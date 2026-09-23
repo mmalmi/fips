@@ -9,6 +9,39 @@ Acceptance targets fresh wallet/controller profiles. Migrating legacy profiles
 is outside this greenfield scope; historical migration notes below do not add a
 requirement to the current milestone. Existing accounts remain untouched.
 
+## Scope and outstanding acceptance
+
+Each linked result applies to its recorded revision and workload. Earlier router
+and phone demonstrations do not accept the latest software for deployment.
+
+| Requirement | Evidence in place | Outstanding acceptance |
+| --- | --- | --- |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
+| Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
+| Financial recovery | Actual process interruption during funding, never-started cancellation, committed-send recovery and lost settlement replies across departure/rejoin. | Actual process kills between wallet completion and controller persistence during settlement; terminal recovery for started but unsubmitted wallet sends; physical power-loss checks. |
+| Long-running history | Route/channel retirement, lifetime rollups and paged proof custody retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK storage bounds and reserved recovery capacity under sustained history pressure. |
+| Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
+| Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
+
+The 23 September source bundle at `492ffeeb6` resolves 693 packages, including
+672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,
+an empty Cargo home and a new target directory, with original source folders,
+registry cache and network access blocked during compilation. Both automatic
+loss/delay paid-route scenarios pass from that build, settle their channels and
+conserve all 518 test sats. Source integrity passes afterward, and all 2,591
+fingerprinted source/dependency inputs match the accepted native graph. This is
+source/build reproducibility; external native tools, artifact authenticity and
+current OpenWrt runtime acceptance remain separate. See the
+[bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
+
+The next focused software boundary is settlement after wallet import but before
+the controller records completion. Existing tests reconstruct that state or lose
+the durable reply; the process fixture should instead kill at the actual handoff
+and recover without editing journals. Keep the original channel/report, exact
+spendable value and lifetime totals. A process kill still does not simulate loss
+of writes already acknowledged by physical storage.
+
 ## Authenticated adjacent neighbors
 
 The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`

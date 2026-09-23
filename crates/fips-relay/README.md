@@ -56,12 +56,12 @@ B pays C using a separate persistent neighbor channel. Quotes specify destinatio
 price, expiry and usage limits. Many destination agreements can share one channel;
 neither packets nor each individual onward hop require a new channel from A.
 
-The current peer API has nine request operations across three services:
+The current peer API has ten request operations across three services:
 
 | Service | Requests | Purpose |
 | --- | --- | --- |
 | Quotes | Quote request | Offer or reject bounded destination service |
-| Controller | Accept, StopRoute, Seal, Settle | Bind an offer, retire one route, freeze a channel's usage, settle its final balance |
+| Controller | Accept, StopRoute, Seal, Settle, ReleaseSettlement | Bind an offer, retire one route, freeze usage, settle the balance, release the recovered settlement report |
 | Payment | Open, Usage, Update, StopForwarding | Manually preapproved setup, cumulative usage/payment and channel-wide admission stop |
 
 Automatic purchases use Accept rather than Payment Open. An active payment cycle
@@ -70,9 +70,11 @@ spending limits, then sends Update and receives durable status. Updates cover ma
 packets. Confirmed idle channels suppress unnecessary polling. Seal and Settle are
 separate so final usage stops changing before the final balance is signed.
 StopRoute affects one agreement; channel operations affect all its agreements.
+ReleaseSettlement follows durable refund recovery and permits safe retirement
+of the seller's settlement report.
 
 These are bounded application records over existing authenticated TCP/FIPS, not
-nine new native FIPS packet types. Existing native MMP supplies quality evidence;
+ten new native FIPS packet types. Existing native MMP supplies quality evidence;
 there is no per-packet quote, payment message or new financial delivery receipt.
 The manual setup/stop surface overlaps the automatic lifecycle and should be
 reviewed before a stable v1 protocol is promised. Consolidation must retain
