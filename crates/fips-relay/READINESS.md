@@ -2856,8 +2856,21 @@ deadline/refresh controls and the live twelve-node encounter. The live originals
 arrive at 924–933 ms before the independent 1,501-ms cut; all 236 local payloads
 arrive. Strict core lint, formatting and the 926-file size gate pass. Runtime and
 dependency fingerprints match across the gates; the final native/lint rerun only
-changes equivalent test syntax and a type alias. Devices remain unchanged, and
-the paid short-contact experiment still needs comparison on this runtime.
+changes equivalent test syntax and a type alias. Devices remain unchanged.
+
+The preserved paid encounter and its bridge-only diagnostic still miss both
+originals on this integrated runtime, before independent 1,501-ms cuts. The
+crowded run first observes the bridge around 20.8 seconds after opening. With
+additional competitors hidden, the reverse source already reports the joined
+root before 0.8 seconds, but its first lookup for that root begins at 1.657
+seconds. These observations separate admission delay from post-join route
+availability; they do not prove a single cause or establish mobile delivery.
+All eight original channels recover their accounting and acknowledgements
+17.38 and 4.19 seconds after reopening, respectively. Local streams deliver
+35/35 and 22/22 per direction, and all 1,536 test sats are collected in each run.
+The unchanged failing experiments remain unmerged. Using a known root coordinate
+as a local routing hint remains an unimplemented experiment, including the
+necessary test of an original queued before the tree merge.
 
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
