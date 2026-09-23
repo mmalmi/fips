@@ -2960,14 +2960,26 @@ missed both originals; this single observation does not establish a general
 latency improvement or crowded/mobile readiness. The fully crowded variant was
 not rerun for this change.
 
-Passive observations show an early no-route drop before bridge authentication
-at approximately 0.73 seconds, but do not identify the exact dropped packet. A
-later lookup crosses the root change: its old-root reply is rejected, and its
-retry occurs after the cut. The boundary already reports current-root target
-coordinates around one second, so the pending lookup does not establish that the
-route remained unusable until its verified reply. The next diagnostic must
-correlate the original's forwarding envelope with the early drop, distinguishing
-best-effort pre-bridge loss from lost queued work or a later routing defect.
+A subsequent passive fingerprint trace identifies the original precisely. Its
+encrypted session envelope is sealed at 0.897 ms, forwarded by the first transit
+at 3.898 ms, and reaches a no-route decision at the disconnected boundary at
+7.575 ms. The matching drop occurs at 7.657 ms and the source handles PathBroken
+at 14.049 ms, before the bridge forms. This is an already submitted best-effort
+datagram, not lost node-owned queued work. The reverse queued original arrives
+at 808 ms before the unchanged 1,501-ms cut. Both local streams deliver 18/18;
+all eight channels recover accounting after reopening and all 1,536 test sats
+are collected. Source/dependency guards and strict core lint pass. The passive
+trace code remains in the isolated experiment; no routing or wire behavior changed.
+
+FSP deliberately provides no retransmission or ordering. The strict raw-datagram
+experiment remains failing and unchanged; it cannot by itself establish a defect
+in retaining queued work. A later lookup also crosses the root change, but the
+boundary reports current-root target coordinates before its verified reply, so
+that reply's latency does not identify how long the application route was unusable.
+The remaining reliable-client gap is a separate test of one accepted TCP write
+across a paid bridge outage, without reconnecting or resubmitting the application
+write. Existing paid mobility datagram retries and direct unpaid TCP loss tests
+do not jointly prove that behavior.
 
 All eight original channels separately recover the required usage, cumulative
 credit and acknowledgements 661 ms after reopening. Those checks include native
