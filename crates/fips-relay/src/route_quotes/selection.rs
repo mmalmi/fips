@@ -276,11 +276,16 @@ impl Destination {
             .map(|sample| sample.loss_ppm)
     }
 
-    fn cost(&self, offer: &RouteOffer, policy: &PriceSelectionPolicy, now: Instant) -> u128 {
-        // For unknown loss, this is the advertised lower bound. Such a path
-        // receives a quota-limited trial, never an assumed zero-loss measurement.
+    fn delivery_ppm(
+        &self,
+        offer: &RouteOffer,
+        policy: &PriceSelectionPolicy,
+        now: Instant,
+    ) -> u128 {
+        // Unknown loss gives an optimistic cost for a quota-limited trial,
+        // never an assumed zero-loss measurement qualifying a full allowance.
         let loss = self.measured_loss(offer, policy, now).unwrap_or(0);
-        u128::from(offer.price.msat) * 1_000_000_000_000 / u128::from(1_000_000 - loss.min(999_999))
+        u128::from(1_000_000 - loss.min(999_999))
     }
 
     fn provider_eligible(&self, provider: NodeAddr, now: Instant) -> bool {
@@ -327,14 +332,24 @@ impl Destination {
             .into_iter()
             .filter(|o| self.provider_eligible(o.provider, now))
             .collect();
-        eligible.sort_by_key(|o| (self.cost(o, policy, now), o.provider));
+        // Cross-products preserve cost ties and the exact switching margin;
+        // division before comparison can make equal savings look sufficient.
+        let costs = |a: &RouteOffer, b: &RouteOffer| {
+            (
+                u128::from(a.price.msat) * self.delivery_ppm(b, policy, now),
+                u128::from(b.price.msat) * self.delivery_ppm(a, policy, now),
+            )
+        };
+        eligible.sort_by(|a, b| {
+            let (left, right) = costs(a, b);
+            (left, a.provider).cmp(&(right, b.provider))
+        });
         let best = eligible.first().ok_or("no eligible priced route")?;
         if let Some(current) = eligible
             .iter()
             .find(|o| self.active.as_ref().is_some_and(|a| same_path(a, o)))
         {
-            let candidate = self.cost(best, policy, now);
-            let retained = self.cost(current, policy, now);
+            let (candidate, retained) = costs(best, current);
             if candidate * 100 >= retained * u128::from(100 - policy.min_improvement_percent) {
                 return Ok(current.clone());
             }

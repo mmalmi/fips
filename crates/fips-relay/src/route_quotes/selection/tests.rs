@@ -268,37 +268,85 @@ fn invalid_selection_policies_are_rejected() {
 #[test]
 fn delivered_cost_choice_matches_independent_reference() {
     let now = Instant::now();
-    let policy = PriceSelectionPolicy {
-        max_loss_percent: 90,
-        min_improvement_percent: 0,
-        ..Default::default()
-    };
-    for active_price in [0, 1, 97, 1_024, 8_192] {
-        for other_price in [0, 1, 97, 1_024, 8_192] {
-            for loss_percent in [0, 10, 25, 50, 90] {
-                let active = offer(2, active_price);
-                let other = offer(3, other_price);
-                let mut state = Destination {
-                    active: Some(active.clone()),
+    let mut offers = [offer(2, 0), offer(3, 0), offer(5, 0)];
+    let permutations = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let prices = [
+        [0, 0, 0],
+        [0, 1, 97],
+        [1, 9, 10],
+        [9, 10, 11],
+        [899, 900, 1_000],
+        [900, 901, 1_000],
+        [1_000, 1_024, 1_500],
+        [1_000, 1_500, 2_000],
+        [u64::MAX / 2, u64::MAX - 1, u64::MAX],
+    ];
+    for rates in prices {
+        for (offer, rate) in offers.iter_mut().zip(rates) {
+            offer.price.msat = rate;
+        }
+        for losses in [
+            [0_u32, 0, 0],
+            [30, 30, 30],
+            [0, 10, 25],
+            [90, 50, 0],
+            [25, 0, 50],
+            [50, 90, 10],
+            [50, 25, 0],
+        ] {
+            for margin in [0, PriceSelectionPolicy::default().min_improvement_percent] {
+                let policy = PriceSelectionPolicy {
+                    max_loss_percent: 90,
+                    min_improvement_percent: margin,
                     ..Default::default()
                 };
-                state
-                    .observe(&working(&active, loss_percent as f64 / 100.0), &policy, now)
-                    .unwrap();
-                // Compare cross-products directly: no production score or
-                // rounding is reused. Equal cost retains the current carrier.
-                let expect = if other_price * (100 - loss_percent) < active_price * 100 {
-                    other.provider
-                } else {
-                    active.provider
-                };
-                assert_eq!(
+                let mut state = Destination::default();
+                for (offer, loss) in offers.iter().zip(losses) {
+                    state.active = Some(offer.clone());
                     state
-                        .choose(vec![other, active], &policy, now)
-                        .unwrap()
-                        .provider,
-                    expect
-                );
+                        .observe(&working(offer, f64::from(loss) / 100.0), &policy, now)
+                        .unwrap();
+                }
+                for active in 0..3 {
+                    state.active = Some(offers[active].clone());
+                    let mut expected = active;
+                    // Independent percentage cross-products: admit only strict
+                    // savings over the active route, then find the cheapest.
+                    // Do not reuse the production score or its rounding.
+                    let cost_pair = |a: usize, b: usize| {
+                        (
+                            u128::from(rates[a]) * u128::from(100 - losses[b]),
+                            u128::from(rates[b]) * u128::from(100 - losses[a]),
+                        )
+                    };
+                    for candidate in 0..3 {
+                        let (next, current) = cost_pair(candidate, active);
+                        if next * 100 >= current * u128::from(100 - margin) {
+                            continue;
+                        }
+                        let (next, best) = cost_pair(candidate, expected);
+                        if (next, offers[candidate].provider) < (best, offers[expected].provider) {
+                            expected = candidate;
+                        }
+                    }
+                    for order in permutations {
+                        assert_eq!(
+                            state
+                                .choose(order.map(|i| offers[i].clone()).to_vec(), &policy, now)
+                                .unwrap()
+                                .provider,
+                            offers[expected].provider,
+                            "rates={rates:?} losses={losses:?} margin={margin} active={active} order={order:?}"
+                        );
+                    }
+                }
             }
         }
     }

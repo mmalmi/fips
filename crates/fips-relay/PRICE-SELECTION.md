@@ -17,6 +17,8 @@ or a delivery guarantee. The broader [readiness work](READINESS.md) remains acti
    of 1500 merits a limited trial when the quality ceiling permits that loss.
 4. Keep the active eligible route unless the alternative improves this score by
    more than the configured margin. Equal costs retain the current carrier.
+   Integer cross-products compare prices and measured loss in parts per million
+   without rounding the ratio first, preserving the exact switching threshold.
 5. A new or retried path gets a quota-limited agreement. Fresh native feedback
    with valid finite RTT and loss can qualify the path for the provider's normal
    quota on the next authorized selection. The normal spending/capital ceilings
@@ -167,6 +169,14 @@ distinct constraints; early quote admission alone cannot explain every missing
 report. Financial signing/forwarding limits continue to apply separately.
 
 ## Reproducible acceptance
+
+The focused selector checks run with `cargo test -p fips-relay --all-features
+--lib route_quotes::selection`. The independent reference check compares three
+recently measured offers across 2,268 combinations of prices, loss, active
+provider, switching margin and offer order. It includes free routes, maximum
+integer prices, ties and savings at either side of the default 10% threshold.
+This checks local selection arithmetic; the native scenarios below exercise
+feedback and paid route activation.
 
 ```sh
 cargo test -p fips-relay --features measurements --lib \
