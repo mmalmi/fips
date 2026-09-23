@@ -1,3 +1,6 @@
+#[cfg(feature = "sim-transport")]
+mod bloom_cancellation;
+
 use super::budget::{
     ENDPOINT_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET,
     RX_LOOP_FAST_MAINTENANCE_TIMEOUT, TUN_DRAIN_BUDGET, endpoint_drain_budget,
@@ -83,7 +86,7 @@ async fn failed_pending_tree_turn_still_drains_bounded_data() {
         &mut tun_rx,
         &endpoint_io.event_tx,
     );
-    let (completed, drained) = node.run_rx_loop_tree_announce_turn(&mut io).await;
+    let (completed, drained) = node.run_rx_loop_routing_announce_turn(&mut io).await;
     assert!(
         completed,
         "local carrier rejection completes without timeout"

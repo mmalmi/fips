@@ -7,17 +7,35 @@ use std::panic::AssertUnwindSafe;
 
 #[test]
 fn periodic_bloom_refresh_respects_debounce_and_does_not_cascade() {
-    run(false);
+    run(Case::Refresh);
 }
 
 #[test]
 fn canceled_bloom_refresh_retains_selected_and_unvisited_updates() {
-    run(true);
+    run(Case::Cancellation);
 }
 
-fn run(cancel: bool) {
+#[test]
+fn canceled_fast_bloom_turn_preserves_work_and_drains_bounded_data() {
+    run(Case::FastCancellation);
+}
+
+#[test]
+fn canceled_tree_turn_leaves_unvisited_bloom_immediately_due() {
+    run(Case::TreeCancellation);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Case {
+    Refresh,
+    Cancellation,
+    FastCancellation,
+    TreeCancellation,
+}
+
+fn run(case: Case) {
     run_large_stack_async_test("bloom-refresh", move || async move {
-        let name = format!("bloom-refresh-{}-{cancel}", std::process::id());
+        let name = format!("bloom-refresh-{}-{case:?}", std::process::id());
         let network = SimNetwork::new(283);
         register_sim_network(name.clone(), network.clone());
         let mut nodes = Vec::new();
@@ -43,10 +61,11 @@ fn run(cancel: bool) {
         let result = AssertUnwindSafe(async {
             setup(&mut nodes).await;
             let owners = owners(&nodes);
-            if cancel {
-                cancellation(&mut nodes, &network).await;
-            } else {
-                unchanged(&mut nodes).await;
+            match case {
+                Case::Refresh => unchanged(&mut nodes).await,
+                Case::Cancellation => cancellation(&mut nodes, &network).await,
+                Case::FastCancellation => fast_cancellation(&mut nodes, &network, false).await,
+                Case::TreeCancellation => fast_cancellation(&mut nodes, &network, true).await,
             }
             assert_eq!(
                 self::owners(&nodes),
@@ -350,5 +369,118 @@ async fn cancellation(nodes: &mut [TestNode], network: &SimNetwork) {
                 .bloom_state
                 .refresh_due(peer, Node::now_ms(), 1_000)
         );
+    }
+}
+
+async fn fast_cancellation(nodes: &mut [TestNode], network: &SimNetwork, tree_first: bool) {
+    anchor_filter(nodes, 0, &[1, 2]).await;
+    let ids: Vec<_> = nodes.iter().map(|node| *node.node.node_addr()).collect();
+    let sequences: Vec<_> = [1, 2]
+        .into_iter()
+        .map(|leaf| {
+            nodes[leaf]
+                .node
+                .get_peer(&ids[0])
+                .unwrap()
+                .filter_sequence()
+        })
+        .collect();
+    // Request an ordinary update after actual successful sends. No history or
+    // clock is seeded; the existing debounce expires in real elapsed time.
+    nodes[0]
+        .node
+        .bloom_state
+        .mark_all_updates_needed(ids[1..].iter().copied());
+    let until = tokio::time::Instant::now() + Duration::from_secs(2);
+    while nodes[0]
+        .node
+        .bloom_state
+        .pending_peers_due(Node::now_ms())
+        .len()
+        != 2
+    {
+        assert!(
+            tokio::time::Instant::now() < until,
+            "real successful-send debounce expires"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let source = nodes[0].addr.as_str().unwrap().to_owned();
+    let sent = nodes[0].node.stats().bloom.sent;
+    let tree_received: u64 = nodes[1..]
+        .iter()
+        .map(|node| node.node.stats().tree.received)
+        .sum();
+    nodes[0]
+        .node
+        .assert_canceled_routing_turn_drains_data(network, &source, tree_first)
+        .await;
+    process_available_packets(nodes).await;
+    if tree_first {
+        assert_eq!(
+            nodes[1..]
+                .iter()
+                .map(|node| node.node.stats().tree.received)
+                .sum::<u64>(),
+            tree_received + 1,
+            "the canceled tree frame is received by exactly one native peer"
+        );
+    } else {
+        assert_eq!(
+            [1, 2]
+                .into_iter()
+                .filter(|leaf| {
+                    nodes[*leaf]
+                        .node
+                        .get_peer(&ids[0])
+                        .unwrap()
+                        .filter_sequence()
+                        > sequences[*leaf - 1]
+                })
+                .count(),
+            1,
+            "the selected canceled frame is genuine; the other peer was unvisited"
+        );
+        let retry = nodes[0]
+            .node
+            .bloom_state
+            .pending_update_deadline_ms()
+            .unwrap();
+        let until = tokio::time::Instant::now() + Duration::from_secs(2);
+        while Node::now_ms() < retry {
+            assert!(
+                tokio::time::Instant::now() < until,
+                "bounded fresh retry floor"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        nodes[0].node.send_due_filter_announces().await;
+    }
+    assert_eq!(nodes[0].node.stats().bloom.sent, sent + 2);
+    assert_eq!(nodes[0].node.bloom_state.pending_update_deadline_ms(), None);
+    nodes[0].node.send_due_filter_announces().await;
+    assert_eq!(
+        nodes[0].node.stats().bloom.sent,
+        sent + 2,
+        "no duplicate retry"
+    );
+    let until = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        process_available_packets(nodes).await;
+        if [1, 2].into_iter().all(|leaf| {
+            nodes[leaf]
+                .node
+                .get_peer(&ids[0])
+                .unwrap()
+                .filter_sequence()
+                > sequences[leaf - 1]
+        }) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < until,
+            "both retained updates arrive"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }

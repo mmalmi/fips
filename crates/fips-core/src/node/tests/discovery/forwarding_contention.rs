@@ -8,6 +8,7 @@ use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 use tokio::time::Instant;
 
+mod bloom_deadline;
 mod guards;
 mod late_reply_loss;
 mod lost_filter;

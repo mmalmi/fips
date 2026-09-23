@@ -20,8 +20,11 @@ pub struct BloomState {
     update_debounce_ms: u64,
     /// Timestamp of last update sent (per peer, in milliseconds).
     last_update_sent: HashMap<NodeAddr, u64>,
-    /// Peers that need a filter update.
-    pending_updates: HashSet<NodeAddr>,
+    /// Pending peers and their fast-dispatch retry floors. Periodic maintenance
+    /// still uses only the successful-send debounce.
+    pending_updates: HashMap<NodeAddr, u64>,
+    /// Cached earliest pending deadline; idle RX turns never scan peer state.
+    pending_update_deadline_ms: Option<u64>,
     /// Current sequence number for outgoing filters.
     sequence: u64,
     /// Last outgoing filter sent to each peer (for change detection).
@@ -37,7 +40,8 @@ impl BloomState {
             is_leaf_only: false,
             update_debounce_ms: 500,
             last_update_sent: HashMap::new(),
-            pending_updates: HashSet::new(),
+            pending_updates: HashMap::new(),
+            pending_update_deadline_ms: None,
             sequence: 0,
             last_sent_filters: HashMap::new(),
         }
@@ -79,6 +83,7 @@ impl BloomState {
     /// Set the update debounce interval.
     pub fn set_update_debounce_ms(&mut self, ms: u64) {
         self.update_debounce_ms = ms;
+        self.refresh_pending_deadline();
     }
 
     /// Add a leaf dependent that we'll include in our filter.
@@ -103,29 +108,84 @@ impl BloomState {
 
     /// Mark that a peer needs an update.
     pub fn mark_update_needed(&mut self, peer_id: NodeAddr) {
-        self.pending_updates.insert(peer_id);
+        self.pending_updates.entry(peer_id).or_insert(0);
+        let due = self.pending_peer_deadline_ms(&peer_id).unwrap();
+        self.pending_update_deadline_ms = Some(
+            self.pending_update_deadline_ms
+                .map_or(due, |previous| previous.min(due)),
+        );
     }
 
     /// Mark all peers as needing updates.
     pub fn mark_all_updates_needed(&mut self, peer_ids: impl IntoIterator<Item = NodeAddr>) {
-        self.pending_updates.extend(peer_ids);
+        for peer in peer_ids {
+            self.mark_update_needed(peer);
+        }
     }
 
     /// Check if a peer needs an update.
     pub fn needs_update(&self, peer_id: &NodeAddr) -> bool {
-        self.pending_updates.contains(peer_id)
+        self.pending_updates.contains_key(peer_id)
     }
 
     /// Check if we should send an update to a peer (respecting debounce).
     pub fn should_send_update(&self, peer_id: &NodeAddr, current_time_ms: u64) -> bool {
-        if !self.pending_updates.contains(peer_id) {
+        if !self.needs_update(peer_id) {
             return false;
         }
 
         match self.last_update_sent.get(peer_id) {
-            Some(&last_time) => current_time_ms >= last_time + self.update_debounce_ms,
+            Some(&last_time) => {
+                current_time_ms >= last_time.saturating_add(self.update_debounce_ms)
+            }
             None => true,
         }
+    }
+
+    pub(crate) fn pending_update_deadline_ms(&self) -> Option<u64> {
+        self.pending_update_deadline_ms
+    }
+
+    pub(crate) fn pending_peer_deadline_ms(&self, peer: &NodeAddr) -> Option<u64> {
+        let retry = *self.pending_updates.get(peer)?;
+        let debounce = self
+            .last_update_sent
+            .get(peer)
+            .map_or(0, |last| last.saturating_add(self.update_debounce_ms));
+        Some(retry.max(debounce))
+    }
+
+    pub(crate) fn pending_peers_due(&self, now_ms: u64) -> Vec<NodeAddr> {
+        self.pending_updates
+            .keys()
+            .filter(|peer| {
+                self.pending_peer_deadline_ms(peer)
+                    .is_some_and(|due| due <= now_ms)
+            })
+            .copied()
+            .collect()
+    }
+
+    pub(crate) fn defer_update_retry(&mut self, peer: &NodeAddr, retry_at_ms: u64) {
+        if let Some(floor) = self.pending_updates.get_mut(peer) {
+            *floor = (*floor).max(retry_at_ms);
+            self.refresh_pending_deadline();
+        }
+    }
+
+    pub(crate) fn defer_pending_retries(&mut self, retry_at_ms: u64) {
+        for floor in self.pending_updates.values_mut() {
+            *floor = (*floor).max(retry_at_ms);
+        }
+        self.refresh_pending_deadline();
+    }
+
+    fn refresh_pending_deadline(&mut self) {
+        self.pending_update_deadline_ms = self
+            .pending_updates
+            .keys()
+            .filter_map(|peer| self.pending_peer_deadline_ms(peer))
+            .min();
     }
 
     /// Whether a previously sent filter needs periodic loss repair. Content
@@ -142,11 +202,13 @@ impl BloomState {
     pub fn record_update_sent(&mut self, peer_id: NodeAddr, current_time_ms: u64) {
         self.last_update_sent.insert(peer_id, current_time_ms);
         self.pending_updates.remove(&peer_id);
+        self.refresh_pending_deadline();
     }
 
     /// Clear all pending updates.
     pub fn clear_pending_updates(&mut self) {
         self.pending_updates.clear();
+        self.pending_update_deadline_ms = None;
     }
 
     /// Record the outgoing filter that was sent to a peer.
@@ -159,6 +221,7 @@ impl BloomState {
         self.last_sent_filters.remove(peer_id);
         self.last_update_sent.remove(peer_id);
         self.pending_updates.remove(peer_id);
+        self.refresh_pending_deadline();
     }
 
     /// Mark only peers whose outgoing filter has actually changed.
@@ -182,7 +245,7 @@ impl BloomState {
                 None => true, // never sent → must send
             };
             if changed {
-                self.pending_updates.insert(*peer_addr);
+                self.mark_update_needed(*peer_addr);
             }
         }
     }

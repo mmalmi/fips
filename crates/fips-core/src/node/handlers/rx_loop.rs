@@ -363,8 +363,8 @@ impl Node {
                         warn!("Link MMP report send timed out; continuing packet processing");
                     }
                 }
-                _ = wait_for_optional_epoch_deadline(self.pending_tree_announce_deadline_ms()) => {
-                    let (completed, drained) = self.run_rx_loop_tree_announce_turn(
+                _ = wait_for_optional_epoch_deadline(self.pending_routing_announce_deadline_ms()) => {
+                    let (completed, drained) = self.run_rx_loop_routing_announce_turn(
                         &mut dataplane_runtime.io(),
                     ).await;
                     if drained.has_data_drained() {
@@ -375,7 +375,7 @@ impl Node {
                             crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
                         );
                         self.mark_rx_loop_maintenance_timeout();
-                        warn!("Pending tree announcement send timed out; continuing packet processing");
+                        warn!("Pending routing announcement send timed out; continuing packet processing");
                     }
                 }
                 // Discovery receives an explicitly rate-limited fair turn:
@@ -546,16 +546,26 @@ impl Node {
         (completed, drained)
     }
 
-    async fn run_rx_loop_tree_announce_turn(
+    async fn run_rx_loop_routing_announce_turn(
         &mut self,
         io: &mut RxLoopDataplaneIo<'_>,
     ) -> (bool, RxLoopDataDrainStats) {
-        let completed =
-            rx_loop_fast_maintenance_within_budget(self.send_pending_tree_announces()).await;
+        let mut sending_filters = false;
+        let completed = rx_loop_fast_maintenance_within_budget(async {
+            self.send_pending_tree_announces().await;
+            sending_filters = true;
+            self.send_due_filter_announces().await;
+        })
+        .await;
         if !completed {
             // Cancellation leaves the original pending flags intact. A due
-            // hint must not cause repeated slow sends ahead of packet work.
-            self.defer_tree_announce_retry();
+            // hint must not cause repeated slow sends ahead of packet work,
+            // but a stalled class must not defer the other class's first turn.
+            if sending_filters {
+                self.defer_filter_announce_retry();
+            } else {
+                self.defer_tree_announce_retry();
+            }
         }
         let drained = self
             .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)

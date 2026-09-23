@@ -45,7 +45,7 @@ impl Node {
     /// Send a FilterAnnounce to a specific peer, respecting debounce.
     ///
     /// If the peer is rate-limited, the update stays pending for
-    /// delivery on the next tick cycle.
+    /// delivery when its debounce deadline expires.
     pub(super) async fn send_filter_announce_to_peer(
         &mut self,
         peer_addr: &NodeAddr,
@@ -55,9 +55,15 @@ impl Node {
         // Check debounce
         if !self.bloom_state.should_send_update(peer_addr, now_ms) {
             self.stats_mut().bloom.debounce_suppressed += 1;
-            // Either not pending or rate-limited; will retry on tick
+            // Pending work remains scheduled for its debounce deadline.
             return Ok(());
         }
+
+        // Reserve only the added fast retry before any send await. Failure or
+        // cancellation retains the update and successful-send history; ordinary
+        // periodic maintenance can still retry on its independently due tick.
+        self.bloom_state
+            .defer_update_retry(peer_addr, self.filter_announce_retry_at_ms());
 
         // Build and encode
         let announce = self.build_filter_announce(peer_addr);
@@ -72,6 +78,8 @@ impl Node {
             .send_dataplane_fmp_link_plaintext(peer_addr, &encoded, false)
             .await
         {
+            self.bloom_state
+                .defer_update_retry(peer_addr, self.filter_announce_retry_at_ms());
             self.stats_mut().bloom.send_failed += 1;
             return Err(e);
         }
@@ -119,7 +127,10 @@ impl Node {
             tree_peer = self.is_tree_peer(peer_addr),
             "Sent FilterAnnounce"
         );
-        self.bloom_state.record_update_sent(*peer_addr, now_ms);
+        // Completion is a conservative debounce anchor even when a transport
+        // accepts its write late. An incomplete send never advances history.
+        self.bloom_state
+            .record_update_sent(*peer_addr, Self::now_ms());
         self.bloom_state.record_sent_filter(*peer_addr, sent_filter);
         if let Some(peer) = self.peers.get_mut(peer_addr) {
             peer.clear_filter_update_needed();
@@ -139,7 +150,44 @@ impl Node {
             .copied()
             .collect();
 
+        self.send_filter_announces_to_peers(ready).await;
+    }
+
+    /// Dispatch only changed updates whose debounce and failed-send floor are
+    /// due. Periodic refresh remains owned by the ordinary maintenance tick.
+    pub(super) async fn send_due_filter_announces(&mut self) {
+        let ready = self.bloom_state.pending_peers_due(Self::now_ms());
+        self.send_filter_announces_to_peers(ready).await;
+    }
+
+    pub(super) fn pending_routing_announce_deadline_ms(&self) -> Option<u64> {
+        self.pending_tree_announce_deadline_ms()
+            .into_iter()
+            .chain(self.bloom_state.pending_update_deadline_ms())
+            .min()
+    }
+
+    pub(super) fn defer_filter_announce_retry(&mut self) {
+        let retry_at = self.filter_announce_retry_at_ms();
+        self.bloom_state.defer_pending_retries(retry_at);
+    }
+
+    fn filter_announce_retry_at_ms(&self) -> u64 {
+        Self::now_ms().saturating_add(
+            self.config
+                .node
+                .tick_interval_secs
+                .saturating_mul(1_000)
+                .max(1),
+        )
+    }
+
+    async fn send_filter_announces_to_peers(&mut self, ready: Vec<NodeAddr>) {
         for peer_addr in ready {
+            if !self.peers.contains_key(&peer_addr) {
+                self.bloom_state.remove_peer_state(&peer_addr);
+                continue;
+            }
             if let Err(e) = self.send_filter_announce_to_peer(&peer_addr).await {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
@@ -282,3 +330,6 @@ impl Node {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod deadlines;

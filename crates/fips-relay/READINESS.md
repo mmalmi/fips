@@ -2756,6 +2756,35 @@ the canonical test suite. No production behavior or hardware changed. Reproduce
 the experiment with the `finite::mature::` priced-path filter and the same
 development dependencies.
 
+The pending-Bloom deadline regression isolates one avoidable propagation delay.
+Three real UDP/Noise nodes establish a stable tree and a successful announcement
+that does not yet advertise the target. A genuine incoming filter makes the
+target reachable, then all three nodes use their normal receive loops. Before
+the fix, the changed announcement arrives after 1,015 ms because it waits for
+the one-second maintenance tick, missing the unchanged 850-ms acceptance bound.
+With cached pending deadlines, it arrives after 503 ms while respecting the
+existing 500-ms debounce. Unchanged-filter refresh remains on ordinary ticks at
+the existing five-second interval; no new wire message or timing limit is added.
+
+Pending tree and Bloom updates share the existing bounded routing turn. Failed
+sends retain their work and successful-send history; fresh retry floors prevent
+failed or canceled writes from immediately rearming fast dispatch. A timed-out
+tree batch leaves unvisited Bloom work eligible for the next turn. Real encrypted
+Sim sends exercise both cancellation boundaries, retained updates and the
+512-packet receive-drain cap. Ordinary periodic retry remains independently
+eligible. This does not establish progress past a persistently stalled peer
+within one serial batch.
+
+All 75 focused checks pass, including the live twelve-node encounter: both
+originals arrive once at 858–864 ms, before the independent 1,501-ms cut, and all
+236 local payloads arrive within their existing bounds. Strict core lint,
+formatting and the 925-file size check pass on the frozen source/dependency
+graph. This isolates and removes a scheduler delay; the failing paid short-contact
+experiment still needs a matched comparison, and the change has not been tested
+on physical routers. Reproduce with the core filters
+`forwarding_contention::bloom_deadline::`, `node::bloom::deadlines::`,
+`sim_discovery::bloom_refresh::` and `responsive::live::`.
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is
