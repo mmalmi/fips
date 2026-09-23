@@ -2720,6 +2720,42 @@ lossy radio mobility, channel coordination and general timing guarantees remain
 separate. Reproduce on Unix with the core library filter `responsive::live::`
 and the same development dependencies.
 
+The funded companion remains an unmerged failing experiment at `821502e87`.
+It retains the six-node paid line, eight competing neighbors and eight existing
+directional channels. Only one idle competitor per boundary is initially visible;
+both full rosters then remain unchanged for twelve seconds with real local paid
+traffic. All competitors and the bridge become available at contact opening.
+One fresh 256-byte datagram is offered in each direction, with an independently
+scheduled 1.5-second cut. Existing end-to-end sessions are retained, unlike the
+cold-session core companion. No additional cross-component application probe is
+sent during recovery, and later payment progress cannot change the cutoff result.
+
+Four runs miss both original deliveries before cuts at 1.501–1.502 seconds.
+The forward original uses a stale route and is dropped at the boundary with a
+no-route indication, without a payment-policy denial. This is permitted by the
+existing best-effort datagram semantics; submission is not a delivery promise.
+The reverse original stays queued. Its sole local peer is connected, healthy
+and eligible for tree forwarding, but its Bloom filter does not advertise the
+destination. The final trace first selects that peer about 7.10 seconds after
+opening, before the next scheduled retry; a verified reply then flushes the
+original. This supports the existing wakeup on newly usable reachability, not
+a missed eligible-peer retry. Why that reachability information arrives late
+still needs isolation; these runs do not establish useful paid service during
+the short encounter or a general mobile convergence bound.
+
+The final two runs separately verify fresh cross-contract usage and supported
+cumulative credit plus payer acknowledgements on all eight original channels
+4.10–4.18 seconds after reopening, within one shared twenty-second passive bound.
+Some usage consumes prior credit; native session upkeep can also advance contract
+counters. These observations do not attribute every payment to a delivered
+original or place acknowledgement before the cut. Local streams remain complete,
+authority and resource limits hold, and all 1,536 test sats are collected in each
+run. Strict relay lint, formatting and the 925-file size check pass on the isolated
+experiment; the delivery assertion remains failing and is not integrated into
+the canonical test suite. No production behavior or hardware changed. Reproduce
+the experiment with the `finite::mature::` priced-path filter and the same
+development dependencies.
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is
