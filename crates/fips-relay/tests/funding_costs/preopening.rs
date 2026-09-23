@@ -1,4 +1,4 @@
-//! A committed wallet send must not remain reserved forever before channel opening.
+//! Interrupted wallet preparation must recover its original funding authority.
 use super::{preopening_support::*, restore::*, *};
 use cashu_service::{revoke_pending_payment, simulation::MintProxy, spilman_client_store_path};
 use serde_json::Value;
@@ -9,6 +9,21 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement_funding() {
+    run(Boundary::CommittedReply).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unsubmitted_wallet_send_recovers_after_offer_expiry_without_replacement_funding() {
+    run(Boundary::UnsubmittedPlan).await;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Boundary {
+    CommittedReply,
+    UnsubmittedPlan,
+}
+
+async fn run(boundary: Boundary) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let (mint, network) = setup::start_mint(root.path(), 9621).await;
@@ -42,9 +57,13 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
         let seen = Arc::new(AtomicUsize::new(0));
         let seen_responses = seen.clone();
         let swaps_before = proxy.state.swaps.load(Ordering::SeqCst);
-        let (committed, release) = proxy.state.pause_matching_swap_reply(move |request| {
-            preparation_match(&retained, &capture, &seen_responses, request)
-        });
+        let attempts_before = proxy.state.swap_attempts.load(Ordering::SeqCst);
+        let (mut reached, mut release) = match boundary {
+            Boundary::CommittedReply => proxy.state.pause_matching_swap_reply(move |request| {
+                preparation_match(&retained, &capture, &seen_responses, request)
+            }),
+            Boundary::UnsubmittedPlan => proxy.state.pause_next_keysets_reply(),
+        };
         let owner = cfg.clone();
         let destination = npubs[2].clone();
         let mut buying = tokio::spawn(async move {
@@ -57,18 +76,39 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
             )
             .await
         });
-        let boundary = tokio::select! {
-            signal = committed => signal.map_err(|_| "mint response barrier closed".to_owned()),
-            result = &mut buying => Err(match result {
-                Ok(Ok(_)) => "Watch completed before the pre-opening swap boundary".to_owned(),
-                Ok(Err(error)) => format!("Watch failed before capture: {}",
-                    error.lines().next().unwrap_or_default().chars().take(200).collect::<String>()),
-                Err(_) => "Watch task failed before the pre-opening swap boundary".to_owned(),
-            }),
-            _ = tokio::time::sleep(Duration::from_secs(30)) =>
-                Err("pre-opening swap boundary timed out".to_owned()),
+        let capture_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut reserved_at_pause = None;
+        let captured = loop {
+            let arrived = tokio::select! {
+                signal = &mut reached => signal.map_err(|_| "mint response barrier closed".to_owned()),
+                result = &mut buying => Err(match result {
+                    Ok(Ok(_)) => "Watch completed before the preparation boundary".to_owned(),
+                    Ok(Err(error)) => format!("Watch failed before capture: {}",
+                        error.lines().next().unwrap_or_default().chars().take(200).collect::<String>()),
+                    Err(_) => "Watch task failed before the preparation boundary".to_owned(),
+                }),
+                _ = tokio::time::sleep_until(capture_deadline) =>
+                    Err("pre-opening preparation boundary timed out".to_owned()),
+            };
+            if arrived.is_err() || boundary == Boundary::CommittedReply { break arrived; }
+            if proxy.state.swap_attempts.load(Ordering::SeqCst) != attempts_before {
+                break Err("wallet submitted a swap before the reserved-plan capture".to_owned());
+            }
+            let sends = send_journal(&wallet).await;
+            if sends["entries"].as_object().unwrap().values().any(|entry| entry["plan"].is_object()) {
+                match inspect_reserved_original(cfg, &funding_keyset.to_string()).await {
+                    Ok(original) => { reserved_at_pause = Some(original); break Ok(()); }
+                    Err(error) => break Err(error.to_owned()),
+                }
+            }
+            // Arm the next read-only GET before releasing this one. Once the
+            // exact plan is durable, recover_wallet_state checks the active
+            // keyset before confirming it; that reply remains held across kill.
+            let next = proxy.state.pause_next_keysets_reply();
+            let _ = release.send(());
+            (reached, release) = next;
         };
-        if let Err(error) = boundary {
+        if let Err(error) = captured {
             let _ = release.send(());
             let sdk = if store.exists() { read(&store) } else { Value::default() };
             let controller = read(&journal);
@@ -84,25 +124,37 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
                 seen.load(Ordering::SeqCst));
             cleanup_wallet_sends(&configs, &mut children, &proxy).await;
             if !buying.is_finished() { buying.abort(); }
-            panic!("fixture did not reach the committed pre-opening wallet send: {error}");
+            panic!("fixture did not reach {boundary:?} pre-opening wallet send: {error}");
         }
         children[0].kill().await.unwrap();
         assert!(!children[0].wait().await.unwrap().success());
         assert!(buying.await.unwrap().is_err());
         let _ = release.send(());
 
-        let original = match inspect_original(cfg, &funding_keyset.to_string(), &matched).await {
+        let inspected = match boundary {
+            Boundary::CommittedReply => inspect_original(cfg, &funding_keyset.to_string(), &matched).await,
+            Boundary::UnsubmittedPlan => inspect_reserved_original(cfg, &funding_keyset.to_string()).await,
+        };
+        let original = match inspected {
             Ok(original) => original,
             Err(error) => {
                 cleanup_wallet_sends(&configs, &mut children, &proxy).await;
                 panic!("pre-opening capture: {error}");
             }
         };
+        if let Some(before) = reserved_at_pause {
+            assert!(before.entry == original.entry && before.intent == original.intent
+                && before.operation == original.operation,
+                "SIGKILL changed the exact unsubmitted plan or funding authority");
+        }
         let OriginalSend { controller: interrupted, sdk: pending, intent_id, intent,
             request: wanted, send_id, entry: original, operation } = original;
         let id = &intent_id;
         let intent = &intent;
-        assert_eq!(proxy.state.swaps.load(Ordering::SeqCst), swaps_before + 1);
+        let submitted = usize::from(boundary == Boundary::CommittedReply);
+        assert_eq!(proxy.state.swaps.load(Ordering::SeqCst), swaps_before + submitted);
+        assert_eq!(proxy.state.swap_attempts.load(Ordering::SeqCst), attempts_before + submitted);
+        eprintln!("pre-opening captured boundary={boundary:?} swap_attempt_delta={submitted}");
         let requested = interrupted["requested"].as_object().unwrap();
         assert_eq!(requested.len(), 1);
         let offer = requested.values().next().unwrap();

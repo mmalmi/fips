@@ -66,10 +66,12 @@ debits or refunds. The original FIPS implementation keeps its 48-sat reservation
 under the same scenario. This proves the local SDK/controller handoff, not
 physical power-loss or Wi-Fi acceptance.
 
-This recovery remains conservative. Missing admissions, started sends without
-saved plans and unsubmitted `ProofsReserved` sends do not prove a terminal
-financial outcome.
-They keep their reservation. A stopped, expired upstream agreement can now retire
+This recovery remains conservative. An exact unsubmitted `ProofsReserved` plan
+can be confirmed and revoked within its original allowance after checking all
+reserved proofs and their ownership. Missing admissions, started sends without
+saved plans, missing operations and changed financial evidence keep their
+reservation. A changed active keyset does not authorize replacement funding or
+prove terminal cancellation. A stopped, expired upstream agreement can now retire
 without an installed seller contract if its verified seller channel already
 exists. The ordinary retirement transaction records zero usage, preserves channel
 terms and paid credit for settlement, and prevents delayed activation even after
@@ -317,18 +319,25 @@ power-loss durability remains a separate boundary. Run the focused case with:
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs restore::interrupted_funding_restores_after_route_expiry_without_new_spending
 ```
 
-The companion pre-opening case interrupts the original wallet preparation send
-before a channel opening exists. After the quote expires and the provider stops,
-ordinary restart upkeep reclaims that exact operation without another send,
+The companion pre-opening cases interrupt the original wallet preparation send
+before a channel opening exists: after its mint swap commits, or after its exact
+`ProofsReserved` plan is saved but before any swap attempt. The latter holds a
+read-only keyset reply and verifies the original saga and reserved coins before
+and after killing the process; it does not rewrite financial journals. After the
+quote expires and the provider stops, ordinary restart upkeep reclaims that exact
+operation without a replacement send,
 channel or route. The verified run recorded 43 sats debited and 35 refunded, with
 zero pending or locked capital and eight sats of lifetime mint fees. All 384 test
 sats are accounted for as 376 spendable plus eight in mint fees. This reclaim can
 finish before the original wallet expiry; retirement still waits for that expiry.
 The test checks unchanged request/plan identity, funding sequence and buyer budget.
-It does not cover the retained unsubmitted or shared-owner cases above. Reproduce:
+The unsubmitted case uses the same recovery and accounting assertions. Finishing
+and revoking that original plan can incur mint fees despite no provider funding.
+Keyset drift, missing evidence and still-live shared ownership remain retained;
+these cases do not establish a durable zero-cost cancellation. Reproduce both:
 
 ```sh
-cargo test --config /path/to/local-dependencies.toml -p fips-relay --test funding_costs preopening::interrupted_wallet_send_recovers_after_offer_expiry_without_replacement_funding -- --exact --test-threads=1 --nocapture
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs wallet_send_recovers_after_offer_expiry_without_replacement_funding -- --test-threads=1 --nocapture
 ```
 
 The four-service transit case extends this boundary to source → middle payer →

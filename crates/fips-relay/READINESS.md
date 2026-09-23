@@ -19,7 +19,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, never-started cancellation, committed-send recovery and lost settlement replies across departure/rejoin. | Terminal recovery for started but unsubmitted wallet sends; physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, never-started cancellation, exact reserved/committed-send recovery and lost settlement replies across departure/rejoin. | Terminal recovery when original wallet evidence is missing or the funding keyset changes; physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups and paged proof custody retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK storage bounds and reserved recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
@@ -56,8 +56,10 @@ dependencies using `cargo test -p fips-relay --all-features --test funding_costs
 paid_fees:: -- --test-threads=1`.
 
 These process kills do not simulate loss of writes already acknowledged by
-physical storage. Started but unsubmitted wallet sends and sustained aggregate
-storage pressure remain separate recovery requirements.
+physical storage. Exact unsubmitted plans now share original-send confirmation
+and revocation, preserving their approved budget and accounting for mint fees.
+Missing or changed evidence, terminal cancellation across keyset drift and
+sustained aggregate storage pressure remain separate recovery requirements.
 
 ## Authenticated adjacent neighbors
 
@@ -3988,8 +3990,9 @@ concurrent retries, token-only capacity competition and retirement fences. The
 18 production feature profiles also pass. These SDK checks do not replace the
 held-funding FIPS regression or establish hardware acceptance of the earlier waits.
 The later companion [pre-opening process regression](FUNDING-COSTS.md) now covers
-FIPS recovery of an expired request with a committed wallet preparation send;
-missing or unsubmitted wallet evidence remains a separate boundary.
+FIPS recovery of expired requests with either committed wallet preparation sends
+or exact unsubmitted plans. Missing or changed wallet evidence remains a separate
+boundary.
 
 An additional same-provider promotion regression holds the successful full-offer
 acceptance after the provider commits it. The source has already retired its

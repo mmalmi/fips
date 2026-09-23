@@ -6,6 +6,7 @@ use cashu_service::{
     revoke_pending_payment, simulation::MintProxy, spilman_client_store_path,
 };
 use cdk_common::database::WalletDatabase;
+use cdk_common::wallet::{OperationData, SendSagaState, WalletSagaState};
 use serde_json::Value;
 use std::{
     path::Path,
@@ -193,6 +194,27 @@ pub(super) async fn inspect_original(
     funding_keyset: &str,
     matched: &Mutex<Option<cashu::nuts::SwapRequest>>,
 ) -> Result<OriginalSend, &'static str> {
+    inspect_preopening(cfg, funding_keyset, SendEvidence::Committed(matched)).await
+}
+
+/// Inspect a saved preparation that has not begun CDK confirmation or submission.
+pub(super) async fn inspect_reserved_original(
+    cfg: &fips_relay::service::ServiceConfig,
+    funding_keyset: &str,
+) -> Result<OriginalSend, &'static str> {
+    inspect_preopening(cfg, funding_keyset, SendEvidence::Reserved).await
+}
+
+enum SendEvidence<'a> {
+    Committed(&'a Mutex<Option<cashu::nuts::SwapRequest>>),
+    Reserved,
+}
+
+async fn inspect_preopening(
+    cfg: &fips_relay::service::ServiceConfig,
+    funding_keyset: &str,
+    evidence: SendEvidence<'_>,
+) -> Result<OriginalSend, &'static str> {
     let wallet = cfg.state_directory.join("wallet");
     let controller = read(&cfg.state_directory.join("controller/controller.json"));
     let intents = controller["funding"].as_object().unwrap();
@@ -210,13 +232,13 @@ pub(super) async fn inspect_original(
         return Err("capture was not an admitted send before channel opening");
     }
     let id = id.clone();
-    inspect_send(&wallet, funding_keyset, matched, controller, sdk, id, 1).await
+    inspect_send(&wallet, funding_keyset, evidence, controller, sdk, id, 1).await
 }
 
 async fn inspect_send(
     wallet: &Path,
     funding_keyset: &str,
-    matched: &Mutex<Option<cashu::nuts::SwapRequest>>,
+    evidence: SendEvidence<'_>,
     controller: Value,
     sdk: Value,
     id: String,
@@ -242,7 +264,6 @@ async fn inspect_send(
     let operation = entry["plan"]["operation_id"].as_str().unwrap().to_owned();
     let proofs: cashu::nuts::Proofs =
         serde_json::from_value(entry["plan"]["proofs_to_swap"].clone()).unwrap();
-    let matched = matched.lock().unwrap();
     if entry["request"]["request_id"] != send_id
         || !entry["result"].is_null()
         || proofs.is_empty()
@@ -250,11 +271,21 @@ async fn inspect_send(
             .iter()
             .any(|p| p.keyset_id.to_string() == funding_keyset)
         || entry["request"]["required_keyset_id"] != funding_keyset
-        || matched
-            .as_ref()
-            .is_none_or(|wire| proofs.without_dleqs() != *wire.inputs())
     {
-        return Err("committed reply differs from the exact persisted preparation swap");
+        return Err("saved preparation differs from the exact admitted wallet request");
+    }
+    match evidence {
+        SendEvidence::Committed(matched) => {
+            if matched
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(|wire| proofs.without_dleqs() != *wire.inputs())
+            {
+                return Err("committed reply differs from the exact persisted preparation swap");
+            }
+        }
+        SendEvidence::Reserved => inspect_reserved_plan(wallet, &entry).await?,
     }
     Ok(OriginalSend {
         intent_id: id,
@@ -266,6 +297,57 @@ async fn inspect_send(
         entry,
         operation,
     })
+}
+
+async fn inspect_reserved_plan(wallet: &Path, entry: &Value) -> Result<(), &'static str> {
+    let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_wallet_db_path(wallet))
+        .await
+        .unwrap();
+    let operation = entry["plan"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .map_err(|_| "saved send operation is not a CDK saga identity")?;
+    let saga = db
+        .get_saga(&operation)
+        .await
+        .unwrap()
+        .ok_or("saved preparation has no original CDK saga")?;
+    if saga.state != WalletSagaState::Send(SendSagaState::ProofsReserved)
+        || saga.amount.to_u64() != entry["request"]["amount_sat"].as_u64().unwrap()
+        || saga.mint_url.to_string() != entry["request"]["mint_url"].as_str().unwrap()
+        || saga.unit != CurrencyUnit::Sat
+        || !matches!(&saga.data, OperationData::Send(data)
+            if data.confirmation.is_none() && data.token.is_none() && data.proofs.is_none())
+    {
+        return Err("original CDK send has advanced beyond unsubmitted ProofsReserved");
+    }
+    let mut expected: cashu::nuts::Proofs =
+        serde_json::from_value(entry["plan"]["proofs_to_swap"].clone()).unwrap();
+    let direct: cashu::nuts::Proofs =
+        serde_json::from_value(entry["plan"]["proofs_to_send"].clone()).unwrap();
+    expected.extend(direct);
+    let reserved = db.get_reserved_proofs(&operation).await.unwrap();
+    let unique = expected
+        .ys()
+        .unwrap()
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    if reserved.len() != expected.len()
+        || unique.len() != expected.len()
+        || expected.iter().any(|proof| {
+            !reserved.iter().any(|saved| {
+                saved.proof == *proof
+                    && saved.state == State::Reserved
+                    && saved.used_by_operation == Some(operation)
+                    && saved.mint_url == saga.mint_url
+                    && saved.unit == saga.unit
+            })
+        })
+    {
+        return Err("original reserved proofs differ from the exact saved send plan");
+    }
+    Ok(())
 }
 
 /// Exact old records which are allowed to coexist with one new original send.
@@ -361,7 +443,7 @@ impl PreparationHistory {
         let original = inspect_send(
             &wallet,
             funding_keyset,
-            matched,
+            SendEvidence::Committed(matched),
             controller,
             sdk,
             id,
