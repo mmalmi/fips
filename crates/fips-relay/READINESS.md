@@ -2871,40 +2871,40 @@ All eight original channels recover their accounting and acknowledgements
 The unchanged failing experiments remain unmerged. The current-root routing experiment below evaluates that post-join delay
 with an original queued before the tree merge.
 
-Pending traffic now also survives cancellation of a flush. Three native
-regressions establish real encrypted sessions, remove a source-bound carrier,
-queue ordinary endpoint or TUN ingress, and restore a healthy authorized carrier.
-They cancel after the selected encrypted packet reaches its next hop while send
-completion remains suspended. The selected original then reaches its destination
-through normal ingress. The old runtime loses all unvisited traffic; the fixed
-runtime retains it for ordinary retry, including original ages and ownership.
-
+Pending-session traffic retains a single owner across retries and cancellation.
 Only one TUN packet or one endpoint batch of at most 16 payloads leaves the
-node-owned queue across an await. Preparing TUN traffic stamps every initially
-unaged packet before sending; cancellation cannot renew the two-second ready-send
-budget. Endpoint errors return only actual deferred payloads matched by the
-existing send token. Their caller restores them ahead of untouched traffic with
-the original age and existing destination/packet caps. Generic errors no longer
-replay a cloned selected batch, and unrelated deferred batches retain normal
-bookkeeping. No protocol message or resource allowance is added.
+node-owned queue across an await. Native regressions cancel a real encrypted send
+after its selected packet reaches the next hop; unvisited originals remain queued
+for ordinary retry. Preparing TUN traffic stamps initially unaged packets before
+sending, so cancellation cannot renew the two-second ready-send budget.
 
-Two additional native endpoint checks cover partial source-admission failure
-without replay, unavailable preflight without queue changes, and exclusive
-ownership of actual deferrals. The latter deliberately removes a real carrier
-between preparation and the prepared-send helper; it tests that helper boundary,
-not a naturally concurrent control turn in the synchronous production preflight.
-Queue checks also cover split batches, front-restoration overflow and first-ready
-TUN ages. All 42 focused checks pass, including the live twelve-node encounter:
-both originals arrive once at 805/813 ms before the independent 1,502-ms cut, and
-all 236 local payloads arrive. Strict core lint, workspace formatting and the
-928-file size check pass on the same source/dependency graph.
+Endpoint errors return only actual deferred payloads matched by the existing
+send token. They retain their original age and the existing destination/packet
+caps. TUN route and MTU preflight likewise runs before removing the selected
+queued packet. After handoff, the cached TUN sender checks its own local transport
+receipt and never authorizes replay from an unrelated failure or an uncertain
+result. It moves the original payload and reuses native IPv6 compression and
+source admission. Terminal turns retain unrelated control ingress; cached sends
+leave deferred TUN packets for their normal dispatcher. The superseded aggregate
+send-result helper and unused bookkeeping are removed.
 
-This guarantees ownership of unvisited traffic, not delivery of a selected send
-whose outcome is uncertain. Selected TUN handoffs in this flush remain best
-effort; the separate direct-ingress TUN error-retry policy is unchanged and still
-needs an uncertainty audit. These checks do not establish financial delivery,
-radio performance or hardware acceptance. The preserved paid short-contact
-failures above remain open and were not rerun for this queue change.
+Two additional UDP/Noise regressions reproduce the distinct TUN failures. One
+rejects an older endpoint record through ordinary source admission, then proves
+that the admitted TUN original arrives while the old runtime wrongly retains a
+queued copy. The other stages genuine SessionAck and TUN reports in the native
+completion-before-control order: the older endpoint arrives, but its cached flush
+previously discarded the waiting TUN original. The fixed runtime delivers both
+originals once. These deliberately staged handler boundaries do not establish
+complete RX scheduling or radio behavior.
+
+All 30 focused behavioral checks pass on the final source, covering these cases,
+TUN delivery, cancellation and original queue ages, endpoint partial failures,
+discovery, current-root recovery and source admission. Strict core lint across
+all features/targets, workspace formatting and the 933-file size check pass.
+Source and dependency fingerprints remain unchanged through the gates. No wire
+messages, allowance limits, payment policy or hardware settings change. Selected
+TUN sends remain best effort; local send receipts are not end-to-end delivery
+proofs. Physical mobile-radio acceptance remains separate.
 
 Tree-mode routing now uses the current root's existing ancestry entry when no
 cached destination coordinate is present. Cached records still take precedence,

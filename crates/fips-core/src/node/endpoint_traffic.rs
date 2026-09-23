@@ -179,6 +179,10 @@ impl PendingTunPacket {
     pub(crate) fn packet(&self) -> &[u8] {
         &self.packet
     }
+
+    pub(crate) fn into_packet(self) -> Vec<u8> {
+        self.packet
+    }
 }
 
 /// Per-destination TUN packets waiting for session establishment.
@@ -188,6 +192,10 @@ pub(crate) struct PendingTunPacketQueue {
 }
 
 impl PendingTunPacketQueue {
+    pub(crate) fn front(&self) -> Option<&PendingTunPacket> {
+        self.packets.front()
+    }
+
     pub(crate) fn push_bounded(
         &mut self,
         packet: Vec<u8>,

@@ -46,8 +46,10 @@ mod sim_harness;
 mod source_coords_recovery;
 mod source_routes;
 mod sparse_recovery;
+mod tun_deferred_ownership;
 mod tun_outbound_core;
 mod tun_outbound_tail;
+mod tun_send_ownership;
 #[cfg(feature = "webrtc-transport")]
 mod webrtc_upgrade;
 

@@ -317,7 +317,7 @@ impl Node {
         true
     }
 
-    fn process_dataplane_tun_outbound_drop(
+    pub(in crate::node) fn process_dataplane_tun_outbound_drop(
         &mut self,
         drop: &crate::dataplane::DataplaneTunOutboundDrop,
     ) -> bool {

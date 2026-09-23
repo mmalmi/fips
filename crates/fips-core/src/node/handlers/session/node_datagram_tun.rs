@@ -1,3 +1,5 @@
+use crate::dataplane::{DataplaneTunOutboundDrop, DataplaneTunOutboundDropReason};
+
 impl Node {
     const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
     const PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX: usize = 16;
@@ -383,12 +385,23 @@ impl Node {
         match self.dataplane_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
                 if self.has_application_next_hop(&dest_addr) {
-                    match self
-                        .send_dataplane_cached_tun_packet(&dest_addr, ipv6_packet.clone())
-                        .await
-                    {
-                        Ok(()) | Err(NodeError::MtuExceeded { .. }) => return,
-                        Err(_) => {}
+                    match self.prepare_dataplane_cached_tun_packet(&dest_addr, &ipv6_packet) {
+                        Ok(route) => {
+                            if let Err(error) = self
+                                .send_dataplane_prepared_tun_packet(&dest_addr, route, ipv6_packet)
+                                .await
+                            {
+                                debug!(dest = %self.peer_display_name(&dest_addr), %error, "Failed to send deferred TUN packet");
+                            }
+                            return;
+                        }
+                        Err(DataplaneTunOutboundDropReason::NoRoute) => {}
+                        Err(reason) => {
+                            self.process_dataplane_tun_outbound_drop(
+                                &DataplaneTunOutboundDrop::new(ipv6_packet, reason),
+                            );
+                            return;
+                        }
                     }
                 }
                 self.queue_pending_tun_packet(dest_addr, ipv6_packet);
@@ -607,21 +620,38 @@ impl Node {
     }
 
     async fn flush_one_pending_tun_packet(&mut self, dest_addr: &NodeAddr) -> bool {
-        if !self.dataplane_has_fsp_owner(dest_addr)
-            || !self.dataplane_application_route_ready(dest_addr)
-        {
-            return false;
-        }
-        // Only the selected packet leaves node ownership across an await.
-        // Neither cancellation nor a post-handoff error proves it was unsent.
-        let Some(packet) = self.pending_session_traffic.pop_tun_packet(dest_addr) else {
+        let Some(packet) = self
+            .pending_session_traffic
+            .tun_packets_for(dest_addr)
+            .and_then(|queue| queue.front())
+        else {
             return false;
         };
-        if let Err(e) = self
-            .send_dataplane_cached_tun_packet(dest_addr, packet.packet().to_vec())
+        let prepared = self.prepare_dataplane_cached_tun_packet(dest_addr, packet.packet());
+        if matches!(prepared, Err(DataplaneTunOutboundDropReason::NoRoute)) {
+            return false;
+        }
+        // Preflight retains the original queue age. Only the selected packet
+        // leaves node ownership across an await; an uncertain send is not retried.
+        let packet = self
+            .pending_session_traffic
+            .pop_tun_packet(dest_addr)
+            .expect("preflight retained the selected TUN packet")
+            .into_packet();
+        let route = match prepared {
+            Ok(route) => route,
+            Err(reason) => {
+                self.process_dataplane_tun_outbound_drop(&DataplaneTunOutboundDrop::new(
+                    packet, reason,
+                ));
+                return false;
+            }
+        };
+        if let Err(error) = self
+            .send_dataplane_prepared_tun_packet(dest_addr, route, packet)
             .await
         {
-            debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+            debug!(dest = %self.peer_display_name(dest_addr), %error, "Failed to send queued TUN packet");
             return false;
         }
         true

@@ -4,9 +4,9 @@ use crate::dataplane::{
     ActivityTick, DataplaneDirectFspSource, DataplaneEndpointDataRoute, DataplaneFspWrapRoute,
     DataplaneIngressRoute, DataplaneLiveNodeTurn, DataplaneLiveOutboundFirsts,
     DataplaneLiveOwnerRoutes, DataplaneLiveTurnIo, DataplaneOutputDrop, DataplaneOutputError,
-    DataplaneReceiveEpoch, DataplaneTransportSentReceipt, DataplaneTunOutboundRoute,
-    OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
-    TransportPath,
+    DataplaneReceiveEpoch, DataplaneTransportSentReceipt, DataplaneTunOutboundDropReason,
+    DataplaneTunOutboundRoute, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId,
+    PacketClass, TransportPath,
 };
 use crate::protocol::SessionMessageType;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -286,75 +286,75 @@ impl Node {
         Ok((packet, send_token))
     }
 
-    pub(in crate::node) async fn send_dataplane_cached_tun_packet(
+    pub(in crate::node) fn prepare_dataplane_cached_tun_packet(
+        &self,
+        dest_addr: &NodeAddr,
+        packet: &[u8],
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason> {
+        if !self.dataplane_has_fsp_owner(dest_addr)
+            || !self.dataplane_application_route_ready(dest_addr)
+        {
+            return Err(DataplaneTunOutboundDropReason::NoRoute);
+        }
+        self.dataplane.prepare_tun_outbound_route(packet)
+    }
+
+    pub(in crate::node) async fn send_dataplane_prepared_tun_packet(
         &mut self,
         dest_addr: &NodeAddr,
+        route: DataplaneTunOutboundRoute,
         packet: Vec<u8>,
     ) -> Result<(), NodeError> {
-        if !self.dataplane_has_fsp_owner(dest_addr) {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "dataplane FSP owner not registered for queued TUN packet".into(),
-            });
-        }
-
-        if !self.dataplane_application_route_ready(dest_addr) {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "application route coordinates unavailable".into(),
-            });
-        }
-
+        let send_token = DATAPLANE_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
+        let packet = route
+            .to_outbound_packet(packet)
+            .with_activity_tick(ActivityTick::new(Self::now_ms()))
+            .with_send_token(send_token);
         let turn = self
             .pump_dataplane_pending_outbound_firsts(
                 DataplaneLiveOutboundFirsts {
-                    tun_packet: Some(packet),
+                    initial_outbound: Some(packet),
+                    collect_transport_sent_receipts: true,
                     ..Default::default()
                 },
                 0,
-                1,
+                0,
                 1,
             )
             .await;
-        if let Some(error) = self.dataplane_cached_tun_drop_error(dest_addr, &turn) {
-            return Err(error);
-        }
-        self.finish_dataplane_pending_outbound_turn(dest_addr, "queued TUN packet", turn)
-            .await
-            .map(|_| ())
-    }
-
-    fn dataplane_cached_tun_drop_error(
-        &mut self,
-        dest_addr: &NodeAddr,
-        turn: &DataplaneLiveNodeTurn,
-    ) -> Option<NodeError> {
-        let drop = turn.tun_outbound_drops().first()?;
-        let packet = drop.packet().to_vec();
-        let payload_len = drop.payload_len();
-        match drop.reason() {
-            crate::dataplane::DataplaneTunOutboundDropReason::MtuExceeded { mtu } => {
-                self.send_icmpv6_packet_too_big(&packet, mtu);
-                Some(NodeError::MtuExceeded {
+        let result = self
+            .drive_dataplane_pending_outbound_token_receipts(
+                turn,
+                send_token,
+                1,
+                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
+                1,
+            )
+            .await;
+        self.requeue_deferred_dataplane_endpoint_batches();
+        // These are local transport receipts, not end-to-end delivery proofs.
+        // Failure or cancellation after admission cannot authorize a replay.
+        let (turn, result) = match result {
+            Ok((_, turn)) => (turn, Ok(())),
+            Err(failure) => {
+                let error = NodeError::SendFailed {
                     node_addr: *dest_addr,
-                    packet_size: payload_len,
-                    mtu: mtu.min(u32::from(u16::MAX)) as u16,
-                })
+                    reason: Self::dataplane_pending_outbound_failure_from_stop(
+                        "queued TUN packet",
+                        &failure,
+                    ),
+                };
+                let turn = match failure {
+                    DataplanePendingOutboundFailure::TurnFailed(turn)
+                    | DataplanePendingOutboundFailure::Stopped { turn, .. }
+                    | DataplanePendingOutboundFailure::Exhausted(turn) => turn,
+                };
+                (turn, Err(error))
             }
-            crate::dataplane::DataplaneTunOutboundDropReason::NoRoute => {
-                self.send_icmpv6_dest_unreachable(&packet);
-                Some(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "dataplane TUN route unavailable".into(),
-                })
-            }
-            crate::dataplane::DataplaneTunOutboundDropReason::InvalidPacket => {
-                Some(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "dataplane TUN packet invalid".into(),
-                })
-            }
-        }
+        };
+        // This completion may also contain unrelated control ingress.
+        self.defer_dataplane_control_turn(turn);
+        result
     }
 
     pub(in crate::node) async fn send_dataplane_cached_endpoint_payloads(
@@ -448,7 +448,7 @@ impl Node {
             )
             .await;
         let unsent = self.take_deferred_pending_endpoint_payloads(send_token);
-        self.process_dataplane_pending_outbound_bookkeeping().await;
+        self.requeue_deferred_dataplane_endpoint_batches();
         let reason = match result {
             Ok(_) if unsent.is_empty() => return Ok(()),
             Ok(_) => "queued endpoint data deferred without transport output".into(),
@@ -660,7 +660,7 @@ impl Node {
                 self.dataplane_pending_outbound_crypto_limit(),
             )
             .await;
-        self.process_dataplane_pending_outbound_bookkeeping().await;
+        self.requeue_deferred_dataplane_endpoint_batches();
         let (_, turn) = match result {
             Ok(completed) => completed,
             Err(failure) => {
@@ -691,86 +691,12 @@ impl Node {
         Ok(())
     }
 
-    async fn finish_dataplane_pending_outbound_turn(
-        &mut self,
-        dest_addr: &NodeAddr,
-        label: &str,
-        turn: DataplaneLiveNodeTurn,
-    ) -> Result<DataplaneLiveNodeTurn, NodeError> {
-        let result = self
-            .drive_dataplane_pending_outbound_turn(
-                turn,
-                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
-            )
-            .await;
-        self.process_dataplane_pending_outbound_bookkeeping().await;
-        match result {
-            Ok(turn) => Ok(turn),
-            Err(failure) => Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: Self::dataplane_pending_outbound_failure_from_stop(label, &failure),
-            }),
-        }
-    }
-
     fn dataplane_pending_outbound_crypto_limit(&self) -> usize {
         // A priority packet can be dispatched behind a full owner window and
         // cannot retire before every lower counter. Drain that same configured
         // window while awaiting its exact terminal receipt; a smaller fixed
         // budget abandons live heartbeats/MMP in the queue under bulk load.
         self.config.node.limits.max_pending_inbound.max(1)
-    }
-
-    async fn drive_dataplane_pending_outbound_turn(
-        &mut self,
-        mut turn: DataplaneLiveNodeTurn,
-        continuation_turns: usize,
-    ) -> Result<DataplaneLiveNodeTurn, DataplanePendingOutboundFailure> {
-        let mut awaiting_output = false;
-        for continuation in 0..=continuation_turns {
-            let summary = turn.summary();
-            let sent = Self::dataplane_pending_outbound_sent(&turn);
-            let deferred =
-                turn.deferred_endpoint_data_batches_count() > 0 || turn.tun_deferred_packets() > 0;
-            let failed = turn.has_failures();
-            let needs_continuation = Self::dataplane_pending_outbound_needs_continuation(&turn);
-
-            if failed {
-                return Err(DataplanePendingOutboundFailure::TurnFailed(turn));
-            }
-            if sent {
-                return Ok(turn);
-            }
-            if needs_continuation {
-                awaiting_output = true;
-            }
-            if deferred || (!needs_continuation && !awaiting_output) {
-                let reason = if deferred {
-                    "deferred without transport output"
-                } else {
-                    "made no transport output progress"
-                };
-                return Err(DataplanePendingOutboundFailure::Stopped { turn, reason });
-            }
-            if continuation == continuation_turns {
-                return Err(DataplanePendingOutboundFailure::Exhausted(turn));
-            }
-
-            if summary.outputs() == 0 {
-                self.wait_for_dataplane_completion().await;
-            }
-            self.defer_dataplane_control_turn(turn);
-            turn = self
-                .pump_dataplane_pending_outbound_firsts(
-                    DataplaneLiveOutboundFirsts::default(),
-                    0,
-                    0,
-                    1,
-                )
-                .await;
-        }
-
-        unreachable!("bounded pending outbound continuation loop must return")
     }
 
     async fn drive_dataplane_pending_outbound_token_receipts(
@@ -841,16 +767,6 @@ impl Node {
             notify.notified(),
         )
         .await;
-    }
-
-    fn dataplane_pending_outbound_sent(turn: &DataplaneLiveNodeTurn) -> bool {
-        turn.transport_sent() > 0 || turn.summary().outputs_sent() > 0
-    }
-
-    fn dataplane_pending_outbound_needs_continuation(turn: &DataplaneLiveNodeTurn) -> bool {
-        let summary = turn.summary();
-        summary.outbound_admitted() > summary.dispatched()
-            || (summary.outbound_admitted() > 0 && summary.outputs() == 0)
     }
 
     fn dataplane_pending_outbound_failure(label: &str, turn: &DataplaneLiveNodeTurn) -> String {

@@ -60,10 +60,7 @@ impl DataplaneTunOutboundRoute {
         self.owner
     }
 
-    fn route_packet(
-        &self,
-        packet: &[u8],
-    ) -> Result<&Self, DataplaneTunOutboundDropReason> {
+    fn route_packet(&self, packet: &[u8]) -> Result<&Self, DataplaneTunOutboundDropReason> {
         if let Some(max_packet_len) = self.max_packet_len
             && packet.len() > max_packet_len
         {
@@ -74,7 +71,7 @@ impl DataplaneTunOutboundRoute {
         Ok(self)
     }
 
-    fn to_outbound_packet(&self, mut payload: Vec<u8>) -> OutboundPacket {
+    pub(crate) fn to_outbound_packet(&self, mut payload: Vec<u8>) -> OutboundPacket {
         assert!(
             crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
                 &mut payload,
@@ -90,10 +87,20 @@ impl DataplaneTunOutboundRoute {
             self.flags,
             PacketBuffer::new(payload),
         )
-            .with_fsp_inner_header(
-                crate::protocol::SessionMessageType::DataPacket.to_byte(),
-                self.inner_flags,
-            )
+        .with_fsp_inner_header(
+            crate::protocol::SessionMessageType::DataPacket.to_byte(),
+            self.inner_flags,
+        )
+    }
+}
+
+impl DataplaneLiveNode {
+    pub(crate) fn prepare_tun_outbound_route(
+        &self,
+        packet: &[u8],
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason> {
+        let dest = FipsTunDestinationPrefix::from_ipv6_packet(packet)?;
+        self.routes.route_tun_outbound(packet, dest).cloned()
     }
 }
 
@@ -111,12 +118,12 @@ pub(crate) struct DataplaneTunOutboundDrop {
 }
 
 impl DataplaneTunOutboundDrop {
-    pub(crate) fn packet(&self) -> &[u8] {
-        &self.packet
+    pub(crate) fn new(packet: Vec<u8>, reason: DataplaneTunOutboundDropReason) -> Self {
+        Self { packet, reason }
     }
 
-    pub(crate) fn payload_len(&self) -> usize {
-        self.packet.len()
+    pub(crate) fn packet(&self) -> &[u8] {
+        &self.packet
     }
 
     pub(crate) fn reason(&self) -> DataplaneTunOutboundDropReason {

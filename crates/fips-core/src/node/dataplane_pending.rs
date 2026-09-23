@@ -15,18 +15,12 @@ impl Node {
         unsent
     }
 
-    async fn process_dataplane_pending_outbound_bookkeeping(&mut self) -> usize {
-        let mut processed = 0usize;
-        // Cached TUN callers observe deferral in the returned turn. Do not
-        // independently replay a selected packet from this bookkeeping path.
-        for _packet in self.dataplane.take_deferred_tun_packets() {
-            processed += 1;
-        }
+    fn requeue_deferred_dataplane_endpoint_batches(&mut self) {
+        // Deferred TUN ingress belongs to the normal control dispatcher. A
+        // cached endpoint/control send may run before that dispatcher reaches it.
         for batch in self.dataplane.take_deferred_endpoint_data_batches() {
             self.requeue_deferred_endpoint_data_batch(batch);
-            processed += 1;
         }
-        processed
     }
 
     pub(in crate::node) fn sync_dataplane_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {
