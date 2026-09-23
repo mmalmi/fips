@@ -5,8 +5,6 @@ use crate::{buyer::BuyerError, ledger::ChannelUsage};
 use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman_refund};
 
 mod state;
-#[cfg(feature = "testbench")]
-mod wallet_barrier;
 pub use state::SettlementReport;
 pub(super) use state::{BuyerSettlement, SellerSettlement, SettlementKind};
 use state::{valid_report, valid_usage};

@@ -327,7 +327,7 @@ async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
         check(&mut errors, request_count(&send_before) == 1, "middle allocated another wallet send");
         if let Some(saved) = send_before["entries"].get(&original.send_id) {
             check(&mut errors, saved["request"] == original.entry["request"]
-                && saved["plan"] == original.entry["plan"], "middle changed its original request or plan");
+                && saved["preparation"]["planned"] == original.entry["preparation"]["planned"], "middle changed its original request or plan");
         }
         if !automatic {
             let sdk = read(&store);
@@ -371,7 +371,7 @@ async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
             "fixture cleanup allocated another middle send");
         if let Some(saved) = final_send["entries"].get(&original.send_id) {
             check(&mut errors, saved["request"] == original.entry["request"]
-                && saved["plan"] == original.entry["plan"], "fixture cleanup replaced the middle send");
+                && saved["preparation"]["planned"] == original.entry["preparation"]["planned"], "fixture cleanup replaced the middle send");
         }
         for (index, cfg) in configs.iter().enumerate() {
             let state = journal(cfg);

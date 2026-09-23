@@ -356,7 +356,7 @@ async fn lost_preparation_reply_recovers_after_expiry_with_continuously_connecte
         check(&mut errors, request_count(&sends) == 1, "a replacement wallet send was created");
         if let Some(saved) = sends["entries"].get(&original.send_id) {
             check(&mut errors, saved["request"] == original.entry["request"]
-                && saved["plan"] == original.entry["plan"], "the original wallet request or plan changed");
+                && saved["preparation"]["planned"] == original.entry["preparation"]["planned"], "the original wallet request or plan changed");
         }
         let mut available = 0;
         for (index, config) in configs.iter().enumerate() {

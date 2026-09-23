@@ -25,6 +25,9 @@ mod setup;
 mod terminal_history;
 #[path = "funding_costs/transit_preopening.rs"]
 mod transit_preopening;
+#[cfg(feature = "testbench")]
+#[path = "funding_costs/wallet_crash.rs"]
+mod wallet_crash;
 use cashu_service::{
     create_topup_quote, load_wallet_overview,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},

@@ -10,7 +10,14 @@ fn cancelled_prefixes_stay_bounded_without_wallet_sends_or_buyer_channels() {
     let (mut store, buyer, template) = fixture(root.path());
     let policy = store.journal.policy.clone();
     for n in 1..=64 {
-        let id = append_disposition(&mut store, &template, FundingReclaim::Cancelled);
+        let disposition = if n % 2 == 0 {
+            FundingReclaim::PreparedCancelled {
+                wallet_operation_id: format!("cancelled-original-{n}"),
+            }
+        } else {
+            FundingReclaim::Cancelled
+        };
+        let id = append_disposition(&mut store, &template, disposition);
         let original = store.journal.funding[&id].clone();
         store.prepare_channel_retirement(&buyer, 10_000).unwrap();
         store = reload(store);

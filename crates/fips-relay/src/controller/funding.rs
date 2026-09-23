@@ -146,6 +146,13 @@ impl Controller {
             ) {
                 return Ok(());
             }
+            #[cfg(feature = "testbench")]
+            wallet_barrier::hold(
+                &self.services.wallet_directory,
+                &intent.id,
+                "funding-reclaim",
+            )
+            .await?;
             self.change(move |j| Self::record_wallet_reclaim(j, &intent, result))
                 .await?;
         }

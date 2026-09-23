@@ -6,7 +6,14 @@ use super::*;
 pub(super) enum FundingReclaim {
     Pending,
     Cancelled,
+    PreparedCancelled { wallet_operation_id: String },
     Complete { result: ReclaimedFunding },
+}
+
+impl FundingReclaim {
+    pub(super) fn cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled | Self::PreparedCancelled { .. })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,7 +25,7 @@ pub(super) struct ReclaimedFunding {
 
 impl FundingIntent {
     pub(super) fn cancelled(&self) -> bool {
-        matches!(self.reclaim, Some(FundingReclaim::Cancelled))
+        self.reclaim.as_ref().is_some_and(FundingReclaim::cancelled)
     }
 
     pub(super) fn reclaim_terminal(&self) -> bool {
@@ -89,6 +96,18 @@ impl Controller {
             Wallet::Cancelled => {
                 Self::record_reclaim_disposition(j, expected, FundingReclaim::Cancelled)
             }
+            Wallet::PreparedCancelled {
+                wallet_operation_id,
+            } => {
+                FundingIntent::validate_wallet_operation(&wallet_operation_id)?;
+                Self::record_reclaim_disposition(
+                    j,
+                    expected,
+                    FundingReclaim::PreparedCancelled {
+                        wallet_operation_id,
+                    },
+                )
+            }
             Wallet::Reclaimed {
                 wallet_operation_id,
                 wallet_cost,
@@ -130,8 +149,11 @@ impl Controller {
         {
             return Err("wallet reclaim intent or result changed".into());
         }
-        if matches!(disposition, FundingReclaim::Cancelled) {
+        if disposition.cancelled() {
             j.version |= journal::FUNDING_CANCELLED_VERSION;
+        }
+        if matches!(disposition, FundingReclaim::PreparedCancelled { .. }) {
+            j.version |= journal::PREPARED_CANCELLED_VERSION;
         }
         j.funding.get_mut(&expected.id).unwrap().reclaim = Some(disposition);
         Ok(())
@@ -170,11 +192,20 @@ impl Controller {
                         return Err("reclaimed funding has an outgoing route".into());
                     }
                 }
-                FundingReclaim::Cancelled => {
+                FundingReclaim::Cancelled | FundingReclaim::PreparedCancelled { .. } => {
                     if j.version & journal::FUNDING_CANCELLED_VERSION == 0
                         || j.outgoing.values().any(|o| o.funding_id == intent.id)
                     {
                         return Err("invalid cancelled funding evidence".into());
+                    }
+                    if let Some(FundingReclaim::PreparedCancelled {
+                        wallet_operation_id,
+                    }) = &intent.reclaim
+                    {
+                        FundingIntent::validate_wallet_operation(wallet_operation_id)?;
+                        if j.version & journal::PREPARED_CANCELLED_VERSION == 0 {
+                            return Err("unsupported prepared cancellation evidence".into());
+                        }
                     }
                 }
                 FundingReclaim::Pending => (),

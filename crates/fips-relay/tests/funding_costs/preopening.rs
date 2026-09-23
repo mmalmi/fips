@@ -1,6 +1,8 @@
 //! Interrupted wallet preparation must recover its original funding authority.
 use super::{preopening_support::*, restore::*, *};
-use cashu_service::{revoke_pending_payment, simulation::MintProxy, spilman_client_store_path};
+use cashu_service::{
+    CashuWalletService, revoke_pending_payment, simulation::MintProxy, spilman_client_store_path,
+};
 use serde_json::Value;
 use std::{
     sync::Mutex,
@@ -13,7 +15,7 @@ async fn interrupted_wallet_send_recovers_after_offer_expiry_without_replacement
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn unsubmitted_wallet_send_recovers_after_offer_expiry_without_replacement_funding() {
+async fn unsubmitted_wallet_send_cancels_after_expiry_and_keyset_change_without_spending() {
     run(Boundary::UnsubmittedPlan).await;
 }
 
@@ -43,6 +45,8 @@ async fn run(boundary: Boundary) {
         let wallet = cfg.state_directory.join("wallet");
         let store = spilman_client_store_path(&wallet);
         let journal = cfg.state_directory.join("controller/controller.json");
+        let original_coins = setup::load_mint_proofs(&wallet, &proxy.url).await.unwrap()
+            .into_iter().map(|p| (p.y.to_string(), p)).collect::<std::collections::BTreeMap<_, _>>();
         // As with the SDK's single-coin fixture, force a wallet preparation swap.
         // Existing denominations could otherwise satisfy a send without one.
         // Requiring a newly active keyset makes every old proof need exchange,
@@ -95,7 +99,7 @@ async fn run(boundary: Boundary) {
                 break Err("wallet submitted a swap before the reserved-plan capture".to_owned());
             }
             let sends = send_journal(&wallet).await;
-            if sends["entries"].as_object().unwrap().values().any(|entry| entry["plan"].is_object()) {
+            if sends["entries"].as_object().unwrap().values().any(|entry| entry["preparation"]["planned"].is_object()) {
                 match inspect_reserved_original(cfg, &funding_keyset.to_string()).await {
                     Ok(original) => { reserved_at_pause = Some(original); break Ok(()); }
                     Err(error) => break Err(error.to_owned()),
@@ -116,7 +120,7 @@ async fn run(boundary: Boundary) {
             let started = sdk["admissions"].as_object().into_iter().flat_map(|a| a.values())
                 .filter(|a| a["funding_started"] == true).count();
             let planned = sends["entries"].as_object().unwrap().values()
-                .filter(|s| !s["plan"].is_null()).count();
+                .filter(|s| !s["preparation"]["planned"].is_null()).count();
             eprintln!("pre-opening premise={error}; admissions={} started={started} openings={} intents={} outgoing={} wallet_plans={planned} swap_delta={} inspected_responses={}",
                 entries(&sdk, "admissions"), entries(&sdk, "openings"),
                 entries(&controller, "funding"), entries(&controller, "outgoing"),
@@ -164,7 +168,36 @@ async fn run(boundary: Boundary) {
         while now() <= expiry {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        if boundary == Boundary::UnsubmittedPlan {
+            // A real keyset change used to strand this original preparation.
+            mint.mint().rotate_keyset("sat".parse().unwrap(),
+                (0..=10).map(|b| 1u64 << b).collect(), 100, false, None).await.unwrap();
+        }
+        #[cfg(feature = "testbench")]
+        let cancellation_marker = (boundary == Boundary::UnsubmittedPlan)
+            .then(|| super::wallet_crash::arm(&wallet, id, "funding-reclaim"));
         children[0] = start(&paths[0]).await;
+        #[cfg(feature = "testbench")]
+        if let Some(marker) = cancellation_marker {
+            super::wallet_crash::wait_at(&mut children[0], &marker, id).await;
+            let saved = read(&journal);
+            assert!(funding_authority(&saved["funding"][id]) == *intent);
+            assert_eq!(saved["funding"][id]["reclaim"]["state"], "pending");
+            assert_eq!(read(&store)["admissions"][id]["reclaim"]["result"]["PreparedCancelled"]["wallet_operation_id"], operation);
+            let cancelled = send_journal(&wallet).await;
+            assert_eq!(cancelled["entries"][&send_id]["outcome"], "cancelled");
+            assert!(cancelled["entries"][&send_id]["preparation"] == original["preparation"]);
+            let status = request(cfg, &AdminRequest::Status).await.unwrap();
+            assert_eq!(status["funding_budget"]["pending_reserved_sat"], intent["max_wallet_debit_sat"]);
+            assert_eq!(status["funding_budget"]["wallet_debited_sat"], 0);
+            assert_eq!(status["funding_budget"]["wallet_refunded_sat"], 0);
+            assert_eq!(setup::load_mint_balance(&wallet, &proxy.url).await.unwrap().balance_sat, 128);
+            super::wallet_crash::kill(&mut children[0]).await;
+            assert!(send_journal(&wallet).await == cancelled);
+            assert!(read(&journal) == saved);
+            eprintln!("pre-opening killed after original SDK cancellation, before controller completion");
+            children[0] = start(&paths[0]).await;
+        }
 
         let mut errors = Vec::new();
         let mut fenced = false;
@@ -200,10 +233,15 @@ async fn run(boundary: Boundary) {
                     "a purchase became active after withdrawal");
                 check(&mut errors, status["remaining_budget_sat"] == cfg.terms.buyer_budget_sat,
                     "recovery consumed unapproved buyer authority");
-                automatic = fenced && terminal_refund(&current, &status, id, &operation, &allowance);
+                automatic = fenced && match boundary {
+                    Boundary::CommittedReply => terminal_refund(&current, &status, id, &operation, &allowance),
+                    Boundary::UnsubmittedPlan => terminal_prepared_cancellation(&current, &status, id, &operation),
+                };
                 last_status = status;
             }
-            if automatic { break; }
+            if automatic && (boundary == Boundary::CommittedReply || current["funding"].get(id).is_none()) {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         let observed = read(&journal);
@@ -220,9 +258,34 @@ async fn run(boundary: Boundary) {
         let stopped_journal = read(&journal);
         let stopped_sdk = read(&store);
         let before_cleanup = send_journal(&wallet).await;
-        check(&mut errors, request_count(&before_cleanup) == 1, "a second wallet send was recorded");
+        let sequence = cashu_service::CashuRequestSequence::from_request_id(&send_id).unwrap().unwrap();
+        let retired_cancellation = boundary == Boundary::UnsubmittedPlan
+            && before_cleanup["sequences"][sequence.scope()]["through"] == sequence.number()
+            && before_cleanup["sequences"][sequence.scope()]["requests"] == 0;
+        check(&mut errors, request_count(&before_cleanup) == 1 || retired_cancellation,
+            "original wallet request was lost or another send was recorded");
+        if automatic && boundary == Boundary::UnsubmittedPlan {
+            check(&mut errors, retired_cancellation && stopped_journal["funding"].get(id).is_none(),
+                "completed cancellation did not retire its original request");
+            let retained = setup::load_mint_proofs(&wallet, &proxy.url).await.unwrap()
+                .into_iter().map(|p| (p.y.to_string(), p)).collect::<std::collections::BTreeMap<_, _>>();
+            check(&mut errors, retained == original_coins, "cancelled retirement changed original spendable coin rows");
+            check(&mut errors, proxy.state.swap_attempts.load(Ordering::SeqCst) == attempts_before,
+                "local cancellation submitted a mint swap");
+            check(&mut errors, proxy.state.fees_collected.load(Ordering::SeqCst) == 0,
+                "local cancellation incurred a mint fee");
+            if let Some(saved) = before_cleanup["entries"].get(&send_id) {
+                check(&mut errors, saved["outcome"] == "cancelled", "wallet cancellation outcome missing");
+            }
+            let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&wallet)).await.unwrap();
+            use cdk_common::database::WalletDatabase;
+            let original_id = operation.parse().unwrap();
+            check(&mut errors, db.get_saga(&original_id).await.unwrap().is_none(), "cancelled native operation was not acknowledged");
+            check(&mut errors, db.list_transactions(None, None, None).await.unwrap().iter()
+                .all(|r| r.saga_id != Some(original_id)), "cancellation invented a wallet receipt");
+        }
         if let Some(saved) = before_cleanup["entries"].get(&send_id) {
-            check(&mut errors, saved["request"] == original["request"] && saved["plan"] == original["plan"],
+            check(&mut errors, saved["request"] == original["request"] && saved["preparation"]["planned"] == original["preparation"]["planned"],
                 "original wallet request or operation changed");
         }
         if !automatic {
@@ -242,21 +305,26 @@ async fn run(boundary: Boundary) {
             // edit the controller's still-unresolved reservation to claim success.
             assert_eq!(entries(&stopped_sdk, "openings"), 0,
                 "fixture cleanup cannot revoke a send now owned by a channel");
-            let refund = tokio::time::timeout(Duration::from_secs(30),
-                revoke_pending_payment(&wallet, &proxy.url, &operation))
-                .await.expect("bounded original wallet-send fixture cleanup").unwrap();
-            eprintln!("pre-opening fixture_cleanup_refund_sat={refund}; autonomous_recovery=false");
-            check(&mut errors, refund > 0, "fixture cleanup recovered no test funds");
+            if boundary == Boundary::UnsubmittedPlan {
+                let service = CashuWalletService::open_file_backed(&wallet).await.unwrap();
+                let original_request = serde_json::from_value(original["request"].clone()).unwrap();
+                service.cancel_wallet_send_request(original_request).await.unwrap();
+            } else {
+                let refund = tokio::time::timeout(Duration::from_secs(30),
+                    revoke_pending_payment(&wallet, &proxy.url, &operation))
+                    .await.expect("bounded original wallet-send fixture cleanup").unwrap();
+                check(&mut errors, refund > 0, "fixture cleanup recovered no test funds");
+                let cleaned = send_journal(&wallet).await;
+                let (cleaned_id, saved) = original_send(&cleaned, &wanted);
+                check(&mut errors, request_count(&cleaned) == 1 && cleaned_id == send_id
+                    && saved["preparation"] == original["preparation"],
+                    "fixture cleanup replaced the original wallet operation");
+                let debit = saved["outcome"]["sent"]["cost"]["wallet_debit_sat"].as_u64().unwrap();
+                check(&mut errors, allowance.contains(&debit), "original wallet send exceeded its cost allowance");
+            }
+            eprintln!("pre-opening fixture cleanup completed; autonomous_recovery=false");
             check(&mut errors, read(&journal) == stopped_journal, "fixture cleanup changed FIPS authority");
             check(&mut errors, read(&store) == stopped_sdk, "fixture cleanup changed channel authority");
-            let cleaned = send_journal(&wallet).await;
-            let (cleaned_id, saved) = original_send(&cleaned, &wanted);
-            check(&mut errors, request_count(&cleaned) == 1 && cleaned_id == send_id
-                && saved["plan"] == original["plan"],
-                "fixture cleanup replaced the original wallet operation");
-            let debit = saved["result"]["cost"]["wallet_debit_sat"].as_u64().unwrap();
-            check(&mut errors, allowance.contains(&debit),
-                "original wallet send exceeded its cost allowance");
         }
         let mut spendable = 0;
         for (i, cfg) in configs.iter().enumerate() {
@@ -281,4 +349,38 @@ async fn run(boundary: Boundary) {
         check(&mut errors, automatic, "pre-opening send stayed unresolved after original expiry; fixture cleanup is not service recovery");
         assert!(errors.is_empty(), "pre-opening recovery: {errors:?}");
     }).await.expect("bounded pre-opening process recovery and fixture cleanup");
+}
+
+fn terminal_prepared_cancellation(
+    journal: &Value,
+    status: &Value,
+    id: &str,
+    operation: &str,
+) -> bool {
+    let budget = &status["funding_budget"];
+    if [
+        "pending_reserved_sat",
+        "wallet_debited_sat",
+        "wallet_refunded_sat",
+        "locked_sat",
+        "exposure_sat",
+    ]
+    .iter()
+    .any(|field| budget[field] != 0)
+    {
+        return false;
+    }
+    if let Some(intent) = journal["funding"].get(id) {
+        intent["funded"].is_null()
+            && intent["reclaim"]["state"] == "prepared_cancelled"
+            && intent["reclaim"]["wallet_operation_id"] == operation
+    } else {
+        let totals = &journal["history"]["channels"]["totals"];
+        journal["funding"].as_object().unwrap().is_empty()
+            && totals["cancelled_requests"] == 1
+            && totals["channels"] == 0
+            && totals["abandoned_requests"] == 0
+            && totals["cost"]["wallet_debit_sat"] == 0
+            && totals["refund_sat"] == 0
+    }
 }

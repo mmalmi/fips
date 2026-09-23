@@ -31,10 +31,11 @@ restore replies and invalid or partial signatures retain uncertainty.
 
 Before a channel opening exists, an exclusively withdrawn funding intent can
 instead reclaim its original wallet send. The controller and SDK persist separate
-abandonment fences before recovery. The SDK verifies the original request and saved
-plan, restores only that send's confirmation, and durably revokes its token. An
+abandonment fences before recovery. If mint submission began, the SDK verifies the
+original request and saved plan, restores only that send's confirmation, and
+durably revokes its token. An
 empty restore may retry the identical saved confirmation; it never prepares a new
-send or processes unrelated wallet operations. For a started send, only the
+send or processes unrelated wallet operations. For a mint-submitted send, only the
 verified original debit and net refund release reserved capital. Until that result
 is saved, new purchases from the same provider remain blocked; unrelated providers
 retain their normal limits. Route changes check the same fence atomically with reservation; if the
@@ -44,8 +45,9 @@ An existing channel opening still uses its original restore/refund path.
 Completed abandoned sends share numbered-prefix retirement with channels after
 their original wallet expiry. They retain gross costs, refunds and lifetime
 exposure, and count as `abandoned_requests`, with zero channel capacity or signed
-payments. The controller retains the `0x800` format bit and the SDK requires
-version 8 or later so older readers cannot silently ignore the abandonment fences.
+payments. The controller retains the `0x800` format bit. The current SDK
+preparation authority and result format requires client-store version 12;
+older readers reject this evidence.
 
 An exact admission which never started a wallet send has a separate terminal
 `Cancelled` outcome. The SDK fences that admission and verifies both wallet
@@ -66,12 +68,24 @@ debits or refunds. The original FIPS implementation keeps its 48-sat reservation
 under the same scenario. This proves the local SDK/controller handoff, not
 physical power-loss or Wi-Fi acceptance.
 
-This recovery remains conservative. An exact unsubmitted `ProofsReserved` plan
-can be confirmed and revoked within its original allowance after checking all
-reserved proofs and their ownership. Missing admissions, started sends without
-saved plans, missing operations and changed financial evidence keep their
-reservation. A changed active keyset does not authorize replacement funding or
-prove terminal cancellation. A stopped, expired upstream agreement can now retire
+A started wallet preparation has its own terminal `PreparedCancelled` outcome.
+The SDK binds the original request to CDK's exact preparation, releases only its
+original reservation, saves the wallet cancellation outcome and then acknowledges
+CDK's retained result. FIPS records that original operation and releases its
+capital reservation without adding a debit, refund, fee or channel. The operation
+cannot belong to another live funding intent. The `0x8000` format bit prevents an
+older controller from overlooking this distinction. Both cancellation outcomes
+share the existing cancelled-request count and original-expiry retirement path.
+
+A lost SDK fee preview can recover exact native preparation evidence through the
+original request commitment; it cannot invent a preview or confirm a different
+send. Local cancellation does not depend on the mint's current keyset. Missing or
+changed original evidence still retains the financial reservation. A send whose
+mint submission began must recover and revoke its original token, preserving its
+real debit, refund and fees. This is a fresh-profile format, not a migration of
+existing accounts. See the SDK's wallet request and channel history documentation.
+
+A stopped, expired upstream agreement can now retire
 without an installed seller contract if its verified seller channel already
 exists. The ordinary retirement transaction records zero usage, preserves channel
 terms and paid credit for settlement, and prevents delayed activation even after
@@ -319,25 +333,32 @@ power-loss durability remains a separate boundary. Run the focused case with:
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs restore::interrupted_funding_restores_after_route_expiry_without_new_spending
 ```
 
-The companion pre-opening cases interrupt the original wallet preparation send
-before a channel opening exists: after its mint swap commits, or after its exact
-`ProofsReserved` plan is saved but before any swap attempt. The latter holds a
-read-only keyset reply and verifies the original saga and reserved coins before
-and after killing the process; it does not rewrite financial journals. After the
-quote expires and the provider stops, ordinary restart upkeep reclaims that exact
-operation without a replacement send,
-channel or route. The verified run recorded 43 sats debited and 35 refunded, with
-zero pending or locked capital and eight sats of lifetime mint fees. All 384 test
-sats are accounted for as 376 spendable plus eight in mint fees. This reclaim can
-finish before the original wallet expiry; retirement still waits for that expiry.
-The test checks unchanged request/plan identity, funding sequence and buyer budget.
-The unsubmitted case uses the same recovery and accounting assertions. Finishing
-and revoking that original plan can incur mint fees despite no provider funding.
-Keyset drift, missing evidence and still-live shared ownership remain retained;
-these cases do not establish a durable zero-cost cancellation. Reproduce both:
+The companion pre-opening cases interrupt the original wallet preparation before
+a channel opening exists. The committed-send case kills the source after its mint
+swap commits. After the quote expires and the provider stops, ordinary restart
+upkeep reclaims the original operation without replacement funding, channel or
+route. The verified run records 43 sats debited and 35 refunded:
+376 spendable test sats plus eight in mint fees account for all 384 issued sats.
+This reclaim can finish before the original wallet expiry; retirement still waits
+for that expiry.
+
+The unsubmitted case holds a read-only keyset reply after the exact
+`ProofsReserved` plan is durable. It checks the original saga and reserved coins,
+kills the source, rotates the mint's actual keyset and restarts after quote expiry.
+With `testbench`, the same case kills the source again after the SDK has durably
+cancelled but before FIPS saves the result. The shared private wallet-completion
+barrier matches the process and original funding identity; it changes no financial
+journal and is absent from production builds. Ordinary restart consumes the
+saved outcome and retires the original request after its original expiry.
+
+The run passes with no replacement funding, swaps, fees, debits or refunds; all
+384 test sats remain spendable. Cancellation and retirement preserve the exact
+original spendable coin rows, funding sequence and buyer budget. These
+process kills do not simulate physical loss of writes acknowledged by storage.
+Run the pre-opening regressions with:
 
 ```sh
-cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs wallet_send_recovers_after_offer_expiry_without_replacement_funding -- --test-threads=1 --nocapture
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs preopening:: -- --test-threads=1 --nocapture
 ```
 
 The four-service transit case extends this boundary to source → middle payer →

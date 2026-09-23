@@ -237,8 +237,9 @@ The controller and ledger's channel bounds now count retained records on both si
 
 **Remaining history work:** unreleased spent proof records, unreleased or unrelated
 transactions, mint/melt records and orphaned legacy receiver records remain.
-Completed CDK recovery operations already remove their saga records; unfinished
-creating and spending operations must retain their original coins. Spent proof
+Completed CDK recovery operations remove their saga records after any required
+owner acknowledgment; unfinished creating and spending operations must retain
+their original coins. Spent proof
 evidence also supports the SDK's receiver-custody checks. Proof cleanup must
 coordinate all of those owners, not merely observe a spent state or completed
 spending operation. This is not yet a bound on total router database size or proof
@@ -271,6 +272,14 @@ must still finish separately. Sender retirement plans use SDK format version 11;
 completed refunds still require
 the original refund proofs, including an explicit empty list for a zero refund.
 No additional FIPS journal or wire message is introduced.
+
+A cancelled preparation retains its exact operation identity until ordinary
+numbered-prefix retirement, using SDK client-store version 12 for the original
+preparation identity. The SDK records cancellation before acknowledging
+the native result. Its released input coins can be reused immediately and do not
+belong to that cancelled request's custody archive. Cancellation contributes no
+wallet sends, debits or refunds; the channel history records a cancelled request
+after its original expiry. Missing or changed evidence retains the reservation.
 
 The wallet retains one custody stream per existing numbered-send scope, within
 the same 32-scope lifetime bound. It reuses the descriptor across retirements.

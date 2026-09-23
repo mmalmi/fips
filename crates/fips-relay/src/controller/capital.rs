@@ -12,6 +12,23 @@ pub struct FundingBudget {
 }
 
 impl FundingIntent {
+    pub(super) fn validate_wallet_operation(operation: &str) -> Result<(), String> {
+        if operation.is_empty() || operation.len() > 64 {
+            return Err("invalid funding wallet operation".into());
+        }
+        Ok(())
+    }
+
+    fn wallet_operation(&self) -> Option<&str> {
+        match &self.reclaim {
+            Some(FundingReclaim::PreparedCancelled {
+                wallet_operation_id,
+            }) => Some(wallet_operation_id),
+            Some(FundingReclaim::Complete { result }) => Some(&result.wallet_operation_id),
+            _ => self.funded.as_ref().map(|f| f.wallet_operation_id.as_str()),
+        }
+    }
+
     pub(super) fn validate_cost(&self, funded: &Funded) -> Result<(), String> {
         self.validate_wallet_cost(&funded.wallet_operation_id, &funded.wallet_cost)
     }
@@ -21,9 +38,8 @@ impl FundingIntent {
         operation: &str,
         cost: &cashu_service::CashuSendCost,
     ) -> Result<(), String> {
-        if operation.is_empty()
-            || operation.len() > 64
-            || cost.token_amount_sat < self.capacity_sat
+        Self::validate_wallet_operation(operation)?;
+        if cost.token_amount_sat < self.capacity_sat
             || cost.token_amount_sat.checked_add(cost.swap_fee_sat) != Some(cost.wallet_debit_sat)
             || cost.wallet_debit_sat > self.max_wallet_debit_sat
         {
@@ -55,16 +71,19 @@ impl Controller {
             if f.reclaim.is_some() && f.funded.is_some() {
                 return Err("funding cannot be opened and reclaimed".into());
             }
-            // The SDK proved this exact admission never started a wallet send.
-            // It releases its reservation without contributing debit or refund.
+            if let Some(operation) = f.wallet_operation() {
+                FundingIntent::validate_wallet_operation(operation)?;
+                if !operations.insert(operation) {
+                    return Err("wallet operation belongs to multiple funding intents".into());
+                }
+            }
+            // Both SDK cancellation outcomes prove zero spend. The preparation
+            // identity remains owned even after its coins become reusable.
             if f.cancelled() {
                 continue;
             }
             let (debit, refund) = if let Some(result) = f.reclaimed() {
                 f.validate_reclaim(result)?;
-                if !operations.insert(&result.wallet_operation_id) {
-                    return Err("wallet operation belongs to multiple funding intents".into());
-                }
                 let debit = result.wallet_cost.wallet_debit_sat;
                 budget.wallet_debited_sat = add(budget.wallet_debited_sat, debit)?;
                 (debit, Some(result.recovered_amount_sat))
@@ -72,11 +91,6 @@ impl Controller {
                 match &f.funded {
                     Some(funded) => {
                         f.validate_cost(funded)?;
-                        if !operations.insert(&funded.wallet_operation_id) {
-                            return Err(
-                                "wallet operation belongs to multiple funding intents".into()
-                            );
-                        }
                         let debit = funded.wallet_cost.wallet_debit_sat;
                         budget.wallet_debited_sat = add(budget.wallet_debited_sat, debit)?;
                         let settlement = j.buyer_settlements.get(&funded.terms.id);

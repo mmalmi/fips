@@ -211,12 +211,12 @@ async fn cleanup(
             let sends = send_journal(&wallet).await;
             if request_count(&sends) == request_count(&history.sends) + 1 {
                 let (send_id, entry) = original_send(&sends, &wanted);
-                if let Some(operation) = entry["plan"]["operation_id"].as_str() {
+                if let Some(operation) = entry["preparation"]["planned"]["operation_id"].as_str() {
                     let distinct = history.sends["entries"]
                         .as_object()
                         .unwrap()
                         .values()
-                        .all(|old| old["plan"]["operation_id"] != operation);
+                        .all(|old| old["preparation"]["planned"]["operation_id"] != operation);
                     if distinct && controller["funding"][&id]["reclaim"]["state"] != "complete" {
                         let result = tokio::time::timeout(
                             Duration::from_secs(30),
@@ -231,7 +231,8 @@ async fn cleanup(
                         if journal(cfg) != controller
                             || read(&sdk_path) != sdk
                             || after["entries"][&send_id]["request"] != entry["request"]
-                            || after["entries"][&send_id]["plan"] != entry["plan"]
+                            || after["entries"][&send_id]["preparation"]["planned"]
+                                != entry["preparation"]["planned"]
                             || request_count(&after) != request_count(&sends)
                             || history.sends["entries"]
                                 .as_object()
@@ -405,7 +406,7 @@ async fn refunded_selected_trial_does_not_pin_another_original_send_to_same_prov
         let sends = send_journal(&wallet).await;
         check(&mut errors, request_count(&sends) == request_count(&history.sends) + 1
             && sends["entries"][&original.send_id]["request"] == original.entry["request"]
-            && sends["entries"][&original.send_id]["plan"] == original.entry["plan"],
+            && sends["entries"][&original.send_id]["preparation"]["planned"] == original.entry["preparation"]["planned"],
             "recovery replaced the original wallet request or send plan");
         check(&mut errors, automatic,
             "refunded selected history pinned the other abandoned send; fixture cleanup is not recovery");
@@ -422,7 +423,7 @@ async fn refunded_selected_trial_does_not_pin_another_original_send_to_same_prov
         let final_sends = send_journal(&wallet).await;
         check(&mut errors, request_count(&final_sends) == request_count(&history.sends) + 1
             && final_sends["entries"][&original.send_id]["request"] == original.entry["request"]
-            && final_sends["entries"][&original.send_id]["plan"] == original.entry["plan"],
+            && final_sends["entries"][&original.send_id]["preparation"]["planned"] == original.entry["preparation"]["planned"],
             "cleanup replaced the original request or plan");
         for index in 1..4 {
             check(&mut errors, journal(&configs[index])["next_funding"] == initial[index]["next_funding"],

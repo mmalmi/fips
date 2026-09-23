@@ -1,4 +1,5 @@
 //! SIGKILL at both wallet/controller handoffs, followed by ordinary recovery.
+use super::wallet_crash::{arm, kill, kill_at};
 use super::*;
 use serde_json::Value;
 use std::{
@@ -198,34 +199,6 @@ pub(super) async fn settle(
     let replay = request(&configs[0], &AdminRequest::Settle).await.unwrap();
     assert_eq!(replay["settlements"], serde_json::json!([report]));
     (replay, payout_proofs)
-}
-
-fn arm(wallet: &Path, id: &str, stage: &str) -> PathBuf {
-    let path = wallet.join(format!("test-settlement-{stage}"));
-    std::fs::write(path.with_extension("arm"), id).unwrap();
-    path.with_extension("reached")
-}
-
-async fn kill_at(child: &mut Child, marker: &Path, id: &str) {
-    let expected = format!("{}\n{id}", child.id().unwrap());
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if std::fs::read_to_string(marker).is_ok_and(|v| v == expected) {
-                break;
-            }
-            assert!(child.try_wait().unwrap().is_none());
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("real wallet completion must reach the armed controller handoff");
-    kill(child).await;
-}
-
-async fn kill(child: &mut Child) {
-    use std::os::unix::process::ExitStatusExt;
-    child.kill().await.unwrap();
-    assert_eq!(child.wait().await.unwrap().signal(), Some(9));
 }
 
 async fn proofs(wallet: &Path, mint: &str) -> BTreeMap<String, cdk_common::wallet::ProofInfo> {

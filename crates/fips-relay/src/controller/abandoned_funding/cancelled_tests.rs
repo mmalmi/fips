@@ -5,80 +5,91 @@ use cashu_service::CashuSpilmanFundingReclaim as Wallet;
 
 #[test]
 fn only_exact_cancelled_admission_releases_its_reservation_after_reload() {
-    let root = tempfile::tempdir().unwrap();
-    let (mut store, old) = abandoned(&root.path().join("controller"));
-    let pending = prepare(&mut store);
-    // Another provider's uncertain intent must retain its separate reservation.
-    store
-        .change(|j| {
-            j.policy.max_locked_sat = 64;
-            let mut other = pending.clone();
-            other.id = "test-2".into();
-            other.provider = NodeAddr::from_bytes([3; 16]);
-            other.reclaim = None;
-            j.funding.insert(other.id.clone(), other);
-            j.next_funding = 3;
-            Ok(())
-        })
-        .unwrap();
-    let before = serde_json::to_value(&store.journal).unwrap();
-    let budget = Controller::capital(&store.journal).unwrap();
-    assert_eq!(budget.pending_reserved_sat, 64);
-    for uncertain in [Wallet::Missing, Wallet::NoPlan] {
+    for outcome in [
+        Wallet::Cancelled,
+        Wallet::PreparedCancelled {
+            wallet_operation_id: "original-preparation".into(),
+        },
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, old) = abandoned(&root.path().join("controller"));
+        let pending = prepare(&mut store);
+        // Another provider's uncertain intent must retain its separate reservation.
         store
-            .change(|j| Controller::record_wallet_reclaim(j, &pending, uncertain))
+            .change(|j| {
+                j.policy.max_locked_sat = 64;
+                let mut other = pending.clone();
+                other.id = "test-2".into();
+                other.provider = NodeAddr::from_bytes([3; 16]);
+                other.reclaim = None;
+                j.funding.insert(other.id.clone(), other);
+                j.next_funding = 3;
+                Ok(())
+            })
             .unwrap();
-        store = reload(store);
-        assert!(serde_json::to_value(&store.journal).unwrap() == before);
-        assert_eq!(Controller::capital(&store.journal).unwrap(), budget);
-        assert!(Controller::provider_reclaiming(
-            &store.journal,
-            pending.provider
-        ));
-    }
-    for _ in 0..2 {
-        store
-            .change(|j| Controller::record_wallet_reclaim(j, &pending, Wallet::Cancelled))
-            .unwrap();
-        store = reload(store);
-        let current = &store.journal.funding[&pending.id];
-        assert!(current.cancelled() && current.reclaim_terminal() && current.reclaimed().is_none());
-        assert!(current.funded.is_none());
-        assert!(!Controller::abandoned_funding(&store.journal, current));
-        assert!(Controller::funding_released(&store.journal, current));
-        assert!(!Controller::provider_reclaiming(
-            &store.journal,
-            current.provider
-        ));
-        assert_eq!(
-            Controller::capital(&store.journal).unwrap(),
-            FundingBudget {
-                pending_reserved_sat: 32,
-                locked_sat: 32,
-                exposure_sat: 32,
-                ..FundingBudget::default()
-            }
-        );
-        let after = serde_json::to_value(&store.journal).unwrap();
-        for field in [
-            "policy",
-            "next_funding",
-            "requested",
-            "recovery_only",
-            "watched_routes",
-        ] {
-            assert!(
-                after[field] == before[field],
-                "cancellation changed retained authority"
-            );
+        let before = serde_json::to_value(&store.journal).unwrap();
+        let budget = Controller::capital(&store.journal).unwrap();
+        assert_eq!(budget.pending_reserved_sat, 64);
+        for uncertain in [Wallet::Missing, Wallet::NoPlan] {
+            store
+                .change(|j| Controller::record_wallet_reclaim(j, &pending, uncertain))
+                .unwrap();
+            store = reload(store);
+            assert!(serde_json::to_value(&store.journal).unwrap() == before);
+            assert_eq!(Controller::capital(&store.journal).unwrap(), budget);
+            assert!(Controller::provider_reclaiming(
+                &store.journal,
+                pending.provider
+            ));
         }
-        assert!(after["funding"]["test-2"] == before["funding"]["test-2"]);
-        assert!(store.journal.outgoing.is_empty() && store.journal.buyer_settlements.is_empty());
-        assert!(Controller::check_purchase(&store.journal, &old.offer, None).is_err());
+        for _ in 0..2 {
+            store
+                .change(|j| Controller::record_wallet_reclaim(j, &pending, outcome.clone()))
+                .unwrap();
+            store = reload(store);
+            let current = &store.journal.funding[&pending.id];
+            assert!(
+                current.cancelled() && current.reclaim_terminal() && current.reclaimed().is_none()
+            );
+            assert!(current.funded.is_none());
+            assert!(!Controller::abandoned_funding(&store.journal, current));
+            assert!(Controller::funding_released(&store.journal, current));
+            assert!(!Controller::provider_reclaiming(
+                &store.journal,
+                current.provider
+            ));
+            assert_eq!(
+                Controller::capital(&store.journal).unwrap(),
+                FundingBudget {
+                    pending_reserved_sat: 32,
+                    locked_sat: 32,
+                    exposure_sat: 32,
+                    ..FundingBudget::default()
+                }
+            );
+            let after = serde_json::to_value(&store.journal).unwrap();
+            for field in [
+                "policy",
+                "next_funding",
+                "requested",
+                "recovery_only",
+                "watched_routes",
+            ] {
+                assert!(
+                    after[field] == before[field],
+                    "cancellation changed retained authority"
+                );
+            }
+            assert!(after["funding"]["test-2"] == before["funding"]["test-2"]);
+            assert!(
+                store.journal.outgoing.is_empty() && store.journal.buyer_settlements.is_empty()
+            );
+            assert!(Controller::check_purchase(&store.journal, &old.offer, None).is_err());
+        }
+        let mut fresh = old.offer;
+        fresh.id = "new-authorized-request".into();
+        assert!(Controller::check_purchase(&store.journal, &fresh, None).is_ok());
     }
-    let mut fresh = old.offer;
-    fresh.id = "new-authorized-request".into();
-    assert!(Controller::check_purchase(&store.journal, &fresh, None).is_ok());
 }
 
 #[test]
@@ -195,5 +206,52 @@ fn cancellation_cannot_replace_a_verified_reclaimed_send() {
         );
         assert!(serde_json::to_value(&store.journal).unwrap() == before);
     }
+    reload(store);
+}
+
+#[test]
+fn prepared_cancellation_binds_one_original_operation_and_requires_its_format() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, _) = abandoned(&root.path().join("controller"));
+    let pending = prepare(&mut store);
+    let result = |id: &str| Wallet::PreparedCancelled {
+        wallet_operation_id: id.into(),
+    };
+    for invalid in [String::new(), "x".repeat(65)] {
+        assert!(
+            store
+                .change(|j| Controller::record_wallet_reclaim(j, &pending, result(&invalid)))
+                .is_err()
+        );
+    }
+    store
+        .change(|j| Controller::record_wallet_reclaim(j, &pending, result("original")))
+        .unwrap();
+    let saved = serde_json::to_value(&store.journal).unwrap();
+    assert!(
+        store
+            .change(|j| Controller::record_wallet_reclaim(j, &pending, result("replacement")))
+            .is_err()
+    );
+    assert!(
+        store
+            .change(|j| Controller::record_wallet_reclaim(j, &pending, Wallet::Cancelled))
+            .is_err()
+    );
+    assert_eq!(serde_json::to_value(&store.journal).unwrap(), saved);
+    let mut duplicate = store.journal.clone();
+    let mut second = duplicate.funding[&pending.id].clone();
+    second.id = "test-2".into();
+    duplicate.funding.insert(second.id.clone(), second);
+    assert!(
+        Controller::capital(&duplicate)
+            .unwrap_err()
+            .contains("multiple funding intents")
+    );
+    let mut old_reader = store.journal.clone();
+    old_reader.version &= !journal::PREPARED_CANCELLED_VERSION;
+    assert!(
+        Controller::validate_journal(&old_reader, &old_reader.policy, old_reader.local).is_err()
+    );
     reload(store);
 }

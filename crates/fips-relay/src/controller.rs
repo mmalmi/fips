@@ -42,6 +42,8 @@ mod control_obligations;
 pub(crate) use control_obligations::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
 mod funding;
 mod funding_ownership;
+#[cfg(feature = "testbench")]
+mod wallet_barrier;
 pub use capital::FundingBudget;
 mod journal;
 mod retirement;

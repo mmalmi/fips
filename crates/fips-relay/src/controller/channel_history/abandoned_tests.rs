@@ -34,8 +34,11 @@ pub(super) fn append_disposition(
     let j = &mut store.journal;
     j.advance_history_version(4);
     j.version |= journal::FUNDING_RECLAIM_VERSION;
-    if matches!(reclaim, FundingReclaim::Cancelled) {
+    if reclaim.cancelled() {
         j.version |= journal::FUNDING_CANCELLED_VERSION;
+    }
+    if matches!(reclaim, FundingReclaim::PreparedCancelled { .. }) {
+        j.version |= journal::PREPARED_CANCELLED_VERSION;
     }
     j.history
         .get_or_insert_with(History::default)

@@ -351,7 +351,7 @@ fn disposition_format_preserves_required_history_and_rejects_unknown_versions() 
         Controller::validate_channel_history(&saved),
         Err("missing channel history".into())
     );
-    saved.version |= 0x8000;
+    saved.advance_history_version(7);
     assert_eq!(
         Controller::validate_journal(&saved, &saved.policy, saved.local),
         Err("invalid controller journal bindings".into())

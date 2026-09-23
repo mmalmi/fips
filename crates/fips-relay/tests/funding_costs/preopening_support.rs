@@ -261,11 +261,14 @@ async fn inspect_send(
         return Err("unexpected wallet-send count at preparation boundary");
     }
     let (send_id, entry) = original_send(&journal, &request);
-    let operation = entry["plan"]["operation_id"].as_str().unwrap().to_owned();
+    let operation = entry["preparation"]["planned"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let proofs: cashu::nuts::Proofs =
-        serde_json::from_value(entry["plan"]["proofs_to_swap"].clone()).unwrap();
+        serde_json::from_value(entry["preparation"]["planned"]["proofs_to_swap"].clone()).unwrap();
     if entry["request"]["request_id"] != send_id
-        || !entry["result"].is_null()
+        || !entry["outcome"].is_null()
         || proofs.is_empty()
         || proofs
             .iter()
@@ -303,7 +306,7 @@ async fn inspect_reserved_plan(wallet: &Path, entry: &Value) -> Result<(), &'sta
     let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_wallet_db_path(wallet))
         .await
         .unwrap();
-    let operation = entry["plan"]["operation_id"]
+    let operation = entry["preparation"]["planned"]["operation_id"]
         .as_str()
         .unwrap()
         .parse()
@@ -323,9 +326,9 @@ async fn inspect_reserved_plan(wallet: &Path, entry: &Value) -> Result<(), &'sta
         return Err("original CDK send has advanced beyond unsubmitted ProofsReserved");
     }
     let mut expected: cashu::nuts::Proofs =
-        serde_json::from_value(entry["plan"]["proofs_to_swap"].clone()).unwrap();
+        serde_json::from_value(entry["preparation"]["planned"]["proofs_to_swap"].clone()).unwrap();
     let direct: cashu::nuts::Proofs =
-        serde_json::from_value(entry["plan"]["proofs_to_send"].clone()).unwrap();
+        serde_json::from_value(entry["preparation"]["planned"]["proofs_to_send"].clone()).unwrap();
     expected.extend(direct);
     let reserved = db.get_reserved_proofs(&operation).await.unwrap();
     let unique = expected
@@ -461,7 +464,7 @@ impl PreparationHistory {
                 .as_object()
                 .unwrap()
                 .values()
-                .any(|entry| entry["plan"]["operation_id"] == original.operation)
+                .any(|entry| entry["preparation"]["planned"]["operation_id"] == original.operation)
         {
             return Err("new preparation changed or reused an old wallet operation");
         }
@@ -509,7 +512,7 @@ pub(super) async fn cleanup_wallet_sends(
         // A channel may own these proofs even if its control reply was lost.
         if entries(&sdk, "openings") == 0 && entries(&sdk, "funding") == 0 {
             for entry in sends["entries"].as_object().unwrap().values() {
-                if let Some(operation) = entry["plan"]["operation_id"].as_str() {
+                if let Some(operation) = entry["preparation"]["planned"]["operation_id"].as_str() {
                     let refund = tokio::time::timeout(
                         Duration::from_secs(30),
                         revoke_pending_payment(&wallet, &proxy.url, operation),
