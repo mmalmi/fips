@@ -114,6 +114,15 @@ pre-opening cases and payout/refund crash case pass on the combined graph; all
 2,610 recorded source/dependency inputs match. The final proof vectors, initial
 wallet selection and aggregate storage still need their own resource bounds.
 
+CDK `e508dc68` additionally keeps sender plans as denomination counts, sharing the
+proof-matching logic and preserving online/offline reuse of existing coins. Its
+141 focused tests and strict all-target lint pass; the FIPS payout/refund crash
+case passes again with all 2,611 source/dependency inputs unchanged. A matched
+local unoptimized planning measurement reduces a 65,536-entry buffer from 512 KiB
+to 64 bytes. Small binary-denomination plans use 64 extra bytes, with lower
+measured planning time. These figures describe the temporary plan, not full-send
+memory or router performance; actual new send/change outputs still need bounds.
+
 ## Authenticated adjacent neighbors
 
 The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`
