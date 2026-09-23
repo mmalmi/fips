@@ -3873,18 +3873,25 @@ The periodic interval and wire messages are unchanged. Synchronized peers do not
 trigger this repair; an authenticated peer withholding its declaration can
 sustain announcements at the configured bounded rate.
 
-The combined paid run passes all 24 direction/contact checks across both root
-placements, including each first 400-ms cold contact. Warm cohorts deliver 40/64
-packets each way; cold cohorts deliver 19/32 and 24/32 with root 0, and 24/32 and
-19/32 with root 3. No duplicate is observed, original funding/channel identities
-and spending authority remain intact, and all 3,072 test sats are collected.
-Packets offered while disconnected remain part of these denominators. These
-bounded software cases establish useful service during the tested contacts, not
-arbitrary mobility, a general latency bound, or hardware acceptance of this fix.
-The final source passes all 160 session and 20 spanning-tree tests, both paid
-brief-contact scenarios, strict core/relay lint, formatting and the source-size
-gate. The dependency overrides and tested lock are fingerprinted for each gate;
-the portable workspace lock remains unchanged.
+Both paid scenarios still pass after the current-root, pending-send and TUN
+ownership fixes: all 24 direction/contact checks deliver fresh traffic before
+their respective cuts, including the scheduled 300- and 400-ms returning contacts.
+Warm cohorts deliver 40/64 packets each way; returning cohorts deliver 19/32 and
+24/32 with root 0, and 24/32 and 19/32 with root 3. No duplicate is observed,
+the original eight channels in each scenario retain their funding and authority,
+and all 3,072 test sats are collected. The two runs use identical fingerprinted
+source/dependency graphs and leave the portable workspace lock unchanged.
+
+One packet offered within root 3's first returning contact remains unobserved;
+packets offered while disconnected also remain part of these denominators.
+This establishes useful service during each tested contact, not lossless handover.
+The returning phase follows a genuine split but observes a newly authenticated
+bidirectional adjacency before immediately cutting it and starting the schedule.
+The short contacts therefore do not bound first-ever admission. Arbitrary mobility,
+saturated neighbor rosters and physical radio handover remain separate acceptance
+cases. The original routing correction passed all 160 session and 20 spanning-tree
+tests, both paid scenarios, strict core/relay lint, formatting and the source-size
+gate; the later ownership checks are recorded in the pending-traffic section.
 
 A held-funding variant now covers a new encounter interrupted after the mint
 commits but before its response reaches the opening caller. The original run
