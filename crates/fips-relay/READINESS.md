@@ -4017,6 +4017,10 @@ partition.
 
 One implementation of forwarding/accounting/Cashu logic; thin transport bindings.
 Keep relay and Android source modules under the enforced 600-line ceiling and
-integration files under 1000 lines. Use focused production-path tests. Record
-failed runs, preserve private operational evidence, and keep only changes with a
-measured benefit or a demonstrated correctness/maintainability purpose.
+integration files under 1000 lines. Keep code and tests simple and well organized.
+Reuse shared logic, consolidate overlapping coverage, and remove obsolete code
+and tests when doing so preserves quality and reliability. Keep verification
+focused and reasonably fast; each retained regression should cover a distinct
+failure or requirement through production paths. Record failed runs, preserve
+private operational evidence, and keep only changes with a measured benefit or
+a demonstrated correctness/maintainability purpose.
