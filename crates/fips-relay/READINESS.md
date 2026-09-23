@@ -2952,6 +2952,31 @@ advance to rescue delivery. All six cases pass. This corrects fixture fidelity;
 the observations do not isolate the cause of every initial failure. Physical
 routers are unchanged, and the paid short-contact comparison remains necessary.
 
+On the integrated current-root and queue-ownership runtime, the unchanged paid
+bridge-only encounter delivers the reverse original at 764 ms, before its
+independent 1,501-ms cut. The forward original remains absent through the
+five-second observation, so the overall test still fails. The previous comparison
+missed both originals; this single observation does not establish a general
+latency improvement or crowded/mobile readiness. The fully crowded variant was
+not rerun for this change.
+
+Passive observations show an early no-route drop before bridge authentication
+at approximately 0.73 seconds, but do not identify the exact dropped packet. A
+later lookup crosses the root change: its old-root reply is rejected, and its
+retry occurs after the cut. The boundary already reports current-root target
+coordinates around one second, so the pending lookup does not establish that the
+route remained unusable until its verified reply. The next diagnostic must
+correlate the original's forwarding envelope with the early drop, distinguishing
+best-effort pre-bridge loss from lost queued work or a later routing defect.
+
+All eight original channels separately recover the required usage, cumulative
+credit and acknowledgements 661 ms after reopening. Those checks include native
+upkeep and prior credit and do not establish delivery of the missing original.
+Both local streams deliver 18/18 without duplicates, and all 1,536 test sats are
+collected before reporting the failure. Fixture, source, dependency and lock
+guards pass. The failing experiment remains isolated and unmerged, and no
+physical router changed.
+
 The finite-contact fixture, initially isolated as `1725169c`, reuses the
 independently timed contact driver with full neighbor tables and no reciprocal
 bridge at the first opening. Financial agreements and earlier session history are retained: this is
