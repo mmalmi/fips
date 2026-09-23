@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody, request-journal recovery reservations and individual send-record byte limits retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK storage bounds, initial native selection/allocation bounds and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody and outgoing receipts, request-journal recovery reservations and individual send-record byte limits retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK storage bounds, initial native selection/allocation bounds and physical recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -90,6 +90,16 @@ pass with this exact dependency graph; all 2,606 recorded source and dependency
 inputs match. These are logical send-record bounds. Initial native proof
 enumeration, coin selection and denomination allocation remain separate, as do
 the full wallet database, custody archive and physical disk space.
+
+SDK `28c591d3` additionally pages outgoing receipts during cancellation recovery
+and retirement, using the existing mint/unit/direction index with limits of 128
+rows and 4 MiB of stored payload before decoding. Retirement keeps candidates
+from one page at a time. Oversized evidence fails without skipping the record or
+changing coins; restoring that record permits the original request to recover.
+All 357 SDK workspace tests and strict all-target lint pass. The five FIPS
+pre-opening cases and payout/refund crash case pass again against this dependency
+graph, with all 2,606 recorded inputs unchanged. Paging bounds receipt-scan memory,
+not full traversal time, incomplete native saga enumeration or total storage.
 
 These process kills do not simulate loss of writes already acknowledged by
 physical storage. Reconciliation of missing evidence, sustained aggregate storage

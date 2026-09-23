@@ -292,8 +292,14 @@ page removal. A pending capture pauses only its own scope's collection.
 Archive storage remains proportional to retained custody. The receiver release
 queue retains its existing limit, and capture still runs to exhaustion within one
 retirement call. These mechanisms do not bound unrelated wallet history, total
-database size or the aggregate SDK client file. Transaction-owner and receipt
-enumeration still loads existing transactions.
+database size or the aggregate SDK client file. Outgoing receipt recovery and
+retirement now use indexed pages scoped to the exact mint, unit and direction.
+The native read limits each page to 128 rows and 4 MiB of stored payload before
+decoding; retirement retains candidates from at most one page. Oversized or
+corrupt evidence stops the operation without skipping records, releasing custody
+or falling back to a full-table read. The money lock spans traversal. These bounds
+cover receipt enumeration memory; full traversal time, native proof selection
+and incomplete-saga enumeration remain separate.
 Production bounds require recovery headroom reserved before funding and sustained
 storage acceptance across supported histories; cleanup must not discard live
 value or evidence to make space.
