@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody and outgoing receipts, request-journal recovery reservations and individual send-record byte limits retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK storage bounds, initial native selection/allocation bounds and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody and outgoing receipts, request-journal recovery reservations, individual send-record limits and bounded wallet inventory/output planning retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK/custody storage bounds, other wallet queries and incomplete-saga enumeration, and physical recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -113,14 +113,27 @@ native library tests pass, along with strict all-target lint. The five FIPS
 pre-opening cases and payout/refund crash case pass on the combined graph; all
 2,610 recorded source/dependency inputs match.
 
-CDK `1f87411f` and SDK `356aaa7` now cap each new mint or swap at 4,096 outputs,
+## Wallet planning bounds
+
+CDK `b1bc86e6` and SDK `24b4247` cap each new mint or swap at 4,096 outputs,
 including payment, change and every quote in a mint batch. Native scalar planning
 checks the budget before creating secrets or advancing derivation counters.
 Direct sends reuse existing coins, and submitted operations recover their
-original outputs. All 673 affected native tests, 358 SDK workspace tests and
+original outputs.
+
+New send, melt and refill planning also admits at most 4,096 unspent proofs and
+4 MiB of stored inventory payload per exact mint/unit scope. One indexed SQLite
+statement checks both budgets before returning payloads for decoding. It returns
+the complete selected inventory or an error; it does not truncate, skip corrupt
+selected records or scan unrelated spent history. Send and melt selection reuse
+that inventory's original derivation metadata instead of reading it again.
+Already-submitted operations retain their original recovery inputs and outputs.
+
+All 950 affected native, SQLite and binding tests, 358 SDK workspace tests and
 strict all-target lint pass. The five FIPS pre-opening cases and payout/refund
-crash case pass on the combined graph; all 2,616 recorded inputs match. Initial
-wallet inventory reads and aggregate storage remain unbounded by this policy.
+crash case pass on the combined graph; all 2,620 recorded inputs match. These are
+new-operation planning limits. Other wallet queries, incomplete-saga enumeration,
+total wallet/SDK/custody storage and physical disk reservations remain separate.
 
 Sender plans retain denomination counts and share proof matching. A matched
 local unoptimized planning measurement reduces a 65,536-entry buffer from 512 KiB
