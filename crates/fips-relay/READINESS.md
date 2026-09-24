@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody and outgoing receipts, request-journal recovery reservations, individual send-record limits and bounded wallet inventory/output planning retain unresolved ownership; see [history](HISTORY.md). | Total wallet/SDK/custody storage bounds, other wallet queries and incomplete-saga enumeration, and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody and outgoing receipts, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total wallet/custody storage and remaining SDK stores, other wallet queries and incomplete-saga enumeration, and physical recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -140,6 +140,37 @@ local unoptimized planning measurement reduces a 65,536-entry buffer from 512 Ki
 to 64 bytes. Small binary-denomination plans use 64 extra bytes, with lower
 measured planning time. These figures describe the temporary plan, not full-send
 memory or router performance.
+
+## Client storage admission
+
+Spilman `2c6c916` and SDK `8a98b94` add a 32 MiB client-file budget covering
+stored bytes and reserved completion space. Wallet admission reserves space before
+sending coins; saved openings use their original denominations to bound later
+funding/refund proofs. Full future issuing-key metadata, payment/closure records
+and lifetime retirement growth are included. Verified completion releases unused
+headroom. Uncertain operations retain it, and bounded reads do not truncate or
+evict evidence. The existing individual record and refund limits remain.
+
+Both native token-opening paths now consult storage before mint submission.
+Raw pending terms persist separately, and completion must match them. This adds
+no peer messages; raw reservations alone do not add an automatic recovery workflow.
+The relay continues to use the SDK's recorded opening and recovery paths. The SDK
+also fixes a feature boundary so retirement can verify cancelled sends without
+requiring its HTTP opener.
+
+A test-mint storage-pressure case holds an admitted wallet send while other
+reservations fill capacity. That send completes and reloads, new wallet/token
+opens leave the original coins unchanged, and an existing refund completes after
+a keyset change. All 361 SDK workspace tests, strict all-target lint and 18
+production feature profiles pass. Native admission has 109 passing library tests
+and strict lint. The five FIPS pre-opening process cases and payout/refund crash
+case pass on the combined graph; all 2,624 recorded source/dependency inputs match.
+
+This accepts fresh-profile logical client storage admission. It does not allocate
+disk blocks, establish process memory or router capacity, bound the whole wallet
+and custody archive, or accept the current build for hardware deployment. The
+budget can reject new work before the 128-record ceiling. See the SDK's
+`docs/wallet-history.md` for the storage contract and remaining ownership bounds.
 
 ## Authenticated adjacent neighbors
 
