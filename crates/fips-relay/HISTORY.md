@@ -292,14 +292,26 @@ page removal. A pending capture pauses only its own scope's collection.
 Archive storage remains proportional to retained custody. The receiver release
 queue retains its existing limit, and capture still runs to exhaustion within one
 retirement call. These mechanisms do not bound unrelated wallet history, total
-database size or the aggregate SDK client file. Outgoing receipt recovery and
+database size or custody archives. The SDK client file separately reserves
+completion space within its 32 MiB limit before funding. Outgoing receipt recovery and
 retirement now use indexed pages scoped to the exact mint, unit and direction.
 The native read limits each page to 128 rows and 4 MiB of stored payload before
 decoding; retirement retains candidates from at most one page. Oversized or
 corrupt evidence stops the operation without skipping records, releasing custody
 or falling back to a full-table read. The money lock spans traversal. These bounds
-cover receipt enumeration memory; full traversal time, native proof selection
-and incomplete-saga enumeration remain separate.
+cover receipt enumeration memory; full traversal time and incomplete-saga
+enumeration remain separate. New-operation proof selection has its separate
+inventory limit; it does not cap total historical wallet records.
+
+Proof-history collection uses the same transaction pages across every mint, unit
+and direction, including unregistered scopes. It retains ownership only for its
+bounded candidate set. Archive transfer and pending-deletion recovery use this
+check too; an owner after earlier pages still prevents deletion. Oversized or
+corrupt pages retain the original coins and pending intent. An index on timestamp
+and ID supports the whole-wallet cursor. This bounds transaction reads and the
+retained ownership set, while full-scan time and unfinished-operation reads
+remain separate requirements.
+
 Production bounds require recovery headroom reserved before funding and sustained
 storage acceptance across supported histories; cleanup must not discard live
 value or evidence to make space.

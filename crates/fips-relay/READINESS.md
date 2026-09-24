@@ -178,6 +178,16 @@ and custody archive, or accept the current build for hardware deployment. The
 budget can reject new work before the 128-record ceiling. See the SDK's
 `docs/wallet-history.md` for the storage contract and remaining ownership bounds.
 
+Proof-history transaction ownership now uses the same bounded native reader
+across all mints, units and directions, retaining only current candidate identities.
+SDK `d57cdb5` and CDK `30c5253b` cover owners beyond the first two pages and oversized
+evidence during collection and interrupted-deletion recovery. The 363-test SDK
+workspace, 360 database/common tests and strict lint pass; PostgreSQL compilation
+passes without a runtime claim. The real FIPS channel-retirement/restart case also
+passes on all 2,627 unchanged source/dependency inputs. This bounds transaction
+reads and ownership-set growth, not total scan time, unfinished-operation
+enumeration or whole-wallet storage. See [history ownership](HISTORY.md).
+
 ## Authenticated adjacent neighbors
 
 The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`
