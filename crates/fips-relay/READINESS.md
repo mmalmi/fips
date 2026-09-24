@@ -277,6 +277,31 @@ engine memory, total wallet/custody capacity, uncapped SDK stores or other nativ
 recovery payloads and results. Current-device and physical power-loss acceptance
 remain open; no hardware services changed.
 
+## Native mint response bounds
+
+Wallet funding and recovery use a 4 MiB response-body limit in both native HTTP
+backends. Raw, JSON and HTTP error replies share the same read path; oversized
+length headers fail before waiting for a body, and chunked responses are counted
+incrementally. Size failures are excluded from automatic payment-request replay.
+
+The test-mint regression rejects an oversized committed swap reply and a later
+oversized restore reply after reopening. It preserves the original financial
+intent and coins, then restores the full balance with one swap submission total.
+Recovery's normal version fence may advance while its financial intent remains
+unchanged. Both backend suites cover headers, chunked overflow, the exact limit,
+error statuses and a successful request after rejection.
+
+CDK `255c9cba` with bitreq `f22cf3e` passes 63 bitreq and 62 reqwest tests,
+including documentation tests, plus strict lint. SDK `3acb5e8` passes its full
+374-test workspace suite, all 18 feature profiles, strict lint and formatting.
+The matching FIPS graph passes 295 relay tests, five opening-recovery process
+cases, the payout/refund crash case and automatic adjacent-router payments,
+plus strict lint. All 2,674 recorded source/dependency inputs match those runs.
+
+These bounds cover native HTTP body bytes. Decoded heap use, total request time,
+other transports, aggregate wallet storage and current-device acceptance remain
+separate. No router or production wallet is involved in these checks.
+
 ## Atomic issue ownership
 
 CDK `150a422b` saves the initial issue journal, every exact mint-quote reservation
