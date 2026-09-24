@@ -46,6 +46,42 @@ binary hash, size, architecture and supplied source revision. The package contai
 no private identities, wallet state or active service JSON. It declares `procd`,
 `jsonfilter`, `iw`, `uclient-fetch` and `ca-bundle` dependencies.
 
+## Linux paid-routing check
+
+The existing automatic quality test runs real controllers, native FIPS feedback
+and a local test mint over simulated links. It checks loss and delay separately,
+switches to a working provider, reuses the recovered cheaper channel, reloads the
+controller and settles both channels. Build its ARM64 Linux executable from the
+same source bundle, keeping test artifacts separate from the package build:
+
+```sh
+CARGO_TARGET_DIR="$PWD/target/linux-tests" CARGO_INCREMENTAL=0 \
+  CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+  cargo +1.96.0 zigbuild --offline --locked -j 1 \
+  --target aarch64-unknown-linux-musl -p fips-relay --all-features --test priced_paths
+```
+
+Choose the executable `priced_paths-<hash>` from
+`target/linux-tests/aarch64-unknown-linux-musl/debug/deps/`, excluding `.d` files.
+Set `relay_test_binary` to its absolute path and `relay_test_image` to an already
+available local ARM64 Linux image. Run with only that executable mounted:
+
+```sh
+docker run --rm --pull never --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --user 65534:65534 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
+  --memory 1g --cpus 2 --pids-limit 256 \
+  --mount "type=bind,source=$relay_test_binary,target=/candidate/priced_paths,readonly" \
+  --entrypoint /candidate/priced_paths "$relay_test_image" \
+  automatic_quality::automatic_watch_leaves_impaired_routes_and_reuses_recovered_channel \
+  --exact --test-threads=1 --nocapture
+```
+
+Loopback remains available to the fixture mint; wallets live only in temporary
+container storage. Each scenario has a 180-second deadline. Verify the source
+manifest and executable checksum again afterward. This checks Linux execution
+and simulated routing, not OpenWrt services, physical links or router performance.
+
 ## Install and configure
 
 Back up the entire existing account while the relay is stopped. Install the local

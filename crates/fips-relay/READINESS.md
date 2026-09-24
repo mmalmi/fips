@@ -95,6 +95,18 @@ Packaging uses standard `od` byte reads and requires no `hexdump` installation.
 These are build, startup and package checks, not an OpenWrt installation or
 forwarding acceptance. Router, radio and physical power-loss checks remain open.
 
+The same bundle's existing automatic loss/delay paid-route test also passes on
+ARM64 Linux. Its separate all-features, unoptimized static test executable builds
+offline with Rust 1.96.0, Zig 0.15.2 and cargo-zigbuild 0.22.1. Both scenarios
+finish in 58.5 seconds inside a container with no external network, a read-only
+root and temporary wallet storage. Native feedback drives replacement and return
+to the recovered cheaper provider; the original channels survive reuse and
+controller reload, and settlement conserves all 518 test sats. Source-manifest
+and executable hashes remain unchanged afterward. These are simulated links with
+real controllers and a local test mint, not physical Ethernet/Wi-Fi or the packaged
+production executable. See the [Linux check](openwrt/README.md#linux-paid-routing-check)
+for reproduction; this duration is not a router performance measurement.
+
 The fee-bearing process fixture sends SIGKILL after seller payout import and
 again after buyer refund completion, before each controller records completion.
 The buyer stays stopped during the seller restart, so ordinary seller upkeep
