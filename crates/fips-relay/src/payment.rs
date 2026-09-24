@@ -43,6 +43,15 @@ pub fn process_payment<R: CashuSpilmanPaymentReceiver<String>>(
             .params
             .as_ref()
             .ok_or("missing channel parameters")?;
+        // Native validation can retain new funding. Reject terms outside the
+        // agreement before handing that financial obligation to the receiver.
+        let capacity = params
+            .get("capacity")
+            .and_then(|v| v.as_u64())
+            .ok_or("missing channel capacity")?;
+        if capacity > channel.capacity_sat {
+            return Err("funded channel exceeds the agreed capacity limit".into());
+        }
         let expiry = params
             .get("expiry_timestamp")
             .and_then(|v| v.as_u64())

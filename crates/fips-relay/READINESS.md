@@ -25,13 +25,21 @@ and phone demonstrations do not accept the latest software for deployment.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
 Incoming route admission checks capacity, existing bindings and replacement
-ownership before invoking receiver funding persistence. The controller holds its
-journal lock through that synchronous verification and the local commit, so
+ownership before invoking receiver funding persistence. The payment boundary
+also rejects declared channel capacity above the agreed limit before native
+validation can store funding, and rechecks the verified capacity afterward.
+The controller holds its journal lock through that synchronous verification and
+the local commit, so
 competing acceptances cannot both consume the last route slot. Retained requests
 can still retry when the route book is full, and failed verification leaves the
-previous replacement route intact. This closes the rejected-route write path;
-total receiver/wallet storage reservations and the crash boundary between their
-separate stores remain outstanding.
+previous replacement route intact. This closes the rejected-route write path.
+
+Receiver profiles now reserve logical completion space for admitted channels.
+The SDK defaults to 32 MiB, including 16 MiB reserved for lifetime history, and
+retains reservations through closure until validated retirement. New work fails
+at capacity while existing settlement and refund records retain their allowance.
+This does not allocate filesystem blocks or bound total wallet/custody storage;
+those limits and the crash boundary between separate stores remain outstanding.
 
 The 23 September source bundle at `492ffeeb6` resolves 693 packages, including
 672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,

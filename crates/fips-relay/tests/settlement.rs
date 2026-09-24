@@ -131,6 +131,13 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
                 )
                 .is_err()
             );
+            assert!(
+                seller
+                    .close_cashu_spilman_channel(&channel.id)
+                    .await
+                    .is_err(),
+                "funding rejected by the agreement must not leave a receiver obligation"
+            );
             let credit = process_payment(
                 &seller,
                 &channel,
