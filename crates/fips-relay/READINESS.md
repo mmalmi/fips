@@ -203,6 +203,29 @@ full traversal time or total wallet/custody storage. The SDK keeps its existing
 writer/money locks across scans; native recovery can complete earlier operations
 before a later read fails. See [history ownership](HISTORY.md).
 
+## Atomic issue preparation
+
+CDK `50b3f9ff` commits the initial issue journal and every exact quote reservation
+in one storage transaction. A conflicting second batch quote can no longer leave
+the first reserved without a journal. Single and batch preparation share this
+boundary after output planning and signing. An uncertain commit reply retains
+any committed journal and reservations without submitting a mint request.
+
+Thirteen focused checks cover exact snapshots, competing batches, malformed
+intents, write rollback and lost replies across SQLite, Redb and the foreign
+bridge. All 665 native wallet/SQLite checks, 91 SDK wallet checks, the five FIPS
+interrupted-funding process cases and the payout/refund crash case pass on the
+same graph; all 2,644 recorded inputs match. Native strict all-target lint and
+PostgreSQL compilation pass. PostgreSQL runtime is not accepted here. Custom
+backends, including Supabase, must implement atomic issue acquisition; there is
+no sequential fallback.
+
+This accepts initial acquisition only. Issue completion/compensation ordering,
+concurrent recovery, exact derivation ranges and conditioned-secret checkpoints
+still need hardening. In particular, existing completion paths may remove an
+issue journal after quote release fails. Orphan cleanup remains unchanged until
+those lifecycle gaps are resolved. This does not establish production readiness.
+
 ## Authenticated adjacent neighbors
 
 The opt-in service setting `"neighbor_admission": "authenticated_adjacent"`

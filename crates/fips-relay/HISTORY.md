@@ -322,6 +322,15 @@ previous native operations have completed. Already-admitted records keep their
 original size. Individual payloads, accumulated result lists, traversal time and
 total wallet/custody storage are not bounded by identity paging.
 
+Initial mint-quote acquisition saves the original issue journal and every exact
+quote reservation together. Output planning and signing precede acquisition;
+conflicting snapshots or write failures cannot leave a partially owned batch.
+A lost commit reply keeps any committed ownership and journal for recovery.
+This closes the reserve-before-journal gap, not the entire issue lifecycle:
+completion/compensation can still discard a journal after failed quote release,
+and recovery fencing and original-secret checkpoints remain open. Existing
+orphan cleanup is therefore not yet removed or treated as proof of safe release.
+
 Production bounds require recovery headroom reserved before funding and sustained
 storage acceptance across supported histories; cleanup must not discard live
 value or evidence to make space.
