@@ -41,6 +41,21 @@ at capacity while existing settlement and refund records retain their allowance.
 This does not allocate filesystem blocks or bound total wallet/custody storage;
 those limits and the crash boundary between separate stores remain outstanding.
 
+The HTTP receiver also restores committed close outputs after a lost mint reply,
+without depending on a swap replay cache. SDK regressions cancel the receiver
+call after the real test mint commits, reopen the receiver, and recover its exact
+payout and refund without another swap. They cover two intervening key rotations,
+an empty active-key cache, truncated replies and invalid signatures; every case
+conserves all 64 test sats. Restore failures retain the closing record and its
+reservation. This exercises cancellation and reload, not physical power loss.
+Mint restore support and retained historical signatures/keys remain requirements;
+custom sync and JavaScript networking adapters still use their existing replay
+hooks. See the SDK receiver recovery contract for those limits.
+The matching local graph passes 117 native-library tests, the full 371-test SDK
+workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five opening
+recovery process cases and the payout/refund crash case, with strict native,
+SDK and relay lint. These results do not accept a new hardware deployment.
+
 The 23 September source bundle at `492ffeeb6` resolves 693 packages, including
 672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,
 an empty Cargo home and a new target directory, with original source folders,
