@@ -72,15 +72,17 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The 23 September source bundle at `492ffeeb6` resolves 693 packages, including
+The 24 September source bundle at `e2ad708ee` resolves 693 packages, including
 672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,
 an empty Cargo home and a new target directory, with original source folders,
 registry cache and network access blocked during compilation. Both automatic
 loss/delay paid-route scenarios pass from that build, settle their channels and
-conserve all 518 test sats. Source integrity passes afterward, and all 2,591
-fingerprinted source/dependency inputs match the accepted native graph. This is
-source/build reproducibility; external native tools, artifact authenticity and
-current OpenWrt runtime acceptance remain separate. See the
+conserve all 518 test sats. Source integrity passes afterward, and all 2,674
+fingerprinted source/dependency inputs match the accepted native graph. The
+initial route-test run was stopped by the disk-reserve guard; the unchanged
+binary passed both scenarios after space recovered. This is source/build
+reproducibility; external native tools, artifact authenticity and current OpenWrt
+runtime acceptance remain separate. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
 The fee-bearing process fixture sends SIGKILL after seller payout import and
