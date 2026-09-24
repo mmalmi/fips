@@ -18,9 +18,9 @@ output=$6
 case "$architecture:$version" in *[!a-zA-Z0-9_.+:-]*) echo 'invalid package metadata' >&2; exit 1 ;; esac
 case "$revision" in ''|*[!a-fA-F0-9]*) echo 'revision must be a Git commit hash' >&2; exit 1 ;; esac
 [ -n "$architecture" ] && [ -n "$version" ] || exit 1
-magic=$(dd if="$binary" bs=1 count=4 2>/dev/null | hexdump -v -e '1/1 "%02x"')
+magic=$(od -An -N4 -tx1 < "$binary" | tr -d '[:space:]')
 [ "$magic" = 7f454c46 ] || { echo 'binary is not an ELF executable' >&2; exit 1; }
-machine=$(dd if="$binary" bs=1 skip=18 count=2 2>/dev/null | hexdump -v -e '1/1 "%02x"')
+machine=$(od -An -j18 -N2 -tx1 < "$binary" | tr -d '[:space:]')
 case "$architecture:$machine" in
 	aarch64*:b700|arm*:2800|x86_64:3e00|i386:0300|mips*:0008|mipsel*:0800|riscv64*:f300) ;;
 	*) echo 'ELF machine does not match the selected package architecture' >&2; exit 1 ;;

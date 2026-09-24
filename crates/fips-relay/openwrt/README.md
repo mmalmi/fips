@@ -11,17 +11,21 @@ currently uses ARM64; other architectures need their own build and runtime check
 
 ## Build
 
-From the repository root, with Rust's target, Zig and cargo-zigbuild installed:
+Use the [source-bundle workflow](../FUNDING-COSTS.md#portable-development-source-bundle)
+for the current development dependencies. From its `checkout/` directory, with
+Rust 1.96.0's target, Zig and cargo-zigbuild installed:
 
 ```sh
-cargo zigbuild -p fips-relay --bin fips-relay --locked \
-  --target aarch64-unknown-linux-musl --profile openwrt -j 4
+cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
+  --target aarch64-unknown-linux-musl --profile openwrt -j 1
 ```
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
-executable. Inspect the result with `file` before packaging. The ARM64 executable
-is approximately 19 MiB; the previous speed-oriented build was about 36 MiB.
-This size comparison is not a forwarding-performance benchmark.
+executable. Inspect the result with `file` before packaging. The accepted ARM64
+build at `e2ad708ee` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.3 MiB;
+its APK is 10.7 MiB. It passes an isolated Linux startup check and package-content
+verification. This does not establish forwarding performance or current-router
+acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
 
 Use an APKv3 tool with the `mkpkg` applet. OpenWrt's installed package manager
 may omit that build applet; the SDK host tool or Alpine's full build tool can

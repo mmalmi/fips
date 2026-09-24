@@ -85,6 +85,16 @@ reproducibility; external native tools, artifact authenticity and current OpenWr
 runtime acceptance remain separate. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
+The same source bundle cross-builds the default relay for
+`aarch64-unknown-linux-musl` with the `openwrt` profile. The stripped static
+executable is 24,450,432 bytes and starts in isolated ARM64 Linux with the expected
+usage response. Its local unsigned APK is 11,175,380 bytes. APK integrity checks
+and payload hashes verify the binary, source metadata, root ownership and disabled
+default configuration; the builder also rejects a mismatched architecture.
+Packaging uses standard `od` byte reads and requires no `hexdump` installation.
+These are build, startup and package checks, not an OpenWrt installation or
+forwarding acceptance. Router, radio and physical power-loss checks remain open.
+
 The fee-bearing process fixture sends SIGKILL after seller payout import and
 again after buyer refund completion, before each controller records completion.
 The buyer stays stopped during the seller restart, so ordinary seller upkeep
