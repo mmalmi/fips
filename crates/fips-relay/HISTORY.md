@@ -265,7 +265,14 @@ Outgoing channel retirement hands off exact completed sender refunds and
 wallet-created funding records through paged wallet custody. The SDK saves a
 wallet-authenticated plan binding the original native send records, channel
 identity and accounting before capture starts. Pages contain at most 128 coins
-and 4 MiB of proof JSON, with indexed reads by creating operation. All pages must
+and 4 MiB of proof JSON, with indexed reads by creating operation. Native operation
+reads also cap aggregate stored payload at 4 MiB before it crosses the database
+driver boundary. Capture halves the requested row count on a size error, down to
+one, while keeping the same cursor and money lock. The actual requested count
+determines whether more records remain, so large valid histories still progress
+without skipping coins. An individually oversized record remains intact and
+blocks that capture. Exact-Y queries, total storage and traversal time remain
+separate. All pages must
 be sealed before send owners are removed. The client financial commit acknowledges
 custody; retry completes that acknowledgment after interruption. Unspent coins
 remain spendable without occupying the deletion queue. Spending an

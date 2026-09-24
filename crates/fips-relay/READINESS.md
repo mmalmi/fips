@@ -57,6 +57,23 @@ capacity checks cover reservation exhaustion, resumed completion and safe reuse 
 collected space; the test-mint case retains every original owner at capacity and
 then completes the same retirement after capacity is increased.
 
+Native operation-proof pages now enforce a 4 MiB aggregate stored-payload limit
+inside the indexed SQL read, before returning payloads to the driver. Sender
+custody retries oversized pages with successively smaller row counts, at most
+eight reads under the same wallet lock. The cursor advances only past consumed
+coins and uses the actual requested count to detect further pages. Oversized
+individual records and other read errors retain original owners and evidence.
+The existing large-history splitting test reproduced the need for this retry;
+its original assertions pass with the bounded reader. Exact-Y reads, total wallet
+storage and physical recovery capacity remain separate requirements.
+The matching graph passes 130 SQLite wallet tests, 158 shared-library tests,
+the full 374-test SDK workspace suite and strict affected-database/SDK lint.
+The real relay-process retirement case also passes: restart and expiry preserve
+original coins and lifetime spending limits through channel cleanup. All 2,677
+fingerprinted source/dependency inputs and both relay/test executable hashes stay
+unchanged through that run. This is local test-money acceptance, not physical
+power-loss or current-router validation.
+
 The HTTP receiver also restores committed close outputs after a lost mint reply,
 without depending on a swap replay cache. SDK regressions cancel the receiver
 call after the real test mint commits, reopen the receiver, and recover its exact
