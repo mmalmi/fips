@@ -259,6 +259,8 @@ metadata growth do not consume duplicate journal space. Collection reads origina
 incrementally, with a soft 4 MiB batch budget and one oversized original allowed
 to progress alone. The journal rejects older queue formats; use fresh profiles.
 
+## Proof custody storage
+
 Outgoing channel retirement hands off exact completed sender refunds and
 wallet-created funding records through paged wallet custody. The SDK saves a
 wallet-authenticated plan binding the original native send records, channel
@@ -289,12 +291,30 @@ deletion queue; residual coins rotate to the tail so an unspent head cannot star
 later pages. An authenticated bounded redo log covers the custody transfer and
 page removal. A pending capture pauses only its own scope's collection.
 
-Archive storage remains proportional to retained custody. The receiver release
-queue retains its existing limit, and capture still runs to exhaustion within one
-retirement call. These mechanisms do not bound unrelated wallet history, total
-database size or custody archives. The SDK client file separately reserves
-completion space within its 32 MiB limit before funding. Outgoing receipt recovery and
-retirement now use indexed pages scoped to the exact mint, unit and direction.
+The version-2 custody registry caps retained pages plus unfinished capture
+reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
+original owners to reserve its full serialized proof size plus 16 KiB per nonempty
+page. Appending transfers that allowance to retained pages; retries use the same
+reservation, and acknowledgment releases unused allowance only after the client
+financial commit. Old archives without these counters require a fresh profile.
+`CashuWalletService::configure_proof_archive_capacity` persists a different limit
+but rejects shrinking below retained and reserved usage. It never evicts evidence.
+
+On pressure, retirement visits at most one previously acknowledged page before
+rejecting a new capture. Repeated retries can therefore free eligible spent
+history even when retirement precedes ordinary upkeep collection. Unspent or
+otherwise owned coins remain charged. The original plan and native owners remain
+until the complete capture fits and is sealed. The existing authenticated redo
+log commits page changes and byte counters together.
+
+This is a logical page limit. Registry metadata has its separate 1 MiB bound, the
+redo log 24 MiB, and rotation may temporarily retain one extra page of at most
+4 MiB plus 16 KiB. The receiver release queue retains its existing limit, and
+capture still runs to exhaustion within one retirement call. These mechanisms do
+not bound unrelated wallet history, total database size or physical disk use.
+The SDK client file separately reserves completion space within its 32 MiB limit
+before funding. Outgoing receipt recovery and retirement use indexed pages scoped
+to the exact mint, unit and direction.
 The native read limits each page to 128 rows and 4 MiB of stored payload before
 decoding; retirement retains candidates from at most one page. Oversized or
 corrupt evidence stops the operation without skipping records, releasing custody

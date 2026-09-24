@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total wallet/custody storage and remaining SDK stores, other wallet queries, individual recovery/result sizes and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total native wallet storage and remaining SDK stores, other wallet queries, individual recovery/result sizes and physical recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -38,8 +38,24 @@ Receiver profiles now reserve logical completion space for admitted channels.
 The SDK defaults to 32 MiB, including 16 MiB reserved for lifetime history, and
 retains reservations through closure until validated retirement. New work fails
 at capacity while existing settlement and refund records retain their allowance.
-This does not allocate filesystem blocks or bound total wallet/custody storage;
+This does not allocate filesystem blocks or bound native wallet storage;
 those limits and the crash boundary between separate stores remain outstanding.
+
+Sender custody now has a default 64 MiB logical page budget, including reserved
+space for each complete capture. Capacity exhaustion keeps the original plan and
+financial owners. Existing captures resume within their reservation; collection
+releases space only for eligible spent evidence. Retirement attempts one bounded
+collection pass under pressure so it cannot prevent the cleanup needed to make
+progress. Metadata, the recovery log and one temporary rotation page have separate
+limits. This does not bound the native wallet database or reserve physical disk;
+see [custody storage](HISTORY.md#proof-custody-storage) for the contract.
+SDK `6578b4d` passes its full 373-test workspace suite, all 18 feature profiles,
+strict lint and formatting. The matching FIPS graph passes 295 relay tests, five
+opening-recovery process cases, the payout/refund crash case and sender retirement,
+plus strict lint. All 2,673 recorded FIPS source/dependency inputs match. The focused
+capacity checks cover reservation exhaustion, resumed completion and safe reuse of
+collected space; the test-mint case retains every original owner at capacity and
+then completes the same retirement after capacity is increased.
 
 The HTTP receiver also restores committed close outputs after a lost mint reply,
 without depending on a swap replay cache. SDK regressions cancel the receiver
@@ -51,10 +67,10 @@ reservation. This exercises cancellation and reload, not physical power loss.
 Mint restore support and retained historical signatures/keys remain requirements;
 custom sync and JavaScript networking adapters still use their existing replay
 hooks. See the SDK receiver recovery contract for those limits.
-The matching local graph passes 117 native-library tests, the full 371-test SDK
-workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five opening
-recovery process cases and the payout/refund crash case, with strict native,
-SDK and relay lint. These results do not accept a new hardware deployment.
+That receiver-close revision passed 117 native-library tests, the full 371-test
+SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
+opening recovery process cases and the payout/refund crash case, with strict
+native, SDK and relay lint. These results do not accept a new hardware deployment.
 
 The 23 September source bundle at `492ffeeb6` resolves 693 packages, including
 672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,
