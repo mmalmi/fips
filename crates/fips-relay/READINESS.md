@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody, receipts and unfinished operations, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total wallet/custody storage and remaining SDK stores, other wallet queries, individual recovery/result sizes and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total wallet/custody storage and remaining SDK stores, other wallet queries, individual recovery/result sizes and physical recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -202,6 +202,32 @@ Paging does not cap individual admitted recovery records, accumulated result lis
 full traversal time or total wallet/custody storage. The SDK keeps its existing
 writer/money locks across scans; native recovery can complete earlier operations
 before a later read fails. See [history ownership](HISTORY.md).
+
+## Recovery record read bounds
+
+SDK `f6c77c8` and CDK `1da778a6` enforce existing recovery-record limits before
+payloads cross the SQL driver boundary. Byte counting and conditional payload
+selection share one statement snapshot. Malformed stored values return errors,
+not missing records. Redb checks its borrowed value before copying it; backends
+without this contract return an unsupported error without an unbounded fallback.
+Foreign database callbacks forward the same limit.
+
+Send-request, incoming-receipt and proof-release journals keep their 4 MiB limits.
+Custody registry, page and redo-log reads retain limits of 1 MiB, 4 MiB + 16 KiB
+and 24 MiB. Archive read and write validation share their limit definitions.
+Rejected reads leave financial evidence unchanged; restoring the original record
+allows interrupted custody transfer to finish.
+
+Four native boundary checks and two SDK recovery regressions pass, along with all
+1,442 native tests, all 367 SDK workspace tests and six real FIPS funding/refund
+process-crash cases. All 2,660 recorded relay source/dependency inputs match.
+Strict native, SDK and relay lint, formatting, the source-size gate and PostgreSQL
+compilation pass. PostgreSQL runtime and custom backend support are not accepted.
+
+These bounds cover individual records crossing the storage interface, not SQL
+engine memory, total wallet/custody capacity, uncapped SDK stores or other native
+recovery payloads and results. Current-device and physical power-loss acceptance
+remain open; no hardware services changed.
 
 ## Atomic issue ownership
 

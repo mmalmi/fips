@@ -322,6 +322,15 @@ previous native operations have completed. Already-admitted records keep their
 original size. Individual payloads, accumulated result lists, traversal time and
 total wallet/custody storage are not bounded by identity paging.
 
+SDK journal and archive reads enforce their existing byte limits before payloads
+cross the SQL driver boundary. One statement checks size and conditionally selects
+the value; malformed records cannot look absent. Redb checks the borrowed value
+before copying it, and unsupported backends fail without an unbounded fallback.
+Oversized records remain intact, including an interrupted custody redo log and its
+targets. Restoring original evidence permits recovery. These individual read
+limits do not reserve total storage or bound other wallet queries; see the
+[accepted scope and checks](READINESS.md#recovery-record-read-bounds).
+
 Initial mint-quote acquisition saves the original issue journal, every exact
 quote reservation and canonical pending receipts together. Output planning and
 signing precede acquisition; conflicting snapshots or write failures cannot leave
