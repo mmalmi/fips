@@ -82,8 +82,26 @@ All table row counts remain fixed during that interval. The wallet retains its
 12 spendable proof rows and all 32 test sats, retires 312 spent rows, and keeps a
 gross lifetime debit of 300 sats. The test takes 42.67 seconds locally, not on a
 router. This accepts a finite completed-payment workload, not total wallet
-storage, overlapping active channels or physical recovery headroom. Collection
-still waits while any native wallet operation is unfinished.
+storage, overlapping active channels or physical recovery headroom. That workload
+finishes all wallet operations between cycles.
+
+Collection now checks each unfinished operation's exact coin references and the
+candidate rows' creator/spender ownership. Unrelated open sends no longer prevent
+retirement. One operation record is inspected at a time within a 4 MiB stored-byte
+bound, enforced before SQL payload projection; malformed or oversized records
+stop collection and remain available to ordinary recovery. The real local-mint
+regression preserves the unrelated open send and every other original coin,
+performs no mint request during collection, and completes the send afterward with
+its balance intact. Tests also retain checkpoint-only and creator/spender owners
+beyond the first header page and across foreign mint/unit scopes. Total native
+wallet admission, completion reservations and sustained overlapping-channel
+storage acceptance remain separate requirements.
+The matching graph passes 159 shared-library tests, 131 SQLite tests, the full
+375-test SDK workspace suite and strict affected-database/SDK lint. The real
+relay-process restart/expiry/retirement case also passes. All 2,680 fingerprinted
+source/dependency inputs and both runtime executable hashes remain unchanged
+through that check. These are local test-money results; current-router, physical
+power-loss and total-storage acceptance remain open.
 
 That test first reproduced a collected spent token creating another pending
 receive after its swap was rejected. Native admission now checks unfamiliar coins

@@ -340,14 +340,19 @@ retained ownership set; full-scan time remains separate.
 Unfinished wallet operations use a shared identity reader: at most 128 creation-time/
 UUID headers, then one original recovery record at a time. SQL uses a matching
 index and never projects recovery payloads into the header page. Coin collection
-needs only one header to defer deletion. Cancellation discovery scans all mint/unit
+inspects each operation with a separate 4 MiB stored-column read bound. It retains
+coins named by checkpoints, tokens, receipts and output secrets, and any candidate
+row naming an unfinished creator or spender. An unrelated open payment no longer
+holds the entire release queue. Missing, changed, corrupt or oversized operation
+evidence stops collection; its original recovery record remains untouched.
+Cancellation discovery scans all mint/unit
 scopes so a later duplicate or foreign preparation still prevents a replacement
 send. Native recovery and pending-send/melt enumeration share the same reader.
 Deleted cursor rows remain valid, but pages are not a snapshot; the SDK keeps its
 existing writer and money locks. Corrupt reads stop the scan, potentially after
 previous native operations have completed. Already-admitted records keep their
-original size. Individual payloads, accumulated result lists, traversal time and
-total wallet/custody storage are not bounded by identity paging.
+original size for recovery. The collection-only inspection budget does not bound
+recovery payloads, accumulated result lists, traversal time or total wallet storage.
 
 SDK journal and archive reads enforce their existing byte limits before payloads
 cross the SQL driver boundary. One statement checks size and conditionally selects
