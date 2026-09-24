@@ -103,6 +103,19 @@ source/dependency inputs and both runtime executable hashes remain unchanged
 through that check. These are local test-money results; current-router, physical
 power-loss and total-storage acceptance remain open.
 
+Required issuing keys and keyset metadata now persist before new wallet output
+secrets are generated; failed best-effort cache writes cannot silently bypass
+this requirement. SQLite first-value write queries also finish before returning,
+so late commit errors cannot supply an uncommitted derivation counter. The
+real-mint regression rejects keyset and key writes independently, retains the
+original send and coins across retries, then completes the same refund after
+storage is available. The matching graph passes 132 SQLite tests, all 817 native
+CDK tests, the full 376-test SDK workspace suite, strict affected-library/SDK lint
+and the real relay-process restart/expiry/retirement case. All 2,682 recorded
+source/dependency inputs and both runtime executable hashes match. These checks
+do not establish whole-wallet admission, completion reservations, physical disk
+headroom or current-router acceptance; see [history](HISTORY.md).
+
 That test first reproduced a collected spent token creating another pending
 receive after its swap was rejected. Native admission now checks unfamiliar coins
 through NUT-07 before acquisition. The replay adds no coin or recovery operation,

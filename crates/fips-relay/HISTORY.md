@@ -363,6 +363,15 @@ targets. Restoring original evidence permits recovery. These individual read
 limits do not reserve total storage or bound other wallet queries; see the
 [accepted scope and checks](READINESS.md#recovery-record-read-bounds).
 
+Before deriving new swap, mint or melt-change outputs, the native wallet requires
+its issuing keys and keyset metadata to be stored successfully. A failed optional
+cache write cannot substitute for that requirement. Reclaim stops before spending
+original coins when those records cannot be saved, and can retry after storage is
+available. SQLite single-value writes finish their statement before returning;
+a `RETURNING` value cannot hide a late commit failure or supply an uncommitted
+secret counter. These checks preserve errors and recovery evidence. Whole-wallet
+admission and completion-space reservations remain outstanding.
+
 For incoming tokens, locally unfamiliar coins require one NUT-07 state query
 before native acquisition. Spent, pending, malformed or unavailable results leave
 no new acquired coins, recovery operation or allocated output secrets. This
