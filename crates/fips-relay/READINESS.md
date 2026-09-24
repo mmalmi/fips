@@ -74,6 +74,32 @@ fingerprinted source/dependency inputs and both relay/test executable hashes sta
 unchanged through that run. This is local test-money acceptance, not physical
 power-loss or current-router validation.
 
+An opt-in SDK storage soak now completes 300 numbered sends and receives through
+a real local test mint, explicitly acknowledges their owners, collects original
+spent coins and reopens every 75 cycles. From cycle 150 onward, the database stays
+at 95 pages of 4096 bytes, including 20 free pages; the WAL peaks at 4,190,072 bytes.
+All table row counts remain fixed during that interval. The wallet retains its
+12 spendable proof rows and all 32 test sats, retires 312 spent rows, and keeps a
+gross lifetime debit of 300 sats. The test takes 42.67 seconds locally, not on a
+router. This accepts a finite completed-payment workload, not total wallet
+storage, overlapping active channels or physical recovery headroom. Collection
+still waits while any native wallet operation is unfinished.
+
+That test first reproduced a collected spent token creating another pending
+receive after its swap was rejected. Native admission now checks unfamiliar coins
+through NUT-07 before acquisition. The replay adds no coin or recovery operation,
+submits no swap and preserves the original wallet and lifetime costs. Malformed,
+pending and unavailable state replies also stop acquisition. Submitted receives
+keep their original ambiguous-error recovery; there is no new FIPS message or
+per-coin tombstone. All 817 native CDK library tests pass, including 23 receive and
+recovery cases. See the SDK `wallet-history.md` steady-state check for reproduction.
+The matching graph also passes the full 374-test SDK workspace suite, strict
+native/SDK lint and the real relay-process restart/retirement case. All 2,678
+fingerprinted source/dependency inputs and both runtime executable hashes remain
+unchanged through that process test. Previous accepted executables are preserved
+separately. This is local test-money acceptance; no device or physical power-loss
+acceptance is added.
+
 The HTTP receiver also restores committed close outputs after a lost mint reply,
 without depending on a swap replay cache. SDK regressions cancel the receiver
 call after the real test mint commits, reopen the receiver, and recover its exact

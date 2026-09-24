@@ -358,6 +358,16 @@ targets. Restoring original evidence permits recovery. These individual read
 limits do not reserve total storage or bound other wallet queries; see the
 [accepted scope and checks](READINESS.md#recovery-record-read-bounds).
 
+For incoming tokens, locally unfamiliar coins require one NUT-07 state query
+before native acquisition. Spent, pending, malformed or unavailable results leave
+no new acquired coins, recovery operation or allocated output secrets. This
+prevents a collected spent token from creating another unresolved receive on
+replay. Known local inputs keep their existing ownership checks. The mint must
+retain authoritative spent-state history; an unspent answer does not prevent a
+later competing spend. After submission begins, errors remain ambiguous and the
+original recovery evidence stays protected. This adds a standard mint lookup per
+unfamiliar batch, not a FIPS message or a per-packet payment.
+
 Initial mint-quote acquisition saves the original issue journal, every exact
 quote reservation and canonical pending receipts together. Output planning and
 signing precede acquisition; conflicting snapshots or write failures cannot leave
