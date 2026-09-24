@@ -299,8 +299,7 @@ The native read limits each page to 128 rows and 4 MiB of stored payload before
 decoding; retirement retains candidates from at most one page. Oversized or
 corrupt evidence stops the operation without skipping records, releasing custody
 or falling back to a full-table read. The money lock spans traversal. These bounds
-cover receipt enumeration memory; full traversal time and incomplete-saga
-enumeration remain separate. New-operation proof selection has its separate
+cover receipt enumeration memory; full traversal time remains separate. New-operation proof selection has its separate
 inventory limit; it does not cap total historical wallet records.
 
 Proof-history collection uses the same transaction pages across every mint, unit
@@ -309,8 +308,19 @@ bounded candidate set. Archive transfer and pending-deletion recovery use this
 check too; an owner after earlier pages still prevents deletion. Oversized or
 corrupt pages retain the original coins and pending intent. An index on timestamp
 and ID supports the whole-wallet cursor. This bounds transaction reads and the
-retained ownership set, while full-scan time and unfinished-operation reads
-remain separate requirements.
+retained ownership set; full-scan time remains separate.
+
+Unfinished wallet operations use a shared identity reader: at most 128 creation-time/
+UUID headers, then one original recovery record at a time. SQL uses a matching
+index and never projects recovery payloads into the header page. Coin collection
+needs only one header to defer deletion. Cancellation discovery scans all mint/unit
+scopes so a later duplicate or foreign preparation still prevents a replacement
+send. Native recovery and pending-send/melt enumeration share the same reader.
+Deleted cursor rows remain valid, but pages are not a snapshot; the SDK keeps its
+existing writer and money locks. Corrupt reads stop the scan, potentially after
+previous native operations have completed. Already-admitted records keep their
+original size. Individual payloads, accumulated result lists, traversal time and
+total wallet/custody storage are not bounded by identity paging.
 
 Production bounds require recovery headroom reserved before funding and sustained
 storage acceptance across supported histories; cleanup must not discard live

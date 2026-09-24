@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody and outgoing receipts, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total wallet/custody storage and remaining SDK stores, other wallet queries and incomplete-saga enumeration, and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody, receipts and unfinished operations, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total wallet/custody storage and remaining SDK stores, other wallet queries, individual recovery/result sizes and physical recovery capacity under sustained history pressure. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -99,7 +99,7 @@ changing coins; restoring that record permits the original request to recover.
 All 357 SDK workspace tests and strict all-target lint pass. The five FIPS
 pre-opening cases and payout/refund crash case pass again against this dependency
 graph, with all 2,606 recorded inputs unchanged. Paging bounds receipt-scan memory,
-not full traversal time, incomplete native saga enumeration or total storage.
+not full traversal time or total storage. Unfinished operations are covered below.
 
 These process kills do not simulate loss of writes already acknowledged by
 physical storage. Reconciliation of missing evidence, sustained aggregate storage
@@ -132,7 +132,7 @@ Already-submitted operations retain their original recovery inputs and outputs.
 All 950 affected native, SQLite and binding tests, 358 SDK workspace tests and
 strict all-target lint pass. The five FIPS pre-opening cases and payout/refund
 crash case pass on the combined graph; all 2,620 recorded inputs match. These are
-new-operation planning limits. Other wallet queries, incomplete-saga enumeration,
+new-operation planning limits. Other wallet queries, individual recovery/result sizes,
 total wallet/SDK/custody storage and physical disk reservations remain separate.
 
 Sender plans retain denomination counts and share proof matching. A matched
@@ -178,15 +178,30 @@ and custody archive, or accept the current build for hardware deployment. The
 budget can reject new work before the 128-record ceiling. See the SDK's
 `docs/wallet-history.md` for the storage contract and remaining ownership bounds.
 
-Proof-history transaction ownership now uses the same bounded native reader
-across all mints, units and directions, retaining only current candidate identities.
-SDK `d57cdb5` and CDK `30c5253b` cover owners beyond the first two pages and oversized
-evidence during collection and interrupted-deletion recovery. The 363-test SDK
-workspace, 360 database/common tests and strict lint pass; PostgreSQL compilation
-passes without a runtime claim. The real FIPS channel-retirement/restart case also
-passes on all 2,627 unchanged source/dependency inputs. This bounds transaction
-reads and ownership-set growth, not total scan time, unfinished-operation
-enumeration or whole-wallet storage. See [history ownership](HISTORY.md).
+## Wallet history enumeration
+
+Proof-history transaction ownership uses bounded native pages across all mints,
+units and directions, retaining only current candidate identities. Owners beyond
+the first two pages and oversized evidence remain covered during collection and
+interrupted-deletion recovery.
+
+Unfinished operations now use pages of at most 128 creation-time/UUID headers,
+loading one original recovery record at a time. Native recovery, pending send/melt
+enumeration and SDK cancellation share this reader. A single header defers coin
+collection without decoding recovery payloads. Global cancellation discovery still
+rejects later duplicate or foreign preparations. Deleted cursor rows remain valid;
+corrupt reads stop the scan without skipping evidence.
+
+SDK `8174382` and CDK `8ccc0ac5` pass all 365 SDK workspace tests, 658 native
+wallet/SQLite checks, seven focused pagination checks and strict all-target lint.
+The real FIPS channel-retirement/restart case passes with all 2,636 recorded inputs
+unchanged. PostgreSQL compilation passes; Supabase coverage uses mocked HTTP.
+Neither is a deployed-server runtime acceptance claim.
+
+Paging does not cap individual admitted recovery records, accumulated result lists,
+full traversal time or total wallet/custody storage. The SDK keeps its existing
+writer/money locks across scans; native recovery can complete earlier operations
+before a later read fails. See [history ownership](HISTORY.md).
 
 ## Authenticated adjacent neighbors
 
