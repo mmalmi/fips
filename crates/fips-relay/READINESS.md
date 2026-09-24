@@ -205,10 +205,19 @@ before a later read fails. See [history ownership](HISTORY.md).
 
 ## Atomic issue ownership
 
-CDK `c3b24531` saves the initial issue journal and every exact mint-quote
+CDK `9e257fee` saves the initial issue journal and every exact mint-quote
 reservation in one transaction. Single and batch preparation share this boundary
 after output planning and signing. Conflicts cannot leave a partially owned
 batch; an uncertain commit reply retains any committed journal and reservations.
+
+The journal retains every original secret and its individual derivation index,
+payment method, signed request and precomputed compatibility signatures. Normal
+submission and recovery share these saved inputs. Advancing the shared counter,
+using conditioned secrets or losing external signing keys after preparation
+cannot change the replayed request or recovered coins. Restore responses must
+cover the exact original outputs and are reordered before unblinding. Recovery
+validates request shape and saved secrets before submission; missing checkpoints,
+stale journals and conflicting quote ownership stop recovery before mint contact.
 
 Terminal cleanup now checks the unchanged original journal, every owned quote
 snapshot and its canonical receipt in one transaction. Prepared cancellation
@@ -224,19 +233,26 @@ out an earlier or concurrent successful submission. A mint that permanently
 rejects the original batch therefore needs reconciliation; this change does not
 provide a safe batch-splitting recovery mechanism.
 
-Fifteen focused checks cover backend contracts, write rollback, receipt conflicts,
-competing transitions, unsupported stores and recovery after completion cleanup
-fails. All 664 native wallet/SQLite checks, 91 SDK wallet checks, five FIPS
-interrupted-funding process cases and the payout/refund crash case pass on the
-same graph; all 2,652 recorded inputs match. Formatting, native strict all-target
-lint and PostgreSQL compilation pass. PostgreSQL runtime is not accepted here.
+Forty-three focused checks cover backend contracts, write rollback, receipt
+conflicts, competing transitions, unsupported stores, original checkpoint replay
+and restore, and recovery after completion cleanup fails. All 666 native
+wallet/SQLite checks and 91 SDK wallet checks pass. Five FIPS interrupted-funding
+process cases and the payout/refund crash case pass on the same graph; all 2,654
+recorded inputs match. The cancellation process check accepts
+either its exact live SDK admission or the exact permanent retirement summary,
+including the original sequence, mint, expiry and zero spending. Completed
+retirement requires that summary and no remaining admission. Formatting, source
+size checks, native and relay strict all-target lint, and PostgreSQL compilation
+pass. PostgreSQL runtime is not accepted here.
 Custom backends, including Supabase, must implement atomic acquisition and
 retirement before issuing; there is no sequential fallback.
 
-This accepts acquisition and terminal cleanup, not the entire issue lifecycle.
-Concurrent recovery and proof publication, exact derivation ranges and complete
-original secret/request checkpoints still need hardening. Melt orphan cleanup
-is unchanged. Current hardware acceptance and production readiness remain open.
+This accepts original checkpoints, acquisition and terminal cleanup. Proof and
+receipt publication still need protection against concurrent recovery: early
+snapshot checks do not fence later writes. The checkpoint format targets fresh
+profiles; submitted legacy records without original evidence fail closed rather
+than inventing replacement secrets. Melt orphan cleanup is unchanged. Current
+hardware acceptance and production readiness remain open.
 
 ## Authenticated adjacent neighbors
 

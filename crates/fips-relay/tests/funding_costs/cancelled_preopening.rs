@@ -1,6 +1,9 @@
 //! A crash before sending releases only its exact, durably cancelled reservation.
 use super::{preopening_support::*, restore::*, *};
-use cashu_service::{simulation::MintProxy, spilman_client_store_path};
+use cashu_service::{
+    CashuRequestSequence, CashuSendCost, CashuSendSequenceHistory, CashuSpilmanRetiredHistory,
+    simulation::MintProxy, spilman_client_store_path,
+};
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 
@@ -49,6 +52,22 @@ async fn crashed_metadata_wait_cancels_and_retires_without_a_wallet_send() {
         let admission = &sdk["admissions"][id];
         let wanted = admission["request"].clone();
         assert_eq!(wanted["client_request_id"], *id);
+        let sequence = CashuRequestSequence::from_request_id(id).unwrap().unwrap();
+        let retired_evidence = CashuSpilmanRetiredHistory {
+            send: CashuSendSequenceHistory {
+                mint_url: wanted["mint_url"].as_str().unwrap().to_owned(),
+                through: sequence.number(),
+                requests: 0,
+                requested_sat: 0,
+                cost: CashuSendCost::default(),
+            },
+            abandoned_requests: 0,
+            cancelled_requests: 1,
+            capacity_sat: 0,
+            signed_sat: 0,
+            refund_sat: 0,
+            expires_through_unix: wanted["expiry_unix"].as_u64().unwrap(),
+        };
         assert_eq!(admission["funding_started"], false);
         assert!(admission["reclaim"].is_null());
         assert_eq!(entries(&sdk, "admissions"), 1);
@@ -78,6 +97,9 @@ async fn crashed_metadata_wait_cancels_and_retires_without_a_wallet_send() {
         while now() <= wanted["expiry_unix"].as_u64().unwrap() + 10 {
             let current = read(&journal_path);
             let sdk = read(&sdk_path);
+            let sdk_retired = serde_json::from_value::<CashuSpilmanRetiredHistory>(
+                sdk["retirement"]["scopes"][sequence.scope()].clone(),
+            ).is_ok_and(|history| history == retired_evidence);
             check(&mut errors, current["next_funding"] == original["next_funding"]
                 && current["policy"] == original["policy"], "funding authority changed");
             check(&mut errors, current["watched_routes"] == original["watched_routes"],
@@ -93,13 +115,21 @@ async fn crashed_metadata_wait_cancels_and_retires_without_a_wallet_send() {
                     "original cancellation terms changed");
                 cancelled |= saved["reclaim"]["state"] == "cancelled";
                 if saved["reclaim"]["state"] == "cancelled" {
-                    check(&mut errors, sdk["admissions"][id]["reclaim"]["result"] == "Cancelled"
-                        && sdk["admissions"][id]["request"] == wanted,
+                    // SDK retirement replaces the admission before the controller
+                    // finishes its handoff; either durable form must remain exact.
+                    let exact = sdk["admissions"].get(id).map_or(sdk_retired, |admission|
+                        admission["reclaim"]["result"] == "Cancelled"
+                            && admission["request"] == wanted);
+                    check(&mut errors, exact,
                         "controller cancellation has no exact SDK evidence");
                 }
             }
             let history = &current["history"]["channels"]["totals"];
             retired = history["cancelled_requests"] == 1 && entries(&current, "funding") == 0;
+            if retired {
+                check(&mut errors, sdk_retired && entries(&sdk, "admissions") == 0,
+                    "retired cancellation has no exact SDK history");
+            }
             cancelled |= retired;
             if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(2),
                 request(cfg, &AdminRequest::Status)).await {
