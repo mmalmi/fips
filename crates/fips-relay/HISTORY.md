@@ -322,29 +322,32 @@ previous native operations have completed. Already-admitted records keep their
 original size. Individual payloads, accumulated result lists, traversal time and
 total wallet/custody storage are not bounded by identity paging.
 
-Initial mint-quote acquisition saves the original issue journal and every exact
-quote reservation together. Output planning and signing precede acquisition;
-conflicting snapshots or write failures cannot leave a partially owned batch.
-A lost commit reply keeps any committed ownership and journal for recovery.
-The journal includes the original secrets, individual derivation indices, payment
-method, signed request and compatibility signatures. Submission and recovery use
-the same checkpoint; restore validates and orders the complete original outputs.
-Missing or invalid checkpoints, stale journals and conflicting quote ownership
-stop recovery before mint submission. The new checkpoint format is for fresh
-profiles; submitted records without original evidence cannot be replayed.
-Terminal cleanup also commits quote release and journal deletion together,
-fenced by the exact original journal, all owned quote snapshots and canonical
-receipts. Prepared cancellation changes only pending receipts to failed;
-submitted work requires completed receipts. A release failure or stale prepared
-snapshot cannot erase the original journal. Startup and quote-status refresh
-retain mint reservations whose original journal is missing. Batch rejections
-retain their original outputs for recovery rather than create individual
-replacement requests; permanently rejected batches still need reconciliation.
+Initial mint-quote acquisition saves the original issue journal, every exact
+quote reservation and canonical pending receipts together. Output planning and
+signing precede acquisition; conflicting snapshots or write failures cannot leave
+a partially owned batch. A lost commit reply keeps any committed evidence.
+The checkpoint includes original unreserved quotes, secrets, individual derivation
+indices, payment method, signed request and compatibility signatures. Submission
+and recovery share that checkpoint; restore validates and orders every original
+output. Missing or invalid checkpoints, stale journals and conflicting quote
+ownership stop recovery before mint submission. The format targets fresh profiles;
+submitted records without original evidence cannot be replayed.
 
-These boundaries do not yet fence proof and receipt publication against concurrent
-recovery; the early original-journal check cannot authorize a later unguarded write.
+Completion atomically publishes verified original outputs and completed receipts,
+sets original issued-amount targets, releases quotes and deletes the journal. It
+compares the exact journal, owned quote snapshots and complete original proof
+records before writing. Later coin states, owners and evidence survive; a stale
+attempt cannot revive spent coins or overwrite a newer reservation after another
+recovery completes. Already-observed issuance is not credited again, and newer
+quote deposits and metadata remain. Prepared cancellation changes existing pending
+receipts to failed without publishing coins. A conflict or write failure preserves
+the original evidence. Startup and quote-status refresh retain mint reservations
+whose journal is missing. Batch rejections keep their original outputs for
+recovery; permanently rejected batches still need reconciliation or safe
+original-output repartitioning.
+
 Melt orphan cleanup is unchanged. See [issue ownership](READINESS.md#atomic-issue-ownership)
-for the accepted revision and focused regression evidence.
+for the accepted revision and regression evidence.
 
 Production bounds require recovery headroom reserved before funding and sustained
 storage acceptance across supported histories; cleanup must not discard live

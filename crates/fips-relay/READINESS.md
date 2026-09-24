@@ -205,54 +205,57 @@ before a later read fails. See [history ownership](HISTORY.md).
 
 ## Atomic issue ownership
 
-CDK `9e257fee` saves the initial issue journal and every exact mint-quote
-reservation in one transaction. Single and batch preparation share this boundary
-after output planning and signing. Conflicts cannot leave a partially owned
-batch; an uncertain commit reply retains any committed journal and reservations.
+CDK `150a422b` saves the initial issue journal, every exact mint-quote reservation
+and canonical pending receipts in one transaction. Single and batch preparation
+share this boundary after output planning and signing. Conflicts cannot leave a
+partially owned batch; an uncertain commit reply retains any committed evidence.
 
-The journal retains every original secret and its individual derivation index,
-payment method, signed request and precomputed compatibility signatures. Normal
-submission and recovery share these saved inputs. Advancing the shared counter,
-using conditioned secrets or losing external signing keys after preparation
-cannot change the replayed request or recovered coins. Restore responses must
-cover the exact original outputs and are reordered before unblinding. Recovery
-validates request shape and saved secrets before submission; missing checkpoints,
-stale journals and conflicting quote ownership stop recovery before mint contact.
+The checkpoint holds the original unreserved quotes, every original secret and
+its individual derivation index, payment method, signed request and precomputed
+compatibility signatures. Normal submission and recovery use this one copy.
+Advancing the shared counter, using conditioned secrets or losing external
+signing keys after preparation cannot change the original request or coins.
+Restore responses must cover every original output and are reordered before
+unblinding. Missing or invalid checkpoints, stale journals and conflicting quote
+ownership stop recovery before mint contact. Debug output redacts bearer secrets
+and quote signing keys.
 
-Terminal cleanup now checks the unchanged original journal, every owned quote
-snapshot and its canonical receipt in one transaction. Prepared cancellation
-marks pending receipts failed; submitted work requires completed receipts.
-Quote release and journal deletion commit together. Rollback retains the
-original evidence, and a stale prepared snapshot cannot cancel submitted work.
-Startup and quote-status refresh no longer release mint reservations merely
-because their journal is missing. Obsolete compensation queues are removed.
+Completion checks the unchanged journal, all owned quote snapshots, original
+proof records and canonical receipts in one transaction. It publishes verified
+outputs, completes receipts, sets the original issued-amount targets, releases
+quotes and deletes the journal together. Existing output records retain later
+spent/reserved states, owners and evidence; a concurrent change rejects the whole
+completion. A status refresh that already observed issuance cannot cause another
+credit. Newer deposits and other quote metadata survive. Delayed normal replies
+and recovery attempts cannot overwrite coins after another recovery completes.
+Prepared cancellation marks existing pending receipts failed without publishing
+coins; a stale prepared snapshot cannot cancel submitted work. Startup and
+quote-status refresh retain mint reservations whose journal is missing.
 
 Batch-size rejections and transport failures retain the original batch for
 replay or restore, without fresh individual requests. A rejection cannot rule
 out an earlier or concurrent successful submission. A mint that permanently
-rejects the original batch therefore needs reconciliation; this change does not
-provide a safe batch-splitting recovery mechanism.
+rejects the original batch still needs reconciliation or safe original-output
+repartitioning; this change does not provide that mechanism.
 
-Forty-three focused checks cover backend contracts, write rollback, receipt
-conflicts, competing transitions, unsupported stores, original checkpoint replay
-and restore, and recovery after completion cleanup fails. All 666 native
-wallet/SQLite checks and 91 SDK wallet checks pass. Five FIPS interrupted-funding
-process cases and the payout/refund crash case pass on the same graph; all 2,654
-recorded inputs match. The cancellation process check accepts
-either its exact live SDK admission or the exact permanent retirement summary,
-including the original sequence, mint, expiry and zero spending. Completed
-retirement requires that summary and no remaining admission. Formatting, source
-size checks, native and relay strict all-target lint, and PostgreSQL compilation
-pass. PostgreSQL runtime is not accepted here.
-Custom backends, including Supabase, must implement atomic acquisition and
-retirement before issuing; there is no sequential fallback.
+Forty-four focused checks cover acquisition/completion conflicts, write rollback,
+receipt identity, original output ownership and concurrent recovery. Native race
+cases pause both at the mint response and immediately before the database
+transaction, covering normal/recovered single/batch issues with later spent or
+reserved coins. All 658 native wallet/SQLite checks, 91 SDK wallet checks and the
+single/batch optional signing-key refresh test pass. Five FIPS interrupted-funding
+process cases and the payout/refund crash case pass on the same graph; all 2,656
+recorded inputs match. Formatting, source-size checks, native and relay strict
+all-target lint, and PostgreSQL compilation pass. PostgreSQL runtime is not
+accepted here. Custom backends, including Supabase, must implement the complete
+atomic acquisition and publication contracts before issuing; there is no
+sequential fallback.
 
-This accepts original checkpoints, acquisition and terminal cleanup. Proof and
-receipt publication still need protection against concurrent recovery: early
-snapshot checks do not fence later writes. The checkpoint format targets fresh
-profiles; submitted legacy records without original evidence fail closed rather
-than inventing replacement secrets. Melt orphan cleanup is unchanged. Current
-hardware acceptance and production readiness remain open.
+This accepts original checkpoint recovery and atomic issue publication on the
+tested source graph. The format targets fresh profiles; records without original
+evidence fail closed rather than inventing replacement secrets. Melt orphan
+cleanup, total storage bounds, current hardware acceptance and production
+readiness remain open.
 
 ## Authenticated adjacent neighbors
 
