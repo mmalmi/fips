@@ -166,6 +166,12 @@ production feature profiles pass. Native admission has 109 passing library tests
 and strict lint. The five FIPS pre-opening process cases and payout/refund crash
 case pass on the combined graph; all 2,624 recorded source/dependency inputs match.
 
+The [24 September loopback cadence matrix](CADENCE-RESULTS.md#accepted-client-storage-budget-comparison--24-september-2026)
+also passes on this graph: all 285,696 payloads arrive, all 40,960 test sats are
+recovered and idle payment work remains zero. It measures fresh-profile CPU and
+logical relay-journal/carrier costs; it does not isolate the added storage checks
+or measure total disk writes. The 500-ms default remains unchanged.
+
 This accepts fresh-profile logical client storage admission. It does not allocate
 disk blocks, establish process memory or router capacity, bound the whole wallet
 and custody archive, or accept the current build for hardware deployment. The

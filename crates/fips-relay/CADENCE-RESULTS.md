@@ -1,5 +1,79 @@
 # Paid-relay cadence measurements
 
+## Accepted client-storage-budget comparison — 24 September 2026
+
+The existing optimized five-process, three-paid-hop loopback matrix passes on
+FIPS `1bb0171c7`, SDK `8a98b94`, Spilman `2c6c916` and CDK `b1bc86e6`.
+This includes client-file completion reservations and bounded wallet inventory.
+All 285,696 original payloads arrive: no loss, duplicates, invalid data or rejected
+timestamps; 15 packets arrive out of order. All eight trials settle six channels
+each and recover all 40,960 test sats. The strict analyzer passes, and all 2,624
+source/dependency inputs still match after measurement. Its Python implementation
+and tests are unchanged from the accepted 120-test analyzer verification below.
+
+The workload, prices, credit limits, two opposite-order repetitions and common
+three-second tail are unchanged. Costs sum all five service processes; each row
+is the mean of two workload windows. Per repetition, bursty delivers 512 packets,
+steady 3,200 and high rate 32,000, each with a 1,000-byte payload.
+
+| Workload | Limit ms | Payment CPU ms | Process CPU ms | Updates | Records KiB | Payment journal KiB | Local carrier KiB | Mean delay ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| idle | 250 | 0.00 | 466.55 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 500 | 0.00 | 316.12 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 1000 | 0.00 | 394.39 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 2000 | 0.00 | 437.84 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| bursty | 250 | 32.77 | 1013.61 | 2.0 | 1.60 | 18.06 | 4.61 | 0.761 |
+| bursty | 500 | 39.06 | 1124.79 | 2.0 | 1.60 | 18.06 | 4.61 | 0.822 |
+| bursty | 1000 | 24.47 | 849.07 | 2.0 | 1.60 | 18.06 | 4.61 | 0.674 |
+| bursty | 2000 | 33.24 | 1032.19 | 2.0 | 1.60 | 18.05 | 4.61 | 0.981 |
+| steady | 250 | 240.87 | 4247.77 | 19.0 | 15.19 | 175.68 | 43.77 | 0.931 |
+| steady | 500 | 211.35 | 3732.68 | 19.0 | 15.19 | 175.83 | 43.77 | 0.800 |
+| steady | 1000 | 163.43 | 3465.73 | 14.0 | 11.19 | 130.24 | 32.25 | 0.800 |
+| steady | 2000 | 120.07 | 3782.97 | 10.0 | 8.00 | 94.06 | 23.04 | 0.945 |
+| high_rate | 250 | 575.02 | 7247.74 | 59.0 | 47.53 | 562.71 | 136.26 | 0.705 |
+| high_rate | 500 | 417.58 | 7432.41 | 44.0 | 35.46 | 419.53 | 101.63 | 0.726 |
+| high_rate | 1000 | 452.42 | 8053.11 | 40.0 | 32.24 | 375.27 | 92.39 | 0.769 |
+| high_rate | 2000 | 398.22 | 6897.34 | 40.0 | 32.24 | 375.26 | 92.39 | 0.920 |
+
+All eight idle windows have zero payment polling, signing, updates, records,
+attributed payment carriers and relay-journal writes. The unchanged
+`prepaid-usage-v1` contract retains 15 disjoint intervals per trial, with exact
+first-to-last reconciliation. Complete observed process CPU is 101,179.190 ms;
+the guards/gaps contribute 190.621 ms and 584 aggregate link bytes. These costs
+are retained separately from the workload rows, without subtracting a baseline.
+
+At high rate, the 500-ms policy costs 13.68 ms of measured payment CPU per delivered
+MiB and 0.244 total process CPU-seconds/MiB. Its payment carrier submissions are
+0.325% of delivered application bytes. Independent window checkpoints add
+50.02 ms of CPU and 151.47 KiB of relay-journal writes per high-rate window;
+these are already included in process CPU and total journal counters, but not in
+the payment columns above. The 1-s policy uses 9.1% fewer updates/carrier bytes
+than 500 ms while measuring 8.3% more payment CPU. The two high-rate payment CPU
+samples are 412.09/423.08 ms at 500 ms and 433.32/471.52 ms at 1 s. High-rate p95
+delay histogram bounds are 2 ms, except one 2-s-policy trial with a 5-ms bound.
+The 500-ms default remains unchanged; this is not evidence of a consistent CPU
+winner or an optimal cadence.
+
+Payment CPU includes signer loading and the new storage checks inside existing
+synchronous spans. Journal bytes exclude SDK client snapshots, SQLite and
+physical writes. Carrier bytes include locally attributed inner TCP segments,
+acknowledgments and retransmissions; they exclude opaque transit, shared native
+control, kernel encapsulation and radio airtime. Fresh profiles and offered load
+do not establish sustained-history cost, maximum capacity or router performance.
+The run does not isolate storage-check overhead from other changes since the
+older comparison, and no optimization is justified by that historical difference.
+
+Compilation finishes before measurement; no task builds/tests run concurrently.
+The matrix takes 431.43 seconds including setup and financial cleanup, on macOS
+ARM64 with 14 logical CPUs and Rust 1.96.0. Shared-host load averages fall from
+19.72/10.74/7.58 to 4.25/5.51/6.10, limiting causal attribution. The release
+executable SHA-256 is
+`14cbb80447ed0df12b265b75ffa812445a7ce3a32d97712d1d973ec3b8bfeb7b`;
+the raw report SHA-256 is
+`f0ffd040e80b298ad8d53774f11d1c26cfa03f7c99415d010502ba246feff13f`.
+Reproduce with the existing [loopback experiment](../../testing/relay-cadence/README.md)
+and matching [development dependencies](FUNDING-COSTS.md).
+
 ## Accepted loopback comparison — 23 September 2026
 
 Five optimized relay processes run three paid forwarding hops over loopback UDP,
