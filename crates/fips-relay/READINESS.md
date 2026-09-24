@@ -24,6 +24,15 @@ and phone demonstrations do not accept the latest software for deployment.
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
+Incoming route admission checks capacity, existing bindings and replacement
+ownership before invoking receiver funding persistence. The controller holds its
+journal lock through that synchronous verification and the local commit, so
+competing acceptances cannot both consume the last route slot. Retained requests
+can still retry when the route book is full, and failed verification leaves the
+previous replacement route intact. This closes the rejected-route write path;
+total receiver/wallet storage reservations and the crash boundary between their
+separate stores remain outstanding.
+
 The 23 September source bundle at `492ffeeb6` resolves 693 packages, including
 672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,
 an empty Cargo home and a new target directory, with original source folders,

@@ -102,72 +102,29 @@ impl Controller {
                 }),
             });
         }
-        self.services.payment_control.prepare_funding().await?;
-        let payments = self.services.payment_control.clone();
-        let terms = channel.clone();
-        let credit = blocking(move || payments.verify_funding(&terms, peer, &payment)).await?;
         let incoming = Incoming {
             offer,
             downstream,
             channel: channel.clone(),
             contract: contract.clone(),
-            verified_paid_msat: credit.paid_msat,
+            verified_paid_msat: 0,
             phase: Phase::Prepared,
             replacement_retired: false,
             replaces,
         };
-        let saved = incoming.clone();
-        self.change(move |j| {
-            if saved
-                .downstream
-                .as_ref()
-                .is_some_and(|d| Self::provider_reclaiming(j, d.provider))
-            {
-                return Err("onward funding is being reclaimed".into());
-            }
-            if j.selling_stopped || Self::retired_offer(j, &saved.offer) {
-                return Err("controller stopped selling".into());
-            }
-            if j.seller_settlements.contains_key(&saved.channel.id) {
-                return Err("channel already sealed for settlement".into());
-            }
-            if let Some(old) = j.incoming.get(&saved.contract.id) {
-                if old.channel != saved.channel
-                    || old.contract != saved.contract
-                    || old.replaces != saved.replaces
-                    || old.phase == Phase::Stopped
-                {
-                    return Err("upstream binding conflict".into());
-                }
-                return Ok(());
-            }
-            if j.incoming.len() >= MAX_ROUTES
-                || j.incoming.values().any(|i| {
-                    i.phase != Phase::Stopped
-                        && saved.replaces.as_ref() != Some(&i.contract.id)
-                        && i.channel.buyer == saved.channel.buyer
-                        && i.contract.destination == saved.contract.destination
+        self.services.payment_control.prepare_funding().await?;
+        let payments = self.services.payment_control.clone();
+        // Keep the admission owner through receiver persistence and the journal
+        // commit, so another acceptance cannot take the last route slot.
+        let incoming = self
+            .change(move |j| {
+                Self::admit_incoming(j, incoming, |terms| {
+                    payments
+                        .verify_funding(terms, peer, &payment)
+                        .map(|c| c.paid_msat)
                 })
-            {
-                return Err("upstream route capacity or conflict".into());
-            }
-            if let Some(previous) = &saved.replaces {
-                let old = j
-                    .incoming
-                    .get_mut(previous)
-                    .ok_or("replacement route missing")?;
-                if previous == &saved.contract.id
-                    || old.channel.buyer != saved.channel.buyer
-                    || old.contract.destination != saved.contract.destination
-                {
-                    return Err("replacement route ownership conflict".into());
-                }
-                old.phase = Phase::Stopped;
-            }
-            j.incoming.insert(saved.contract.id.clone(), saved);
-            Ok(())
-        })
-        .await?;
+            })
+            .await?;
         self.activate(incoming).await?;
         Ok(ControllerResponse::Accepted {
             purchase: Box::new(Purchase {
@@ -176,6 +133,74 @@ impl Controller {
                 contract,
             }),
         })
+    }
+
+    fn admit_incoming(
+        j: &mut Journal,
+        mut saved: Incoming,
+        verify: impl FnOnce(&ChannelTerms) -> Result<u64, String>,
+    ) -> Result<Incoming, String> {
+        Self::check_incoming(j, &saved)?;
+        saved.verified_paid_msat = verify(&saved.channel)?;
+        if !j.incoming.contains_key(&saved.contract.id) {
+            if let Some(previous) = &saved.replaces {
+                j.incoming
+                    .get_mut(previous)
+                    .ok_or("replacement route missing")?
+                    .phase = Phase::Stopped;
+            }
+            j.incoming.insert(saved.contract.id.clone(), saved.clone());
+        }
+        Ok(saved)
+    }
+
+    fn check_incoming(j: &Journal, saved: &Incoming) -> Result<(), String> {
+        if saved
+            .downstream
+            .as_ref()
+            .is_some_and(|d| Self::provider_reclaiming(j, d.provider))
+        {
+            return Err("onward funding is being reclaimed".into());
+        }
+        if j.selling_stopped || Self::retired_offer(j, &saved.offer) {
+            return Err("controller stopped selling".into());
+        }
+        if j.seller_settlements.contains_key(&saved.channel.id) {
+            return Err("channel already sealed for settlement".into());
+        }
+        if let Some(old) = j.incoming.get(&saved.contract.id) {
+            if old.channel != saved.channel
+                || old.contract != saved.contract
+                || old.replaces != saved.replaces
+                || old.phase == Phase::Stopped
+            {
+                return Err("upstream binding conflict".into());
+            }
+            return Ok(());
+        }
+        if j.incoming.len() >= MAX_ROUTES
+            || j.incoming.values().any(|i| {
+                i.phase != Phase::Stopped
+                    && saved.replaces.as_ref() != Some(&i.contract.id)
+                    && i.channel.buyer == saved.channel.buyer
+                    && i.contract.destination == saved.contract.destination
+            })
+        {
+            return Err("upstream route capacity or conflict".into());
+        }
+        if let Some(previous) = &saved.replaces {
+            let old = j
+                .incoming
+                .get(previous)
+                .ok_or("replacement route missing")?;
+            if previous == &saved.contract.id
+                || old.channel.buyer != saved.channel.buyer
+                || old.contract.destination != saved.contract.destination
+            {
+                return Err("replacement route ownership conflict".into());
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn activate(&self, incoming: Incoming) -> Result<(), String> {
@@ -256,3 +281,6 @@ impl Controller {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

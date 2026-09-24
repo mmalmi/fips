@@ -78,12 +78,35 @@ pub(super) async fn exercise(
             let controller =
                 Controller::load(&directory, policy.clone(), services.clone()).unwrap();
             let result = controller.resume_pending().await;
-            if matches!(mode, "paused" | "orphaned") {
-                result.unwrap();
+            // Expired requests now withdraw into recovery-only state. Missing
+            // wallet evidence keeps its capital reserved and reclaim pending;
+            // only conflicting evidence must fail this recovery pass.
+            if mode == "changed-terms" {
+                assert!(result.is_err(), "{mode}, attempt {attempt}: {result:?}");
             } else {
-                assert!(result.is_err());
+                result.unwrap_or_else(|error| panic!("{mode}, attempt {attempt}: {error}"));
             }
             let after = read();
+            let expected_reclaim = if mode == "missing-wallet-record" {
+                serde_json::json!({"state": "pending"})
+            } else {
+                serde_json::Value::Null
+            };
+            assert_eq!(after["funding"][&id]["reclaim"], expected_reclaim);
+            if !matches!(mode, "paused" | "orphaned") {
+                let offer_id = journal["requested"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .next()
+                    .unwrap();
+                assert!(
+                    after["recovery_only"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&offer_id.clone().into())
+                );
+            }
             let funded = &after["funding"][&id]["funded"];
             if attempt == 0 && !expected_funded.is_null() {
                 // The wallet can retain a later signature at the same zero
