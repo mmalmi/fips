@@ -46,9 +46,10 @@ space for each complete capture. Capacity exhaustion keeps the original plan and
 financial owners. Existing captures resume within their reservation; collection
 releases space only for eligible spent evidence. Retirement attempts one bounded
 collection pass under pressure so it cannot prevent the cleanup needed to make
-progress. Metadata, the recovery log and one temporary rotation page have separate
-limits. This does not bound the native wallet database or reserve physical disk;
-see [custody storage](HISTORY.md#proof-custody-storage) for the contract.
+progress. Registry metadata and individual pages have separate limits. Related
+custody changes commit together in SQLite. This does not bound the native wallet
+database or reserve physical disk; see [custody storage](HISTORY.md#proof-custody-storage)
+for the contract.
 SDK `6578b4d` passes its full 373-test workspace suite, all 18 feature profiles,
 strict lint and formatting. The matching FIPS graph passes 295 relay tests, five
 opening-recovery process cases, the payout/refund crash case and sender retirement,
@@ -241,6 +242,26 @@ All 2,727 recorded source/dependency inputs and both process executable hashes
 match the accepted graph. One opt-in SDK storage soak is excluded. These checks
 do not establish sustained token-funded capacity, token-specific fee/power-loss
 coverage or current hardware acceptance; service capacity accounting stays disabled.
+
+Fresh custody archive format 3 commits its page, queue and cursor changes in one
+conditional SQLite transaction. This removes the SDK's separate archive redo log.
+A failed write, capacity check or conflicting original rolls back every record
+and its storage charges. Ordinary wallet reads therefore remain usable at full
+native capacity after a rejected archive update. Each update has at most four
+record changes, with deletions first to release space inside the transaction.
+New captures or acknowledgments may still need space; refusal retains the original
+financial owners or client retry intent. Older archive formats are not adopted.
+
+CDK `bd7d4667` and SDK `7f34bad` pass 246 affected database tests, 29 proof-history
+checks, the real-mint interrupted-capture/acknowledgment case, the full 414-test SDK
+suite, all 18 feature profiles and strict lint. Atomic write tests replace the
+obsolete redo-specific cases. The matching FIPS graph passes 296 relay tests,
+strict lint and the sender-retirement process case: restart and actual expiry
+preserve original refund proofs and lifetime spending limits. All 2,729 recorded
+source/dependency inputs and both process executable hashes match. These are local
+test-money and SQLite results; one opt-in SDK storage soak is excluded. Remaining
+wallet stores, sustained full-capacity collection, physical disk/power-loss and
+current hardware acceptance remain open. Service capacity accounting stays disabled.
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks

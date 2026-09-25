@@ -312,15 +312,16 @@ the same 32-scope lifetime bound. It reuses the descriptor across retirements.
 FIPS upkeep visits one acknowledged page even when no new channel retires, after
 releasing the controller journal lock. Eligible spent coins enter the exact
 deletion queue; residual coins rotate to the tail so an unspent head cannot starve
-later pages. An authenticated bounded redo log covers the custody transfer and
-page removal. A pending capture pauses only its own scope's collection.
+later pages. One conditional SQLite transaction commits queue admission, custody
+pages and their cursor together. A pending capture pauses only its own scope's
+collection.
 
-The version-2 custody registry caps retained pages plus unfinished capture
+The version-3 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
 original owners to reserve its full serialized proof size plus 16 KiB per nonempty
 page. Appending transfers that allowance to retained pages; retries use the same
 reservation, and acknowledgment releases unused allowance only after the client
-financial commit. Old archives without these counters require a fresh profile.
+financial commit. Older archives and unfinished redo logs require a fresh profile.
 `CashuWalletService::configure_proof_archive_capacity` persists a different limit
 but rejects shrinking below retained and reserved usage. It never evicts evidence.
 
@@ -328,13 +329,16 @@ On pressure, retirement visits at most one previously acknowledged page before
 rejecting a new capture. Repeated retries can therefore free eligible spent
 history even when retirement precedes ordinary upkeep collection. Unspent or
 otherwise owned coins remain charged. The original plan and native owners remain
-until the complete capture fits and is sealed. The existing authenticated redo
-log commits page changes and byte counters together.
+until the complete capture fits and is sealed. The same transaction commits page
+changes and byte counters, checking every original record before replacement.
 
-This is a logical page limit. Registry metadata has its separate 1 MiB bound, the
-redo log 24 MiB, and rotation may temporarily retain one extra page of at most
-4 MiB plus 16 KiB. The receiver release queue retains its existing limit, and
-capture still runs to exhaustion within one retirement call. These mechanisms do
+This is a logical page limit. Registry metadata has its separate 1 MiB bound and
+each page is limited to 4 MiB plus 16 KiB. An update has at most four record changes;
+deletions run first inside the transaction to release space. Failed writes, capacity
+checks and changed originals roll back the whole update and its native storage
+charges. No SDK archive redo log remains; SQLite keeps its own journal. The receiver
+release queue retains its existing limit, and capture still runs to exhaustion
+within one retirement call. These mechanisms do
 not bound unrelated wallet history, total database size or physical disk use.
 The SDK client file separately reserves completion space within its 32 MiB limit
 before funding. Outgoing receipt recovery and retirement use indexed pages scoped
@@ -375,9 +379,9 @@ SDK journal and archive reads enforce their existing byte limits before payloads
 cross the SQL driver boundary. One statement checks size and conditionally selects
 the value; malformed records cannot look absent. Redb checks the borrowed value
 before copying it, and unsupported backends fail without an unbounded fallback.
-Oversized records remain intact, including an interrupted custody redo log and its
-targets. Restoring original evidence permits recovery. These individual read
-limits do not reserve total storage or bound other wallet queries; see the
+Oversized records remain intact. Restoring current-format evidence permits retry;
+older custody redo logs are rejected without decoding their payload. These
+individual read limits do not reserve total storage or bound other wallet queries; see the
 [accepted scope and checks](READINESS.md#recovery-record-read-bounds).
 
 Before submitting new swap, mint or melt-change outputs, the native wallet requires
