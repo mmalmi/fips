@@ -118,25 +118,32 @@ reclaim regressions also remain in the accepted suites. The single/batch issuanc
 regressions interrupt initial journal and receipt writes with reopens, retain the
 original paid quotes and counters, then retry successfully for 8/16 test sats.
 All swaps now construct private proposals; the obsolete eager-allocation and
-nested standalone reservation paths were removed. Service capacity accounting
-stays disabled pending whole-operation completion/cancellation admission, other
-wallet paths/stores and physical recovery acceptance.
+nested standalone reservation paths were removed.
 
-The current wallet graph uses CDK `652e58a0` and SDK `1e4740a`. It passes 818 native
-tests, 483 shared-library/storage tests, 29 database-binding checks, the full
-395-test SDK suite, strict affected-crate/SDK lint and formatting checks. One
-opt-in SDK soak is excluded. All 1,684 recorded source/dependency inputs match the
-integrated files. The database APIs accept an optional preparation parent and the
-issuance counter range; both storage implementations and the foreign database
-bridge are updated. PostgreSQL has all-target compile/lint acceptance only.
-Schemas and feature settings are unchanged.
+With SQLite capacity accounting enabled, standalone swaps now reserve their exact
+input claims and peak output/checkpoint space inside that initial preparation
+transaction. Rejection leaves the original coins, counters and storage claims
+unchanged. Completion or cancellation releases unused allowance while retained
+coins remain charged. The real-mint regressions recover at full capacity after a
+lost reply and restart, including rotated keys and blinded recipient conditions;
+all 32 test sats remain usable as 13 recipient sats and 19 change sats. Local
+cancellation also preserves the exact originals at capacity without a mint swap.
+Service capacity accounting stays disabled pending issuance/withdrawal admission,
+other wallet paths/stores and physical recovery acceptance.
+
+The current wallet graph uses CDK `db1eb793` and SDK `10c4456`. It passes 483
+shared-library/storage tests, the full 397-test SDK suite, strict affected-crate/SDK
+lint and formatting checks. One opt-in SDK soak is excluded. All 1,686 recorded
+source/dependency inputs match the integrated files. PostgreSQL has all-target
+compile/lint acceptance only. This update changes SQLite capacity admission;
+schemas, APIs, dependencies and feature settings are unchanged.
 
 Two three-relay process regressions pass on this wallet graph. A kill after funding
 commits, followed by offer expiry and ordinary restart, recovers the original funds
 without replacement funding: 378 test sats remain spendable and 6 cover mint fees.
 An unsubmitted plan survives a keyset change and a second kill after wallet
 cancellation, then automatically retires the original funding intent without a
-mint swap or fee; all 384 test sats remain spendable. All 2,711 recorded
+mint swap or fee; all 384 test sats remain spendable. All 2,713 recorded
 source/dependency inputs and both executable hashes stay unchanged through these
 runs. These local checks do not validate current routers, physical power loss or
 complete wallet-capacity operation; see [history](HISTORY.md).
