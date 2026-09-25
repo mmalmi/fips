@@ -372,6 +372,7 @@ async fn three_native_transit_routers_redeem_both_directions_through_neighbor_co
             servers.push(PaymentServer::start(
                 PaymentControl::new(
                     receiver,
+                    wallets[i].clone(),
                     ledgers[i].clone(),
                     std::mem::take(&mut approvals[i]),
                 )

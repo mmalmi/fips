@@ -114,17 +114,20 @@ impl Controller {
         };
         self.services.payment_control.prepare_funding().await?;
         let payments = self.services.payment_control.clone();
+        let wallet_guard = self.wallet.clone().lock_owned().await;
         // Keep the admission owner through receiver persistence and the journal
         // commit, so another acceptance cannot take the last route slot.
-        let incoming = self
+        let (incoming, wallet_guard) = self
             .change(move |j| {
-                Self::admit_incoming(j, incoming, |terms| {
+                let incoming = Self::admit_incoming(j, incoming, |terms| {
                     payments
                         .verify_funding(terms, peer, &payment)
                         .map(|c| c.paid_msat)
-                })
+                })?;
+                Ok((incoming, wallet_guard))
             })
             .await?;
+        drop(wallet_guard);
         self.activate(incoming).await?;
         Ok(ControllerResponse::Accepted {
             purchase: Box::new(Purchase {

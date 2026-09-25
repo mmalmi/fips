@@ -159,6 +159,23 @@ completed handoffs write neither buyer nor controller journals.
 
 ## Completed seller channels and report release
 
+The payment controller pairs its receiver with the original wallet directory.
+Automatic acceptance and preapproved `Open` requests reuse the same agreement
+checks and SDK wallet admission. When native capacity accounting is enabled, the
+SDK reserves the complete payout and shared bookkeeping before retaining funding.
+Updates and final settlement require the original complete funding record; they
+cannot reconstruct it from a later signed payment. Ordinary updates do not open
+the wallet. Admission, payout import and retirement share the controller's wallet
+owner; automatic acceptance acquires it before the journal lock and releases it
+before onward purchase or peer-control waits.
+
+Settlement imports the SDK's original closed payout through its original wallet
+allowance, including a zero payout, before saving the controller report. Retrying
+an interrupted import does not credit coins twice. Authenticated receiver retirement
+removes the corresponding wallet admission only after the original payout handoff.
+These are logical storage reservations; service capacity accounting remains
+disabled pending the other wallet paths/stores and physical recovery acceptance.
+
 After the buyer has durably recovered its refund, it sends one
 `ReleaseSettlement { channel_id }` request over the existing authenticated
 neighbor control connection. `SettlementReleased { channel_id }` acknowledges

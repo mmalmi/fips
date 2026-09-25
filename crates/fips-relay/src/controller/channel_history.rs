@@ -249,11 +249,10 @@ impl Controller {
             let _guard = guard;
             let mut store = store.lock().map_err(|_| "controller state poisoned")?;
             let timestamp = now()?;
-            let mut prepare = |ids: &[String]| {
-                runtime.block_on(control.receiver_retirement_plan(&directory, ids, timestamp))
-            };
+            let mut prepare =
+                |ids: &[String]| runtime.block_on(control.receiver_retirement_plan(ids, timestamp));
             let mut retire = |plan: &cashu_service::CashuSpilmanReceiverRetirement| {
-                runtime.block_on(control.retire_receiver(&directory, plan))
+                runtime.block_on(control.retire_receiver(plan))
             };
             let mut count = store.resume_sales(&seller, &mut prepare, &mut retire)?;
             if select {

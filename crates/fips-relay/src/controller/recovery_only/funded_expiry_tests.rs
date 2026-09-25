@@ -1,7 +1,8 @@
 //! Real mint regression for a wallet-committed channel with no Outgoing record.
 use super::*;
 use cashu_service::{
-    FileSpilmanPaymentReceiverConfig, create_topup_quote, load_mint_balance, load_wallet_overview,
+    FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, create_topup_quote,
+    load_mint_balance, load_wallet_overview,
     open_streaming_route_cashu_spilman_channel_from_wallet, receive_payment_token,
     refund_expired_cashu_spilman_channel, send_payment_token,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},

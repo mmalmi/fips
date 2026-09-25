@@ -244,7 +244,7 @@ async fn controller_scenario(
             let (payment_incoming, gate) = payment_mobility::gate(payment_incoming, peers[2], slow_neighbor);
             payment_gates.push(gate);
             let payment_control =
-                Arc::new(PaymentControl::new(receiver, ledgers[i].clone(), vec![]).unwrap());
+                Arc::new(PaymentControl::new(receiver, wallets[i].clone(), ledgers[i].clone(), vec![]).unwrap());
             payment_servers.push(PaymentServer::start_shared(
                 payment_control.clone(),
                 payment_incoming,

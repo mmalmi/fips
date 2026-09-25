@@ -13,6 +13,15 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             npubs,
             mut children,
         } = setup::start_bench(root.path(), 9618, 60).await;
+        let seller_db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+            &configs[1].state_directory.join("wallet"),
+        ))
+        .await
+        .unwrap();
+        seller_db
+            .configure_storage_capacity(16 * 1024 * 1024)
+            .await
+            .unwrap();
         for (source, destination) in [(0, 2), (2, 0)] {
             request(
                 &configs[source],
@@ -23,6 +32,18 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             .await
             .unwrap();
         }
+        // Both original channel admissions must already own their payout space.
+        // Normal payment updates, process recovery and retirement cannot grow it.
+        let payout_capacity = seller_db
+            .storage_capacity()
+            .await
+            .unwrap()
+            .unwrap()
+            .charged_bytes;
+        seller_db
+            .configure_storage_capacity(payout_capacity)
+            .await
+            .unwrap();
         for round in 0..3 {
             let payload = format!("fee-{round}:{}", "x".repeat(700));
             let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
@@ -263,6 +284,15 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         }
         assert!(queue["pending"].is_null());
         assert_ne!(read(1)["version"].as_u64().unwrap() & 0x4000, 0);
+        assert_eq!(
+            seller_db
+                .storage_capacity()
+                .await
+                .unwrap()
+                .unwrap()
+                .maximum_bytes,
+            payout_capacity
+        );
     })
     .await
     .expect("bounded paid settlement fee scenario");

@@ -13,7 +13,7 @@ use crate::{
     payment_control::{PaymentControl, PaymentRequest, PaymentResponse},
     route_quotes::{RouteOffer, RouteQuotes, contract_from_offer},
 };
-use cashu_service::{CashuSpilmanPayment, FileSpilmanPaymentReceiver, FileSpilmanPaymentSigner};
+use cashu_service::{CashuSpilmanPayment, FileSpilmanPaymentSigner};
 use fips_core::{FipsEndpoint, Identity, NodeAddr, PeerIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -101,7 +101,7 @@ pub struct ControllerServices {
     pub quotes: Arc<RouteQuotes>,
     pub acceptance: Arc<ControlTransport>,
     pub payments: Arc<ControlTransport>,
-    pub payment_control: Arc<PaymentControl<FileSpilmanPaymentReceiver>>,
+    pub payment_control: Arc<PaymentControl>,
     pub seller: Arc<DurableRelay>,
     pub buyer: Arc<BuyerAuthorizer>,
     pub wallet_directory: PathBuf,
@@ -422,12 +422,16 @@ impl Controller {
         services: ControllerServices,
         store: Store,
     ) -> Result<Self, String> {
+        if services.wallet_directory != services.payment_control.wallet_directory() {
+            return Err("controller and receiver wallets differ".into());
+        }
+        let wallet = services.payment_control.wallet_owner();
         let controller = Self {
             services,
             policy,
             control_obligations: store.control_obligations.clone(),
             store: Arc::new(Mutex::new(store)),
-            wallet: Arc::new(AsyncMutex::new(())),
+            wallet,
             channel_work: Mutex::new(BTreeMap::new()),
             #[cfg(feature = "measurements")]
             payment_progress: Default::default(),

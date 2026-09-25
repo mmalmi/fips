@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{buyer::BuyerError, ledger::ChannelUsage};
-use cashu_service::{import_payment_proofs, restore_streaming_route_cashu_spilman_refund};
+use cashu_service::restore_streaming_route_cashu_spilman_refund;
 
 mod state;
 pub use state::SettlementReport;
@@ -128,7 +128,7 @@ impl Controller {
             let terms = sale.channel.clone();
             let signed = payment.clone();
             blocking(move || {
-                let credit = control.verify_funding(&terms, peer, &signed)?;
+                let credit = control.verify_existing(&terms, peer, &signed)?;
                 seller
                     .apply_verified_balance(&terms.id, credit.paid_msat)
                     .map_err(|e| e.to_string())
@@ -164,7 +164,6 @@ impl Controller {
         }
         let payment = sale.payment.ok_or("final signed payment missing")?;
         let control = self.services.payment_control.clone();
-        let directory = self.services.wallet_directory.clone();
         let wallet_guard = self.wallet.clone().lock_owned().await;
         let runtime = tokio::runtime::Handle::current();
         let report = blocking(move || {
@@ -179,16 +178,7 @@ impl Controller {
                 {
                     return Err("mint close does not match final agreement".into());
                 }
-                if closed.receiver_sum != 0 {
-                    import_payment_proofs(
-                        &directory,
-                        &sale.channel.mint_url,
-                        "sat",
-                        &closed.receiver_proofs_json,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                }
+                control.import_wallet_payout(&sale.channel.id).await?;
                 Ok(report)
             })
         })

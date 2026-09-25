@@ -5,7 +5,7 @@ mod scheduling;
 use super::*;
 use crate::ledger::{BillingBasis, Limits};
 use crate::route_quotes::QuotePolicy;
-use cashu_service::FileSpilmanPaymentReceiverConfig;
+use cashu_service::{FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig};
 use fips_core::Config;
 use fips_core::config::{TransportInstances, UdpConfig};
 
@@ -97,7 +97,7 @@ async fn controller_with_neighbors(
             acceptance: Arc::new(acceptance),
             payments: Arc::new(payments),
             payment_control: Arc::new(
-                PaymentControl::new(receiver, seller.clone(), vec![]).unwrap(),
+                PaymentControl::new(receiver, root.join("wallet"), seller.clone(), vec![]).unwrap(),
             ),
             seller,
             buyer,

@@ -151,11 +151,11 @@ and release writes, and capacity exhausted after the preparatory swap commits.
 All 32 test sats remain accounted for as payment plus usable coins. Settlement
 proof strings have a method-neutral 64 KiB UTF-8 limit; sizing includes worst-case
 JSON escaping, and oversized results retain pending custody without truncation.
-Service capacity accounting stays disabled pending receiver payout admission,
-token-funded refunds, remaining wallet paths/stores and physical recovery
+Service capacity accounting stays disabled pending token-funded refunds,
+remaining wallet paths/stores and physical recovery
 acceptance.
 
-The current wallet graph uses CDK `63655bfc` and SDK `7896de5`. It passes 819
+The withdrawal acceptance used CDK `63655bfc` and SDK `7896de5`. It passed 819
 native-library tests, 483 shared-library/storage tests, the full 404-test SDK suite,
 strict affected-crate/SDK lint and formatting checks. The SDK run uses one worker;
 one opt-in storage soak is excluded. All 1,691 recorded source/dependency inputs
@@ -173,6 +173,25 @@ mint swap or fee; all 384 test sats remain spendable. All 2,718 recorded
 source/dependency inputs and both executable hashes stay unchanged through these
 runs. These local checks do not validate current routers, physical power loss or
 complete wallet-capacity operation; see [history](HISTORY.md).
+
+Receiver wallet admission now reserves payout proofs and shared bookkeeping
+before retaining funding, including the original mint metadata for a cold wallet.
+The bounded admission journal preserves the original allowance through partial
+writes and rejects lost accepted funding instead of recreating it. FIPS automatic
+acceptance and preapproved opening use this admission with their existing agreement
+checks; recurring payments require original funding without reopening the wallet.
+Settlement imports the original payout, including zero payouts, through its paired
+wallet. No protocol message or payment cadence changes are introduced.
+
+The receiver-admission graph passes all 408 SDK tests, all 18 feature profiles,
+296 relay unit tests, strict SDK/relay lint and source formatting/length checks.
+Preapproved native channels and automatic multi-hop purchases pass their live
+scenarios. The three-relay settlement regression fills the seller wallet after
+admission, then preserves paid and zero-payout handoffs through process kills,
+ordinary restart, duplicate settlement and actual expiry/retirement. All 2,722
+source/dependency inputs match; relay and test executable hashes stay unchanged
+through the crash scenario. This accepts logical SQLite capacity with local test
+money, not physical disk exhaustion, power loss or current-router operation.
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks

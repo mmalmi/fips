@@ -413,8 +413,9 @@ async fn start_inner(
         )
         .await
         .unwrap();
-        let payment_control =
-            Arc::new(PaymentControl::new(receiver, sellers[i].clone(), vec![]).unwrap());
+        let payment_control = Arc::new(
+            PaymentControl::new(receiver, wallets[i].clone(), sellers[i].clone(), vec![]).unwrap(),
+        );
         payment_servers.push(PaymentServer::start_shared(
             payment_control.clone(),
             requests,

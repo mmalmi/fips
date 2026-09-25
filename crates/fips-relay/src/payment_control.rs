@@ -10,13 +10,14 @@ use crate::{
     measurements::{Operation, measure},
     payment::process_payment,
 };
-use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentReceiver};
+use cashu_service::{CashuSpilmanPayment, FileSpilmanPaymentReceiver};
 use fips_core::PeerIdentity;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
 mod keysets;
 mod retirement;
+mod wallet;
 
 #[derive(Debug, Clone)]
 pub struct ApprovedAgreement {
@@ -53,14 +54,16 @@ pub enum PaymentResponse {
     Rejected,
 }
 
-pub struct PaymentControl<R> {
-    receiver: R,
+pub struct PaymentControl {
+    receiver: FileSpilmanPaymentReceiver,
+    wallet_directory: PathBuf,
+    wallet: Arc<tokio::sync::Mutex<()>>,
     ledger: Arc<DurableRelay>,
     approved: BTreeMap<String, ApprovedAgreement>,
     keysets: Option<keysets::KeysetRefresh>,
 }
 
-impl PaymentControl<cashu_service::FileSpilmanPaymentReceiver> {
+impl PaymentControl {
     pub fn with_keyset_refresh(
         mut self,
         directory: std::path::PathBuf,
@@ -82,24 +85,14 @@ impl PaymentControl<cashu_service::FileSpilmanPaymentReceiver> {
     ) -> Result<cashu_service::CashuSpilmanReceiverCloseResult, String> {
         self.receiver.close_cashu_spilman_channel(channel_id).await
     }
-}
 
-impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
-    /// Verify and durably retain authenticated funding before a trusted runtime
-    /// commits its own working capital. This alone does not activate forwarding.
-    pub(crate) fn verify_funding(
-        &self,
-        channel: &ChannelTerms,
-        peer: PeerIdentity,
-        payment: &CashuSpilmanPayment,
-    ) -> Result<crate::payment::VerifiedCredit, String> {
-        process_payment(&self.receiver, channel, peer, payment, true)
-    }
     /// Static approvals support the Open request. The automatic controller can
     /// instead install verified bindings in the durable ledger; subsequent
     /// usage, payment and stop requests use those same immutable terms.
+    /// Keep the paired wallet directory for the receiver's complete lifetime.
     pub fn new(
-        receiver: R,
+        receiver: FileSpilmanPaymentReceiver,
+        wallet_directory: PathBuf,
         ledger: Arc<DurableRelay>,
         agreements: Vec<ApprovedAgreement>,
     ) -> Result<Self, String> {
@@ -148,13 +141,15 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
         }
         Ok(Self {
             receiver,
+            wallet_directory,
+            wallet: Arc::new(tokio::sync::Mutex::new(())),
             ledger,
             approved,
             keysets: None,
         })
     }
 
-    /// Performs validation and durable I/O; never call on the native node loop.
+    /// Performs validation and durable I/O; call from a Tokio blocking worker.
     pub fn handle(&self, peer: PeerIdentity, body: &[u8]) -> PaymentResponse {
         if body.len() > crate::control_transport::MAX_RECORD_BYTES {
             return PaymentResponse::Rejected;
@@ -199,8 +194,8 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
                     .approved
                     .get(id)
                     .ok_or("opening requires a preapproved agreement")?;
-                let credit =
-                    process_payment(&self.receiver, &approved.channel, peer, payment, true)?;
+                let _wallet = self.wallet.blocking_lock();
+                let credit = self.verify_funding(&approved.channel, peer, payment)?;
                 if self.ledger.channel_usage(id).is_none() {
                     self.ledger
                         .open_channel_verified(approved.channel.clone(), credit.paid_msat)
@@ -220,7 +215,7 @@ impl<R: CashuSpilmanPaymentReceiver<String>> PaymentControl<R> {
                 if self.ledger.channel_usage(id).is_none() {
                     return Err("channel not opened".into());
                 }
-                let credit = process_payment(&self.receiver, &terms, peer, payment, false)?;
+                let credit = self.verify_existing(&terms, peer, payment)?;
                 self.ledger
                     .apply_verified_balance(id, credit.paid_msat)
                     .map_err(|e| e.to_string())?;
@@ -257,15 +252,12 @@ impl PaymentServer {
         let _ = (&mut self.task).await;
     }
 
-    pub fn start<R: CashuSpilmanPaymentReceiver<String> + Send + Sync + 'static>(
-        control: PaymentControl<R>,
-        incoming: mpsc::Receiver<IncomingRequest>,
-    ) -> Self {
+    pub fn start(control: PaymentControl, incoming: mpsc::Receiver<IncomingRequest>) -> Self {
         Self::start_shared(Arc::new(control), incoming)
     }
 
-    pub fn start_shared<R: CashuSpilmanPaymentReceiver<String> + Send + Sync + 'static>(
-        control: Arc<PaymentControl<R>>,
+    pub fn start_shared(
+        control: Arc<PaymentControl>,
         mut incoming: mpsc::Receiver<IncomingRequest>,
     ) -> Self {
         let (stopping, mut stop) = tokio::sync::watch::channel(false);
