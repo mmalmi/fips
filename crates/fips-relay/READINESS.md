@@ -128,22 +128,36 @@ coins remain charged. The real-mint regressions recover at full capacity after a
 lost reply and restart, including rotated keys and blinded recipient conditions;
 all 32 test sats remain usable as 13 recipient sats and 19 change sats. Local
 cancellation also preserves the exact originals at capacity without a mint swap.
-Service capacity accounting stays disabled pending issuance/withdrawal admission,
-other wallet paths/stores and physical recovery acceptance.
+Single and batch issuance now claim their original quotes and reserve their peak
+ownership/state growth, exact output keys/counters, all output proofs and terminal
+receipts in the initial transaction. Sizing shares the production record encoders.
+Exact completion or cancellation releases unused allowance with proof publication,
+receipt/quote updates and journal removal. The local-mint cases recover at full
+capacity after a lost committed reply and reopen; another wallet redeems all 8 or
+16 original test sats, including conditioned batch outputs. Injected terminal
+release failure rolls back proofs, receipts and quote release together. Rejected
+admission preserves original quotes/counters, and unsubmitted cancellation leaves
+the paid quotes reusable. Service capacity accounting stays disabled pending
+withdrawal admission, other wallet paths/stores and physical recovery acceptance.
 
-The current wallet graph uses CDK `db1eb793` and SDK `10c4456`. It passes 483
-shared-library/storage tests, the full 397-test SDK suite, strict affected-crate/SDK
-lint and formatting checks. One opt-in SDK soak is excluded. All 1,686 recorded
+The current wallet graph uses CDK `11ad137f` and SDK `454172b`. It passes 483
+shared-library/storage tests, the full 399-test SDK suite, strict affected-crate/SDK
+lint and formatting checks. One opt-in SDK soak is excluded. All 1,689 recorded
 source/dependency inputs match the integrated files. PostgreSQL has all-target
-compile/lint acceptance only. This update changes SQLite capacity admission;
+compile/lint acceptance only. This update adds SQLite issuance capacity admission
+and shares the initial reservation helper with standalone swaps;
 schemas, APIs, dependencies and feature settings are unchanged.
+
+A two-worker workspace attempt hit two five-second funding-fixture expiry failures
+under concurrent load. All three affected receiver tests then passed in isolation,
+and the complete SDK suite passed with one worker on unchanged sources.
 
 Two three-relay process regressions pass on this wallet graph. A kill after funding
 commits, followed by offer expiry and ordinary restart, recovers the original funds
 without replacement funding: 378 test sats remain spendable and 6 cover mint fees.
 An unsubmitted plan survives a keyset change and a second kill after wallet
 cancellation, then automatically retires the original funding intent without a
-mint swap or fee; all 384 test sats remain spendable. All 2,713 recorded
+mint swap or fee; all 384 test sats remain spendable. All 2,716 recorded
 source/dependency inputs and both executable hashes stay unchanged through these
 runs. These local checks do not validate current routers, physical power loss or
 complete wallet-capacity operation; see [history](HISTORY.md).
