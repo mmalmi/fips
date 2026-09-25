@@ -363,14 +363,18 @@ targets. Restoring original evidence permits recovery. These individual read
 limits do not reserve total storage or bound other wallet queries; see the
 [accepted scope and checks](READINESS.md#recovery-record-read-bounds).
 
-Before deriving new swap, mint or melt-change outputs, the native wallet requires
-its issuing keys and keyset metadata to be stored successfully. A failed optional
-cache write cannot substitute for that requirement. Reclaim stops before spending
-original coins when those records cannot be saved, and can retry after storage is
-available. SQLite single-value writes finish their statement before returning;
-a `RETURNING` value cannot hide a late commit failure or supply an uncommitted
-secret counter. These checks preserve errors and recovery evidence. Whole-wallet
-admission and completion-space reservations remain outstanding.
+Before submitting new swap, mint or melt-change outputs, the native wallet requires
+durable issuing keys and keyset metadata. A failed optional cache write cannot
+substitute for that requirement. Reclaim derives a private proposal from a read-only
+counter snapshot, then atomically compares the exact parent and counter and saves
+the keys, counter allocation and recovery plan. A failed or conflicting commit
+leaves no proposal-owned records or counter increment; the proposal must never be
+submitted. Other output paths still store keys before derivation and need separate
+atomic-preparation acceptance. SQLite single-value writes finish their statement
+before returning, so a `RETURNING` value cannot hide a late commit failure.
+The SDK reserves logical completion space for channel refunds and abandoned
+funding, but service capacity accounting remains disabled until the other wallet
+paths and stores are covered. Logical allowances do not reserve physical disk.
 
 For incoming tokens, locally unfamiliar coins require one NUT-07 state query
 before native acquisition. Spent, pending, malformed or unavailable results leave
