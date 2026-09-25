@@ -103,33 +103,38 @@ source/dependency inputs and both runtime executable hashes remain unchanged
 through that check. These are local test-money results; current-router, physical
 power-loss and total-storage acceptance remain open.
 
-Send confirmation, receive and reclaim now share atomic output preparation.
-A private proposal's issuing keys, exact derivation range and recovery plan commit
-in one transaction. Rollback leaves no proposal-owned keys or consumed counters;
-conflicting or uncertain writes prevent mint submission and retain any committed
-plan for recovery. The send/receive regressions interrupt three plan writes with
-reopens, then complete the original operation or token with the balance intact.
-The separate full-capacity reclaim regression also rotates keys and recovers the
-original 16-sat refund. Channel funding reserves logical completion space for
-refunds and abandoned funding recovery. Service capacity accounting remains
-disabled pending acceptance of the other wallet paths, stores and physical recovery
-requirements.
+Send confirmation, receive, reclaim and preparatory withdrawal swaps share atomic
+output preparation. A private proposal's issuing keys, exact derivation range and
+recovery plan commit together. Withdrawal change saves its pending wallet receipt
+in the same transaction, using the existing receipt identity and status rules.
+Rollback leaves no proposal-owned keys or consumed counters; conflicting or
+uncertain writes prevent mint submission and retain any committed recovery plan.
+The withdrawal regressions interrupt both preparation boundaries twice with wallet
+reopens, preserve the original 32 sats without submitting a swap or payment, then
+complete the same 8-sat withdrawal with 24 sats remaining. Earlier send/receive and rotating-key
+reclaim regressions also remain in the accepted suites. Service capacity accounting
+stays disabled pending standalone swap and issuance preparation, other wallet
+paths/stores and physical recovery acceptance.
 
-The 25 September graph uses CDK `bbcc2f39` and SDK `ddf6a1e`. It passes 817 native
-tests, the full 391-test SDK suite, strict native/SDK lint and formatting. The SDK
-suite excludes one opt-in soak. Database APIs, schemas and features are unchanged;
-their earlier acceptance matrices were not repeated for this wallet-only change.
-The existing three-relay process regression also passes on this graph: a kill
-after funding commits, followed by offer expiry and ordinary restart, recovers
-the original funds without replacement funding. All 384 test sats are conserved:
-378 spendable and 6 in mint fees. All 2,710 recorded source/dependency inputs and
-both executable hashes remain unchanged. This accepts local interrupted-funding
-recovery, not current-router, physical power-loss or complete wallet-capacity
-operation; see [history](HISTORY.md).
+The current wallet graph uses CDK `17e0ab00` and SDK `b440e63`. It passes 817 native
+tests, 483 shared-library/storage tests, 11 database-binding checks, the full
+393-test SDK suite, strict affected-crate/SDK lint and formatting checks. One
+opt-in SDK soak is excluded. All 1,683 recorded source/dependency inputs match the
+integrated files. The preparation API adds an optional wallet receipt; both storage
+implementations and the foreign database bridge are updated. PostgreSQL has
+all-target compile/lint acceptance only. Schemas and feature settings are unchanged.
 
-That test first reproduced a collected spent token creating another pending
-receive after its swap was rejected. Native admission now checks unfamiliar coins
-through NUT-07 before acquisition. The replay adds no coin or recovery operation,
+The most recent three-relay process regression used the earlier CDK `bbcc2f39` /
+SDK `ddf6a1e` graph. A kill after funding commits, followed by offer expiry and
+ordinary restart, recovered the original funds without replacement funding. All
+384 test sats were conserved: 378 spendable and 6 in mint fees. Its 2,710 recorded
+source/dependency inputs and both executable hashes stayed unchanged. That result
+does not revalidate the newer wallet graph, current routers, physical power loss
+or complete wallet-capacity operation; see [history](HISTORY.md).
+
+The receive-replay regression first reproduced a collected spent token creating
+another pending receive after its swap was rejected. Native admission now checks
+unfamiliar coins through NUT-07 before acquisition. The replay adds no coin or recovery operation,
 submits no swap and preserves the original wallet and lifetime costs. Malformed,
 pending and unavailable state replies also stop acquisition. Submitted receives
 keep their original ambiguous-error recovery; there is no new FIPS message or

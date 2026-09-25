@@ -365,15 +365,17 @@ limits do not reserve total storage or bound other wallet queries; see the
 
 Before submitting new swap, mint or melt-change outputs, the native wallet requires
 durable issuing keys and keyset metadata. A failed optional cache write cannot
-substitute for that requirement. Send confirmation, receive and reclaim derive
-private proposals from read-only counter snapshots. A shared helper validates the
-exact derived range and issuing keyset; one transaction compares the exact parent
+substitute for that requirement. Send confirmation, receive, reclaim and preparatory
+withdrawal swaps derive private proposals from read-only counter snapshots. A
+shared helper validates the exact derived range and issuing keyset; one transaction compares the exact parent
 and counter and saves the keys, counter allocation and recovery plan. Rollback
 leaves no proposal-owned records or counter increments. Conflicting or uncertain
 writes prevent submission, and any committed plan remains available for recovery.
-Standalone swaps, mint issuance and melt-change output preparation still need
-separate atomic-preparation acceptance. SQLite single-value writes finish their
-statement before returning, so a `RETURNING` value cannot hide a late commit failure.
+Withdrawal change uses the same transaction to commit its issuing keys, range,
+exact request and pending wallet receipt. Receipt conflicts roll back the complete
+proposal, and matching terminal receipts keep their status. Standalone swaps and
+mint issuance still need separate atomic-preparation acceptance. SQLite single-value
+writes finish their statement before returning, so a `RETURNING` value cannot hide a late commit failure.
 The SDK reserves logical completion space for channel refunds and abandoned
 funding, but service capacity accounting remains disabled until the other wallet
 paths and stores are covered. Logical allowances do not reserve physical disk.
