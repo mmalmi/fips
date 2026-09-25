@@ -103,26 +103,29 @@ source/dependency inputs and both runtime executable hashes remain unchanged
 through that check. These are local test-money results; current-router, physical
 power-loss and total-storage acceptance remain open.
 
-Reclaim output preparation now commits issuing keys, the derivation counter range
-and the exact recovery plan in one transaction. Proposed secrets remain private
-until commit; a failed or conflicting write leaves no proposal-owned key records
-or consumed counter range. The full-capacity SDK regression interrupts three plan
-writes with key rotations and reopens, then recovers the original 16-sat refund.
-Channel funding also reserves logical completion space for refunds and abandoned
-funding recovery. Service capacity accounting remains disabled pending acceptance
-of the other wallet paths, stores and physical recovery requirements.
+Send confirmation, receive and reclaim now share atomic output preparation.
+A private proposal's issuing keys, exact derivation range and recovery plan commit
+in one transaction. Rollback leaves no proposal-owned keys or consumed counters;
+conflicting or uncertain writes prevent mint submission and retain any committed
+plan for recovery. The send/receive regressions interrupt three plan writes with
+reopens, then complete the original operation or token with the balance intact.
+The separate full-capacity reclaim regression also rotates keys and recovers the
+original 16-sat refund. Channel funding reserves logical completion space for
+refunds and abandoned funding recovery. Service capacity accounting remains
+disabled pending acceptance of the other wallet paths, stores and physical recovery
+requirements.
 
-The 25 September graph uses CDK `0fd3f59b` and SDK `86f6b42`. It passes 817 native
-tests, 149 SQLite tests, 88 Redb tests, 159 shared-library tests, the full 389-test
-SDK suite, all 18 feature profiles, strict affected-library/SDK lint and formatting.
-The default SDK suite excludes one opt-in soak; PostgreSQL was compiled/linted,
-not exercised against a live server. The existing three-relay process regression
-also passes on this graph: a kill after funding commits, followed by offer expiry
-and ordinary restart, recovers the original funds without replacement funding.
-All 384 test sats are conserved: 378 spendable and 6 in mint fees. All 2,710
-recorded source/dependency inputs and both executable hashes remain unchanged.
-This accepts local interrupted-funding recovery, not current-router, physical
-power-loss or complete wallet-capacity operation; see [history](HISTORY.md).
+The 25 September graph uses CDK `bbcc2f39` and SDK `ddf6a1e`. It passes 817 native
+tests, the full 391-test SDK suite, strict native/SDK lint and formatting. The SDK
+suite excludes one opt-in soak. Database APIs, schemas and features are unchanged;
+their earlier acceptance matrices were not repeated for this wallet-only change.
+The existing three-relay process regression also passes on this graph: a kill
+after funding commits, followed by offer expiry and ordinary restart, recovers
+the original funds without replacement funding. All 384 test sats are conserved:
+378 spendable and 6 in mint fees. All 2,710 recorded source/dependency inputs and
+both executable hashes remain unchanged. This accepts local interrupted-funding
+recovery, not current-router, physical power-loss or complete wallet-capacity
+operation; see [history](HISTORY.md).
 
 That test first reproduced a collected spent token creating another pending
 receive after its swap was rejected. Native admission now checks unfamiliar coins
