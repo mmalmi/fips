@@ -151,9 +151,8 @@ and release writes, and capacity exhausted after the preparatory swap commits.
 All 32 test sats remain accounted for as payment plus usable coins. Settlement
 proof strings have a method-neutral 64 KiB UTF-8 limit; sizing includes worst-case
 JSON escaping, and oversized results retain pending custody without truncation.
-Service capacity accounting stays disabled pending token-funded refunds,
-remaining wallet paths/stores and physical recovery
-acceptance.
+Service capacity accounting stays disabled pending token-funded history retirement,
+remaining wallet paths/stores and physical recovery acceptance.
 
 The withdrawal acceptance used CDK `63655bfc` and SDK `7896de5`. It passed 819
 native-library tests, 483 shared-library/storage tests, the full 404-test SDK suite,
@@ -192,6 +191,22 @@ ordinary restart, duplicate settlement and actual expiry/retirement. All 2,722
 source/dependency inputs match; relay and test executable hashes stay unchanged
 through the crash scenario. This accepts logical SQLite capacity with local test
 money, not physical disk exhaustion, power loss or current-router operation.
+
+Token-funded channels now reserve the buyer's native wallet refund allowance before
+submitting funding. Wallet-bound intent and ready markers retain the original
+allowance through interrupted admission and lost funding replies. Recovery rejects
+missing or changed original wallet evidence instead of creating another allowance.
+The SDK checks restore a lost funding reply without another swap, then import the
+original 13-test-sat refund at full wallet capacity and skip duplicate imports.
+They also cover rejected admission and a captured-snapshot simulation of interruption
+between the native reservation and client marker writes.
+
+SDK `c06d3e1` passes all 411 workspace tests, all 18 feature profiles, strict lint and
+changed-source formatting. All 1,695 recorded SDK/dependency inputs match the
+integrated files; one opt-in storage soak is excluded. These are SDK-level,
+local test-money results. They add no FIPS process, current-router or physical
+power-loss acceptance; token-funded history retirement and remaining wallet stores
+still need coverage before enabling service capacity accounting.
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
