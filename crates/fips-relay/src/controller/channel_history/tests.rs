@@ -94,6 +94,9 @@ pub(super) fn ack(p: &Plan, mint: &str) -> CashuSpilmanRetiredHistory {
             requested_sat: p.after.capacity_sat,
             cost: p.after.cost.clone(),
         },
+        token_requests: 0,
+        token_amount_sat: 0,
+        token_refund_sat: 0,
         abandoned_requests: p.after.abandoned_requests,
         cancelled_requests: p.after.cancelled_requests,
         capacity_sat: p.after.capacity_sat,
@@ -220,13 +223,20 @@ fn interrupted_handoff_resumes_before_or_after_buyer_and_wallet_commit() {
         }
         let expected = ack(&p, &store.journal.policy.mint_url);
         if boundary == 2 {
-            let mut mismatch = expected.clone();
-            mismatch.refund_sat -= 1;
-            assert!(
-                store
-                    .resume_channel_retirement(&buyer, |_, _| Ok(mismatch))
-                    .is_err()
-            );
+            for field in 0..4 {
+                let mut mismatch = expected.clone();
+                match field {
+                    0 => mismatch.refund_sat -= 1,
+                    1 => mismatch.token_requests = 1,
+                    2 => mismatch.token_amount_sat = 1,
+                    _ => mismatch.token_refund_sat = 1,
+                }
+                assert!(
+                    store
+                        .resume_channel_retirement(&buyer, |_, _| Ok(mismatch))
+                        .is_err()
+                );
+            }
         }
         assert!(store.change(|_| Ok(())).is_err());
         store = super::super::transition_tests::reload(store);

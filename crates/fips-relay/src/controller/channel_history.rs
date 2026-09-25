@@ -94,6 +94,9 @@ impl Totals {
             && Some(sdk.send.requests) == self.channels.checked_add(self.abandoned_requests)
             && sdk.abandoned_requests == self.abandoned_requests
             && sdk.cancelled_requests == self.cancelled_requests
+            && sdk.token_requests == 0
+            && sdk.token_amount_sat == 0
+            && sdk.token_refund_sat == 0
             && sdk.capacity_sat == self.capacity_sat
             && sdk.signed_sat == self.signed_sat
             && sdk.refund_sat == self.refund_sat
