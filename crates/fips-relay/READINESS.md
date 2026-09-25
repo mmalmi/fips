@@ -137,27 +137,39 @@ capacity after a lost committed reply and reopen; another wallet redeems all 8 o
 16 original test sats, including conditioned batch outputs. Injected terminal
 release failure rolls back proofs, receipts and quote release together. Rejected
 admission preserves original quotes/counters, and unsubmitted cancellation leaves
-the paid quotes reusable. Service capacity accounting stays disabled pending
-withdrawal admission, other wallet paths/stores and physical recovery acceptance.
+the paid quotes reusable.
 
-The current wallet graph uses CDK `11ad137f` and SDK `454172b`. It passes 483
-shared-library/storage tests, the full 399-test SDK suite, strict affected-crate/SDK
-lint and formatting checks. One opt-in SDK soak is excluded. All 1,689 recorded
-source/dependency inputs match the integrated files. PostgreSQL has all-target
-compile/lint acceptance only. This update adds SQLite issuance capacity admission
-and shares the initial reservation helper with standalone swaps;
-schemas, APIs, dependencies and feature settings are unchanged.
+Withdrawal admission now reserves cancellation space with initial input/quote
+acquisition, replacement coins and their checkpoint before a preparatory swap,
+and the paid receipt/change/quote before final payment. Failed admission rolls
+back before that stage's mint request. If a preparatory swap has already spent
+the originals, rejected payment admission releases only the replacement coins.
+Terminal cancellation or completion releases unused allowance while retained
+financial evidence remains charged. Five real-mint regressions cover full-capacity
+cancellation, interrupted paid and swap replies, wallet reopen, failed allowance
+and release writes, and capacity exhausted after the preparatory swap commits.
+All 32 test sats remain accounted for as payment plus usable coins. Settlement
+proof strings have a method-neutral 64 KiB UTF-8 limit; sizing includes worst-case
+JSON escaping, and oversized results retain pending custody without truncation.
+Service capacity accounting stays disabled pending receiver payout admission,
+token-funded refunds, remaining wallet paths/stores and physical recovery
+acceptance.
 
-A two-worker workspace attempt hit two five-second funding-fixture expiry failures
-under concurrent load. All three affected receiver tests then passed in isolation,
-and the complete SDK suite passed with one worker on unchanged sources.
+The current wallet graph uses CDK `63655bfc` and SDK `7896de5`. It passes 819
+native-library tests, 483 shared-library/storage tests, the full 404-test SDK suite,
+strict affected-crate/SDK lint and formatting checks. The SDK run uses one worker;
+one opt-in storage soak is excluded. All 1,691 recorded source/dependency inputs
+match the integrated files. PostgreSQL has all-target compile/lint acceptance
+only. This update adds SQLite withdrawal capacity admission through shared sizing
+and reservation helpers; schemas, dependencies, feature settings and Wallet
+methods are unchanged.
 
 Two three-relay process regressions pass on this wallet graph. A kill after funding
 commits, followed by offer expiry and ordinary restart, recovers the original funds
 without replacement funding: 378 test sats remain spendable and 6 cover mint fees.
 An unsubmitted plan survives a keyset change and a second kill after wallet
 cancellation, then automatically retires the original funding intent without a
-mint swap or fee; all 384 test sats remain spendable. All 2,716 recorded
+mint swap or fee; all 384 test sats remain spendable. All 2,718 recorded
 source/dependency inputs and both executable hashes stay unchanged through these
 runs. These local checks do not validate current routers, physical power loss or
 complete wallet-capacity operation; see [history](HISTORY.md).

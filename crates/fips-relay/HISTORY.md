@@ -374,8 +374,10 @@ writes prevent submission, and any committed plan remains available for recovery
 Withdrawal change uses the same transaction to commit its issuing keys, range,
 exact request and pending wallet receipt. Receipt conflicts roll back the complete
 proposal, and matching terminal receipts keep their status. Standalone swaps and
-mint issuance still need separate atomic-preparation acceptance. SQLite single-value
-writes finish their statement before returning, so a `RETURNING` value cannot hide a late commit failure.
+mint issuance also commit their initial output plans with completion reservations;
+see the [accepted wallet scope](READINESS.md#scope-and-outstanding-acceptance).
+SQLite single-value writes finish their statement before returning, so a
+`RETURNING` value cannot hide a late commit failure.
 The SDK reserves logical completion space for channel refunds and abandoned
 funding, but service capacity accounting remains disabled until the other wallet
 paths and stores are covered. Logical allowances do not reserve physical disk.
