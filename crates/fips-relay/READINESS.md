@@ -208,6 +208,21 @@ local test-money results. They add no FIPS process, current-router or physical
 power-loss acceptance; token-funded history retirement and remaining wallet stores
 still need coverage before enabling service capacity accounting.
 
+The SDK's direct mint calls for metadata, channel funding and settled/expiry
+refund recovery now share a streamed 1 MiB response limit and a 30-second request
+deadline. Non-success statuses reject without reading or echoing their bodies.
+Oversized proof-state and restore replies preserve the original financial records;
+an oversized reply after a committed expiry swap still recovers its original coins
+without another swap. A stalled proof-state request releases the client store at
+its deadline and permits ordinary retry.
+
+SDK `af36c31` passes all 414 workspace tests, all 18 feature profiles, strict lint
+and changed-source formatting. All 1,697 recorded SDK/dependency inputs match the
+integrated files; one opt-in storage soak is excluded. These local test-money
+checks establish per-request bounds, not whole-workflow deadlines, custom-transport
+bounds, current FIPS process or hardware acceptance. Service capacity accounting
+remains disabled while the other storage and recovery requirements are open.
+
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
 unfamiliar coins through NUT-07 before acquisition. The replay adds no coin or recovery operation,
