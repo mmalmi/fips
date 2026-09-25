@@ -142,9 +142,12 @@ journal cleanup only and introduces no network message.
 For an abandoned wallet send, the SDK also acknowledges its exact original refund
 receipt before discarding the operation identity. Its saved channel intent retains
 the verified net refund and original token cost through the wallet's durable
-incoming-history handoff. Recovery completes those refund/fee totals exactly once
-even if receipt deletion preceded an interrupted totals write. The later proof
-handoff releases only the retired send's original native inputs and outputs;
+incoming-history handoff. Exact receipt deletion, unused native completion-space
+release and cumulative totals commit together in one SQLite transaction, including
+at full configured payload capacity. Failure rolls everything back; retrying a
+committed batch does not count it twice. Fresh incoming-history format 2 needs no
+separate redo log. The later proof handoff releases only the retired send's
+original native inputs and outputs;
 unspent coins and unrelated receipt owners remain protected. This does not change
 the controller's gross debit, refund or lifetime spending calculations.
 

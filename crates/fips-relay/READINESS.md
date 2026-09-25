@@ -271,6 +271,27 @@ results; one opt-in SDK storage soak is excluded. Remaining wallet stores,
 sustained aggregate storage pressure, physical disk/power loss and current
 hardware acceptance remain open. Service capacity accounting stays disabled.
 
+
+Incoming-history format 2 commits exact receipt deletion, release of unused native
+completion allowance and cumulative received/refund totals in one conditional
+SQLite transaction. It removes the SDK's pending redo log and can retire receipts
+at full configured payload capacity without raising the limit. Retained coins
+stay charged and unrelated storage reservations remain intact. The caller keeps
+durable acknowledgment intent until success; a retry cannot count absent receipts
+again. Stale receipts, inputs or checkpoints, failed writes and insufficient
+checkpoint space roll back the entire batch. Earlier journal formats require
+fresh profiles under this greenfield scope.
+
+Native CDK `2fd3f24c` passes 248 affected database tests and strict lint; SDK
+`6d43934` passes all four receipt tests, 409 workspace tests, 18 feature profiles
+and strict lint. The matching FIPS graph passes 296 relay tests, strict lint and
+the actual-expiry/restart refund-retirement process. All 2,731 recorded source
+inputs and both executable hashes match. Full-capacity rollback checks include
+reopening, separate fees/refunds and untouched unrelated reservations. This is
+local test-money and logical SQLite-capacity evidence; physical disk/power loss,
+sustained aggregate storage pressure, remaining stores/queries and current device
+acceptance remain open. Service capacity accounting stays disabled.
+
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
 unfamiliar coins through NUT-07 before acquisition. The replay adds no coin or recovery operation,
