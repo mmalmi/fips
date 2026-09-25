@@ -274,23 +274,34 @@ hardware acceptance remain open. Service capacity accounting stays disabled.
 
 Incoming-history format 2 commits exact receipt deletion, release of unused native
 completion allowance and cumulative received/refund totals in one conditional
-SQLite transaction. It removes the SDK's pending redo log and can retire receipts
-at full configured payload capacity without raising the limit. Retained coins
-stay charged and unrelated storage reservations remain intact. The caller keeps
-durable acknowledgment intent until success; a retry cannot count absent receipts
-again. Stale receipts, inputs or checkpoints, failed writes and insufficient
-checkpoint space roll back the entire batch. Earlier journal formats require
-fresh profiles under this greenfield scope.
+SQLite transaction. It removes the pending redo log and retires receipts at full
+configured payload capacity. Retained coins stay charged and unrelated storage
+reservations remain intact. The caller keeps durable acknowledgment intent until
+success; retries cannot count absent receipts again. Earlier journal formats
+require fresh profiles under this greenfield scope.
 
-Native CDK `2fd3f24c` passes 248 affected database tests and strict lint; SDK
-`6d43934` passes all four receipt tests, 409 workspace tests, 18 feature profiles
-and strict lint. The matching FIPS graph passes 296 relay tests, strict lint and
-the actual-expiry/restart refund-retirement process. All 2,731 recorded source
-inputs and both executable hashes match. Full-capacity rollback checks include
-reopening, separate fees/refunds and untouched unrelated reservations. This is
-local test-money and logical SQLite-capacity evidence; physical disk/power loss,
-sustained aggregate storage pressure, remaining stores/queries and current device
-acceptance remain open. Service capacity accounting stays disabled.
+Exact receipt batches and selected proof pages enforce the existing 128-record,
+4-MiB stored-payload limits before crossing the SQL driver. Retirement streams the
+complete original inputs under the same atomic ownership, spent-state and gross
+value checks. Oversized groups retry smaller pages, at most eight reads from 128
+inputs down to one; individually oversized or malformed evidence remains an error.
+Incoming enumeration shares native eligibility, and incoming acknowledgment
+leaves its input checks to atomic retirement.
+Read errors, stale records, failed writes and insufficient checkpoint space retain
+the original receipts, coins and totals. These bounds do not cap all database
+internal memory or physical storage.
+
+Native CDK `7c1b089f` passes 402 affected native tests and strict lint; SDK
+`85534be` passes 12 focused history/refund tests, 410 workspace tests, all 18
+feature profiles and strict lint. The matching FIPS graph passes 296 relay tests,
+strict lint and the actual-expiry/restart refund-retirement process. All
+2,733 recorded source inputs and both executable hashes match. Local regressions
+cover aggregate page overflow, smaller-page progress, late invalid inputs,
+full-capacity rollback, reopening/retry and separate fee/refund totals. This is
+local test-money evidence; physical disk/power loss, sustained aggregate storage
+pressure, remaining stores/queries and current device acceptance remain open.
+Service capacity accounting stays disabled.
+
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks

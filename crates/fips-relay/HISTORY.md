@@ -146,8 +146,12 @@ incoming-history handoff. Exact receipt deletion, unused native completion-space
 release and cumulative totals commit together in one SQLite transaction, including
 at full configured payload capacity. Failure rolls everything back; retrying a
 committed batch does not count it twice. Fresh incoming-history format 2 needs no
-separate redo log. The later proof handoff releases only the retired send's
-original native inputs and outputs;
+separate redo log. Exact receipt batches and selected input pages cap stored
+payloads at 128 records and 4 MiB before SQL driver projection. Oversized input
+groups retry smaller pages; individual oversized or malformed records retain the
+original evidence. All original input checks still complete inside the retirement
+transaction before deletion. The later proof handoff releases only the retired
+send's original native inputs and outputs;
 unspent coins and unrelated receipt owners remain protected. This does not change
 the controller's gross debit, refund or lifetime spending calculations.
 
