@@ -103,34 +103,43 @@ source/dependency inputs and both runtime executable hashes remain unchanged
 through that check. These are local test-money results; current-router, physical
 power-loss and total-storage acceptance remain open.
 
-Send confirmation, receive, reclaim and preparatory withdrawal swaps share atomic
-output preparation. A private proposal's issuing keys, exact derivation range and
-recovery plan commit together. Withdrawal change saves its pending wallet receipt
-in the same transaction, using the existing receipt identity and status rules.
-Rollback leaves no proposal-owned keys or consumed counters; conflicting or
-uncertain writes prevent mint submission and retain any committed recovery plan.
+All wallet swaps share atomic output preparation. A private proposal's issuing
+keys, exact derivation range and recovery plan commit together, including the
+initial record for a standalone swap. Withdrawal change saves its pending wallet
+receipt in the same transaction, using the existing receipt identity and status
+rules. Single and batch issuance acquire their quotes, keys, one consecutive
+derivation range, exact requests and pending receipts atomically. Rollback leaves
+no proposal-owned keys or consumed counters; conflicting or uncertain writes
+prevent mint submission and retain any committed recovery plan.
 The withdrawal regressions interrupt both preparation boundaries twice with wallet
 reopens, preserve the original 32 sats without submitting a swap or payment, then
 complete the same 8-sat withdrawal with 24 sats remaining. Earlier send/receive and rotating-key
-reclaim regressions also remain in the accepted suites. Service capacity accounting
-stays disabled pending standalone swap and issuance preparation, other wallet
-paths/stores and physical recovery acceptance.
+reclaim regressions also remain in the accepted suites. The single/batch issuance
+regressions interrupt initial journal and receipt writes with reopens, retain the
+original paid quotes and counters, then retry successfully for 8/16 test sats.
+All swaps now construct private proposals; the obsolete eager-allocation and
+nested standalone reservation paths were removed. Service capacity accounting
+stays disabled pending whole-operation completion/cancellation admission, other
+wallet paths/stores and physical recovery acceptance.
 
-The current wallet graph uses CDK `17e0ab00` and SDK `b440e63`. It passes 817 native
-tests, 483 shared-library/storage tests, 11 database-binding checks, the full
-393-test SDK suite, strict affected-crate/SDK lint and formatting checks. One
-opt-in SDK soak is excluded. All 1,683 recorded source/dependency inputs match the
-integrated files. The preparation API adds an optional wallet receipt; both storage
-implementations and the foreign database bridge are updated. PostgreSQL has
-all-target compile/lint acceptance only. Schemas and feature settings are unchanged.
+The current wallet graph uses CDK `652e58a0` and SDK `1e4740a`. It passes 818 native
+tests, 483 shared-library/storage tests, 29 database-binding checks, the full
+395-test SDK suite, strict affected-crate/SDK lint and formatting checks. One
+opt-in SDK soak is excluded. All 1,684 recorded source/dependency inputs match the
+integrated files. The database APIs accept an optional preparation parent and the
+issuance counter range; both storage implementations and the foreign database
+bridge are updated. PostgreSQL has all-target compile/lint acceptance only.
+Schemas and feature settings are unchanged.
 
-The most recent three-relay process regression used the earlier CDK `bbcc2f39` /
-SDK `ddf6a1e` graph. A kill after funding commits, followed by offer expiry and
-ordinary restart, recovered the original funds without replacement funding. All
-384 test sats were conserved: 378 spendable and 6 in mint fees. Its 2,710 recorded
-source/dependency inputs and both executable hashes stayed unchanged. That result
-does not revalidate the newer wallet graph, current routers, physical power loss
-or complete wallet-capacity operation; see [history](HISTORY.md).
+Two three-relay process regressions pass on this wallet graph. A kill after funding
+commits, followed by offer expiry and ordinary restart, recovers the original funds
+without replacement funding: 378 test sats remain spendable and 6 cover mint fees.
+An unsubmitted plan survives a keyset change and a second kill after wallet
+cancellation, then automatically retires the original funding intent without a
+mint swap or fee; all 384 test sats remain spendable. All 2,711 recorded
+source/dependency inputs and both executable hashes stay unchanged through these
+runs. These local checks do not validate current routers, physical power loss or
+complete wallet-capacity operation; see [history](HISTORY.md).
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
