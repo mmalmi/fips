@@ -151,8 +151,8 @@ and release writes, and capacity exhausted after the preparatory swap commits.
 All 32 test sats remain accounted for as payment plus usable coins. Settlement
 proof strings have a method-neutral 64 KiB UTF-8 limit; sizing includes worst-case
 JSON escaping, and oversized results retain pending custody without truncation.
-Service capacity accounting stays disabled pending token-funded history retirement,
-remaining wallet paths/stores and physical recovery acceptance.
+Service capacity accounting stays disabled pending remaining wallet paths/stores,
+sustained history pressure and physical recovery acceptance.
 
 The withdrawal acceptance used CDK `63655bfc` and SDK `7896de5`. It passed 819
 native-library tests, 483 shared-library/storage tests, the full 404-test SDK suite,
@@ -222,6 +222,25 @@ integrated files; one opt-in storage soak is excluded. These local test-money
 checks establish per-request bounds, not whole-workflow deadlines, custom-transport
 bounds, current FIPS process or hardware acceptance. Service capacity accounting
 remains disabled while the other storage and recovery requirements are open.
+
+Numbered supplied-token channels with their original authenticated wallet refund
+admission now retire through the existing custody handoff. Their original input
+value and refunds stay separate from native wallet debits; shared capacity and
+signed-payment totals include both funding sources. The regression preserves
+original owners at archive capacity, rejects premature retirement and replay,
+continues with wallet-funded channels in the same scope, and resumes an interrupted
+cutoff write without changing saved totals. Profiles without that original wallet
+admission retain their records. FIPS's wallet-funded retirement rejects nonzero
+supplied-token totals rather than accepting unrelated financial evidence.
+
+SDK `eca7752` passes all 415 workspace tests, all 18 feature profiles and strict
+lint. FIPS `81345dfad` passes 296 relay tests, strict lint and the interrupted
+pre-funding process case: ordinary restart cancels and retires the original
+request, preserves all 384 test sats and creates no wallet debit or refund.
+All 2,727 recorded source/dependency inputs and both process executable hashes
+match the accepted graph. One opt-in SDK storage soak is excluded. These checks
+do not establish sustained token-funded capacity, token-specific fee/power-loss
+coverage or current hardware acceptance; service capacity accounting stays disabled.
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
