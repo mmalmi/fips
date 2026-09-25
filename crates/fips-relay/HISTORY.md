@@ -263,18 +263,26 @@ spending operation. This is not yet a bound on total router database size or pro
 of indefinite operation under hostile identity churn.
 
 The SDK provides an explicit local proof-release queue for that handoff.
-Its caller must durably release every external owner before adding
-the original coins; spent state alone grants no cleanup authority. The queue
-retains at most 1024 candidates and deletes at most 128 eligible spent records per
-pass, preserving unspent value, local recovery/send/receipt owners and an exact
-crash-recovery intent. FIPS seller-channel retirement supplies its saved original
-receiver payout batches only after custody checks and receiver retirement finish.
-The SDK's version-2 queue stores compact authenticated references; the original
-coin stays in the wallet until exact comparison/deletion. The authenticated
-deletion intent binds the full current record, so large originals and later
-metadata growth do not consume duplicate journal space. Collection reads originals
-incrementally, with a soft 4 MiB batch budget and one oversized original allowed
-to progress alone. The journal rejects older queue formats; use fresh profiles.
+Its caller must durably release every external owner before adding the original
+coins; spent state alone grants no cleanup authority. The queue retains at most
+1024 candidates and deletes at most 128 eligible spent records per pass, preserving
+unspent value, local recovery/send/receipt owners and the lifetime retired count.
+FIPS seller-channel retirement supplies its saved original receiver payouts only
+after custody checks and receiver retirement finish.
+
+The version-3 queue stores compact authenticated references. Original coins remain
+in the wallet until native full-record comparison and deletion, committed in the
+same SQLite transaction as the authenticated queue and count update. A failure
+rolls back both records and storage charges; there is no separate deletion redo
+log. An admitted eligible queue batch can reclaim full native payload capacity
+without growing a recovery intent first. Ordinary wallet reads remain available
+after refusal, and retry advances the count once. Archive traversal at full native
+capacity and physical disk recovery remain separate requirements.
+
+Collection reads originals incrementally, with a soft 4 MiB batch budget and one
+oversized original allowed to progress alone. Neither queue references nor its
+checkpoint duplicate complete proof payloads. Older queue formats require fresh
+profiles.
 
 ## Proof custody storage
 
@@ -352,9 +360,9 @@ inventory limit; it does not cap total historical wallet records.
 
 Proof-history collection uses the same transaction pages across every mint, unit
 and direction, including unregistered scopes. It retains ownership only for its
-bounded candidate set. Archive transfer and pending-deletion recovery use this
-check too; an owner after earlier pages still prevents deletion. Oversized or
-corrupt pages retain the original coins and pending intent. An index on timestamp
+bounded candidate set. Archive transfer and queue collection use this check too;
+an owner after earlier pages still prevents deletion. Oversized or corrupt pages
+retain the original coins and release queue. An index on timestamp
 and ID supports the whole-wallet cursor. This bounds transaction reads and the
 retained ownership set; full-scan time remains separate.
 
