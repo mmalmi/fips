@@ -276,8 +276,9 @@ same SQLite transaction as the authenticated queue and count update. A failure
 rolls back both records and storage charges; there is no separate deletion redo
 log. An admitted eligible queue batch can reclaim full native payload capacity
 without growing a recovery intent first. Ordinary wallet reads remain available
-after refusal, and retry advances the count once. Archive traversal at full native
-capacity and physical disk recovery remain separate requirements.
+after refusal, and retry advances the count once. Archive collection shares this
+proof/count transaction and the same per-call budget. Physical disk recovery and
+sustained aggregate storage pressure remain separate requirements.
 
 Collection reads originals incrementally, with a soft 4 MiB batch budget and one
 oversized original allowed to progress alone. Neither queue references nor its
@@ -318,13 +319,13 @@ after its original expiry. Missing or changed evidence retains the reservation.
 The wallet retains one custody stream per existing numbered-send scope, within
 the same 32-scope lifetime bound. It reuses the descriptor across retirements.
 FIPS upkeep visits one acknowledged page even when no new channel retires, after
-releasing the controller journal lock. Eligible spent coins enter the exact
-deletion queue; residual coins rotate to the tail so an unspent head cannot starve
-later pages. One conditional SQLite transaction commits queue admission, custody
-pages and their cursor together. A pending capture pauses only its own scope's
-collection.
+releasing the controller journal lock. Residual coins rotate to the tail so an
+unspent head cannot starve later pages. One conditional SQLite transaction deletes
+eligible spent originals, removes matching queue references, updates the lifetime
+count and commits custody pages and their cursor. No intermediate queue admission
+is required. A pending capture pauses only its own scope's collection.
 
-The version-3 custody registry caps retained pages plus unfinished capture
+The version-4 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
 original owners to reserve its full serialized proof size plus 16 KiB per nonempty
 page. Appending transfers that allowance to retained pages; retries use the same
@@ -341,8 +342,12 @@ until the complete capture fits and is sealed. The same transaction commits page
 changes and byte counters, checking every original record before replacement.
 
 This is a logical page limit. Registry metadata has its separate 1 MiB bound and
-each page is limited to 4 MiB plus 16 KiB. An update has at most four record changes;
-deletions run first inside the transaction to release space. Failed writes, capacity
+each page is limited to 4 MiB plus 16 KiB. Encoding reserves bounded whitespace
+for each rotating counter's full decimal width and the longest scope cursor. Page
+keys already have fixed-width indexes. An all-unspent rotation therefore keeps
+its native storage charge unchanged, including digit and scope-length boundaries.
+An update has at most four record changes and 128 exact proof deletions; proof
+and old-page deletions run first inside the transaction to release space. Failed writes, capacity
 checks and changed originals roll back the whole update and its native storage
 charges. No SDK archive redo log remains; SQLite keeps its own journal. The receiver
 release queue retains its existing limit, and capture still runs to exhaustion

@@ -243,33 +243,33 @@ match the accepted graph. One opt-in SDK storage soak is excluded. These checks
 do not establish sustained token-funded capacity, token-specific fee/power-loss
 coverage or current hardware acceptance; service capacity accounting stays disabled.
 
-Fresh custody archive format 3 commits its page, queue and cursor changes in one
-conditional SQLite transaction. Proof-release journal format 3 now uses the same
-native transaction boundary for exact proof deletion, queue removal and the
-lifetime retired count. Both separate SDK redo logs are removed. A failed write,
-capacity check or changed original rolls back every record and storage charge.
-Ordinary wallet reads remain usable after a rejected update. Archive updates
-have at most four record changes; queue deletion keeps its 128-coin/soft-4-MiB
-batch bounds and checks all local owners before the native full-record comparison.
+Fresh custody archive format 4 reserves bounded native charged bytes for rotating
+counter widths and the longest registered scope cursor. An all-unspent page can
+rotate at full native payload capacity without growing its storage charge. One
+conditional SQLite transaction deletes eligible spent originals, writes residual
+custody, advances the cursor and updates the proof-release journal's lifetime
+count. Matching queue references disappear in that transaction; no intermediate
+queue admission or separate SDK redo log is needed. Archive and queue collection
+share a 128-coin/soft-4-MiB per-call limit and retain all local ownership checks.
 
-An already admitted eligible queue batch can delete its proofs and write the
-smaller checkpoint at exact full native payload capacity. The public collection
-call visits the archive first; sustained archive traversal at full native capacity
-remains a separate acceptance case. New capture, acknowledgment or release
-admission may still need space; refusal retains original financial owners or
-client retry intent. Older archive and queue formats require fresh profiles.
+Full-capacity regressions cover digit boundaries, differing scope lengths,
+partial-page deletion, overlapping release paths and rollback at each proof,
+page, cursor and checkpoint write. Reopening and retrying preserves unspent
+originals and counts each deletion once without raising the capacity. New capture,
+acknowledgment or release admission can still need space; refusal retains original
+financial owners or client retry intent. Older archives require fresh profiles.
+The proof-release journal remains format 3.
 
-CDK `9fb5b3c5` and SDK `1f27056` pass 247 affected database tests, 26 proof-history
-checks, real-mint interrupted collection and receiver-payout retry cases, the
-full 410-test SDK suite, all 18 feature profiles and strict lint. Atomic rollback
-checks replace obsolete deletion-redo cases. The matching FIPS graph passes 296
-relay tests, strict lint and the sender-retirement process case: restart and actual
-expiry preserve original refund proofs and lifetime spending limits. All 2,730
-recorded source/dependency inputs and both process executable hashes match.
-These are local test-money and SQLite results; one opt-in SDK storage soak is
-excluded. Remaining wallet stores, sustained full-capacity archive traversal,
-physical disk/power-loss and current hardware acceptance remain open. Service
-capacity accounting stays disabled.
+SDK `a7563f6` passes 27 focused proof-history checks, the full 411-test workspace
+suite, all 18 feature profiles and strict lint. The unchanged native CDK
+`9fb5b3c5` supplies the previously accepted shared proof/KV transaction. The matching
+FIPS graph passes 296 relay tests, strict lint and the sender-retirement process
+case: restart and actual expiry preserve original refund proofs and lifetime
+spending limits. All 2,730 recorded source/dependency inputs and both process
+executable hashes match. These are local test-money and logical SQLite-capacity
+results; one opt-in SDK storage soak is excluded. Remaining wallet stores,
+sustained aggregate storage pressure, physical disk/power loss and current
+hardware acceptance remain open. Service capacity accounting stays disabled.
 
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
