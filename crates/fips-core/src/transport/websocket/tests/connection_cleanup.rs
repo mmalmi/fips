@@ -91,7 +91,7 @@ async fn failed_initial_hint_write_releases_address_for_a_fresh_dial() {
     assert_eq!(transport.stats().connections_closed, 1);
     assert!(transport.discover().unwrap().is_empty());
     assert!(
-        !transport.runtime.pool.lock().await.contains_key(&addr),
+        !transport.runtime.connections().contains_key(&addr),
         "failed initial hint write must not retain the address in the connection pool"
     );
     assert_eq!(
@@ -170,7 +170,7 @@ async fn old_connection_completion_preserves_the_replacement_state_and_writer() 
     drop(old_peer);
     let _ = old.await;
     {
-        let pool = transport.runtime.pool.lock().await;
+        let pool = transport.runtime.connections();
         assert_eq!(pool.get(&addr).unwrap().generation, generation);
         // Holding the pool guard exercises the synchronous state fallback.
         assert_eq!(
@@ -242,9 +242,7 @@ async fn late_dial_failure_does_not_overwrite_an_established_replacement() {
     wait_for_connection(&transport, &addr).await;
     let generation = transport
         .runtime
-        .pool
-        .lock()
-        .await
+        .connections()
         .get(&addr)
         .unwrap()
         .generation;
@@ -265,7 +263,7 @@ async fn late_dial_failure_does_not_overwrite_an_established_replacement() {
     .expect("old dial must publish its failed HTTP upgrade result");
     assert!(rejected.is_err());
     {
-        let pool = transport.runtime.pool.lock().await;
+        let pool = transport.runtime.connections();
         assert_eq!(pool.get(&addr).unwrap().generation, generation);
         assert_eq!(
             transport.connection_state_sync(&addr),
@@ -284,4 +282,80 @@ async fn late_dial_failure_does_not_overwrite_an_established_replacement() {
     transport.stop_async().await.unwrap();
     assert_eq!(transport.stats().connections_opened, 1);
     assert_eq!(transport.stats().connections_closed, 1);
+}
+
+#[tokio::test]
+async fn detached_close_cannot_remove_a_replacement() {
+    use futures::FutureExt;
+    for had_original in [true, false] {
+        let mut transport = test_transport(8);
+        transport.start_async().await.unwrap();
+        let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
+        if had_original {
+            let (socket, peer) = raw_pair().await;
+            let mut old = Box::pin(run_connection(
+                transport.runtime.clone(),
+                addr.clone(),
+                socket,
+                transport.runtime.next_generation(),
+                Direction::Outbound,
+                false,
+                0,
+            ));
+            poll_pending(old.as_mut()).await;
+            transport.close_connection_detached(&addr);
+            drop(peer);
+            // Complete the old worker without yielding to the scheduled close.
+            let _ = old
+                .as_mut()
+                .now_or_never()
+                .expect("closed underlay must finish immediately");
+        } else {
+            transport.close_connection_detached(&addr);
+        }
+        let (socket, mut peer) = raw_pair().await;
+        let generation = transport.runtime.next_generation();
+        let mut replacement = Box::pin(run_connection(
+            transport.runtime.clone(),
+            addr.clone(),
+            socket,
+            generation,
+            Direction::Outbound,
+            false,
+            0,
+        ));
+        poll_pending(replacement.as_mut()).await;
+        // This current-thread test has not yielded. Any detached cleanup now
+        // runs after the replacement registered at the same seed URL.
+        let tasks = std::mem::take(&mut *transport.runtime.tasks.lock().unwrap());
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert_eq!(
+            transport.connection_state_sync(&addr),
+            ConnectionState::Connected,
+            "a delayed close must leave the replacement connected"
+        );
+        let expected = record();
+        transport.send_async(&addr, &expected).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                result = replacement.as_mut() => panic!("replacement ended early: {result:?}"),
+                _ = expect_record(&mut peer, &expected) => {}
+            }
+        })
+        .await
+        .expect("replacement must deliver after detached cleanup");
+        transport.close_connection_async(&addr).await;
+        replacement.await.unwrap();
+        assert_eq!(
+            transport.stats().connections_opened,
+            1 + u64::from(had_original)
+        );
+        assert_eq!(
+            transport.stats().connections_closed,
+            1 + u64::from(had_original)
+        );
+        transport.stop_async().await.unwrap();
+    }
 }

@@ -81,7 +81,7 @@ async fn full_send_queue_returns_backpressure_without_growing() {
     transport.state = TransportState::Up;
     let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
     let (tx, _rx) = mpsc::channel(1);
-    transport.runtime.pool.lock().await.insert(
+    transport.runtime.connections().insert(
         addr.clone(),
         Connection {
             generation: 1,

@@ -81,7 +81,7 @@ async fn assert_closed(
     addr: &TransportAddr,
     peer: &mut DuplexStream,
 ) {
-    assert!(transport.runtime.pool.lock().await.is_empty());
+    assert!(transport.runtime.connections().is_empty());
     assert_eq!(transport.connection_state_sync(addr), ConnectionState::None);
     assert_eq!(transport.stats().connections_opened, 1);
     assert_eq!(transport.stats().connections_closed, 1);

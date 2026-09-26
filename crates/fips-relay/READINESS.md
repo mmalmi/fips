@@ -1121,6 +1121,20 @@ acceptance remains outstanding.
 The stalled-write failures have not been linked to the earlier intermittent
 paid-delivery timeout.
 
+A deterministic regression also reproduces a deferred node-lifecycle close
+removing a replacement WebSocket registered at the same seed URL. The close now
+removes the current pool entry synchronously, using a short lock that never spans
+I/O or an await. No deferred close task can act on a later connection; the existing
+generation check still protects replacement state from an old worker's exit.
+The regression controls execution order, covers both an existing and absent
+original connection, delivers a physical record over the replacement and checks
+balanced connection counters. It fails on the old code and passes after the fix.
+The final checks pass 22 transport, six node and seven public-transit tests,
+plus six process tests in each of the all-feature and no-default-feature modes.
+Strict core/relay lint, formatting and the source-size gate also pass.
+The ARM64 package at `bef351f9d` predates this cleanup fix. The connection to the
+earlier intermittent paid-delivery timeout remains unproven.
+
 One no-default-feature seed-only service run nevertheless timed out in paid
 delivery. Its original failure lacked a phase snapshot. Bounded failure-only
 diagnostics now retain the purchase/renewal/restart phase, safe payment state,

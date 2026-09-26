@@ -21,10 +21,10 @@ use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
@@ -47,7 +47,7 @@ struct Connection {
     _close: oneshot::Sender<()>,
 }
 
-type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, Connection>>>;
+type ConnectionPool = Arc<StdMutex<HashMap<TransportAddr, Connection>>>;
 type ConnectionStates = Arc<StdMutex<HashMap<TransportAddr, ConnectionState>>>;
 type DiscoveryQueue = Arc<StdMutex<VecDeque<DiscoveredPeer>>>;
 
@@ -125,6 +125,12 @@ struct Runtime {
 }
 
 impl Runtime {
+    // Pool operations never await or perform I/O. A synchronous lock lets node
+    // eviction close the current stream before a replacement can register.
+    fn connections(&self) -> MutexGuard<'_, HashMap<TransportAddr, Connection>> {
+        self.pool.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
     fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
         // Registration and the running check share the shutdown drain's lock.
@@ -156,16 +162,16 @@ impl Runtime {
             .insert(addr.clone(), state);
     }
 
-    async fn set_disconnected_state(&self, addr: &TransportAddr, state: ConnectionState) {
-        let pool = self.pool.lock().await;
+    fn set_disconnected_state(&self, addr: &TransportAddr, state: ConnectionState) {
+        let pool = self.connections();
         // A late dial result must not overwrite an established replacement.
         if !pool.contains_key(addr) {
             self.set_state(addr, state);
         }
     }
 
-    async fn remove_connection(&self, addr: &TransportAddr, generation: Option<u64>) {
-        let mut pool = self.pool.lock().await;
+    fn remove_connection(&self, addr: &TransportAddr, generation: Option<u64>) {
+        let mut pool = self.connections();
         if generation.is_none_or(|generation| {
             pool.get(addr)
                 .is_some_and(|connection| connection.generation == generation)
@@ -207,7 +213,7 @@ impl WebSocketTransport {
             config: config.clone(),
             local_pubkey: identity.pubkey().serialize(),
             packet_tx,
-            pool: Arc::new(Mutex::new(HashMap::new())),
+            pool: Arc::new(StdMutex::new(HashMap::new())),
             states: Arc::new(StdMutex::new(HashMap::new())),
             discoveries: Arc::new(StdMutex::new(VecDeque::new())),
             running: Arc::new(AtomicBool::new(false)),
@@ -338,7 +344,7 @@ impl WebSocketTransport {
             let _ = task.await;
             self.draining_tasks.pop();
         }
-        self.runtime.pool.lock().await.clear();
+        self.runtime.connections().clear();
         self.runtime
             .states
             .lock()
@@ -366,9 +372,7 @@ impl WebSocketTransport {
         validate_websocket_record(data).map_err(TransportError::SendFailed)?;
         let tx = self
             .runtime
-            .pool
-            .lock()
-            .await
+            .connections()
             .get(addr)
             .map(|connection| connection.tx.clone())
             .ok_or(TransportError::NotStarted)?;
@@ -436,16 +440,12 @@ impl WebSocketTransport {
     }
 
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
-        self.runtime.remove_connection(addr, None).await;
+        self.runtime.remove_connection(addr, None);
     }
 
-    /// Schedule connection cleanup from synchronous node-lifecycle paths.
+    /// Close the current connection from synchronous node-lifecycle paths.
     pub fn close_connection_detached(&self, addr: &TransportAddr) {
-        let runtime = self.runtime.clone();
-        let addr = addr.clone();
-        self.runtime.spawn(async move {
-            runtime.remove_connection(&addr, None).await;
-        });
+        self.runtime.remove_connection(addr, None);
     }
 
     /// Replace TCP-backed WebSocket streams after a confirmed network change.
@@ -460,7 +460,7 @@ impl WebSocketTransport {
         }
         if self.state.is_operational() {
             // Serialize the generation cutover with outbound pool insertion.
-            let mut pool = self.runtime.pool.lock().await;
+            let mut pool = self.runtime.connections();
             self.runtime
                 .network_rebind_generation
                 .send_modify(|generation| *generation = generation.wrapping_add(1));
@@ -633,9 +633,7 @@ async fn run_seed_dialer(runtime: Runtime, addr: TransportAddr) {
     let mut network_rebind_generation = runtime.network_rebind_generation.subscribe();
     let mut observed_network_rebind = *network_rebind_generation.borrow_and_update();
     while runtime.running.load(Ordering::Acquire) {
-        runtime
-            .set_disconnected_state(&addr, ConnectionState::Connecting)
-            .await;
+        runtime.set_disconnected_state(&addr, ConnectionState::Connecting);
         runtime
             .stats
             .reconnect_attempts
@@ -658,9 +656,7 @@ async fn run_seed_dialer(runtime: Runtime, addr: TransportAddr) {
                 delay_ms = runtime.config.reconnect_initial_ms();
             }
             Err(error) => {
-                runtime
-                    .set_disconnected_state(&addr, ConnectionState::Failed(error.to_string()))
-                    .await;
+                runtime.set_disconnected_state(&addr, ConnectionState::Failed(error.to_string()));
                 debug!(remote_addr = %addr, %error, "WebSocket seed connection failed");
                 delay_ms = delay_ms
                     .saturating_mul(2)
@@ -688,9 +684,7 @@ async fn run_seed_dialer(runtime: Runtime, addr: TransportAddr) {
 async fn run_one_shot_dial(runtime: Runtime, addr: TransportAddr) {
     let result = dial_and_run(runtime.clone(), addr.clone()).await;
     if let Err(error) = result {
-        runtime
-            .set_disconnected_state(&addr, ConnectionState::Failed(error.to_string()))
-            .await;
+        runtime.set_disconnected_state(&addr, ConnectionState::Failed(error.to_string()));
     }
 }
 
@@ -745,7 +739,7 @@ where
     let (tx, rx) = mpsc::channel::<Vec<u8>>(runtime.config.max_send_queue());
     let (close_tx, close_rx) = oneshot::channel();
     {
-        let mut pool = runtime.pool.lock().await;
+        let mut pool = runtime.connections();
         // A handshake started on the previous underlay must not repopulate the cleared pool.
         if *runtime.network_rebind_generation.borrow() != expected_network_rebind_generation {
             return Err(TransportError::StartFailed(
@@ -777,7 +771,7 @@ where
         _ = close_rx => Ok(()),
         result = connection::run(&runtime, &addr, websocket, rx, request_key_hint) => result,
     };
-    runtime.remove_connection(&addr, Some(generation)).await;
+    runtime.remove_connection(&addr, Some(generation));
     debug!(
         transport_id = %runtime.transport_id,
         remote_addr = %addr,

@@ -59,7 +59,7 @@ async fn stalled_upgrade(transport: &WebSocketTransport) -> TcpStream {
         "the actual accepted HTTP upgrade must own both permits before testing its lifetime"
     );
     assert_eq!(transport.stats().connections_opened, 0);
-    assert!(transport.runtime.pool.lock().await.is_empty());
+    assert!(transport.runtime.connections().is_empty());
     client
 }
 
@@ -235,7 +235,7 @@ async fn stop_joins_stalled_upgrade_before_restart_and_rejects_its_late_completi
     server.start_async().await.unwrap();
     let stale_upgrade_completed = finish_old_upgrade(&mut stalled).await;
     let before_fresh_stats = server.stats();
-    let stale_pool_entries = server.runtime.pool.lock().await.len();
+    let stale_pool_entries = server.runtime.connections().len();
     // Close only this test-owned old client before probing the fresh runtime,
     // retaining the observations above even on the broken implementation.
     drop(stalled);
