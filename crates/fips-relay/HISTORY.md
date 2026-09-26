@@ -338,9 +338,17 @@ Native atomic proof comparison reads pages of at most 128 identities within
 ceiling derived from the caller-owned original through the production row encoder.
 Stored growth cannot raise that ceiling. Each read is bounded before driver
 projection and decoding; full typed equality and atomic proof/checkpoint rollback
-are retained. Initial collection reads and optional operation-fence reads remain
+are retained. Initial collection reads remain
 separate limits. This does not impose a smaller admission limit on original coins
 whose stored mint, witness or ownership metadata makes them larger than proof JSON.
+
+Exact recovery-record comparisons in atomic proof changes, output preparation,
+receipt publication, issuance retirement and withdrawal completion share the same
+caller-sized bound. Their bounded operation query retains row locking and typed
+equality; a required absence check reads only existence. Larger expected originals
+still compare, while unexpected stored growth cannot raise the ceiling. Internal
+storage-reservation reads without an exact original snapshot and ordinary recovery
+reads remain separate bounds.
 
 The version-4 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the

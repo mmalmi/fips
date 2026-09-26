@@ -304,11 +304,18 @@ record from the caller's original; stored growth cannot enlarge the ceiling.
 Reads are gated before driver projection and decoding. Full typed comparison and
 atomic proof/checkpoint rollback remain unchanged.
 
-Native CDK `53a3485a` passes 405 affected native tests and strict lint; SDK
-`cfe3691` passes 15 focused proof-history tests, 411 workspace tests,
+Exact saved-operation comparisons now share the bounded SQL projection in atomic
+proof changes, output preparation, receipt publication, issuance retirement and
+withdrawal completion. Production bindings size a larger caller-owned original;
+unexpected stored growth cannot enlarge the 4 MiB or original-record ceiling.
+Full typed equality, row locking and atomic writes remain unchanged. A required
+absent operation is checked without loading its payload.
+
+Native CDK `a339c80f` passes 407 affected native tests, five focused
+operation-record checks and strict lint; SDK `8a87a1f` passes 411 workspace tests,
 all 18 feature profiles and strict lint. The matching FIPS graph passes 296 relay tests,
 strict lint and the actual-expiry/restart refund-retirement process. All
-2,736 recorded source inputs and both executable hashes match. Local regressions
+2,737 recorded source inputs and both executable hashes match. Local regressions
 cover aggregate page overflow, smaller-page progress, late invalid inputs,
 full-capacity rollback, reopening/retry and separate fee/refund totals. The outgoing
 regression rejects oversized malformed inputs before decoding, preserves the
@@ -319,10 +326,14 @@ Large witness groups split without skipping coins. Atomic-comparison regressions
 also retain earlier records and checkpoints when a later page is oversized, and
 preserve larger caller-held originals and equivalent JSON encodings within the
 read budget. SDK collection still accepts near-limit proofs with a 2048-byte mint
-URL and later ownership metadata. This is local test-money evidence; one opt-in
-SDK storage soak is excluded. Initial collection and imported-proof reads,
-optional operation-fence reads, remaining stores, sustained aggregate storage
-pressure, physical disk/power loss and current device acceptance remain open.
+URL and later ownership metadata. Operation-record regressions reject malformed
+stored growth before decoding and retain the original coins and checkpoint. They
+also preserve larger expected records, stale-record rejection and equivalent JSON
+within the read budget. This is local test-money evidence; one opt-in SDK storage
+soak is excluded. Initial collection/import reads, ordinary recovery and two
+internal storage-reservation reads without an exact old snapshot remain open,
+along with remaining stores, sustained aggregate storage pressure, physical
+disk/power loss and current device acceptance.
 Service capacity accounting stays disabled.
 
 
