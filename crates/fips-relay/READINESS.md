@@ -347,6 +347,30 @@ disk/power loss and current device acceptance.
 Service capacity accounting stays disabled.
 
 
+### Cached keyset comparison
+
+Output preparation bounds stored mint-key JSON before it reaches the SQL driver
+or decoder. The ceiling is 4 MiB or the larger caller-owned original encoded by
+production bindings. Typed equality, keyset identity checks and atomic ownership
+remain unchanged. Rejection retains keys, metadata, counters, recovery records and
+reserved space; equivalent encodings within budget and larger known originals
+still work, including after reopening at full logical capacity.
+
+Native CDK `ec8d976f` passes 409 affected tests, four focused output-key
+checks and strict lint. With unchanged SDK `99ed177c`, the matching graph
+passes 22 existing issuance, swap, withdrawal, receiver-admission and
+send/receive/reclaim preparation checks, all 18 feature profiles and strict
+all-target lint. It also passes 296 relay tests, relay lint and the actual-expiry,
+restart and refund-retirement process. All 2,738 source inputs and both runtime
+executable hashes match. The preceding 411-test SDK workspace result belongs to
+CDK `ceb17370`; this focused acceptance does not repeat that full suite.
+
+Ordinary initial key-cache reads and the remaining storage, physical recovery and
+current-device requirements stay open. Service capacity accounting stays disabled.
+
+
+### Earlier wallet and build evidence
+
 The receive-replay regression first reproduced a collected spent token creating
 another pending receive after its swap was rejected. Native admission now checks
 unfamiliar coins through NUT-07 before acquisition. The replay adds no coin or recovery operation,

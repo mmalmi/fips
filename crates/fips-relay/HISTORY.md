@@ -356,6 +356,12 @@ already held by the caller instead of another decoded batch. Duplicate identitie
 operation ownership, full typed equality and atomic storage claims remain checked.
 This does not bound the initial operation or receipt reads used during admission.
 
+Output preparation also bounds cached mint-key comparison before SQL driver
+projection and decoding. The ceiling is 4 MiB or the larger caller-owned original,
+measured with the production key encoder. Full typed equality and keyset identity
+checks remain; rejection preserves keys, metadata, counters, recovery records and
+storage allowances. This does not bound ordinary initial key-cache loads.
+
 The version-4 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
 original owners to reserve its full serialized proof size plus 16 KiB per nonempty
