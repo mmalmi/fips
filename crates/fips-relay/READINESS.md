@@ -285,20 +285,25 @@ Exact receipt batches and selected proof pages enforce the existing 128-record,
 complete original inputs under the same atomic ownership, spent-state and gross
 value checks. Oversized groups retry smaller pages, at most eight reads from 128
 inputs down to one; individually oversized or malformed evidence remains an error.
-Incoming enumeration shares native eligibility, and incoming acknowledgment
-leaves its input checks to atomic retirement.
+Incoming enumeration and outgoing recovery share native eligibility, replacing
+the outgoing SDK's unbounded proof and recovery-record reads. Active-operation
+existence checks do not load recovery payloads. Incoming acknowledgment leaves
+its input checks to atomic retirement.
 Read errors, stale records, failed writes and insufficient checkpoint space retain
 the original receipts, coins and totals. These bounds do not cap all database
 internal memory or physical storage.
 
-Native CDK `7c1b089f` passes 402 affected native tests and strict lint; SDK
-`85534be` passes 12 focused history/refund tests, 410 workspace tests, all 18
-feature profiles and strict lint. The matching FIPS graph passes 296 relay tests,
+Native CDK `a2169eee` passes 402 affected native tests and strict lint; SDK
+`d0cf363` passes 11 focused incoming/outgoing history tests, 411 workspace tests,
+all 18 feature profiles and strict lint. The matching FIPS graph passes 296 relay tests,
 strict lint and the actual-expiry/restart refund-retirement process. All
 2,733 recorded source inputs and both executable hashes match. Local regressions
 cover aggregate page overflow, smaller-page progress, late invalid inputs,
-full-capacity rollback, reopening/retry and separate fee/refund totals. This is
-local test-money evidence; physical disk/power loss, sustained aggregate storage
+full-capacity rollback, reopening/retry and separate fee/refund totals. The outgoing
+regression rejects oversized malformed inputs before decoding, preserves the
+receipt and coins, and retries after reopening without resetting costs or making
+another mint swap. This is local test-money evidence; physical disk/power loss,
+sustained aggregate storage
 pressure, remaining stores/queries and current device acceptance remain open.
 Service capacity accounting stays disabled.
 
