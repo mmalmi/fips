@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Total native wallet storage and remaining SDK stores, other wallet queries, individual recovery/result sizes and physical recovery capacity under sustained history pressure. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Service-level capacity configuration, remaining wallet workflows/stores and queries, sustained live channel pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -75,16 +75,15 @@ fingerprinted source/dependency inputs and both relay/test executable hashes sta
 unchanged through that run. This is local test-money acceptance, not physical
 power-loss or current-router validation.
 
-An opt-in SDK storage soak now completes 300 numbered sends and receives through
-a real local test mint, explicitly acknowledges their owners, collects original
-spent coins and reopens every 75 cycles. From cycle 150 onward, the database stays
-at 95 pages of 4096 bytes, including 20 free pages; the WAL peaks at 4,190,072 bytes.
-All table row counts remain fixed during that interval. The wallet retains its
-12 spendable proof rows and all 32 test sats, retires 312 spent rows, and keeps a
-gross lifetime debit of 300 sats. The test takes 42.67 seconds locally, not on a
-router. This accepts a finite completed-payment workload, not total wallet
-storage, overlapping active channels or physical recovery headroom. That workload
-finishes all wallet operations between cycles.
+The existing SDK storage soak now uses a fixed 16 MiB logical wallet capacity
+through 300 numbered sends and receives. Every 75 cycles it interrupts an admitted
+receive after mint commitment, fills unreserved space, rejects new spending and
+reopens the wallet. Recovery finishes before removing pressure, without increasing
+the limit. Exact custody and lifetime costs remain checked throughout. The workload
+retains six accounting owners and 12 spendable proof rows, retires 312 spent rows,
+conserves all 32 test sats and keeps a 300-sat lifetime gross debit. Financial and
+accounting row counts stay fixed after warm-up. See the current acceptance below
+and the SDK's wallet-history document for measurements and reproduction.
 
 Collection now checks each unfinished operation's exact coin references and the
 candidate rows' creator/spender ownership. Unrelated open sends no longer prevent
@@ -362,19 +361,29 @@ SQL driver projection; malformed ownership rejects the page. This scan does not
 decode proof witnesses or other payloads and grants no deletion authority. Full
 original comparison, spent-state checks and atomic history deletion remain intact.
 
-Native CDK `fe294d0c` passes 410 affected tests, 6 focused proof-page checks
-and strict lint. SDK `6ee58546` passes all 411 workspace tests, 15 focused
-history checks, 18 feature profiles and strict all-target lint. The matching graph
-passes 296 relay tests, relay lint and the actual-expiry/restart refund-retirement
-process. All 2,739 recorded source inputs and both runtime executable hashes match.
-Ownership regressions span multiple proof and operation pages,
-exclude malformed oversized payloads from the header scan, and retain exact
-deletion checks and full-capacity collection. One opt-in storage soak is excluded.
+Outgoing receipt retirement now releases its completed operation's unused storage
+allowance in the same SQLite transaction. Exact receipt, spent-input and inactive
+operation checks still guard removal; refund receipts, original coins and unrelated
+reservations remain. Failed release rolls back deletion. The sustained workload
+reproduced one leaked reservation per completed send before this correction.
 
-Initial full-proof and key-cache reads, other wallet stores, sustained aggregate
-pressure, physical storage/power loss, current devices and remote deployment
+Native CDK `e2a9cb49` passes 411 affected tests, five focused history checks and
+strict lint. SDK `2f49ee1f` passes its full 411-test workspace suite, strict
+all-target lint and the explicit 300-cycle pressure/recovery soak. The matching
+graph passes 296 relay tests, relay lint and the actual-expiry, restart and
+refund-retirement process. All 2,739 recorded source inputs and both runtime
+executable hashes match. Features and dependencies did not change; no new
+feature-matrix run is claimed.
+
+The soak's 49.82-second local run reached 4,178 SQLite pages of 4096 bytes and a
+20,291,032-byte peak WAL under synthetic pressure. Charged logical bytes were
+103,906 at cycle 150 and 102,984 at cycle 300. These measurements do not reserve
+physical disk or establish router memory, latency or power-loss behavior.
+
+This accepts one mint's repeated send/receive overlap and recovery at aggregate
+logical capacity. Sustained live channel lifecycles, remaining wallet workflows
+and queries, physical storage/power loss, current devices and remote deployment
 remain unaccepted. Service capacity accounting stays disabled.
-
 
 ### Earlier wallet and build evidence
 

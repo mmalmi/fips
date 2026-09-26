@@ -398,10 +398,13 @@ decoding; retirement retains candidates from at most one page. Outgoing recovery
 shares the native incoming/outgoing eligibility check: exact original proofs use
 bounded pages, oversized groups retry smaller pages, and active-operation checks
 read only existence. The atomic retirement repeats all checks before deletion.
-Oversized or
-corrupt evidence stops the operation without skipping records, releasing custody
-or falling back to a full-table read. The money lock spans traversal. These bounds
-cover receipt enumeration and retirement eligibility reads; full traversal time
+Outgoing receipt retirement also releases the completed native operation's
+unused storage allowance atomically. Refund receipts, retained coins and unrelated
+reservations remain; a failed allowance release rolls receipt removal back.
+Oversized or corrupt evidence stops the operation without skipping records,
+releasing custody or falling back to a full-table read. The money lock spans
+traversal. These bounds cover receipt enumeration and retirement eligibility reads;
+full traversal time
 remains separate. New-operation proof selection has its separate
 inventory limit; it does not cap total historical wallet records.
 
