@@ -18,7 +18,7 @@ use futures::{SinkExt, StreamExt};
 use rand::RngExt;
 use secp256k1::XOnlyPublicKey;
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
@@ -42,6 +42,7 @@ enum Direction {
 
 struct Connection {
     generation: u64,
+    pending_hint: Option<XOnlyPublicKey>,
     tx: mpsc::Sender<Vec<u8>>,
     // Dropping the pool entry also interrupts a writer blocked below its queue.
     _close: oneshot::Sender<()>,
@@ -49,7 +50,6 @@ struct Connection {
 
 type ConnectionPool = Arc<StdMutex<HashMap<TransportAddr, Connection>>>;
 type ConnectionStates = Arc<StdMutex<HashMap<TransportAddr, ConnectionState>>>;
-type DiscoveryQueue = Arc<StdMutex<VecDeque<DiscoveredPeer>>>;
 
 #[derive(Debug, Default)]
 struct WebSocketStats {
@@ -113,7 +113,6 @@ struct Runtime {
     packet_tx: PacketTx,
     pool: ConnectionPool,
     states: ConnectionStates,
-    discoveries: DiscoveryQueue,
     running: Arc<AtomicBool>,
     total_slots: Arc<Semaphore>,
     inbound_slots: Arc<Semaphore>,
@@ -215,7 +214,6 @@ impl WebSocketTransport {
             packet_tx,
             pool: Arc::new(StdMutex::new(HashMap::new())),
             states: Arc::new(StdMutex::new(HashMap::new())),
-            discoveries: Arc::new(StdMutex::new(VecDeque::new())),
             running: Arc::new(AtomicBool::new(false)),
             total_slots: Arc::new(Semaphore::new(max_connections)),
             inbound_slots: Arc::new(Semaphore::new(max_inbound)),
@@ -534,12 +532,17 @@ impl Transport for WebSocketTransport {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredPeer>, TransportError> {
+        // At most one unconsumed hint belongs to each live connection. Closing
+        // or replacing that connection retires its discovery metadata too.
         Ok(self
             .runtime
-            .discoveries
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .drain(..)
+            .connections()
+            .iter_mut()
+            .filter_map(|(addr, connection)| {
+                connection.pending_hint.take().map(|pubkey| {
+                    DiscoveredPeer::with_hint(self.transport_id, addr.clone(), pubkey)
+                })
+            })
             .collect())
     }
 
@@ -753,6 +756,7 @@ where
             addr.clone(),
             Connection {
                 generation,
+                pending_hint: None,
                 tx,
                 _close: close_tx,
             },
@@ -769,7 +773,7 @@ where
     let outcome = tokio::select! {
         biased;
         _ = close_rx => Ok(()),
-        result = connection::run(&runtime, &addr, websocket, rx, request_key_hint) => result,
+        result = connection::run(&runtime, &addr, websocket, rx, request_key_hint, generation) => result,
     };
     runtime.remove_connection(&addr, Some(generation));
     debug!(

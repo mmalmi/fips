@@ -1160,6 +1160,23 @@ Strict core/relay lint, formatting and the source-size gate also pass.
 The ARM64 package checks above include this cleanup fix. Its connection to the
 earlier intermittent paid-delivery timeout remains unproven.
 
+Pending WebSocket discovery hints now belong to their live physical connection.
+The previous separate queue retained hints after a stream closed, allowing stale
+discovery and accumulation when the node did not drain it. Each connection now
+holds at most one unconsumed hint; close, replacement, network change and shutdown
+retire it with the pool entry. A late hint can update only its original connection
+generation. This removes the queue and its lock without changing wire messages,
+configuration, FIPS authentication or payment policy.
+The real framing regression `unconsumed_seed_hints_retire` fails before the fix
+on remote close and passes afterward across all four retirement paths. A fresh
+connection at the same URL announces its own key once, and the existing delayed
+completion case preserves the replacement's hint and writer. All 23 transport,
+six node and seven public-transit checks pass, along with strict core/relay lint.
+The paid seed-bootstrap process case passes with all features and with optional
+relay features disabled, including recovery and settlement of all 384 test sats.
+The packaged ARM64 build at `993304961` predates this discovery-hint change; the
+original intermittent timeout and current-device acceptance remain open.
+
 One no-default-feature seed-only service run nevertheless timed out in paid
 delivery. Its original failure lacked a phase snapshot. Bounded failure-only
 diagnostics now retain the purchase/renewal/restart phase, safe payment state,

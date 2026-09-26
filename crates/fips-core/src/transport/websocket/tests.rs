@@ -85,6 +85,7 @@ async fn full_send_queue_returns_backpressure_without_growing() {
         addr.clone(),
         Connection {
             generation: 1,
+            pending_hint: None,
             tx,
             _close: oneshot::channel().0,
         },

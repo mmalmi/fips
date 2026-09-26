@@ -8,6 +8,7 @@ pub(super) async fn run<S>(
     websocket: WebSocketStream<S>,
     mut rx: mpsc::Receiver<Vec<u8>>,
     request_key_hint: bool,
+    generation: u64,
 ) -> Result<(), TransportError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -79,16 +80,12 @@ where
                             deadlines.hint = None;
                             if pubkey != runtime.local_pubkey
                                 && let Ok(pubkey) = XOnlyPublicKey::from_slice(&pubkey)
+                                && let Some(connection) = runtime
+                                    .connections()
+                                    .get_mut(addr)
+                                    .filter(|connection| connection.generation == generation)
                             {
-                                runtime
-                                    .discoveries
-                                    .lock()
-                                    .unwrap_or_else(|error| error.into_inner())
-                                    .push_back(DiscoveredPeer::with_hint(
-                                        runtime.transport_id,
-                                        addr.clone(),
-                                        pubkey,
-                                    ));
+                                connection.pending_hint = Some(pubkey);
                             }
                         }
                         LocalKeyHint::Response { .. } => {}

@@ -140,16 +140,18 @@ async fn old_connection_completion_preserves_the_replacement_state_and_writer() 
     let mut transport = test_transport(8);
     transport.start_async().await.unwrap();
     let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
-    let (old_socket, old_peer) = raw_pair().await;
+    let (old_socket, mut old_peer) = raw_pair().await;
     let mut old = Box::pin(run_connection(
         transport.runtime.clone(),
         addr.clone(),
         old_socket,
         transport.runtime.next_generation(),
         Direction::Outbound,
-        false,
+        true,
         0,
     ));
+    poll_pending(old.as_mut()).await;
+    answer_hint(&mut old_peer, Identity::generate().pubkey().serialize()).await;
     poll_pending(old.as_mut()).await;
     transport.close_connection_async(&addr).await;
 
@@ -161,14 +163,23 @@ async fn old_connection_completion_preserves_the_replacement_state_and_writer() 
         replacement_socket,
         generation,
         Direction::Outbound,
-        false,
+        true,
         0,
     ));
+    poll_pending(replacement.as_mut()).await;
+    let replacement_pubkey = Identity::generate().pubkey().serialize();
+    answer_hint(&mut replacement_peer, replacement_pubkey).await;
     poll_pending(replacement.as_mut()).await;
 
     // The old worker finishes only after the new one has registered itself.
     drop(old_peer);
     let _ = old.await;
+    let hints = transport.discover().unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(
+        hints[0].pubkey_hint.unwrap().serialize(),
+        replacement_pubkey
+    );
     {
         let pool = transport.runtime.connections();
         assert_eq!(pool.get(&addr).unwrap().generation, generation);
@@ -356,6 +367,65 @@ async fn detached_close_cannot_remove_a_replacement() {
             transport.stats().connections_closed,
             1 + u64::from(had_original)
         );
+        transport.stop_async().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn unconsumed_seed_hints_retire_with_their_physical_connection() {
+    for retirement in ["remote-close", "peer-removal", "network-change", "stop"] {
+        let mut transport = test_transport(8);
+        let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
+        for keep_live in [false, true] {
+            if !transport.state.is_operational() {
+                transport.start_async().await.unwrap();
+            }
+            let pubkey = Identity::generate().pubkey().serialize();
+            let (socket, mut peer) = raw_pair().await;
+            let mut connection = Box::pin(run_connection(
+                transport.runtime.clone(),
+                addr.clone(),
+                socket,
+                transport.runtime.next_generation(),
+                Direction::Outbound,
+                true,
+                *transport.runtime.network_rebind_generation.borrow(),
+            ));
+            poll_pending(connection.as_mut()).await;
+            answer_hint(&mut peer, pubkey).await;
+            poll_pending(connection.as_mut()).await;
+
+            if keep_live {
+                // A new connection at the same URL still announces its own
+                // key exactly once after the previous connection retires.
+                let hints = transport.discover().unwrap();
+                assert_eq!(hints.len(), 1, "fresh discovery after {retirement}");
+                assert_eq!(hints[0].addr, addr);
+                assert_eq!(hints[0].pubkey_hint.unwrap().serialize(), pubkey);
+                assert!(transport.discover().unwrap().is_empty());
+                transport.close_connection_detached(&addr);
+            } else {
+                match retirement {
+                    "remote-close" => peer.close(None).await.unwrap(),
+                    "peer-removal" => transport.close_connection_detached(&addr),
+                    "network-change" => {
+                        assert!(transport.restart_after_network_change().await.unwrap());
+                    }
+                    "stop" => transport.stop_async().await.unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+            tokio::time::timeout(Duration::from_secs(1), connection)
+                .await
+                .expect("retired physical connection must finish")
+                .unwrap();
+            assert!(
+                transport.discover().unwrap().is_empty(),
+                "retired WebSocket connection must not leave a discovery hint: {retirement}"
+            );
+        }
+        assert_eq!(transport.stats().connections_opened, 2);
+        assert_eq!(transport.stats().connections_closed, 2);
         transport.stop_async().await.unwrap();
     }
 }
