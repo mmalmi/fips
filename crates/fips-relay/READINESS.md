@@ -469,8 +469,8 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The 26 September source bundle at `bb287843d` contains 35,691 inventoried files
-and resolves 693 packages, including 672 vendored registry packages. All 2,740
+The 27 September source bundle at `bef351f9d` contains 35,694 inventoried files
+and resolves 693 packages, including 672 vendored registry packages. All 2,743
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -480,16 +480,32 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,068,584
-bytes, static and stripped. The unsigned APK is 11,482,351 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,072,048
+bytes, static and stripped. The unsigned APK is 11,487,405 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
 installed on a router.
 
-The four-node funding/recovery fixture also runs against that exact production
-executable in ARM64 Linux. A separate all-features test harness provides the local
-mint and test wallets; each child relay uses the default-feature OpenWrt binary.
+The current packaged executable also passes three UDP-to-WebSocket process
+cases in isolated ARM64 Linux: URL-only plaintext bootstrap, ordinary TLS and
+explicit FIPS-authenticated self-signed TLS. A separate harness with optional
+relay features disabled starts the real default-feature production executable.
+Each case verifies unpaid denial, paid delivery, allowance exhaustion, renewal,
+middle-relay crash/restart, paid delivery after recovery and settlement conserving
+all 384 test sats. The TLS cases reject untrusted issuers, wrong server names or
+forged handshake signatures according to the selected policy before admission
+or spending. The source manifest, harness and executable hashes remain unchanged.
+All three containers use a read-only root, no external network or capabilities,
+and only the two executables mounted from the host; all are removed afterward.
+See the [WebSocket reproduction steps](openwrt/README.md#websocket-and-tls-with-the-packaged-executable).
+These passes do not explain the earlier intermittent delivery timeout or establish
+radio performance, remote TLS deployment, physical power loss or current-device
+acceptance.
+
+Earlier acceptance at `bb287843d` runs the four-node funding/recovery fixture
+against that revision's production executable in ARM64 Linux. A separate
+all-features test harness provides the local mint and test wallets; each child relay uses the default-feature OpenWrt binary.
 Both the logical-wallet-limit case and the real Linux ENOSPC case pass, including
 paid delivery after restart, original-channel settlement, fund reconciliation and
 unchanged lifetime spending limits. In the latter case, only the transit relay's
@@ -500,7 +516,7 @@ power-loss or OpenWrt service supervision checks. The container has no external
 network, a read-only root, no capabilities and only the executables mounted from
 the host. See the [process recovery recipe](openwrt/README.md#production-executable-and-storage-recovery).
 
-The same bundle's separate all-features routing harness passes both automatic
+That earlier bundle's separate all-features routing harness passes both automatic
 loss and delay scenarios on ARM64 Linux. Native feedback moves the purchase away
 from an impaired route and back to the recovered cheaper provider, preserving
 the original channels across reuse and controller reload. Settlement conserves
@@ -1100,7 +1116,8 @@ All three regressions fail before the fix and pass afterward. The matching graph
 passes all 20 transport, six authenticated-node and seven public-API WebSocket
 checks, five paid-service/startup checks in each relay feature mode, strict
 core/relay lint, formatting and source-size checks. These are local native
-checks; the earlier OpenWrt package predates this fix and needs rebuilding.
+checks; the current ARM64 package includes this fix, while current-device
+acceptance remains outstanding.
 The stalled-write failures have not been linked to the earlier intermittent
 paid-delivery timeout.
 

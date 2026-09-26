@@ -22,10 +22,11 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `bb287843d` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
-its APK is 11.0 MiB. It passes an isolated Linux startup check and package-content
-verification. This does not establish forwarding performance or current-router
-acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
+build at `bef351f9d` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
+the three [paid WebSocket/TLS process cases](#websocket-and-tls-with-the-packaged-executable)
+against the packaged executable. These checks do not establish forwarding
+performance or current-router acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
 
 Use an APKv3 tool with the `mkpkg` applet. OpenWrt's installed package manager
 may omit that build applet; the SDK host tool or Alpine's full build tool can
@@ -132,6 +133,46 @@ startup and recovery. Both cases require paid delivery after restart and settle
 the original channels without resetting lifetime spending limits. Tmpfs exercises
 Linux errors and process recovery; it does not model flash persistence or power
 loss. Verify the source manifest and both executable hashes afterward.
+
+### WebSocket and TLS with the packaged executable
+
+Build the existing service harness with optional relay features disabled, matching
+the packaged daemon. The fixture supplies its own temporary mint and TLS proxy:
+
+```sh
+CARGO_TARGET_DIR="$PWD/target/linux-tests" CARGO_INCREMENTAL=0 \
+  CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+  cargo +1.96.0 zigbuild --offline --locked -j 1 \
+  --target aarch64-unknown-linux-musl -p fips-relay --no-default-features --test service
+```
+
+Set `service_test_binary` to the resulting executable `service-<hash>` in
+`target/linux-tests/aarch64-unknown-linux-musl/debug/deps/`. Use `relay_program`,
+`compiled_relay_path` and the local image from the production-executable recipe
+above. Each case mounts only the harness and the packaged executable:
+
+```sh
+for relay_case in \
+  mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster \
+  mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid_limits \
+  mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_paid_limits
+do
+  docker run --rm --pull never --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --user 65534:65534 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
+    --memory 2g --cpus 2 --pids-limit 256 \
+    --mount "type=bind,source=$service_test_binary,target=/candidate/service,readonly" \
+    --mount "type=bind,source=$relay_program,target=$compiled_relay_path,readonly" \
+    --entrypoint /candidate/service "$relay_test_image" \
+    "mixed_transport::$relay_case" --exact --test-threads=1 --nocapture || exit
+done
+```
+
+Each three-process case crosses UDP and WebSocket, denies unfunded forwarding,
+exhausts and renews paid allowances, crashes/restarts the middle relay and settles
+all original test funds. The TLS cases also check certificate/handshake rejection
+before peer admission or spending. Verify both executables and the source manifest
+afterward. Loopback TLS does not establish remote proxy or radio acceptance.
 
 ## Install and configure
 
