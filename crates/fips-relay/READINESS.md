@@ -1064,6 +1064,24 @@ checks. All four paid-service checks pass in each feature mode, as do strict
 core/relay lint, formatting and source-size checks. These concrete cleanup
 failures have not been linked to the intermittent paid-delivery timeout below.
 
+Stalled-write regressions additionally reproduce an initial key-hint write
+outliving its exchange deadline, a data write suspending the idle timer, and
+local close leaving the writer blocked. They use the real WebSocket encoder
+over a one-byte duplex underlay whose peer stays alive without reading. The
+existing hint/idle deadlines now cover all frame writes, and removing a pool
+entry signals cancellation independently of the data queue. Explicit close and
+network rebind release stalled streams even with the idle timeout disabled;
+generation checks still protect replacement connections. Partial writes do not
+increment completed-frame counters or resume on a replacement stream. No new
+wire messages, configuration fields or dependency versions are required.
+All three regressions fail before the fix and pass afterward. The matching graph
+passes all 20 transport, six authenticated-node and seven public-API WebSocket
+checks, five paid-service/startup checks in each relay feature mode, strict
+core/relay lint, formatting and source-size checks. These are local native
+checks; the earlier OpenWrt package predates this fix and needs rebuilding.
+The stalled-write failures have not been linked to the earlier intermittent
+paid-delivery timeout.
+
 One no-default-feature seed-only service run nevertheless timed out in paid
 delivery. Its original failure lacked a phase snapshot. Bounded failure-only
 diagnostics now retain the purchase/renewal/restart phase, safe payment state,

@@ -134,6 +134,11 @@ without preconfigured identities; payment control then requires explicit
 `neighbor_admission: "authenticated_adjacent"`. A seed URL supplies a bootstrap
 location, not spending authority or arbitrary endpoint discovery.
 
+The key-hint and idle deadlines also apply during blocked WebSocket writes.
+Closing a connection or rebinding after a network change interrupts its pending
+writes, including when the idle timeout is disabled. A partially written frame
+is discarded with the old stream; it is not resumed on a replacement connection.
+
 Before starting payment workers, the service checks that every requested
 transport instance is operational. A failed listener or unavailable adapter
 stops startup and closes any sibling transports that did start. Network changes

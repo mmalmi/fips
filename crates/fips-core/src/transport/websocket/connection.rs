@@ -1,5 +1,6 @@
 //! Framing and discovery for a registered WebSocket connection.
 use super::*;
+use tokio::time::Instant;
 
 pub(super) async fn run<S>(
     runtime: &Runtime,
@@ -13,32 +14,29 @@ where
 {
     let (mut sink, mut stream) = websocket.split();
     let mut pending_nonce = request_key_hint.then(|| rand::rng().random::<u64>());
+    let mut deadlines = Deadlines::new(&runtime.config, request_key_hint);
     if let Some(nonce) = pending_nonce {
-        sink.send(Message::Binary(
-            LocalKeyHint::Request { nonce }.encode().into(),
-        ))
-        .await
-        .map_err(|error| TransportError::SendFailed(error.to_string()))?;
+        deadlines
+            .send(
+                &mut sink,
+                Message::Binary(LocalKeyHint::Request { nonce }.encode().into()),
+            )
+            .await?;
     }
 
-    let started = tokio::time::Instant::now();
-    let mut last_received = started;
     let ping_secs = runtime.config.ping_interval_secs();
-    let idle_secs = runtime.config.idle_timeout_secs();
     let mut ping = tokio::time::interval(if ping_secs == 0 {
         Duration::from_secs(24 * 60 * 60)
     } else {
         Duration::from_secs(ping_secs)
     });
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut check = tokio::time::interval(Duration::from_secs(1));
-    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     enum Event {
         Outbound(Option<Vec<u8>>),
         Inbound(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
         Ping,
-        Check,
+        Expired,
     }
 
     loop {
@@ -46,14 +44,14 @@ where
             outbound = rx.recv() => Event::Outbound(outbound),
             inbound = stream.next() => Event::Inbound(inbound),
             _ = ping.tick(), if ping_secs > 0 => Event::Ping,
-            _ = check.tick() => Event::Check,
+            _ = deadlines.expired() => Event::Expired,
         };
         match event {
             Event::Outbound(Some(data)) => {
                 let len = data.len();
-                if let Err(error) = sink.send(Message::Binary(data.into())).await {
-                    break Err(TransportError::SendFailed(error.to_string()));
-                }
+                deadlines
+                    .send(&mut sink, Message::Binary(data.into()))
+                    .await?;
                 runtime.stats.frames_sent.fetch_add(1, Ordering::Relaxed);
                 runtime
                     .stats
@@ -62,7 +60,7 @@ where
             }
             Event::Outbound(None) => break Ok(()),
             Event::Inbound(Some(Ok(Message::Binary(data)))) => {
-                last_received = tokio::time::Instant::now();
+                deadlines.received = Instant::now();
                 if let Some(hint) = LocalKeyHint::decode(&data) {
                     match hint {
                         LocalKeyHint::Request { nonce } => {
@@ -70,16 +68,15 @@ where
                                 nonce,
                                 pubkey: runtime.local_pubkey,
                             };
-                            if let Err(error) =
-                                sink.send(Message::Binary(reply.encode().into())).await
-                            {
-                                break Err(TransportError::SendFailed(error.to_string()));
-                            }
+                            deadlines
+                                .send(&mut sink, Message::Binary(reply.encode().into()))
+                                .await?;
                         }
                         LocalKeyHint::Response { nonce, pubkey }
                             if pending_nonce == Some(nonce) =>
                         {
                             pending_nonce = None;
+                            deadlines.hint = None;
                             if pubkey != runtime.local_pubkey
                                 && let Ok(pubkey) = XOnlyPublicKey::from_slice(&pubkey)
                             {
@@ -128,13 +125,11 @@ where
                     .fetch_add(len as u64, Ordering::Relaxed);
             }
             Event::Inbound(Some(Ok(Message::Ping(payload)))) => {
-                last_received = tokio::time::Instant::now();
-                if let Err(error) = sink.send(Message::Pong(payload)).await {
-                    break Err(TransportError::SendFailed(error.to_string()));
-                }
+                deadlines.received = Instant::now();
+                deadlines.send(&mut sink, Message::Pong(payload)).await?;
             }
             Event::Inbound(Some(Ok(Message::Pong(_)))) => {
-                last_received = tokio::time::Instant::now();
+                deadlines.received = Instant::now();
             }
             Event::Inbound(Some(Ok(Message::Close(_))) | None) => break Ok(()),
             Event::Inbound(Some(Ok(Message::Text(_) | Message::Frame(_)))) => {
@@ -147,21 +142,60 @@ where
                 break Err(TransportError::RecvFailed(error.to_string()));
             }
             Event::Ping => {
-                if let Err(error) = sink.send(Message::Ping(Bytes::new())).await {
-                    break Err(TransportError::SendFailed(error.to_string()));
-                }
+                deadlines
+                    .send(&mut sink, Message::Ping(Bytes::new()))
+                    .await?;
             }
-            Event::Check => {
-                if pending_nonce.is_some()
-                    && started.elapsed()
-                        >= Duration::from_millis(runtime.config.key_hint_timeout_ms())
-                {
-                    break Err(TransportError::Timeout);
-                }
-                if idle_secs > 0 && last_received.elapsed() >= Duration::from_secs(idle_secs) {
-                    break Err(TransportError::Timeout);
-                }
-            }
+            Event::Expired => break Err(TransportError::Timeout),
+        }
+    }
+}
+
+// The same deadlines cover waiting for input and writing any frame, including
+// the initial hint. A partial timed-out write closes the whole stream; it is
+// never resumed on a replacement connection.
+struct Deadlines {
+    hint: Option<Instant>,
+    idle_after: Option<Duration>,
+    received: Instant,
+}
+
+impl Deadlines {
+    fn new(config: &WebSocketConfig, request_key_hint: bool) -> Self {
+        let now = Instant::now();
+        Self {
+            hint: request_key_hint
+                .then(|| now.checked_add(Duration::from_millis(config.key_hint_timeout_ms())))
+                .flatten(),
+            idle_after: (config.idle_timeout_secs() > 0)
+                .then(|| Duration::from_secs(config.idle_timeout_secs())),
+            received: now,
+        }
+    }
+
+    async fn expired(&self) {
+        let deadline = self
+            .hint
+            .into_iter()
+            .chain(
+                self.idle_after
+                    .and_then(|idle| self.received.checked_add(idle)),
+            )
+            .min();
+        match deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending().await,
+        }
+    }
+
+    async fn send<S>(&self, sink: &mut S, message: Message) -> Result<(), TransportError>
+    where
+        S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+    {
+        tokio::select! {
+            biased;
+            _ = self.expired() => Err(TransportError::Timeout),
+            result = sink.send(message) => result.map_err(|error| TransportError::SendFailed(error.to_string())),
         }
     }
 }

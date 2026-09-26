@@ -2,6 +2,7 @@ use super::*;
 
 mod connection_cleanup;
 mod handshake_lifetime;
+mod write_lifetime;
 
 #[test]
 fn websocket_record_validation_accepts_bounded_direct_fsp_fragments() {
@@ -66,12 +67,14 @@ async fn full_send_queue_returns_backpressure_without_growing() {
     transport.state = TransportState::Up;
     let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
     let (tx, _rx) = mpsc::channel(1);
-    transport
-        .runtime
-        .pool
-        .lock()
-        .await
-        .insert(addr.clone(), Connection { generation: 1, tx });
+    transport.runtime.pool.lock().await.insert(
+        addr.clone(),
+        Connection {
+            generation: 1,
+            tx,
+            _close: oneshot::channel().0,
+        },
+    );
     let record = build_msg1(
         SessionIndex::new(1),
         &[0; crate::noise::HANDSHAKE_MSG1_SIZE],

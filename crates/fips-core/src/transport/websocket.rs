@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
@@ -41,6 +41,8 @@ enum Direction {
 struct Connection {
     generation: u64,
     tx: mpsc::Sender<Vec<u8>>,
+    // Dropping the pool entry also interrupts a writer blocked below its queue.
+    _close: oneshot::Sender<()>,
 }
 
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, Connection>>>;
@@ -734,6 +736,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (tx, rx) = mpsc::channel::<Vec<u8>>(runtime.config.max_send_queue());
+    let (close_tx, close_rx) = oneshot::channel();
     {
         let mut pool = runtime.pool.lock().await;
         // A handshake started on the previous underlay must not repopulate the cleared pool.
@@ -745,7 +748,14 @@ where
         if pool.contains_key(&addr) {
             return Err(TransportError::AlreadyStarted);
         }
-        pool.insert(addr.clone(), Connection { generation, tx });
+        pool.insert(
+            addr.clone(),
+            Connection {
+                generation,
+                tx,
+                _close: close_tx,
+            },
+        );
         runtime.set_state(&addr, ConnectionState::Connected);
     }
     runtime
@@ -755,7 +765,11 @@ where
     // Cancellation and early send failures also close the physical connection.
     let _stats_guard = ConnectionStatsGuard(runtime.stats.clone());
 
-    let outcome = connection::run(&runtime, &addr, websocket, rx, request_key_hint).await;
+    let outcome = tokio::select! {
+        biased;
+        _ = close_rx => Ok(()),
+        result = connection::run(&runtime, &addr, websocket, rx, request_key_hint) => result,
+    };
     runtime.remove_connection(&addr, Some(generation)).await;
     debug!(
         transport_id = %runtime.transport_id,
