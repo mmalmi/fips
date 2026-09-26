@@ -6,22 +6,32 @@ use sha2::{Digest, Sha256};
 async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charges() {
     tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
+        const MAXIMUM: u64 = 16 * 1024 * 1024;
+        let (mint, network) = setup::start_mint(root.path(), 9618).await;
+        let url = mint.url().to_owned();
         let setup::Bench {
             mint,
             configs,
             paths,
             npubs,
             mut children,
-        } = setup::start_bench(root.path(), 9618, 60).await;
-        let seller_db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
-            &configs[1].state_directory.join("wallet"),
-        ))
-        .await
-        .unwrap();
-        seller_db
-            .configure_storage_capacity(16 * 1024 * 1024)
-            .await
-            .unwrap();
+        } = setup::start_configured_line(
+            root.path(),
+            mint,
+            network,
+            &url,
+            setup::LineConfig {
+                lifetime: 60,
+                quote_lifetime: 30,
+                funding_limits: &[40, 40, 40],
+            },
+            |index, config| {
+                if index == 1 {
+                    config.terms.wallet_capacity_bytes = Some(MAXIMUM);
+                }
+            },
+        )
+        .await;
         for (source, destination) in [(0, 2), (2, 0)] {
             request(
                 &configs[source],
@@ -34,16 +44,7 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         }
         // Both original channel admissions must already own their payout space.
         // Normal payment updates, process recovery and retirement cannot grow it.
-        let payout_capacity = seller_db
-            .storage_capacity()
-            .await
-            .unwrap()
-            .unwrap()
-            .charged_bytes;
-        seller_db
-            .configure_storage_capacity(payout_capacity)
-            .await
-            .unwrap();
+        let seller_db = setup::fill_wallet_capacity(&configs[1]).await;
         for round in 0..3 {
             let payload = format!("fee-{round}:{}", "x".repeat(700));
             let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
@@ -291,7 +292,7 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
                 .unwrap()
                 .unwrap()
                 .maximum_bytes,
-            payout_capacity
+            MAXIMUM
         );
     })
     .await

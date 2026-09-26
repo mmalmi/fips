@@ -45,17 +45,72 @@ use std::{
 async fn wallet_costs_and_refunds_survive_restart_without_resetting_the_lifetime_limit() {
     tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
+        let (mint, network) = setup::start_mint(root.path(), 9616).await;
+        let url = mint.url().to_owned();
         let setup::Bench {
             mint,
             configs,
             paths,
             npubs,
             mut children,
-        } = setup::start_bench(root.path(), 9616, 600).await;
+        } = setup::start_configured_line(
+            root.path(),
+            mint,
+            network,
+            &url,
+            setup::LineConfig {
+                lifetime: 600,
+                quote_lifetime: 300,
+                funding_limits: &[40, 40, 40, 40],
+            },
+            |_, config| config.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024),
+        )
+        .await;
         let buy = AdminRequest::Buy {
-            destination: npubs[2].clone(),
+            destination: npubs[3].clone(),
         };
         request(&configs[0], &buy).await.unwrap();
+        // This tariff bills session setup in both directions, including replies.
+        request(&configs[3], &AdminRequest::Buy { destination: npubs[0].clone() })
+            .await.unwrap();
+        let middle_budget =
+            request(&configs[1], &AdminRequest::Status).await.unwrap()["funding_budget"].clone();
+        let middle_debit = middle_budget["wallet_debited_sat"].as_u64().unwrap();
+        assert!(
+            middle_debit > 32 && middle_debit <= 40,
+            "transit relay funds its own next hop"
+        );
+        let middle_db = setup::fill_wallet_capacity(&configs[1]).await;
+        let payload = "shared-wallet:".to_owned() + &"x".repeat(700);
+        request(
+            &configs[0],
+            &AdminRequest::Send {
+                destination: npubs[3].clone(),
+                payload: payload.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let delivered = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let status = request(&configs[3], &AdminRequest::Status).await.unwrap();
+                if status["received"]["bytes"].as_u64().unwrap() == payload.len() as u64 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        if delivered.is_err() {
+            for (index, config) in configs.iter().enumerate() {
+                let status = request(config, &AdminRequest::Status).await.unwrap();
+                eprintln!("node {index}: {}", serde_json::json!({
+                    "received": status["received"], "last_error": status["last_error"],
+                    "data_carrier": status["data_carrier"], "funding_budget": status["funding_budget"],
+                }));
+            }
+            panic!("paid traffic must cross both relays at wallet capacity");
+        }
         let status = request(&configs[0], &AdminRequest::Status).await.unwrap();
         let budget = status["funding_budget"].clone();
         let debit = budget["wallet_debited_sat"].as_u64().unwrap();
@@ -82,10 +137,59 @@ async fn wallet_costs_and_refunds_survive_restart_without_resetting_the_lifetime
             request(&configs[0], &AdminRequest::Status).await.unwrap()["funding_budget"],
             budget
         );
-        if let Err(error) = request(&configs[0], &AdminRequest::Settle).await {
-            let provider = request(&configs[1], &AdminRequest::Status).await.unwrap();
-            panic!("settlement: {error}; provider: {}", provider["last_error"]);
+        assert_eq!(
+            request(&configs[1], &AdminRequest::Status).await.unwrap()["funding_budget"],
+            middle_budget
+        );
+        let mut settlements = Vec::new();
+        for config in &configs {
+            let result = request(config, &AdminRequest::Settle).await.unwrap();
+            assert_eq!(result["settlements"].as_array().unwrap().len(), 1);
+            settlements.push(result["settlements"][0].clone());
         }
+        let outgoing = &settlements[1];
+        assert!(settlements[0]["paid_sat"].as_u64().unwrap() > 0);
+        assert!(outgoing["paid_sat"].as_u64().unwrap() > 0);
+        let earned: u64 = [0, 2].iter().map(|&index| {
+            settlements[index]["paid_sat"].as_u64().unwrap()
+                + settlements[index]["receiver_fee_reserve_sat"].as_u64().unwrap()
+        }).sum();
+        let mut available = 0;
+        for config in &configs {
+            available += load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+                .await.unwrap().balance_sat;
+        }
+        let mut spent = 0;
+        let mut returned = 0;
+        for config in &configs {
+            let budget = request(config, &AdminRequest::Status).await.unwrap()["funding_budget"].clone();
+            assert_eq!(budget["locked_sat"], 0);
+            spent += budget["wallet_debited_sat"].as_u64().unwrap();
+            returned += budget["wallet_refunded_sat"].as_u64().unwrap();
+        }
+        let paid: u64 = settlements.iter().map(|report| report["paid_sat"].as_u64().unwrap()
+            + report["receiver_fee_reserve_sat"].as_u64().unwrap()).sum();
+        assert_eq!(available, 512 + returned + paid - spent);
+        let middle_after =
+            request(&configs[1], &AdminRequest::Status).await.unwrap()["funding_budget"].clone();
+        let middle_refund = middle_after["wallet_refunded_sat"].as_u64().unwrap();
+        assert_eq!(middle_after["wallet_debited_sat"], middle_debit);
+        assert_eq!(middle_after["locked_sat"], 0);
+        assert_eq!(middle_refund, outgoing["refunded_sat"].as_u64().unwrap());
+        assert!(middle_refund > 0);
+        assert_eq!(
+            load_mint_balance(&configs[1].state_directory.join("wallet"), mint.url())
+                .await
+                .unwrap()
+                .balance_sat,
+            128 + earned + middle_refund - middle_debit
+        );
+        let capacity = middle_db.storage_capacity().await.unwrap().unwrap();
+        assert_eq!(
+            Some(capacity.maximum_bytes),
+            configs[1].terms.wallet_capacity_bytes
+        );
+        assert!(capacity.charged_bytes <= capacity.maximum_bytes);
         let settled =
             request(&configs[0], &AdminRequest::Status).await.unwrap()["funding_budget"].clone();
         assert_eq!(settled["locked_sat"], 0);

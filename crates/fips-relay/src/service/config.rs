@@ -24,6 +24,10 @@ pub struct ServiceTerms {
     #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
     pub billing: BillingBasis,
     pub controller: ControllerPolicy,
+    /// Logical wallet bytes, including completion reservations; not filesystem space.
+    /// Set only before initialization. Omission preserves an unconfigured wallet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_capacity_bytes: Option<u64>,
     pub buyer_budget_sat: u64,
     pub window_msat: u64,
     pub grace_msat: u64,
@@ -133,6 +137,11 @@ impl ServiceConfig {
             .channel_capacity_sat
             .checked_mul(1_000)
             .ok_or("capacity overflow")?;
+        if t.wallet_capacity_bytes
+            .is_some_and(|maximum| maximum == 0 || maximum > i64::MAX as u64)
+        {
+            return Err("wallet storage maximum is out of range".into());
+        }
         if t.buyer_budget_sat == 0
             || t.window_msat == 0
             || t.window_msat > t.grace_msat

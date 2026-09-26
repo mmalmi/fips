@@ -26,7 +26,8 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
     };
     let mut mint = BenchMint::start(mint_config.clone()).await.unwrap();
     assert!(BenchMint::start(mint_config).await.is_err());
-    let cfg = config(root.path(), mint.url());
+    let mut cfg = config(root.path(), mint.url());
+    cfg.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024);
     RelayService::initialize(cfg.clone()).await.unwrap();
     let buyer_before = std::fs::read(cfg.state_directory.join("buyer/buyer.json")).unwrap();
     let grant = BenchRequest::Issue {

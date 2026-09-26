@@ -488,6 +488,18 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
         .await
         .unwrap();
     let mut cfg = config(root.path(), mint.url());
+    for invalid in [0, u64::MAX] {
+        cfg.terms.wallet_capacity_bytes = Some(invalid);
+        assert!(
+            fips_relay::service::RelayService::initialize(cfg.clone())
+                .await
+                .unwrap_err()
+                .contains("out of range")
+        );
+        assert!(!cfg.state_directory.exists());
+    }
+    const MAXIMUM: u64 = 16 * 1024 * 1024;
+    cfg.terms.wallet_capacity_bytes = Some(MAXIMUM);
     let path = root.path().join("config.json");
     std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
     assert!(
@@ -535,6 +547,43 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
     let native_reply: serde_json::Value = serde_json::from_slice(&native_reply.stdout).unwrap();
     assert_eq!(native_reply["status"], "ok");
     stop(&mut running).await;
+    for changed_limit in [None, Some(MAXIMUM * 2)] {
+        cfg.terms.wallet_capacity_bytes = changed_limit;
+        std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let changed = command(&path, "run").await;
+        assert!(!changed.status.success());
+        assert!(String::from_utf8_lossy(&changed.stderr).contains("saved terms"));
+    }
+    cfg.terms.wallet_capacity_bytes = Some(MAXIMUM);
+    std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+        &cfg.state_directory.join("wallet"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        db.storage_capacity().await.unwrap().unwrap().maximum_bytes,
+        MAXIMUM
+    );
+    // A manifest/configuration match must not hide a changed database policy.
+    db.configure_storage_capacity(MAXIMUM * 2).await.unwrap();
+    let changed = command(&path, "run").await;
+    assert!(!changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("wallet storage capacity"));
+    assert!(
+        fips_relay::wallet_tools::offline_wallet(
+            &cfg,
+            fips_relay::wallet_tools::WalletRequest::Balance,
+        )
+        .await
+        .unwrap_err()
+        .contains("wallet storage capacity")
+    );
+    assert_eq!(
+        db.storage_capacity().await.unwrap().unwrap().maximum_bytes,
+        MAXIMUM * 2
+    );
+    db.configure_storage_capacity(MAXIMUM).await.unwrap();
     cfg.terms.buyer_budget_sat += 1;
     std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
     let changed = command(&path, "run").await;

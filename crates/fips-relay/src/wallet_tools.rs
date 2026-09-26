@@ -105,8 +105,13 @@ pub(crate) async fn export_payment(
     // Reserve the id before the wallet operation. If interrupted before its
     // token is saved, fail closed; the Cashu activity/saga journal remains the
     // recovery source. Retrying must not produce another spend automatically.
-    private_new(&directory.join(format!("{id}.intent")), &serde_json::to_vec(&json!({"amount_sat":amount,"mint":mint})).unwrap())
-        .map_err(|_| "export is pending or cannot be reserved; reconcile its wallet activity before retrying")?;
+    private_new(
+        &directory.join(format!("{id}.intent")),
+        &serde_json::to_vec(&json!({"amount_sat":amount,"mint":mint})).unwrap(),
+    )
+    .map_err(|_| {
+        "export is pending or cannot be reserved; reconcile its wallet activity before retrying"
+    })?;
     let payment = send_payment_token(&root.join("wallet"), mint, amount)
         .await
         .map_err(|e| e.to_string())?;
@@ -127,6 +132,7 @@ pub async fn offline_wallet(
     RelayService::validate_stored_state(config)?;
     let _owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
     RelayService::validate_stored_state(config)?;
+    RelayService::check_wallet_capacity(config).await?;
     let mint = &config.terms.controller.mint_url;
     let wallet = config.state_directory.join("wallet");
     match command {

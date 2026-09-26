@@ -128,6 +128,7 @@ impl CustomerProfile {
                         before_expiry_secs: 30,
                     }),
                 },
+                wallet_capacity_bytes: None,
                 buyer_budget_sat: self.budget_sat,
                 window_msat: 4000,
                 grace_msat: 8000,

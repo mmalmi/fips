@@ -24,8 +24,8 @@ use crate::{
     route_quotes::{QuotePolicy, QuoteServer, RouteQuotes},
 };
 use cashu_service::{
-    FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig, FileSpilmanPaymentSigner,
-    load_mint_balance,
+    CashuWalletService, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
+    FileSpilmanPaymentSigner,
 };
 use fips_core::{
     FipsEndpoint, Identity, PeerIdentity,
@@ -167,6 +167,21 @@ impl RelayService {
         Self::stored_state(config).map(|_| ())
     }
 
+    pub(crate) async fn check_wallet_capacity(config: &ServiceConfig) -> Result<(), String> {
+        let wallet = CashuWalletService::open_file_backed(config.state_directory.join("wallet"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let maximum = wallet
+            .storage_capacity()
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|capacity| capacity.maximum_bytes);
+        if maximum != config.terms.wallet_capacity_bytes {
+            return Err("wallet storage capacity differs from saved terms".into());
+        }
+        Ok(())
+    }
+
     fn stored_state(config: &ServiceConfig) -> Result<(Identity, Manifest), String> {
         config.validate()?;
         let manifest: Manifest = read_json(&config.state_directory.join("service.json"))?;
@@ -219,10 +234,22 @@ impl RelayService {
             .map_err(|e| e.to_string())?,
         );
         if create {
-            load_mint_balance(&root.join("wallet"), &config.terms.controller.mint_url)
+            let directory = root.join("wallet");
+            let wallet = match config.terms.wallet_capacity_bytes {
+                Some(maximum) => {
+                    CashuWalletService::create_file_backed_with_capacity(&directory, maximum).await
+                }
+                None => CashuWalletService::open_file_backed(&directory).await,
+            }
+            .map_err(|e| e.to_string())?;
+            wallet
+                .load_mint_balance(&config.terms.controller.mint_url)
                 .await
                 .map_err(|e| e.to_string())?;
-            drop(FileSpilmanPaymentSigner::load(&root.join("wallet"))?);
+            drop(wallet);
+            drop(FileSpilmanPaymentSigner::load(&directory)?);
+        } else {
+            Self::check_wallet_capacity(&config).await?;
         }
         let receiver = FileSpilmanPaymentReceiver::load(
             &root.join("receiver"),

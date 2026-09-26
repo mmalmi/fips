@@ -20,9 +20,31 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Service-level capacity configuration, remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
+
+Fresh services can opt into `terms.wallet_capacity_bytes` before initialization.
+The SDK creates the limited wallet before admitting financial work; normal reopening
+preserves its maximum. Service startup and offline wallet commands compare that
+maximum with the saved terms. Existing or partial wallets cannot be adopted by
+the fresh-wallet constructor, and changed or removed limits fail without resizing.
+See [service configuration](SERVICE.md) for the configuration boundary.
+
+Focused local acceptance covers initialization/mismatch rejection and offline
+import/export, plus a four-node paid UDP line with 16 MiB per wallet. Its middle relay
+buys onward forwarding and accepts two incoming channels through one wallet. With
+all unreserved native space occupied, paid data crosses both relays, ordinary
+restart preserves spending totals, and all four original channels settle. The
+three-node payout/refund crash case also passes with the limit fixed before init,
+including original-proof recovery and actual-expiry retirement. These tests use
+local test money and logical database pressure; they do not establish router
+memory sizing, filesystem/WAL reservation or physical power-loss safety.
+The matching graph passes the full 412-test SDK workspace suite, 296 relay unit
+tests, strict SDK/relay lint and the ordinary service restart/retirement regression.
+The focused configuration, offline-wallet, shared-wallet and crash-recovery checks
+also pass. One opt-in SDK storage soak is excluded from the full-suite count;
+features and native dependencies are unchanged.
 
 Incoming route admission checks capacity, existing bindings and replacement
 ownership before invoking receiver funding persistence. The payment boundary
@@ -151,8 +173,8 @@ and release writes, and capacity exhausted after the preparatory swap commits.
 All 32 test sats remain accounted for as payment plus usable coins. Settlement
 proof strings have a method-neutral 64 KiB UTF-8 limit; sizing includes worst-case
 JSON escaping, and oversized results retain pending custody without truncation.
-Service capacity accounting stays disabled pending remaining wallet paths/stores,
-sustained history pressure and physical recovery acceptance.
+Those withdrawal checks did not establish whole-service capacity or physical
+recovery acceptance.
 
 The withdrawal acceptance used CDK `63655bfc` and SDK `7896de5`. It passed 819
 native-library tests, 483 shared-library/storage tests, the full 404-test SDK suite,
@@ -206,7 +228,7 @@ changed-source formatting. All 1,695 recorded SDK/dependency inputs match the
 integrated files; one opt-in storage soak is excluded. These are SDK-level,
 local test-money results. They add no FIPS process, current-router or physical
 power-loss acceptance; token-funded history retirement and remaining wallet stores
-still need coverage before enabling service capacity accounting.
+were outside that checkpoint's service-level capacity coverage.
 
 The SDK's direct mint calls for metadata, channel funding and settled/expiry
 refund recovery now share a streamed 1 MiB response limit and a 30-second request
@@ -220,8 +242,8 @@ SDK `af36c31` passes all 414 workspace tests, all 18 feature profiles, strict li
 and changed-source formatting. All 1,697 recorded SDK/dependency inputs match the
 integrated files; one opt-in storage soak is excluded. These local test-money
 checks establish per-request bounds, not whole-workflow deadlines, custom-transport
-bounds, current FIPS process or hardware acceptance. Service capacity accounting
-remains disabled while the other storage and recovery requirements are open.
+bounds, current FIPS process or hardware acceptance. Those results did not cover
+service-level capacity configuration or the other storage and recovery requirements.
 
 Numbered supplied-token channels with their original authenticated wallet refund
 admission now retire through the existing custody handoff. Their original input
@@ -240,7 +262,8 @@ request, preserves all 384 test sats and creates no wallet debit or refund.
 All 2,727 recorded source/dependency inputs and both process executable hashes
 match the accepted graph. One opt-in SDK storage soak is excluded. These checks
 do not establish sustained token-funded capacity, token-specific fee/power-loss
-coverage or current hardware acceptance; service capacity accounting stays disabled.
+coverage or current hardware acceptance. That checkpoint did not configure
+service-level capacity.
 
 Fresh custody archive format 4 reserves bounded native charged bytes for rotating
 counter widths and the longest registered scope cursor. An all-unspent page can
@@ -268,7 +291,8 @@ spending limits. All 2,730 recorded source/dependency inputs and both process
 executable hashes match. These are local test-money and logical SQLite-capacity
 results; one opt-in SDK storage soak is excluded. Remaining wallet stores,
 sustained aggregate storage pressure, physical disk/power loss and current
-hardware acceptance remain open. Service capacity accounting stays disabled.
+hardware acceptance remained outside that checkpoint, which did not configure
+service-level capacity.
 
 
 Incoming-history format 2 commits exact receipt deletion, release of unused native
@@ -343,7 +367,7 @@ recovery and two internal storage-reservation reads without an exact old snapsho
 remain open,
 along with remaining stores, sustained aggregate storage pressure, physical
 disk/power loss and current device acceptance.
-Service capacity accounting stays disabled.
+That checkpoint did not configure service-level capacity.
 
 
 ### Wallet read bounds
@@ -392,8 +416,9 @@ for reproduction and limits.
 These checks cover one mint's repeated send/receive overlap, recovery and settled
 channel lifecycles at aggregate logical capacity. Broader overlapping channel
 workloads, remaining wallet workflows and queries, physical storage/power loss,
-current devices and remote deployment remain unaccepted. Service capacity
-accounting stays disabled.
+current devices and remote deployment remain separate requirements. That SDK
+checkpoint did not configure service-level capacity; fresh-profile relay
+configuration is covered above.
 
 ### Earlier wallet and build evidence
 

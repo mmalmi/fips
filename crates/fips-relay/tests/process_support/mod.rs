@@ -35,6 +35,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
                 channel_lifetime_secs: 600,
                 renewal: None,
             },
+            wallet_capacity_bytes: None,
             buyer_budget_sat: 64,
             window_msat: 4_000,
             grace_msat: 8_000,

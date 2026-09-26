@@ -180,8 +180,10 @@ Settlement imports the SDK's original closed payout through its original wallet
 allowance, including a zero payout, before saving the controller report. Retrying
 an interrupted import does not credit coins twice. Authenticated receiver retirement
 removes the corresponding wallet admission only after the original payout handoff.
-These are logical storage reservations; service capacity accounting remains
-disabled pending the other wallet paths/stores and physical recovery acceptance.
+These are logical storage reservations. Fresh services can explicitly configure
+native wallet capacity before initialization; [service setup](SERVICE.md) describes
+the fixed policy. Other wallet paths/stores and physical recovery still need
+separate deployment acceptance.
 
 After the buyer has durably recovered its refund, it sends one
 `ReleaseSettlement { channel_id }` request over the existing authenticated
@@ -462,8 +464,9 @@ see the [accepted wallet scope](READINESS.md#scope-and-outstanding-acceptance).
 SQLite single-value writes finish their statement before returning, so a
 `RETURNING` value cannot hide a late commit failure.
 The SDK reserves logical completion space for channel refunds and abandoned
-funding, but service capacity accounting remains disabled until the other wallet
-paths and stores are covered. Logical allowances do not reserve physical disk.
+funding. Fresh services may opt into a fixed native-wallet limit; that policy does
+not accept every other wallet path or store. Logical allowances do not reserve
+physical disk.
 
 For incoming tokens, locally unfamiliar coins require one NUT-07 state query
 before native acquisition. Spent, pending, malformed or unavailable results leave
