@@ -1,5 +1,5 @@
 use super::{
-    ConnectionPool, Direction, StreamConnectionIo, TorConnection, record_pool_removed,
+    ConnectionPool, Direction, StreamConnectionIo, TorConnection, lock_pool, record_pool_removed,
     remove_if_current,
 };
 use crate::config::TorConfig;
@@ -133,7 +133,7 @@ pub(super) async fn tor_receive_loop(
     }
 
     io.mark_closed();
-    let mut pool_guard = pool.lock().await;
+    let mut pool_guard = lock_pool(&pool);
     let removed = remove_if_current(&mut pool_guard, &remote_addr, &io);
     drop(pool_guard);
     if let Some(connection) = removed {
@@ -262,7 +262,7 @@ pub(super) async fn tor_accept_loop(
 
         // Resolve ownership before spawning so a fast EOF cannot beat pool
         // registration or leave a dead generation installed afterward.
-        let mut pool_guard = pool.lock().await;
+        let mut pool_guard = lock_pool(&pool);
         if let Some(existing) = pool_guard.get(&remote_addr)
             && !existing.io.is_closed()
         {

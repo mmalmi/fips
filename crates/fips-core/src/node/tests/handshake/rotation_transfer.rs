@@ -232,9 +232,9 @@ fn reciprocal_transfer_preserves_deadline_acl_and_one_candidate_bound() {
 }
 
 #[test]
-fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
+fn reciprocal_transfer_closes_old_tcp_carrier_before_reusing_slot() {
     super::super::super::super::session::run_large_stack_async_test(
-        "rotation-reciprocal-transfer-cancel",
+        "rotation-reciprocal-transfer-close",
         || async {
             let mut node = make_test_node().await;
             let old = make_node();
@@ -243,11 +243,6 @@ fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
             let (_old_socket, old_source) = local_path().await;
             let (ready_socket, ready_source) = local_path().await;
             let old_owner = incumbent(&mut node, &old, &old_source, 310, 60_000).await;
-            let old_generation = node
-                .node
-                .get_peer(old.node_addr())
-                .unwrap()
-                .session_generation();
             enable(&mut node, 1);
             node.node
                 .config
@@ -302,7 +297,6 @@ fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
             assert!(outgoing.is_outbound() && !outgoing.has_session());
             let outgoing_link = outgoing.link_id();
             let outgoing_index = outgoing.our_index().unwrap();
-            let original_activity = outgoing.last_activity();
             let attempt_start = node
                 .node
                 .neighbor_rotation_started_at(silent.node_addr())
@@ -318,10 +312,6 @@ fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
             .await
             .unwrap();
 
-            let guard = match node.node.transports.get(&tcp_id).unwrap() {
-                TransportHandle::Tcp(tcp) => tcp.test_pool_guard().await,
-                _ => unreachable!(),
-            };
             let mut handshake = HandshakeState::new_initiator(
                 ready.identity.keypair(),
                 node.node.identity.pubkey_full(),
@@ -341,54 +331,7 @@ fn cancelled_reciprocal_transfer_keeps_old_tcp_owner_until_close_completes() {
                 .unwrap();
             assert_eq!(incoming.remote_addr, ready_source);
             assert_eq!(incoming.data.as_slice(), msg1.as_slice());
-            let mut admission = Box::pin(node.node.handle_msg1(incoming));
-            assert!(
-                futures::poll!(admission.as_mut()).is_pending(),
-                "real TCP close must wait for its pool lock"
-            );
-            drop(admission);
-
-            // The cancelled handler must still own every old accounting/index
-            // record while physical removal has not acquired the pool lock.
-            assert_eq!(resources(&node), (1, 1, 2, 2));
-            let retained = node.node.get_connection(&outgoing_link).unwrap();
-            assert_eq!(retained.our_index(), Some(outgoing_index));
-            assert_eq!(retained.last_activity(), original_activity);
-            assert_eq!(
-                node.node.links.lookup_addr(tcp_id, &silent_source),
-                Some(outgoing_link)
-            );
-            assert_eq!(
-                node.node
-                    .pending_outbound
-                    .get(&(tcp_id, outgoing_index.as_u32())),
-                Some(&outgoing_link)
-            );
-            assert!(node.node.index_allocator.is_allocated(outgoing_index));
-            assert_eq!(
-                node.node.neighbor_rotation_started_at(silent.node_addr()),
-                Some(attempt_start)
-            );
-            assert_eq!(
-                node.node.neighbor_rotation_order(*ready.node_addr()),
-                cursor
-            );
-            let retained = node.node.get_peer(old.node_addr()).unwrap();
-            assert_eq!(retained.link_id(), old_owner.link);
-            assert_eq!(retained.our_index(), Some(old_owner.index));
-            assert_eq!(retained.session_generation(), old_generation);
-            assert_eq!(stats.snapshot().pool_outbound, 1);
-            drop(guard);
-
-            ready_socket
-                .send_to(&msg1, node.addr.as_str().unwrap())
-                .await
-                .unwrap();
-            let replay = tokio::time::timeout(Duration::from_secs(1), node.packet_rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            node.node.handle_msg1(replay).await;
+            node.node.handle_msg1(incoming).await;
             assert_eq!(resources(&node), (1, 1, 2, 2));
             assert_eq!(stats.snapshot().pool_outbound, 0);
             assert!(node.node.get_connection(&outgoing_link).is_none());

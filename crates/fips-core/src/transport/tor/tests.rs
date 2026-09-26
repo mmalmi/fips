@@ -322,7 +322,7 @@ async fn inbound_receive_loop_bounds_an_incomplete_first_frame() {
     let (reader, writer) = server.into_split();
     let io = Arc::new(StreamConnectionIo::new(writer));
     let (packet_tx, _packet_rx) = packet_channel(1);
-    let pool = Arc::new(Mutex::new(HashMap::new()));
+    let pool = ConnectionPool::default();
     let stats = Arc::new(TorStats::new());
 
     tokio::time::timeout(
@@ -345,7 +345,7 @@ async fn inbound_receive_loop_bounds_an_incomplete_first_frame() {
     .expect("incomplete inbound Tor frame should be bounded");
 
     assert_eq!(stats.snapshot().recv_errors, 1);
-    assert!(pool.lock().await.is_empty());
+    assert!(lock_pool(&pool).is_empty());
 }
 
 #[tokio::test]
@@ -367,8 +367,8 @@ async fn stale_receive_cleanup_preserves_successor_generation_and_gauge() {
     let successor_task = tokio::spawn(std::future::pending::<()>());
 
     let addr = TransportAddr::from_string("stale-tor-generation.test:443");
-    let pool = Arc::new(Mutex::new(HashMap::new()));
-    pool.lock().await.insert(
+    let pool = ConnectionPool::default();
+    lock_pool(&pool).insert(
         addr.clone(),
         TorConnection {
             io: successor_io.clone(),
@@ -396,7 +396,7 @@ async fn stale_receive_cleanup_preserves_successor_generation_and_gauge() {
     )
     .await;
 
-    let mut pool = pool.lock().await;
+    let mut pool = lock_pool(&pool);
     let successor = pool.get(&addr).expect("stale cleanup removed successor");
     assert!(Arc::ptr_eq(&successor.io, &successor_io));
     assert_eq!(stats.snapshot().pool_inbound, 0);
@@ -416,7 +416,7 @@ async fn background_promotion_keeps_open_and_replaces_closed_generation_once() {
     let (_existing_peer, existing_stream) = tcp_pair().await;
     let (_existing_reader, existing_writer) = existing_stream.into_split();
     let existing_io = Arc::new(StreamConnectionIo::new(existing_writer));
-    transport.pool.lock().await.insert(
+    lock_pool(&transport.pool).insert(
         addr.clone(),
         TorConnection {
             io: existing_io.clone(),
@@ -428,7 +428,7 @@ async fn background_promotion_keeps_open_and_replaces_closed_generation_once() {
 
     let (_discarded_peer, discarded_candidate) = tcp_pair().await;
     {
-        let mut pool = transport.pool.lock().await;
+        let mut pool = lock_pool(&transport.pool);
         transport.promote_connection_in_pool(&mut pool, &addr, discarded_candidate);
         assert!(Arc::ptr_eq(&pool.get(&addr).unwrap().io, &existing_io));
     }
@@ -441,7 +441,7 @@ async fn background_promotion_keeps_open_and_replaces_closed_generation_once() {
     existing_io.mark_closed();
     let (_replacement_peer, replacement_candidate) = tcp_pair().await;
     {
-        let mut pool = transport.pool.lock().await;
+        let mut pool = lock_pool(&transport.pool);
         transport.promote_connection_in_pool(&mut pool, &addr, replacement_candidate);
         let replacement = &pool.get(&addr).unwrap().io;
         assert!(!Arc::ptr_eq(replacement, &existing_io));
@@ -503,34 +503,52 @@ async fn completed_background_dial_waits_for_pool_then_promotes_once() {
     while !task.is_finished() {
         tokio::task::yield_now().await;
     }
-    transport
-        .connecting
-        .lock()
-        .await
-        .insert(remote.clone(), ConnectingEntry { task });
+    lock_pool(&transport.connecting).insert(remote.clone(), ConnectingEntry { task });
 
-    let occupied_pool = transport.pool.lock().await;
+    let occupied_pool = lock_pool(&transport.pool);
     assert_eq!(
         transport.connection_state_sync(&remote),
         ConnectionState::Connecting
     );
-    assert_eq!(transport.connecting.lock().await.len(), 1);
+    assert_eq!(lock_pool(&transport.connecting).len(), 1);
     drop(occupied_pool);
 
     assert_eq!(
         transport.connection_state_sync(&remote),
         ConnectionState::Connected
     );
-    assert!(transport.connecting.lock().await.is_empty());
-    assert_eq!(transport.pool.lock().await.len(), 1);
+    assert!(lock_pool(&transport.connecting).is_empty());
+    assert_eq!(lock_pool(&transport.pool).len(), 1);
     assert_eq!(transport.stats.snapshot().pool_outbound, 1);
     transport.close_connection_async(&remote).await;
     assert_eq!(transport.stats.snapshot().pool_outbound, 0);
+
+    let (mut peer, candidate) = tcp_pair().await;
+    let task = tokio::spawn(async move { Ok::<_, TransportError>(candidate) });
+    while !task.is_finished() {
+        tokio::task::yield_now().await;
+    }
+    lock_pool(&transport.connecting).insert(remote.clone(), ConnectingEntry { task });
+    transport.close_connection_detached(&remote);
+    assert!(lock_pool(&transport.connecting).is_empty());
+    assert_eq!(
+        transport.connection_state_sync(&remote),
+        ConnectionState::None
+    );
+    assert_eq!(transport.stats.snapshot().pool_outbound, 0);
+    use tokio::io::AsyncReadExt;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
 async fn close_and_stop_invalidate_retained_writers() {
-    for stop in [false, true] {
+    for operation in 0..3 {
         // Set up destination + mock proxy
         let (dest_tx, _dest_rx) = packet_channel(32);
         let dest_config = TcpConfig {
@@ -559,18 +577,18 @@ async fn close_and_stop_invalidate_retained_writers() {
 
         // Verify pool has the connection
         {
-            let pool = tor.pool.lock().await;
+            let pool = lock_pool(&tor.pool);
             assert_eq!(pool.len(), 1);
         }
         assert_eq!(tor.stats.snapshot().pool_outbound, 1);
         assert_eq!(tor.stats.snapshot().pool_inbound, 0);
 
-        let retained = tor.pool.lock().await.get(&target).unwrap().io.clone();
+        let retained = lock_pool(&tor.pool).get(&target).unwrap().io.clone();
         // Close the connection
-        if stop {
-            tor.stop_async().await.unwrap();
-        } else {
-            tor.close_connection_async(&target).await;
+        match operation {
+            0 => tor.close_connection_async(&target).await,
+            1 => tor.close_connection_detached(&target),
+            _ => tor.stop_async().await.unwrap(),
         }
         assert!(
             retained.is_closed(),
@@ -587,12 +605,12 @@ async fn close_and_stop_invalidate_retained_writers() {
 
         // Verify pool is empty
         {
-            let pool = tor.pool.lock().await;
+            let pool = lock_pool(&tor.pool);
             assert_eq!(pool.len(), 0);
         }
         assert_eq!(tor.stats.snapshot().pool_outbound, 0);
 
-        if !stop {
+        if operation != 2 {
             tor.stop_async().await.unwrap();
         }
         dest.stop_async().await.unwrap();

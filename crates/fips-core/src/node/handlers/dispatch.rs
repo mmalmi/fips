@@ -249,9 +249,8 @@ impl Node {
             let _ = self.index_allocator.free(session_index.index);
         }
 
-        // Remove the link before scheduling physical transport cleanup. WebRTC
-        // peers otherwise disappear logically while their ICE sockets remain
-        // open until the process reaches its file-descriptor limit.
+        // Remove this link before closing its physical carrier. A shared
+        // active or pending owner must retain the connection.
         if let Some(link) = self.remove_link(&link_id)
             && !self.handshake_carrier_is_owned(link.transport_id(), link.remote_addr())
             && let Some(transport) = self.transports.get(&link.transport_id())

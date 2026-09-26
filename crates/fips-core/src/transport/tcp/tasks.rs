@@ -97,7 +97,7 @@ pub(super) async fn accept_loop(
 
                 // Resolve the pool slot before spawning so fast EOF cannot
                 // clean up before this generation owns the slot and gauge.
-                let mut pool_guard = pool.lock().await;
+                let mut pool_guard = lock_pool(&pool);
                 if let Some(existing) = pool_guard.get(&remote_addr)
                     && !existing.io.is_closed()
                 {
@@ -294,7 +294,7 @@ pub(super) async fn tcp_receive_loop(
     }
 
     io.mark_closed();
-    let mut pool_guard = pool.lock().await;
+    let mut pool_guard = lock_pool(&pool);
     let removed = remove_if_current(&mut pool_guard, &remote_addr, &io);
     drop(pool_guard);
     if let Some(connection) = removed {

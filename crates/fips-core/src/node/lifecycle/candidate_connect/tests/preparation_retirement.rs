@@ -1,4 +1,4 @@
-//! Physical preparation cleanup retains its owner through a cancelled close.
+//! Ready carrier rejection releases its preparation before Noise allocation.
 use super::*;
 use crate::config::TcpConfig;
 use crate::node::acl::PeerAclReloader;
@@ -8,22 +8,11 @@ use std::panic::AssertUnwindSafe;
 use tokio::io::AsyncReadExt;
 
 #[tokio::test]
-async fn cancelled_preparation_retirement_retries_exact_owner_and_closes_tcp() {
-    exercise_with_cleanup(true).await;
-}
-
-#[tokio::test]
 async fn ready_tcp_preparation_rechecks_acl_before_allocating_noise() {
-    exercise_with_cleanup(false).await;
-}
-
-async fn exercise_with_cleanup(cancel_close: bool) {
     let mut config = Config::new();
     config.node.system_files_enabled = false;
     let mut node = Node::new(config).unwrap();
-    let result = AssertUnwindSafe(exercise(&mut node, cancel_close))
-        .catch_unwind()
-        .await;
+    let result = AssertUnwindSafe(exercise(&mut node)).catch_unwind().await;
     for transport in node.transports.values_mut() {
         transport.stop().await.unwrap();
     }
@@ -32,7 +21,7 @@ async fn exercise_with_cleanup(cancel_close: bool) {
     }
 }
 
-async fn exercise(node: &mut Node, cancel_close: bool) {
+async fn exercise(node: &mut Node) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let remote = TransportAddr::from_socket_addr(listener.local_addr().unwrap());
     let transport_id = TransportId::new(1);
@@ -50,8 +39,7 @@ async fn exercise(node: &mut Node, cancel_close: bool) {
         .await
         .unwrap()
         .unwrap();
-    // Observe actual readiness before taking the pool lock. A locked pool
-    // reports Connecting, so this does not pretend a locked poll sees Ready.
+    // Observe actual readiness before changing the ACL.
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if matches!(
@@ -91,30 +79,9 @@ async fn exercise(node: &mut Node, cancel_close: bool) {
         .is_err()
     );
 
-    if cancel_close {
-        let guard = match node.transports.get(&transport_id).unwrap() {
-            TransportHandle::Tcp(tcp) => tcp.test_pool_guard().await,
-            _ => unreachable!(),
-        };
-        // Exercise the production close phase directly. The separate test
-        // below proves that the real ready-poll ACL branch reaches cleanup.
-        let mut close = Box::pin(node.retire_connection_preparation(link));
-        assert!(futures::poll!(close.as_mut()).is_pending());
-        drop(close);
-        assert_pending_owner(node, link, transport_id, &remote, &peer);
-        assert_eq!(stats.snapshot().pool_outbound, 1);
-        drop(guard);
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            node.retire_connection_preparation(link),
-        )
+    tokio::time::timeout(Duration::from_secs(1), node.poll_pending_connects())
         .await
-        .expect("same owned retirement must resume after cancellation");
-    } else {
-        tokio::time::timeout(Duration::from_secs(1), node.poll_pending_connects())
-            .await
-            .expect("ready carrier rejection must finish without a held pool lock");
-    }
+        .expect("ready carrier rejection must finish");
     assert!(
         node.pending_connects.is_empty(),
         "successful retirement must release its exact pending owner together with the carrier"

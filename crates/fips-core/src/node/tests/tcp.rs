@@ -522,3 +522,91 @@ async fn test_tcp_reconnection_after_link_death() {
 
     cleanup_nodes(&mut nodes).await;
 }
+
+#[tokio::test]
+async fn tcp_peer_disconnect_releases_inbound_and_outbound_carriers() {
+    for removed in [0, 1] {
+        let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+        initiate_handshake(&mut nodes, 0, 1).await;
+        drain_all_packets(&mut nodes, false).await;
+        let other = 1 - removed;
+        let identity = nodes[other].node.identity().npub();
+        let peer = *nodes[other].node.node_addr();
+        assert!(nodes[removed].node.get_peer(&peer).is_some());
+        let stats = match nodes[removed]
+            .node
+            .transports
+            .get(&nodes[removed].transport_id)
+            .unwrap()
+        {
+            TransportHandle::Tcp(tcp) => tcp.stats().clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            stats.snapshot().pool_inbound + stats.snapshot().pool_outbound,
+            1
+        );
+        nodes[removed].node.api_disconnect(&identity).await.unwrap();
+        assert!(nodes[removed].node.get_peer(&peer).is_none());
+        assert!(nodes[removed].node.links.is_empty());
+        assert_eq!(
+            stats.snapshot().pool_inbound + stats.snapshot().pool_outbound,
+            0,
+            "removing a TCP peer must release its unshared physical carrier"
+        );
+        drain_all_packets(&mut nodes, false).await;
+        assert!(
+            nodes[other]
+                .node
+                .get_peer(nodes[removed].node.node_addr())
+                .is_none()
+        );
+        cleanup_nodes(&mut nodes).await;
+    }
+}
+
+#[tokio::test]
+async fn tcp_peer_removal_preserves_a_pending_carrier_owner() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    initiate_handshake(&mut nodes, 0, 1).await;
+    drain_all_packets(&mut nodes, false).await;
+    let remote = nodes[1].addr.clone();
+    let peer = *nodes[1].node.node_addr();
+    let transport_id = nodes[0].transport_id;
+    let pending_identity = PeerIdentity::from_pubkey_full(make_node().identity.pubkey_full());
+    nodes[0]
+        .node
+        .initiate_connection(transport_id, remote.clone(), pending_identity)
+        .await
+        .unwrap();
+    assert_eq!(nodes[0].node.pending_connects.len(), 1);
+    let pending_link = nodes[0].node.pending_connects[0].link_id;
+    nodes[0].node.remove_active_peer(&peer);
+    assert!(nodes[0].node.get_peer(&peer).is_none());
+    assert_eq!(nodes[0].node.pending_connects.len(), 1);
+    assert_eq!(nodes[0].node.pending_connects[0].link_id, pending_link);
+    assert_eq!(
+        nodes[0]
+            .node
+            .transports
+            .get(&transport_id)
+            .unwrap()
+            .connection_state(&remote),
+        crate::transport::ConnectionState::Connected
+    );
+    nodes[0]
+        .node
+        .retire_connection_preparation(pending_link)
+        .await;
+    assert!(nodes[0].node.pending_connects.is_empty());
+    assert_eq!(
+        nodes[0]
+            .node
+            .transports
+            .get(&transport_id)
+            .unwrap()
+            .connection_state(&remote),
+        crate::transport::ConnectionState::None
+    );
+    cleanup_nodes(&mut nodes).await;
+}

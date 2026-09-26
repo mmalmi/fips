@@ -33,7 +33,9 @@ mod trait_impl;
 #[cfg(test)]
 mod tests;
 
-use super::stream_io::{StreamConnectionIo, StreamWriteError};
+use super::stream_io::{
+    StreamConnectionIo, StreamPool, StreamWriteError, lock_pool, try_lock_pool,
+};
 use super::{
     ConnectionState, PacketTx, TransportAddr, TransportError, TransportId, TransportState,
 };
@@ -79,7 +81,7 @@ struct TorConnection {
 }
 
 /// Shared connection pool.
-type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, TorConnection>>>;
+type ConnectionPool = StreamPool<TorConnection>;
 
 fn remove_if_current(
     pool: &mut HashMap<TransportAddr, TorConnection>,
@@ -109,7 +111,7 @@ struct ConnectingEntry {
 }
 
 /// Map of addresses with background connection attempts in progress.
-type ConnectingPool = Arc<Mutex<HashMap<TransportAddr, ConnectingEntry>>>;
+type ConnectingPool = StreamPool<ConnectingEntry>;
 
 // ============================================================================
 // Tor Transport
@@ -164,8 +166,8 @@ impl TorTransport {
             name,
             config,
             state: TransportState::Configured,
-            pool: Arc::new(Mutex::new(HashMap::new())),
-            connecting: Arc::new(Mutex::new(HashMap::new())),
+            pool: ConnectionPool::default(),
+            connecting: ConnectingPool::default(),
             packet_tx,
             stats: Arc::new(TorStats::new()),
             accept_task: None,
@@ -466,27 +468,30 @@ impl TorTransport {
         self.onion_address = None;
 
         // Abort pending connection attempts
-        let mut connecting = self.connecting.lock().await;
-        for (addr, entry) in connecting.drain() {
-            entry.task.abort();
-            debug!(
-                transport_id = %self.transport_id,
-                remote_addr = %addr,
-                "Tor connect aborted (transport stopping)"
-            );
+        {
+            let mut connecting = lock_pool(&self.connecting);
+            for (addr, entry) in connecting.drain() {
+                entry.task.abort();
+                debug!(
+                    transport_id = %self.transport_id,
+                    remote_addr = %addr,
+                    "Tor connect aborted (transport stopping)"
+                );
+            }
         }
-        drop(connecting);
 
         // Close all connections
-        let mut pool = self.pool.lock().await;
-        for (addr, conn) in pool.drain() {
-            conn.io.mark_closed();
-            conn.recv_task.abort();
-            let _ = conn.recv_task.await;
-            match conn.direction {
-                Direction::Inbound => self.stats.record_pool_inbound_removed(),
-                Direction::Outbound => self.stats.record_pool_outbound_removed(),
+        let connections = {
+            let mut pool = lock_pool(&self.pool);
+            for conn in pool.values() {
+                conn.io.mark_closed();
+                conn.recv_task.abort();
+                record_pool_removed(&self.stats, conn);
             }
+            std::mem::take(&mut *pool)
+        };
+        for (addr, conn) in connections {
+            let _ = conn.recv_task.await;
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
@@ -494,7 +499,6 @@ impl TorTransport {
                 "Tor connection closed (transport stopping)"
             );
         }
-        drop(pool);
 
         self.state = TransportState::Down;
 
@@ -530,7 +534,7 @@ impl TorTransport {
 
         // Get or create connection
         let io = {
-            let pool = self.pool.lock().await;
+            let pool = lock_pool(&self.pool);
             pool.get(addr).map(|connection| connection.io.clone())
         };
 
@@ -576,7 +580,7 @@ impl TorTransport {
         addr: &TransportAddr,
         failed_io: &Arc<StreamConnectionIo<OwnedWriteHalf>>,
     ) {
-        let mut pool = self.pool.lock().await;
+        let mut pool = lock_pool(&self.pool);
         if let Some(connection) = remove_if_current(&mut pool, addr, failed_io) {
             connection.recv_task.abort();
             record_pool_removed(&self.stats, &connection);
@@ -671,7 +675,7 @@ impl TorTransport {
 
         // Own the slot before spawning so cancellation or EOF cannot leave an
         // unregistered receive task behind.
-        let mut pool_guard = self.pool.lock().await;
+        let mut pool_guard = lock_pool(&self.pool);
         if let Some(existing) = pool_guard.get(addr)
             && !existing.io.is_closed()
         {
@@ -762,14 +766,14 @@ impl TorTransport {
         // Reserve this address before spawning. Holding the pool guard across
         // the connecting-map recheck prevents an established generation from
         // racing the reservation; cancellation before spawn leaves no task.
-        let pool = self.pool.lock().await;
+        let pool = lock_pool(&self.pool);
         if pool
             .get(addr)
             .is_some_and(|connection| !connection.io.is_closed())
         {
             return Ok(());
         }
-        let mut connecting = self.connecting.lock().await;
+        let mut connecting = lock_pool(&self.connecting);
         if connecting.contains_key(addr) {
             return Ok(());
         }
@@ -851,15 +855,15 @@ impl TorTransport {
     /// Returns `ConnectionState::Connecting` if locks can't be acquired.
     pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
         // Check established pool first
-        let mut pool = match self.pool.try_lock() {
-            Ok(pool) => pool,
-            Err(_) => return ConnectionState::Connecting,
+        let mut pool = match try_lock_pool(&self.pool) {
+            Some(pool) => pool,
+            None => return ConnectionState::Connecting,
         };
         if pool
             .get(addr)
             .is_some_and(|connection| !connection.io.is_closed())
         {
-            if let Ok(mut connecting) = self.connecting.try_lock()
+            if let Some(mut connecting) = try_lock_pool(&self.connecting)
                 && let Some(entry) = connecting.remove(addr)
             {
                 entry.task.abort();
@@ -868,9 +872,9 @@ impl TorTransport {
         }
 
         // Check connecting pool
-        let mut connecting = match self.connecting.try_lock() {
-            Ok(c) => c,
-            Err(_) => return ConnectionState::Connecting,
+        let mut connecting = match try_lock_pool(&self.connecting) {
+            Some(c) => c,
+            None => return ConnectionState::Connecting,
         };
 
         let entry = match connecting.get_mut(addr) {
@@ -967,7 +971,15 @@ impl TorTransport {
 
     /// Close a specific connection asynchronously.
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
-        let mut pool = self.pool.lock().await;
+        self.close_connection_detached(addr);
+    }
+
+    /// Remove the current stream and pending dial without deferring by address.
+    pub fn close_connection_detached(&self, addr: &TransportAddr) {
+        let mut pool = lock_pool(&self.pool);
+        if let Some(entry) = lock_pool(&self.connecting).remove(addr) {
+            entry.task.abort();
+        }
         if let Some(conn) = pool.remove(addr) {
             conn.io.mark_closed();
             conn.recv_task.abort();

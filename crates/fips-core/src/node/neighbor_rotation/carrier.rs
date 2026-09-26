@@ -74,25 +74,16 @@ impl Node {
         {
             return Some(prepared);
         }
-        if let Some(transport) = self.transports.get(&transport_id) {
-            // These close methods await only the pool lock, then remove the
-            // carrier without another yield. WebSocket/WebRTC use the existing
-            // cleanup owned by remove_active_peer; their close can yield after
-            // removal and must not interrupt this prepared promotion.
-            match transport {
-                crate::transport::TransportHandle::Tcp(t) => {
-                    t.close_connection_async(&address).await
-                }
-                crate::transport::TransportHandle::Tor(t) => {
-                    t.close_connection_async(&address).await
-                }
-                #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
-                crate::transport::TransportHandle::Ble(t) => {
-                    t.close_connection_async(&address).await
-                }
-                _ => {}
-            }
+        // TCP/Tor/WebSocket close synchronously in remove_active_peer;
+        // WebRTC schedules its existing owned cleanup there. BLE still needs
+        // its asynchronous pool lock before releasing the logical owner.
+        #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
+        if let Some(crate::transport::TransportHandle::Ble(transport)) =
+            self.transports.get(&transport_id)
+        {
+            transport.close_connection_async(&address).await;
         }
+
         Some(prepared)
     }
 }

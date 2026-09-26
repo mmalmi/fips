@@ -30,7 +30,9 @@ use stream::{DEFAULT_FRAME_COMPLETION_TIMEOUT, validate_stream_record};
 use tasks::{AcceptConfig, TcpReceiveContext, accept_loop, tcp_receive_loop};
 
 use super::resolve_socket_addrs;
-use super::stream_io::{StreamConnectionIo, StreamWriteError};
+use super::stream_io::{
+    StreamConnectionIo, StreamPool, StreamWriteError, lock_pool, try_lock_pool,
+};
 use super::{
     ConnectionState, DiscoveredPeer, PacketTx, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
@@ -46,7 +48,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -72,7 +73,7 @@ struct TcpConnection {
 }
 
 /// Shared connection pool.
-type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, TcpConnection>>>;
+type ConnectionPool = StreamPool<TcpConnection>;
 
 fn remove_if_current(
     pool: &mut HashMap<TransportAddr, TcpConnection>,
@@ -101,7 +102,7 @@ struct ConnectingEntry {
 }
 
 /// Map of addresses with background connection attempts in progress.
-type ConnectingPool = Arc<Mutex<HashMap<TransportAddr, ConnectingEntry>>>;
+type ConnectingPool = StreamPool<ConnectingEntry>;
 
 // ============================================================================
 // TCP Transport
@@ -148,8 +149,8 @@ impl TcpTransport {
             name,
             config,
             state: TransportState::Configured,
-            pool: Arc::new(Mutex::new(HashMap::new())),
-            connecting: Arc::new(Mutex::new(HashMap::new())),
+            pool: ConnectionPool::default(),
+            connecting: ConnectingPool::default(),
             packet_tx,
             accept_task: None,
             local_addr: None,
@@ -173,8 +174,12 @@ impl TcpTransport {
     }
 
     #[cfg(test)]
-    pub(crate) async fn test_pool_guard(&self) -> impl Send + use<> {
-        self.pool.clone().lock_owned().await
+    pub(crate) fn test_block_writes(
+        &self,
+        addr: &TransportAddr,
+    ) -> impl Future<Output = ()> + Send + use<> {
+        let io = lock_pool(&self.pool).get(addr).unwrap().io.clone();
+        async move { io.block_writes_for_test().await }
     }
 
     /// Start the transport asynchronously.
@@ -257,27 +262,30 @@ impl TcpTransport {
         }
 
         // Abort pending connection attempts
-        let mut connecting = self.connecting.lock().await;
-        for (addr, entry) in connecting.drain() {
-            entry.task.abort();
-            debug!(
-                transport_id = %self.transport_id,
-                remote_addr = %addr,
-                "TCP connect aborted (transport stopping)"
-            );
+        {
+            let mut connecting = lock_pool(&self.connecting);
+            for (addr, entry) in connecting.drain() {
+                entry.task.abort();
+                debug!(
+                    transport_id = %self.transport_id,
+                    remote_addr = %addr,
+                    "TCP connect aborted (transport stopping)"
+                );
+            }
         }
-        drop(connecting);
 
         // Close all established connections
-        let mut pool = self.pool.lock().await;
-        for (addr, conn) in pool.drain() {
-            conn.io.mark_closed();
-            conn.recv_task.abort();
-            let _ = conn.recv_task.await;
-            match conn.direction {
-                Direction::Inbound => self.stats.record_pool_inbound_removed(),
-                Direction::Outbound => self.stats.record_pool_outbound_removed(),
+        let connections = {
+            let mut pool = lock_pool(&self.pool);
+            for conn in pool.values() {
+                conn.io.mark_closed();
+                conn.recv_task.abort();
+                record_pool_removed(&self.stats, conn);
             }
+            std::mem::take(&mut *pool)
+        };
+        for (addr, conn) in connections {
+            let _ = conn.recv_task.await;
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
@@ -285,7 +293,6 @@ impl TcpTransport {
                 "TCP connection closed (transport stopping)"
             );
         }
-        drop(pool);
 
         self.local_addr = None;
         self.state = TransportState::Down;
@@ -332,9 +339,7 @@ impl TcpTransport {
 
         // Get or create connection
         let io = {
-            let pool = tokio::time::timeout_at(deadline, self.pool.lock())
-                .await
-                .map_err(|_| TransportError::Timeout)?;
+            let pool = lock_pool(&self.pool);
             pool.get(addr).map(|connection| connection.io.clone())
         };
 
@@ -384,7 +389,7 @@ impl TcpTransport {
         addr: &TransportAddr,
         failed_io: &Arc<StreamConnectionIo<OwnedWriteHalf>>,
     ) {
-        let mut pool = self.pool.lock().await;
+        let mut pool = lock_pool(&self.pool);
         if let Some(connection) = remove_if_current(&mut pool, addr, failed_io) {
             connection.recv_task.abort();
             record_pool_removed(&self.stats, &connection);
@@ -426,7 +431,7 @@ impl TcpTransport {
             .map_err(|e| TransportError::StartFailed(format!("from_std: {}", e)))?;
 
         // Reserve the pool slot before spawning the detached receive task.
-        let mut pool_guard = self.pool.lock().await;
+        let mut pool_guard = lock_pool(&self.pool);
         if let Some(existing) = pool_guard.get(addr)
             && !existing.io.is_closed()
         {
@@ -490,7 +495,15 @@ impl TcpTransport {
     /// Removes the connection from the pool, aborts its receive task,
     /// and drops the write half (sends FIN to remote).
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
-        let mut pool = self.pool.lock().await;
+        self.close_connection_detached(addr);
+    }
+
+    /// Remove the current stream and pending dial without deferring by address.
+    pub fn close_connection_detached(&self, addr: &TransportAddr) {
+        let mut pool = lock_pool(&self.pool);
+        if let Some(entry) = lock_pool(&self.connecting).remove(addr) {
+            entry.task.abort();
+        }
         if let Some(conn) = pool.remove(addr) {
             conn.io.mark_closed();
             conn.recv_task.abort();
@@ -521,7 +534,7 @@ impl TcpTransport {
 
         // Already established?
         {
-            let pool = self.pool.lock().await;
+            let pool = lock_pool(&self.pool);
             if pool
                 .get(addr)
                 .is_some_and(|connection| !connection.io.is_closed())
@@ -532,7 +545,7 @@ impl TcpTransport {
 
         // Already connecting?
         {
-            let connecting = self.connecting.lock().await;
+            let connecting = lock_pool(&self.connecting);
             if connecting.contains_key(addr) {
                 return Ok(());
             }
@@ -554,14 +567,14 @@ impl TcpTransport {
         // Reserve this address before spawning. Holding the pool guard across
         // the connecting-map recheck prevents an established generation from
         // racing the reservation; cancellation before spawn leaves no task.
-        let pool = self.pool.lock().await;
+        let pool = lock_pool(&self.pool);
         if pool
             .get(addr)
             .is_some_and(|connection| !connection.io.is_closed())
         {
             return Ok(());
         }
-        let mut connecting = self.connecting.lock().await;
+        let mut connecting = lock_pool(&self.connecting);
         if connecting.contains_key(addr) {
             return Ok(());
         }
@@ -618,15 +631,15 @@ impl TcpTransport {
     /// Returns `ConnectionState::Connecting` if locks can't be acquired.
     pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
         // Check established pool first
-        let mut pool = match self.pool.try_lock() {
-            Ok(pool) => pool,
-            Err(_) => return ConnectionState::Connecting,
+        let mut pool = match try_lock_pool(&self.pool) {
+            Some(pool) => pool,
+            None => return ConnectionState::Connecting,
         };
         if pool
             .get(addr)
             .is_some_and(|connection| !connection.io.is_closed())
         {
-            if let Ok(mut connecting) = self.connecting.try_lock()
+            if let Some(mut connecting) = try_lock_pool(&self.connecting)
                 && let Some(entry) = connecting.remove(addr)
             {
                 entry.task.abort();
@@ -635,9 +648,9 @@ impl TcpTransport {
         }
 
         // Check connecting pool
-        let mut connecting = match self.connecting.try_lock() {
-            Ok(c) => c,
-            Err(_) => return ConnectionState::Connecting,
+        let mut connecting = match try_lock_pool(&self.connecting) {
+            Some(c) => c,
+            None => return ConnectionState::Connecting,
         };
 
         let entry = match connecting.get_mut(addr) {

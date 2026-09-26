@@ -32,8 +32,7 @@ async fn exercise(node: &mut TestNode) {
         .authenticated_at();
     enable(node, 1);
 
-    // The old carrier is UDP so the candidate's TCP pool lock cannot block
-    // pre-promotion carrier cleanup. Let the actual one-second idle age pass.
+    // The old carrier is UDP. Let the actual one-second idle age pass.
     tokio::time::timeout(Duration::from_secs(2), async {
         while Node::now_ms().saturating_sub(original_authenticated_at) < 1_050 {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -74,14 +73,15 @@ async fn exercise(node: &mut TestNode) {
     let first_wire = first.data.as_slice().to_vec();
     let filters_before = node.node.stats().bloom.sent;
 
-    let guard = match node.node.transports.get(&tcp_id).unwrap() {
-        TransportHandle::Tcp(tcp) => tcp.test_pool_guard().await,
+    let mut guard = Box::pin(match node.node.transports.get(&tcp_id).unwrap() {
+        TransportHandle::Tcp(tcp) => tcp.test_block_writes(&candidate.source),
         _ => unreachable!(),
-    };
+    });
+    assert!(futures::poll!(guard.as_mut()).is_pending());
     let mut promotion = Box::pin(node.node.confirm_pending_handshake(first));
     assert!(
         futures::poll!(promotion.as_mut()).is_pending(),
-        "bootstrap cannot finish its TCP send while the pool is locked"
+        "bootstrap cannot finish its TCP send while the writer is locked"
     );
     drop(promotion);
 

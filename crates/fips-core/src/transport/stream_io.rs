@@ -1,11 +1,33 @@
 //! Shared cancellation-safe byte-stream connection ownership.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+
+use super::TransportAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, MutexGuard, Notify};
 use tokio::time::Instant;
+
+/// Connection bookkeeping never holds a guard across an await or blocking I/O.
+/// Synchronous removal cannot race a deferred close against a new generation.
+pub(super) type StreamPool<T> = Arc<StdMutex<HashMap<TransportAddr, T>>>;
+
+pub(super) fn lock_pool<T>(pool: &StreamPool<T>) -> StdMutexGuard<'_, HashMap<TransportAddr, T>> {
+    pool.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+pub(super) fn try_lock_pool<T>(
+    pool: &StreamPool<T>,
+) -> Option<StdMutexGuard<'_, HashMap<TransportAddr, T>>> {
+    match pool.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
 
 /// One generation of a connection-oriented transport's write side.
 ///
@@ -54,6 +76,12 @@ impl<W> StreamConnectionIo<W> {
             }
             notified.await;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn block_writes_for_test(&self) {
+        let _guard = self.writer.try_lock().expect("test writer must be idle");
+        std::future::pending::<()>().await;
     }
 
     #[cfg(test)]
