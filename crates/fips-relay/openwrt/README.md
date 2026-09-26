@@ -22,8 +22,8 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `e2ad708ee` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.3 MiB;
-its APK is 10.7 MiB. It passes an isolated Linux startup check and package-content
+build at `bb287843d` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+its APK is 11.0 MiB. It passes an isolated Linux startup check and package-content
 verification. This does not establish forwarding performance or current-router
 acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
 
@@ -81,6 +81,57 @@ Loopback remains available to the fixture mint; wallets live only in temporary
 container storage. Each scenario has a 180-second deadline. Verify the source
 manifest and executable checksum again afterward. This checks Linux execution
 and simulated routing, not OpenWrt services, physical links or router performance.
+
+### Production executable and storage recovery
+
+Build `--test funding_costs` with the same all-features Linux test command above.
+Its fixture initializes a local test mint and wallets; the four child relays can
+use the separately built default-feature OpenWrt executable. Mount that executable
+at the absolute path baked into the test's `CARGO_BIN_EXE_fips-relay`. With the
+target directories used above, set:
+
+```sh
+relay_program="$PWD/target/aarch64-unknown-linux-musl/openwrt/fips-relay"
+compiled_relay_path="$PWD/target/linux-tests/aarch64-unknown-linux-musl/debug/fips-relay"
+```
+
+Set `funding_test_binary` to the absolute `funding_costs-<hash>` executable in the
+Linux test target's `debug/deps/`. Use an already available ARM64 Linux image with
+`sh` and `stat`. The following runs each case in a fresh container. Only the two
+executables are mounted from the host; the full-volume case fills its own tmpfs:
+
+```sh
+run_recovery() {
+  docker run --rm --pull never --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --user 65534:65534 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
+    --tmpfs /isolated:rw,nosuid,nodev,size=128m,mode=700,uid=65534,gid=65534 \
+    --memory 2g --cpus 2 --pids-limit 256 \
+    --mount "type=bind,source=$funding_test_binary,target=/candidate/funding_costs,readonly" \
+    --mount "type=bind,source=$relay_program,target=$compiled_relay_path,readonly" \
+    --env FIPS_TEST_STORAGE_VOLUME=/isolated \
+    --env "FIPS_TEST_STORAGE_TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4())')" \
+    --entrypoint /bin/sh "$relay_test_image" -ec '
+      device=$(stat -c %d /isolated)
+      blocks=$(stat -f -c %b /isolated)
+      block_bytes=$(stat -f -c %S /isolated)
+      capacity=$((blocks * block_bytes))
+      printf "{\"schema\":1,\"device\":%s,\"capacity_bytes\":%s,\"token\":\"%s\"}\n" \
+        "$device" "$capacity" "$FIPS_TEST_STORAGE_TOKEN" > /isolated/.fips-storage-test.json
+      exec /candidate/funding_costs "$@"
+    ' sh "$@"
+}
+run_recovery wallet_costs_and_refunds_survive_restart_without_resetting_the_lifetime_limit \
+  --exact --test-threads=1 --nocapture
+run_recovery filesystem_exhaustion::full_filesystem_preserves_wallet_and_channels \
+  --exact --ignored --test-threads=1 --nocapture
+```
+
+The second case verifies Linux ENOSPC and SQLite rollback before interrupted
+startup and recovery. Both cases require paid delivery after restart and settle
+the original channels without resetting lifetime spending limits. Tmpfs exercises
+Linux errors and process recovery; it does not model flash persistence or power
+loss. Verify the source manifest and both executable hashes afterward.
 
 ## Install and configure
 

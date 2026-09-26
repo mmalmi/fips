@@ -19,7 +19,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on a disposable macOS HFS+ volume. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
@@ -469,40 +469,45 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The 24 September source bundle at `e2ad708ee` resolves 693 packages, including
-672 vendored registry packages. Its relocated macOS ARM64 build uses Rust 1.96.0,
-an empty Cargo home and a new target directory, with original source folders,
-registry cache and network access blocked during compilation. Both automatic
-loss/delay paid-route scenarios pass from that build, settle their channels and
-conserve all 518 test sats. Source integrity passes afterward, and all 2,674
-fingerprinted source/dependency inputs match the accepted native graph. The
-initial route-test run was stopped by the disk-reserve guard; the unchanged
-binary passed both scenarios after space recovered. This is source/build
-reproducibility; external native tools, artifact authenticity and current OpenWrt
-runtime acceptance remain separate. See the
+The 26 September source bundle at `bb287843d` contains 35,691 inventoried files
+and resolves 693 packages, including 672 vendored registry packages. All 2,740
+recorded source/dependency inputs match the accepted native graph, with the
+explicit tested root lockfile substituted for the portable development lock.
+The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
+cargo-zigbuild 0.22.1, using empty Cargo homes and new target directories. Build
+sandboxes deny network access, original repositories, the registry cache and
+previous build outputs. Exported revision metadata does not inherit the unrelated
+parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-The same source bundle cross-builds the default relay for
-`aarch64-unknown-linux-musl` with the `openwrt` profile. The stripped static
-executable is 24,450,432 bytes and starts in isolated ARM64 Linux with the expected
-usage response. Its local unsigned APK is 11,175,380 bytes. APK integrity checks
-and payload hashes verify the binary, source metadata, root ownership and disabled
-default configuration; the builder also rejects a mismatched architecture.
-Packaging uses standard `od` byte reads and requires no `hexdump` installation.
-These are build, startup and package checks, not an OpenWrt installation or
-forwarding acceptance. Router, radio and physical power-loss checks remain open.
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,068,584
+bytes, static and stripped. The unsigned APK is 11,482,351 bytes. Package integrity
+and all 11 payload hashes verify the executable, exact source metadata, root
+ownership and disabled default configuration. The builder rejects a mismatched
+architecture. The executable starts in isolated ARM64 Linux; no package is
+installed on a router.
 
-The same bundle's existing automatic loss/delay paid-route test also passes on
-ARM64 Linux. Its separate all-features, unoptimized static test executable builds
-offline with Rust 1.96.0, Zig 0.15.2 and cargo-zigbuild 0.22.1. Both scenarios
-finish in 58.5 seconds inside a container with no external network, a read-only
-root and temporary wallet storage. Native feedback drives replacement and return
-to the recovered cheaper provider; the original channels survive reuse and
-controller reload, and settlement conserves all 518 test sats. Source-manifest
-and executable hashes remain unchanged afterward. These are simulated links with
-real controllers and a local test mint, not physical Ethernet/Wi-Fi or the packaged
-production executable. See the [Linux check](openwrt/README.md#linux-paid-routing-check)
-for reproduction; this duration is not a router performance measurement.
+The four-node funding/recovery fixture also runs against that exact production
+executable in ARM64 Linux. A separate all-features test harness provides the local
+mint and test wallets; each child relay uses the default-feature OpenWrt binary.
+Both the logical-wallet-limit case and the real Linux ENOSPC case pass, including
+paid delivery after restart, original-channel settlement, fund reconciliation and
+unchanged lifetime spending limits. In the latter case, only the transit relay's
+128 MiB tmpfs fills; controller persistence and a SQLite write fail, startup
+refuses the full volume, and freeing the test ballast permits recovery with the
+original proofs. These are actual Linux process and filesystem errors, not flash
+power-loss or OpenWrt service supervision checks. The container has no external
+network, a read-only root, no capabilities and only the executables mounted from
+the host. See the [process recovery recipe](openwrt/README.md#production-executable-and-storage-recovery).
+
+The same bundle's separate all-features routing harness passes both automatic
+loss and delay scenarios on ARM64 Linux. Native feedback moves the purchase away
+from an impaired route and back to the recovered cheaper provider, preserving
+the original channels across reuse and controller reload. Settlement conserves
+all 518 test sats across the two scenarios. These use simulated links and real
+controllers, not the packaged daemon or physical radios. All source-manifest and
+executable hashes remain unchanged after the three Linux checks. Their durations
+are test completion times, not router performance measurements.
 
 The fee-bearing process fixture sends SIGKILL after seller payout import and
 again after buyer refund completion, before each controller records completion.
