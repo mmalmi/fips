@@ -418,9 +418,13 @@ UUID headers, then one original recovery record at a time. SQL uses a matching
 index and never projects recovery payloads into the header page. Coin collection
 inspects each operation with a separate 4 MiB stored-column read bound. It retains
 coins named by checkpoints, tokens, receipts and output secrets, and any candidate
-row naming an unfinished creator or spender. An unrelated open payment no longer
-holds the entire release queue. Missing, changed, corrupt or oversized operation
-evidence stops collection; its original recovery record remains untouched.
+row naming an unfinished creator or spender. Candidate row ownership is read in
+batches of 128, projecting only the coin identity and two optional operation UUIDs
+within a 105-byte per-row limit before the SQL driver. Proof payloads remain outside
+this ownership scan; full original checks still guard deletion. An unrelated open
+payment no longer holds the entire release queue. Missing, changed, corrupt or
+oversized operation evidence stops collection; its original recovery record
+remains untouched.
 Cancellation discovery scans all mint/unit
 scopes so a later duplicate or foreign preparation still prevents a replacement
 send. Native recovery and pending-send/melt enumeration share the same reader.
