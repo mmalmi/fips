@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Service-level capacity configuration, remaining wallet workflows/stores and queries, sustained live channel pressure and physical recovery capacity. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; see [history](HISTORY.md). | Service-level capacity configuration, remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -380,10 +380,20 @@ The soak's 49.82-second local run reached 4,178 SQLite pages of 4096 bytes and a
 103,906 at cycle 150 and 102,984 at cycle 300. These measurements do not reserve
 physical disk or establish router memory, latency or power-loss behavior.
 
-This accepts one mint's repeated send/receive overlap and recovery at aggregate
-logical capacity. Sustained live channel lifecycles, remaining wallet workflows
-and queries, physical storage/power loss, current devices and remote deployment
-remain unaccepted. Service capacity accounting stays disabled.
+SDK `ae5250d1` extends the existing 130-channel lifecycle test with fixed 16 MiB
+logical wallet limits at both endpoints, eight nonzero payouts and
+four full-capacity settlement checkpoints after wallet reopen. Both endpoints
+retire completed channels while preserving lifetime costs and refunds. Retained
+custody stays bounded by actual coin records; unused reservations do not
+accumulate. Its full 411-test SDK suite and strict lint pass. Production files and
+dependency pins are unchanged. See the SDK's channel-history acceptance contract
+for reproduction and limits.
+
+These checks cover one mint's repeated send/receive overlap, recovery and settled
+channel lifecycles at aggregate logical capacity. Broader overlapping channel
+workloads, remaining wallet workflows and queries, physical storage/power loss,
+current devices and remote deployment remain unaccepted. Service capacity
+accounting stays disabled.
 
 ### Earlier wallet and build evidence
 
