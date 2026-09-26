@@ -17,7 +17,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Synchronous TCP peer-removal cleanup, current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
@@ -1010,6 +1010,19 @@ their lifetime budgets and exact wallet debit history; the relay earns payment
 and all 384 test sats are conserved. One endpoint has only native TCP, so no UDP
 fallback can satisfy the scenario. Payment control remains TCP-over-FIPS over
 the selected physical carriers; no new payment wire messages are introduced.
+
+Explicit TCP/Tor connection close and transport shutdown now invalidate retained
+writers, release idle write halves and cancel active or queued writes. The shared
+one-byte-stream regression wakes the receiver and both writers and confirms that
+only the byte sent before close arrives. The existing TCP and local SOCKS5 tests
+now cover retained writers after both close and shutdown. All three regressions
+fail before the fix and pass afterward; two shared, 28 TCP, 33 Tor, eight TCP-node
+and two rotation tests pass, along with strict core/relay lint, formatting and
+source-size checks. The paid UDP-to-TCP process case above passes with all features
+and with optional relay features disabled. Reproduce the focused checks with core
+test filters `transport::stream_io::tests::` and `close_and_stop_invalidate_retained_writers`.
+Synchronous node removal still omits TCP/Tor transport cleanup and remains work;
+this change does not enable Tor in the paid service or accept new hardware.
 
 A matching three-process UDP-to-WebSocket test passes the same payment,
 exhaustion, renewal, middle restart and 384-test-sat conservation checks. Its

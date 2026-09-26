@@ -597,44 +597,65 @@ async fn test_connect_timeout() {
 }
 
 #[tokio::test]
-async fn test_close_connection() {
-    let (tx1, _rx1) = packet_channel(100);
-    let (tx2, _rx2) = packet_channel(100);
+async fn close_and_stop_invalidate_retained_writers() {
+    for stop in [false, true] {
+        let (tx1, _rx1) = packet_channel(100);
+        let (tx2, _rx2) = packet_channel(100);
 
-    let mut t1 = TcpTransport::new(TransportId::new(1), None, make_outbound_config(), tx1);
-    let mut t2 = TcpTransport::new(TransportId::new(2), None, make_config(), tx2);
+        let mut t1 = TcpTransport::new(TransportId::new(1), None, make_outbound_config(), tx1);
+        let mut t2 = TcpTransport::new(TransportId::new(2), None, make_config(), tx2);
 
-    t1.start_async().await.unwrap();
-    t2.start_async().await.unwrap();
+        t1.start_async().await.unwrap();
+        t2.start_async().await.unwrap();
 
-    let addr2 = t2.local_addr().unwrap();
-    let remote = TransportAddr::from_string(&addr2.to_string());
+        let addr2 = t2.local_addr().unwrap();
+        let remote = TransportAddr::from_string(&addr2.to_string());
 
-    // Build valid msg1 frame to establish connection
-    let mut msg1 = vec![0xAA; 114];
-    msg1[0] = 0x01;
-    msg1[1] = 0x00;
-    msg1[2..4].copy_from_slice(&110u16.to_le_bytes());
+        // Build valid msg1 frame to establish connection
+        let mut msg1 = vec![0xAA; 114];
+        msg1[0] = 0x01;
+        msg1[1] = 0x00;
+        msg1[2..4].copy_from_slice(&110u16.to_le_bytes());
 
-    t1.send_async(&remote, &msg1).await.unwrap();
+        t1.send_async(&remote, &msg1).await.unwrap();
 
-    // Connection should exist
-    {
-        let pool = t1.pool.lock().await;
-        assert!(pool.contains_key(&remote));
+        // Connection should exist
+        {
+            let pool = t1.pool.lock().await;
+            assert!(pool.contains_key(&remote));
+        }
+
+        let retained = t1.pool.lock().await.get(&remote).unwrap().io.clone();
+        // Close it
+        if stop {
+            t1.stop_async().await.unwrap();
+        } else {
+            t1.close_connection_async(&remote).await;
+        }
+        assert!(
+            retained.is_closed(),
+            "close must invalidate retained TCP writers"
+        );
+        assert!(
+            !retained.has_writer().await,
+            "close must release the TCP write half"
+        );
+        assert!(matches!(
+            retained.write_record(&msg1, None).await,
+            Err(StreamWriteError::Closed)
+        ));
+
+        // Connection should be gone
+        {
+            let pool = t1.pool.lock().await;
+            assert!(!pool.contains_key(&remote));
+        }
+
+        if !stop {
+            t1.stop_async().await.unwrap();
+        }
+        t2.stop_async().await.unwrap();
     }
-
-    // Close it
-    t1.close_connection_async(&remote).await;
-
-    // Connection should be gone
-    {
-        let pool = t1.pool.lock().await;
-        assert!(!pool.contains_key(&remote));
-    }
-
-    t1.stop_async().await.unwrap();
-    t2.stop_async().await.unwrap();
 }
 
 #[tokio::test]

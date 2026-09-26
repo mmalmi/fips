@@ -30,19 +30,29 @@ impl<W> StreamConnectionIo<W> {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// Mark this generation unusable and wake its receive loop.
+    /// Invalidate this generation, release an idle writer and cancel pending I/O.
     ///
     /// This is synchronous so every terminal receive or cancelled-write path
-    /// closes the generation before it waits for the pool mutex.
+    /// closes the generation before it waits for the pool mutex. An active
+    /// write owns the guard that drops its writer when cancellation wakes it.
     pub(crate) fn mark_closed(&self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
-            self.close_notify.notify_one();
+            self.close_notify.notify_waiters();
+        }
+        if let Ok(mut writer) = self.writer.try_lock() {
+            writer.take();
         }
     }
 
     pub(crate) async fn closed(&self) {
-        while !self.is_closed() {
-            self.close_notify.notified().await;
+        loop {
+            // Register before checking the flag so a concurrent close cannot
+            // fall between the check and the notification subscription.
+            let notified = self.close_notify.notified();
+            if self.is_closed() {
+                return;
+            }
+            notified.await;
         }
     }
 
@@ -60,28 +70,37 @@ impl<W: AsyncWrite + Unpin> StreamConnectionIo<W> {
         record: &[u8],
         deadline: Option<Instant>,
     ) -> Result<(), StreamWriteError> {
-        let writer = match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline, self.writer.lock())
-                .await
-                .map_err(|_| StreamWriteError::LockTimeout)?,
-            None => self.writer.lock().await,
-        };
+        let write = async {
+            let writer = match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, self.writer.lock())
+                    .await
+                    .map_err(|_| StreamWriteError::LockTimeout)?,
+                None => self.writer.lock().await,
+            };
 
-        let mut write = RecordWriteGuard::new(self, writer)?;
-        let result = match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline, write.writer().write_all(record))
-                .await
-                .map_err(|_| StreamWriteError::WriteTimeout),
-            None => Ok(write.writer().write_all(record).await),
-        };
+            let mut write = RecordWriteGuard::new(self, writer)?;
+            let result = match deadline {
+                Some(deadline) => {
+                    tokio::time::timeout_at(deadline, write.writer().write_all(record))
+                        .await
+                        .map_err(|_| StreamWriteError::WriteTimeout)
+                }
+                None => Ok(write.writer().write_all(record).await),
+            };
 
-        match result {
-            Ok(Ok(())) => {
-                write.commit();
-                Ok(())
+            match result {
+                Ok(Ok(())) => {
+                    write.commit();
+                    Ok(())
+                }
+                Ok(Err(error)) => Err(StreamWriteError::Io(error)),
+                Err(error) => Err(error),
             }
-            Ok(Err(error)) => Err(StreamWriteError::Io(error)),
-            Err(error) => Err(error),
+        };
+        tokio::select! {
+            biased;
+            () = self.closed() => Err(StreamWriteError::Closed),
+            result = write => result,
         }
     }
 }
@@ -203,5 +222,61 @@ mod tests {
         reader.read_exact(&mut received).await.unwrap();
         assert_eq!(received, clean_record);
         assert!(!successor.is_closed());
+    }
+
+    fn spawn_pending<F>(
+        future: F,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<F::Output>,
+    )
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut future = Box::pin(future);
+            assert!(futures::poll!(future.as_mut()).is_pending());
+            ready.send(()).unwrap();
+            future.await
+        });
+        (started, task)
+    }
+
+    #[tokio::test]
+    async fn close_interrupts_active_and_queued_writes_and_wakes_receiver() {
+        let (writer, mut reader) = tokio::io::duplex(1);
+        let io = Arc::new(StreamConnectionIo::new(writer));
+        let receiver_io = io.clone();
+        let (ready, receiver) = spawn_pending(async move { receiver_io.closed().await });
+        ready.await.unwrap();
+        let active_io = io.clone();
+        let (ready, active) =
+            spawn_pending(async move { active_io.write_record(b"active", None).await });
+        ready.await.unwrap();
+        let queued_io = io.clone();
+        let (ready, queued) =
+            spawn_pending(async move { queued_io.write_record(b"queued", None).await });
+        ready.await.unwrap();
+
+        io.mark_closed();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            receiver.await.unwrap();
+            assert!(matches!(
+                active.await.unwrap(),
+                Err(StreamWriteError::Closed)
+            ));
+            assert!(matches!(
+                queued.await.unwrap(),
+                Err(StreamWriteError::Closed)
+            ));
+        })
+        .await
+        .expect("closing a stream must wake its receiver and cancel every writer");
+        assert!(!io.has_writer().await);
+        let mut received = Vec::new();
+        reader.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"a", "only the byte sent before close may arrive");
     }
 }

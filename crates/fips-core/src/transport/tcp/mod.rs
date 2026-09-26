@@ -271,6 +271,7 @@ impl TcpTransport {
         // Close all established connections
         let mut pool = self.pool.lock().await;
         for (addr, conn) in pool.drain() {
+            conn.io.mark_closed();
             conn.recv_task.abort();
             let _ = conn.recv_task.await;
             match conn.direction {
@@ -491,6 +492,7 @@ impl TcpTransport {
     pub async fn close_connection_async(&self, addr: &TransportAddr) {
         let mut pool = self.pool.lock().await;
         if let Some(conn) = pool.remove(addr) {
+            conn.io.mark_closed();
             conn.recv_task.abort();
             match conn.direction {
                 Direction::Inbound => self.stats.record_pool_inbound_removed(),

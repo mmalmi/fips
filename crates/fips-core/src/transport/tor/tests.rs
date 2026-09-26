@@ -529,53 +529,74 @@ async fn completed_background_dial_waits_for_pool_then_promotes_once() {
 }
 
 #[tokio::test]
-async fn test_close_connection() {
-    // Set up destination + mock proxy
-    let (dest_tx, _dest_rx) = packet_channel(32);
-    let dest_config = TcpConfig {
-        bind_addr: Some("127.0.0.1:0".to_string()),
-        ..Default::default()
-    };
-    let mut dest = TcpTransport::new(TransportId::new(100), None, dest_config, dest_tx);
-    dest.start_async().await.unwrap();
-    let dest_addr = dest.local_addr().unwrap();
+async fn close_and_stop_invalidate_retained_writers() {
+    for stop in [false, true] {
+        // Set up destination + mock proxy
+        let (dest_tx, _dest_rx) = packet_channel(32);
+        let dest_config = TcpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        };
+        let mut dest = TcpTransport::new(TransportId::new(100), None, dest_config, dest_tx);
+        dest.start_async().await.unwrap();
+        let dest_addr = dest.local_addr().unwrap();
 
-    let mock = MockSocks5Server::new(dest_addr).await.unwrap();
-    let proxy_addr = mock.addr();
-    let _proxy_handle = mock.spawn();
+        let mock = MockSocks5Server::new(dest_addr).await.unwrap();
+        let proxy_addr = mock.addr();
+        let _proxy_handle = mock.spawn();
 
-    let (tor_tx, _tor_rx) = packet_channel(32);
-    let tor_config = TorConfig {
-        socks5_addr: Some(proxy_addr.to_string()),
-        ..Default::default()
-    };
-    let mut tor = TorTransport::new(TransportId::new(200), None, tor_config, tor_tx);
-    tor.start_async().await.unwrap();
+        let (tor_tx, _tor_rx) = packet_channel(32);
+        let tor_config = TorConfig {
+            socks5_addr: Some(proxy_addr.to_string()),
+            ..Default::default()
+        };
+        let mut tor = TorTransport::new(TransportId::new(200), None, tor_config, tor_tx);
+        tor.start_async().await.unwrap();
 
-    // Send to establish a connection
-    let target = TransportAddr::from_string(&dest_addr.to_string());
-    tor.send_async(&target, &build_msg1_frame()).await.unwrap();
+        // Send to establish a connection
+        let target = TransportAddr::from_string(&dest_addr.to_string());
+        tor.send_async(&target, &build_msg1_frame()).await.unwrap();
 
-    // Verify pool has the connection
-    {
-        let pool = tor.pool.lock().await;
-        assert_eq!(pool.len(), 1);
+        // Verify pool has the connection
+        {
+            let pool = tor.pool.lock().await;
+            assert_eq!(pool.len(), 1);
+        }
+        assert_eq!(tor.stats.snapshot().pool_outbound, 1);
+        assert_eq!(tor.stats.snapshot().pool_inbound, 0);
+
+        let retained = tor.pool.lock().await.get(&target).unwrap().io.clone();
+        // Close the connection
+        if stop {
+            tor.stop_async().await.unwrap();
+        } else {
+            tor.close_connection_async(&target).await;
+        }
+        assert!(
+            retained.is_closed(),
+            "close must invalidate retained Tor writers"
+        );
+        assert!(
+            !retained.has_writer().await,
+            "close must release the Tor write half"
+        );
+        assert!(matches!(
+            retained.write_record(&build_msg1_frame(), None).await,
+            Err(StreamWriteError::Closed)
+        ));
+
+        // Verify pool is empty
+        {
+            let pool = tor.pool.lock().await;
+            assert_eq!(pool.len(), 0);
+        }
+        assert_eq!(tor.stats.snapshot().pool_outbound, 0);
+
+        if !stop {
+            tor.stop_async().await.unwrap();
+        }
+        dest.stop_async().await.unwrap();
     }
-    assert_eq!(tor.stats.snapshot().pool_outbound, 1);
-    assert_eq!(tor.stats.snapshot().pool_inbound, 0);
-
-    // Close the connection
-    tor.close_connection_async(&target).await;
-
-    // Verify pool is empty
-    {
-        let pool = tor.pool.lock().await;
-        assert_eq!(pool.len(), 0);
-    }
-    assert_eq!(tor.stats.snapshot().pool_outbound, 0);
-
-    tor.stop_async().await.unwrap();
-    dest.stop_async().await.unwrap();
 }
 
 // ========================================================================
