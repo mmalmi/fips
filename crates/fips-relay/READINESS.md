@@ -469,7 +469,7 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The 27 September source bundle at `bef351f9d` contains 35,694 inventoried files
+The 27 September source bundle at `993304961` contains 35,694 inventoried files
 and resolves 693 packages, including 672 vendored registry packages. All 2,743
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
@@ -480,25 +480,26 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,072,048
-bytes, static and stripped. The unsigned APK is 11,487,405 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,021,128
+bytes, static and stripped. The unsigned APK is 11,465,006 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
 installed on a router.
 
-The current packaged executable also passes three UDP-to-WebSocket process
-cases in isolated ARM64 Linux: URL-only plaintext bootstrap, ordinary TLS and
-explicit FIPS-authenticated self-signed TLS. A separate harness with optional
-relay features disabled starts the real default-feature production executable.
+The current packaged executable passes four mixed-transport process cases in
+isolated ARM64 Linux: UDP-to-TCP, and UDP-to-WebSocket using URL-only plaintext
+bootstrap, ordinary TLS and explicit FIPS-authenticated self-signed TLS. A
+separate harness with optional relay features disabled starts the real
+default-feature production executable.
 Each case verifies unpaid denial, paid delivery, allowance exhaustion, renewal,
 middle-relay crash/restart, paid delivery after recovery and settlement conserving
 all 384 test sats. The TLS cases reject untrusted issuers, wrong server names or
 forged handshake signatures according to the selected policy before admission
 or spending. The source manifest, harness and executable hashes remain unchanged.
-All three containers use a read-only root, no external network or capabilities,
+All four containers use a read-only root, no external network or capabilities,
 and only the two executables mounted from the host; all are removed afterward.
-See the [WebSocket reproduction steps](openwrt/README.md#websocket-and-tls-with-the-packaged-executable).
+See the [TCP/WebSocket reproduction steps](openwrt/README.md#tcp-websocket-and-tls-with-the-packaged-executable).
 These passes do not explain the earlier intermittent delivery timeout or establish
 radio performance, remote TLS deployment, physical power loss or current-device
 acceptance.
@@ -1031,8 +1032,9 @@ ready-preparation ACL test, strict core/relay lint, formatting and source-size c
 The paid UDP-to-TCP process case above passes with all features and with optional
 relay features disabled. Core test filters `tcp_peer_disconnect` and
 `tcp_peer_removal_preserves` reproduce the node regressions. This does not enable
-Tor in the paid service or accept new hardware; the package at `bef351f9d` predates
-these connection-lifecycle fixes.
+Tor in the paid service or accept new hardware. The ARM64 package at `993304961`
+includes these connection-lifecycle fixes and passes the paid TCP/WebSocket
+process checks above.
 
 A matching three-process UDP-to-WebSocket test passes the same payment,
 exhaustion, renewal, middle restart and 384-test-sat conservation checks. Its
@@ -1155,7 +1157,7 @@ balanced connection counters. It fails on the old code and passes after the fix.
 The final checks pass 22 transport, six node and seven public-transit tests,
 plus six process tests in each of the all-feature and no-default-feature modes.
 Strict core/relay lint, formatting and the source-size gate also pass.
-The ARM64 package at `bef351f9d` predates this cleanup fix. The connection to the
+The ARM64 package checks above include this cleanup fix. Its connection to the
 earlier intermittent paid-delivery timeout remains unproven.
 
 One no-default-feature seed-only service run nevertheless timed out in paid

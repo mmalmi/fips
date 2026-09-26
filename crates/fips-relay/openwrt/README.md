@@ -22,9 +22,9 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `bef351f9d` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
-its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
-the three [paid WebSocket/TLS process cases](#websocket-and-tls-with-the-packaged-executable)
+build at `993304961` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+its APK is 10.9 MiB. It passes isolated Linux startup, package-content checks and
+the four [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
 against the packaged executable. These checks do not establish forwarding
 performance or current-router acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
 
@@ -134,7 +134,7 @@ the original channels without resetting lifetime spending limits. Tmpfs exercise
 Linux errors and process recovery; it does not model flash persistence or power
 loss. Verify the source manifest and both executable hashes afterward.
 
-### WebSocket and TLS with the packaged executable
+### TCP, WebSocket and TLS with the packaged executable
 
 Build the existing service harness with optional relay features disabled, matching
 the packaged daemon. The fixture supplies its own temporary mint and TLS proxy:
@@ -153,6 +153,7 @@ above. Each case mounts only the harness and the packaged executable:
 
 ```sh
 for relay_case in \
+  mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart \
   mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster \
   mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid_limits \
   mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_paid_limits
@@ -168,7 +169,7 @@ do
 done
 ```
 
-Each three-process case crosses UDP and WebSocket, denies unfunded forwarding,
+Each three-process case crosses UDP and TCP or WebSocket, denies unfunded forwarding,
 exhausts and renews paid allowances, crashes/restarts the middle relay and settles
 all original test funds. The TLS cases also check certificate/handshake rejection
 before peer admission or spending. Verify both executables and the source manifest
