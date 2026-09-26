@@ -311,11 +311,17 @@ unexpected stored growth cannot enlarge the 4 MiB or original-record ceiling.
 Full typed equality, row locking and atomic writes remain unchanged. A required
 absent operation is checked without loading its payload.
 
-Native CDK `a339c80f` passes 407 affected native tests, five focused
-operation-record checks and strict lint; SDK `8a87a1f` passes 411 workspace tests,
+Initial swap admission and native send/receive/reclaim completion admission now
+reuse the bounded proof comparator. Completion sizing retains references to the
+verified originals instead of another decoded batch. Duplicate identities, exact
+operation ownership and atomic storage claims remain checked. This does not bound
+the initial operation or receipt reads used during admission.
+
+Native CDK `ceb17370` passes 408 affected native tests, 14 focused
+storage-admission checks and strict lint; SDK `99ed177` passes 411 workspace tests,
 all 18 feature profiles and strict lint. The matching FIPS graph passes 296 relay tests,
 strict lint and the actual-expiry/restart refund-retirement process. All
-2,737 recorded source inputs and both executable hashes match. Local regressions
+2,738 recorded source inputs and both executable hashes match. Local regressions
 cover aggregate page overflow, smaller-page progress, late invalid inputs,
 full-capacity rollback, reopening/retry and separate fee/refund totals. The outgoing
 regression rejects oversized malformed inputs before decoding, preserves the
@@ -329,9 +335,13 @@ read budget. SDK collection still accepts near-limit proofs with a 2048-byte min
 URL and later ownership metadata. Operation-record regressions reject malformed
 stored growth before decoding and retain the original coins and checkpoint. They
 also preserve larger expected records, stale-record rejection and equivalent JSON
-within the read budget. This is local test-money evidence; one opt-in SDK storage
-soak is excluded. Initial collection/import reads, ordinary recovery and two
-internal storage-reservation reads without an exact old snapshot remain open,
+within the read budget. Admission regressions reject unexpectedly enlarged stored
+proofs before decoding, retain original proofs and storage allowances, and leave
+new operation records, output keys and counters uncommitted. The standalone swap
+case also admits a larger expected original. This is local test-money evidence;
+one opt-in SDK storage soak is excluded. Initial collection/import reads, ordinary
+recovery and two internal storage-reservation reads without an exact old snapshot
+remain open,
 along with remaining stores, sustained aggregate storage pressure, physical
 disk/power loss and current device acceptance.
 Service capacity accounting stays disabled.

@@ -350,6 +350,12 @@ still compare, while unexpected stored growth cannot raise the ceiling. Internal
 storage-reservation reads without an exact original snapshot and ordinary recovery
 reads remain separate bounds.
 
+Initial swap admission and native send/receive/reclaim completion admission also
+reuse the bounded proof comparator. Completion sizing uses the verified originals
+already held by the caller instead of another decoded batch. Duplicate identities,
+operation ownership, full typed equality and atomic storage claims remain checked.
+This does not bound the initial operation or receipt reads used during admission.
+
 The version-4 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
 original owners to reserve its full serialized proof size plus 16 KiB per nonempty
