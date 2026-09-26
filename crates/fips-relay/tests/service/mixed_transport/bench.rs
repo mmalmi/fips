@@ -17,6 +17,7 @@ use std::{
 };
 use tokio::process::Child;
 
+use super::tls::TlsProxy;
 use crate::process_support::{command, config, ready, start};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,21 +25,28 @@ pub enum SecondHop {
     Tcp,
     WebSocket,
     WebSocketSeed,
+    WebSocketTls,
 }
 
 impl SecondHop {
     pub fn kind(self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
-            Self::WebSocket | Self::WebSocketSeed => "websocket",
+            Self::WebSocket | Self::WebSocketSeed | Self::WebSocketTls => "websocket",
         }
     }
 
     fn address(self, socket: SocketAddr) -> String {
         match self {
             Self::Tcp => socket.to_string(),
-            Self::WebSocket | Self::WebSocketSeed => format!("ws://{socket}/fips"),
+            Self::WebSocket | Self::WebSocketSeed | Self::WebSocketTls => {
+                format!("ws://{socket}/fips")
+            }
         }
+    }
+
+    fn is_seed(self) -> bool {
+        matches!(self, Self::WebSocketSeed | Self::WebSocketTls)
     }
 }
 
@@ -48,6 +56,7 @@ pub struct MixedBench {
     pub paths: Vec<PathBuf>,
     pub npubs: Vec<String>,
     pub children: Vec<Child>,
+    pub tls: Option<TlsProxy>,
     second_hop: SecondHop,
     next_probe: AtomicU64,
     stage: &'static str,
@@ -70,6 +79,15 @@ impl MixedBench {
         let tcp: Vec<_> = (0..2)
             .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
             .collect();
+        let tls = if second_hop == SecondHop::WebSocketTls {
+            Some(TlsProxy::start(root.path(), tcp[0].local_addr().unwrap()).await)
+        } else {
+            None
+        };
+        let seed_url = tls.as_ref().map_or_else(
+            || second_hop.address(tcp[0].local_addr().unwrap()),
+            |proxy| proxy.url.clone(),
+        );
         let (mut configs, mut paths, mut npubs) = (Vec::new(), Vec::new(), Vec::new());
         for node in 0..3 {
             let directory = root.path().join(format!("n{node}"));
@@ -91,15 +109,15 @@ impl MixedBench {
                             ..Default::default()
                         });
                     }
-                    SecondHop::WebSocket | SecondHop::WebSocketSeed => {
+                    SecondHop::WebSocket | SecondHop::WebSocketSeed | SecondHop::WebSocketTls => {
                         config.transports.websocket = TransportInstances::Single(WebSocketConfig {
-                            bind_addr: if second_hop == SecondHop::WebSocketSeed && node == 2 {
+                            bind_addr: if second_hop.is_seed() && node == 2 {
                                 None
                             } else {
                                 bind_addr
                             },
-                            seed_urls: if second_hop == SecondHop::WebSocketSeed && node == 2 {
-                                vec![second_hop.address(tcp[0].local_addr().unwrap())]
+                            seed_urls: if second_hop.is_seed() && node == 2 {
+                                vec![seed_url.clone()]
                             } else {
                                 Vec::new()
                             },
@@ -107,7 +125,7 @@ impl MixedBench {
                         });
                     }
                 }
-                if second_hop == SecondHop::WebSocketSeed {
+                if second_hop.is_seed() {
                     config.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
                 }
             }
@@ -159,7 +177,7 @@ impl MixedBench {
             "udp",
             udp[0].local_addr().unwrap().to_string(),
         )];
-        if second_hop != SecondHop::WebSocketSeed {
+        if !second_hop.is_seed() {
             configs[1].neighbors.push(PeerConfig::new(
                 &npubs[2],
                 second_hop.kind(),
@@ -188,10 +206,7 @@ impl MixedBench {
             let client = configs[2].transports.websocket.iter().next().unwrap().1;
             assert!(client.bind_addr.is_none());
             assert!(client.public_url.is_none());
-            assert_eq!(
-                client.seed_urls,
-                vec![second_hop.address(tcp[0].local_addr().unwrap())]
-            );
+            assert_eq!(client.seed_urls, vec![seed_url]);
         }
         assert!(
             configs[2].transports.udp.is_empty(),
@@ -207,8 +222,17 @@ impl MixedBench {
         }
         drop((udp, tcp));
         let mut children = Vec::new();
-        for path in &paths {
-            children.push(start(path).await);
+        for (node, path) in paths.iter().enumerate() {
+            children.push(
+                if let Some(proxy) = &tls
+                    && node == 2
+                {
+                    proxy.assert_rejections(&configs[node], path).await;
+                    proxy.start_client(path).await
+                } else {
+                    start(path).await
+                },
+            );
         }
         ready(&configs, &paths, &npubs, &mut children).await;
         Self {
@@ -217,6 +241,7 @@ impl MixedBench {
             paths,
             npubs,
             children,
+            tls,
             second_hop,
             next_probe: AtomicU64::new(1),
             stage: "other-mixed-fixture",
@@ -244,7 +269,7 @@ impl MixedBench {
     }
 
     pub async fn assert_carriers(&self) {
-        if self.second_hop == SecondHop::WebSocketSeed {
+        if self.second_hop.is_seed() {
             let report = native_request(
                 &self.configs[2],
                 &serde_json::json!({"command": "show_transports"}),

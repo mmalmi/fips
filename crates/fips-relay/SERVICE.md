@@ -149,7 +149,11 @@ ordinary Internet gateway is installed by this process. Paid-service acceptance
 covers UDP and Ethernet, plus mixed UDP/TCP and UDP/WebSocket routes with payment,
 exhausted allowance, renewal and relay restart. WebSocket checks include both
 configured peers and URL-only bootstrap with authenticated adjacent admission.
-They use local loopback listeners; TLS proxy deployment is not covered.
+The TLS bootstrap case uses a loopback reverse proxy: untrusted issuers and
+server-name mismatches are rejected before peer admission or spending, and a
+valid certificate permits the same paid route and recovery checks. Its temporary
+CA is supplied only to the child client's process; system trust is unchanged.
+This covers local certificate validation, not remote TLS proxy deployment.
 
 An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their

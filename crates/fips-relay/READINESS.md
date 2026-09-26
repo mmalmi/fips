@@ -17,7 +17,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
@@ -1016,6 +1016,23 @@ tests, four startup tests, 292 relay library tests and strict all-target linting
 pass; formatting and source-size checks pass without new size exceptions.
 Run `cargo test -p fips-relay --all-features --test service websocket` for the
 WebSocket process cases, or use `--no-default-features` for their production mode.
+
+A third WebSocket case adds a loopback TLS reverse proxy to the URL-only fixture.
+The real client rejects an untrusted issuer and a server-name mismatch without
+connecting to the WS backend, admitting peers, funding channels or debiting its
+wallet. A generated CA is passed only through the child client's `SSL_CERT_FILE`
+and an empty `SSL_CERT_DIR`; the current dependency graph's native-root loader
+uses these alongside bundled web PKI roots. No system trust store or certificate
+verifier is changed. With a valid certificate, the existing FIPS authentication,
+unpaid denial, paid forwarding, exhaustion, renewal and settlement assertions
+pass. Crashing the middle relay requires a fresh TLS connection; paid traffic
+resumes and all 384 test sats are conserved. This passes with all relay features
+and with optional relay features disabled; the plaintext seed regression and
+strict all-target lint also pass. Test-only dependencies reuse already locked
+`rcgen` and `tokio-rustls` versions. Production code and wire messages are unchanged.
+Run the service test filter `mixed_udp_websocket_tls` for this case. Local TLS
+acceptance does not cover remote proxy deployment or resolve the intermittent
+paid-delivery timeout below.
 
 Native WebSocket lifecycle checks additionally reproduce and fix stalled HTTP
 upgrades retaining both connection slots indefinitely and completing after a

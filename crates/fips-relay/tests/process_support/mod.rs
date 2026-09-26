@@ -3,6 +3,7 @@ use fips_relay::{
     service::{AdminRequest, ServiceConfig, ServiceTerms, request},
 };
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -48,6 +49,10 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
 }
 
 pub async fn start(path: &Path) -> Child {
+    start_with_env(path, &[]).await
+}
+
+pub async fn start_with_env(path: &Path, environment: &[(&str, &OsStr)]) -> Child {
     let log = std::fs::File::create(path.with_extension("log")).unwrap();
     Command::new(env!("CARGO_BIN_EXE_fips-relay"))
         .arg("run")
@@ -57,6 +62,7 @@ pub async fn start(path: &Path) -> Child {
             "RUST_LOG",
             std::env::var("FIPS_RELAY_TEST_LOG").unwrap_or_else(|_| "warn".into()),
         )
+        .envs(environment.iter().copied())
         .stderr(log)
         .kill_on_drop(true)
         .spawn()

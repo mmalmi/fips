@@ -25,6 +25,8 @@ mod payment_progress;
 mod round_trip;
 #[path = "mixed_transport/service_carrier.rs"]
 mod service_carrier;
+#[path = "mixed_transport/tls.rs"]
+mod tls;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
@@ -39,6 +41,11 @@ async fn mixed_udp_websocket_daemons_preserve_paid_limits_through_exhaustion_and
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster() {
     mixed_daemons_preserve_paid_limits(SecondHop::WebSocketSeed).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid_limits() {
+    mixed_daemons_preserve_paid_limits(SecondHop::WebSocketTls).await;
 }
 
 async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
@@ -153,6 +160,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
         let before = bench.states().await;
+        let tls_connections = bench.tls.as_ref().map(tls::TlsProxy::connections);
         bench.children[1].kill().await.unwrap();
         bench.children[1] = process_support::start(&bench.paths[1]).await;
         process_support::ready(
@@ -163,6 +171,9 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         )
         .await;
         bench.assert_carriers().await;
+        if let Some(previous) = tls_connections {
+            assert!(bench.tls.as_ref().unwrap().connections() > previous);
+        }
         let after = bench.states().await;
         for (old, recovered) in before.iter().zip(&after) {
             assert_eq!(recovered["history"], old["history"]);
