@@ -5,6 +5,20 @@ mod handshake_lifetime;
 mod write_lifetime;
 
 #[test]
+fn tls_verification_requires_an_explicit_recognized_policy() {
+    use crate::config::WebSocketTlsVerification;
+    let default: WebSocketConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(default.tls_verification(), WebSocketTlsVerification::WebPki);
+    let selected: WebSocketConfig = serde_json::from_str(r#"{"tls_verification":"fips"}"#).unwrap();
+    assert_eq!(selected.tls_verification(), WebSocketTlsVerification::Fips);
+    assert_eq!(
+        serde_json::to_value(selected).unwrap()["tls_verification"],
+        "fips"
+    );
+    assert!(serde_json::from_str::<WebSocketConfig>(r#"{"tls_verification":"off"}"#).is_err());
+}
+
+#[test]
 fn websocket_record_validation_accepts_bounded_direct_fsp_fragments() {
     let mut fragment = vec![0u8; 24];
     fragment[..4].copy_from_slice(b"DFP1");

@@ -29,7 +29,9 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
-use tokio_tungstenite::{WebSocketStream, accept_hdr_async_with_config, connect_async_with_config};
+use tokio_tungstenite::{
+    WebSocketStream, accept_hdr_async_with_config, connect_async_tls_with_config,
+};
 use tracing::{debug, info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,7 +704,12 @@ async fn dial_and_run(runtime: Runtime, addr: TransportAddr) -> Result<(), Trans
     let url = addr
         .as_str()
         .ok_or_else(|| TransportError::InvalidAddress(addr.to_string()))?;
-    let connect = connect_async_with_config(url, Some(runtime.websocket_config()), false);
+    let connect = connect_async_tls_with_config(
+        url,
+        Some(runtime.websocket_config()),
+        false,
+        tls::connector(runtime.config.tls_verification())?,
+    );
     let (websocket, _) = tokio::time::timeout(
         Duration::from_millis(runtime.config.connect_timeout_ms()),
         connect,
@@ -795,6 +802,7 @@ fn validate_websocket_record(data: &[u8]) -> Result<(), String> {
 }
 
 mod connection;
+mod tls;
 
 #[cfg(test)]
 mod tests;

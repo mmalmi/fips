@@ -17,7 +17,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
@@ -1033,6 +1033,28 @@ strict all-target lint also pass. Test-only dependencies reuse already locked
 Run the service test filter `mixed_udp_websocket_tls` for this case. Local TLS
 acceptance does not cover remote proxy deployment or resolve the intermittent
 paid-delivery timeout below.
+
+Native outbound WebSocket instances can explicitly select
+`tls_verification: "fips"` for untrusted/self-signed certificates. The default
+`web_pki` path retains ordinary chain, name and date validation. FIPS mode parses
+the certificate and uses Rustls' real TLS 1.2/1.3 handshake-signature verification,
+but leaves peer identity to FIPS Noise instead of the certificate's issuer, name
+or dates. Browser trust policy is unchanged. See [configuration](SERVICE.md).
+
+The shared three-process fixture now also uses an untrusted self-signed leaf
+whose name does not match the URL. It first confirms that default TLS still
+rejects that issuer and that FIPS mode rejects a handshake signed by the wrong
+key, with no admitted peer, backend connection or wallet debit. The actual
+self-signed connection then passes authenticated adjacency, unpaid denial,
+paid forwarding, exhaustion, renewal, middle-relay restart and settlement with
+all 384 test sats conserved. The test failed before the connector was wired in.
+It passes with all relay features and with optional features disabled. Default
+TLS, all 21 transport and six authenticated-node checks, strict core/relay lint,
+formatting and file-size checks also pass on the matching source graph.
+Run the service filter `mixed_udp_websocket_self_signed` to reproduce it.
+No wire messages or dependency versions change; core uses the already locked
+Rustls directly. This acceptance remains local and does not resolve the earlier
+intermittent timeout or accept the current build on routers.
 
 Native WebSocket lifecycle checks additionally reproduce and fix stalled HTTP
 upgrades retaining both connection slots indefinitely and completing after a

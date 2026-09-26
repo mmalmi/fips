@@ -619,6 +619,18 @@ impl TcpConfig {
     }
 }
 
+/// Authentication boundary for native outbound WebSocket TLS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSocketTlsVerification {
+    /// Verify the server name and certificate chain using the normal root store.
+    #[default]
+    WebPki,
+    /// Accept untrusted certificates and authenticate peers through FIPS instead.
+    /// TLS handshake signatures are still verified.
+    Fips,
+}
+
 /// WebSocket physical transport configuration.
 ///
 /// The native listener intentionally speaks plain WebSocket so deployments can
@@ -642,6 +654,10 @@ pub struct WebSocketConfig {
     /// One or more explicit first-adjacency seed URLs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seed_urls: Vec<String>,
+
+    /// Native outbound TLS trust policy. Defaults to `web_pki`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_verification: Option<WebSocketTlsVerification>,
 
     /// HTTP path accepted by the native listener. Defaults to `/fips`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -699,6 +715,10 @@ pub struct WebSocketConfig {
 }
 
 impl WebSocketConfig {
+    pub fn tls_verification(&self) -> WebSocketTlsVerification {
+        self.tls_verification.unwrap_or_default()
+    }
+
     pub fn path(&self) -> &str {
         self.path.as_deref().unwrap_or(DEFAULT_WEBSOCKET_PATH)
     }

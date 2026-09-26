@@ -49,7 +49,7 @@ pub use peer::{ConnectPolicy, PeerAddress, PeerAddressProvenance, PeerConfig};
 pub use transport::SimTransportConfig;
 pub use transport::{
     BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances,
-    TransportsConfig, UdpConfig, WebRtcConfig, WebSocketConfig,
+    TransportsConfig, UdpConfig, WebRtcConfig, WebSocketConfig, WebSocketTlsVerification,
 };
 pub(crate) use webrtc_budget::{
     MAX_WEBRTC_CONFIG_CANDIDATE_SOCKETS, validate_webrtc_candidate_socket_budget,

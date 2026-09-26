@@ -48,6 +48,11 @@ async fn mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid
     mixed_daemons_preserve_paid_limits(SecondHop::WebSocketTls).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_paid_limits() {
+    mixed_daemons_preserve_paid_limits(SecondHop::WebSocketSelfSigned).await;
+}
+
 async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();

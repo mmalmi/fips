@@ -134,6 +134,17 @@ without preconfigured identities; payment control then requires explicit
 `neighbor_admission: "authenticated_adjacent"`. A seed URL supplies a bootstrap
 location, not spending authority or arbitrary endpoint discovery.
 
+Native outbound WSS defaults to `tls_verification: "web_pki"`, checking the
+certificate chain, server name and validity dates. To use self-signed or otherwise
+untrusted certificates without installing a CA, set `tls_verification: "fips"`
+on that WebSocket instance. This accepts a well-formed certificate regardless of
+issuer, name or dates, while still verifying TLS handshake signatures. Peer
+identity is authenticated by FIPS Noise; admission rules and spending limits
+still apply. Configure the expected FIPS public identity when a particular peer
+is required: a URL-only hint and link-quality measurements cannot establish that
+identity. Browser clients retain the browser's certificate policy. Native
+Wi-Fi/Ethernet links do not require TLS certificates.
+
 The key-hint and idle deadlines also apply during blocked WebSocket writes.
 Closing a connection or rebinding after a network change interrupts its pending
 writes, including when the idle timeout is disabled. A partially written frame
@@ -154,11 +165,14 @@ ordinary Internet gateway is installed by this process. Paid-service acceptance
 covers UDP and Ethernet, plus mixed UDP/TCP and UDP/WebSocket routes with payment,
 exhausted allowance, renewal and relay restart. WebSocket checks include both
 configured peers and URL-only bootstrap with authenticated adjacent admission.
-The TLS bootstrap case uses a loopback reverse proxy: untrusted issuers and
+The default TLS bootstrap case uses a loopback reverse proxy: untrusted issuers and
 server-name mismatches are rejected before peer admission or spending, and a
 valid certificate permits the same paid route and recovery checks. Its temporary
 CA is supplied only to the child client's process; system trust is unchanged.
-This covers local certificate validation, not remote TLS proxy deployment.
+The explicit FIPS TLS mode passes the same checks with an untrusted self-signed
+certificate and a mismatched name; a forged handshake signature is rejected
+before admission or spending. These are local checks; remote TLS proxy deployment
+remains unverified.
 
 An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their

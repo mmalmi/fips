@@ -1,5 +1,7 @@
 use cashu_service::{create_topup_quote, load_wallet_overview, simulation::PaymentNetwork};
-use fips_core::config::{PeerConfig, TcpConfig, TransportInstances, UdpConfig, WebSocketConfig};
+use fips_core::config::{
+    PeerConfig, TcpConfig, TransportInstances, UdpConfig, WebSocketConfig, WebSocketTlsVerification,
+};
 use fips_relay::{
     control_transport::NeighborAdmission,
     controller::RenewalPolicy,
@@ -26,27 +28,37 @@ pub enum SecondHop {
     WebSocket,
     WebSocketSeed,
     WebSocketTls,
+    WebSocketSelfSigned,
 }
 
 impl SecondHop {
     pub fn kind(self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
-            Self::WebSocket | Self::WebSocketSeed | Self::WebSocketTls => "websocket",
+            Self::WebSocket
+            | Self::WebSocketSeed
+            | Self::WebSocketTls
+            | Self::WebSocketSelfSigned => "websocket",
         }
     }
 
     fn address(self, socket: SocketAddr) -> String {
         match self {
             Self::Tcp => socket.to_string(),
-            Self::WebSocket | Self::WebSocketSeed | Self::WebSocketTls => {
+            Self::WebSocket
+            | Self::WebSocketSeed
+            | Self::WebSocketTls
+            | Self::WebSocketSelfSigned => {
                 format!("ws://{socket}/fips")
             }
         }
     }
 
     fn is_seed(self) -> bool {
-        matches!(self, Self::WebSocketSeed | Self::WebSocketTls)
+        matches!(
+            self,
+            Self::WebSocketSeed | Self::WebSocketTls | Self::WebSocketSelfSigned
+        )
     }
 }
 
@@ -79,8 +91,18 @@ impl MixedBench {
         let tcp: Vec<_> = (0..2)
             .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
             .collect();
-        let tls = if second_hop == SecondHop::WebSocketTls {
-            Some(TlsProxy::start(root.path(), tcp[0].local_addr().unwrap()).await)
+        let tls = if matches!(
+            second_hop,
+            SecondHop::WebSocketTls | SecondHop::WebSocketSelfSigned
+        ) {
+            Some(
+                TlsProxy::start(
+                    root.path(),
+                    tcp[0].local_addr().unwrap(),
+                    second_hop == SecondHop::WebSocketSelfSigned,
+                )
+                .await,
+            )
         } else {
             None
         };
@@ -109,8 +131,14 @@ impl MixedBench {
                             ..Default::default()
                         });
                     }
-                    SecondHop::WebSocket | SecondHop::WebSocketSeed | SecondHop::WebSocketTls => {
+                    SecondHop::WebSocket
+                    | SecondHop::WebSocketSeed
+                    | SecondHop::WebSocketTls
+                    | SecondHop::WebSocketSelfSigned => {
                         config.transports.websocket = TransportInstances::Single(WebSocketConfig {
+                            tls_verification: (second_hop == SecondHop::WebSocketSelfSigned
+                                && node == 2)
+                                .then_some(WebSocketTlsVerification::Fips),
                             bind_addr: if second_hop.is_seed() && node == 2 {
                                 None
                             } else {

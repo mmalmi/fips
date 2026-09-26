@@ -3682,6 +3682,7 @@ dependencies = [
  "procfs",
  "rand 0.10.1",
  "ring",
+ "rustls",
  "rtnetlink",
  "rustables",
  "secp256k1 0.30.0",
