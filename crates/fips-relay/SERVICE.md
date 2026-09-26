@@ -336,3 +336,52 @@ links as immediate route readiness. It does not promise seamless recovery.
 For failed-test diagnostics, set `FIPS_RELAY_TEST_LOG=fips_core::node=debug` and
 `FIPS_RELAY_TEST_LOG_DIR` to an existing private directory. Failed tests save only
 node logs there. Normal test wallets and account state remain temporary.
+
+## Filesystem exhaustion regression
+
+The ignored `funding_costs` filesystem test uses four local services and test
+money. One transit relay lives on a disposable filesystem. It fills that volume
+with real writes, requires ENOSPC from a controller journal write and SQLite's
+disk-full error from a wallet write, then interrupts the relay. Restart must fail
+while the volume is full. After removing only the test ballast, the shared
+recovery scenario resumes paid traffic, settles the original channels and checks
+balances and lifetime spending limits. This tests failed writes and process
+recovery, not power loss or physical flash behavior.
+
+Use a dedicated mounted 32–128 MiB filesystem. The test rejects the parent
+filesystem and requires a matching marker and token; it never creates a mount.
+For example, on macOS:
+
+```sh
+image_dir="$(mktemp -d)"
+export FIPS_TEST_STORAGE_VOLUME="$(mktemp -d /tmp/fips-space.XXXXXX)"
+hdiutil create -size 128m -fs HFS+ -volname 'FIPS storage test' \
+  -nospotlight -type UDIF "$image_dir/relay-test.dmg"
+hdiutil attach "$image_dir/relay-test.dmg" \
+  -mountpoint "$FIPS_TEST_STORAGE_VOLUME" -nobrowse -noautoopen -owners on
+export FIPS_TEST_STORAGE_TOKEN="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+root = Path(os.environ['FIPS_TEST_STORAGE_VOLUME']).resolve()
+device = root.stat().st_dev
+space = os.statvfs(root)
+capacity = space.f_blocks * space.f_frsize
+assert device != root.parent.stat().st_dev
+assert 32 * 1024**2 <= capacity <= 128 * 1024**2
+os.chmod(root, 0o700)
+marker = dict(schema=1, device=device, capacity_bytes=capacity,
+              token=os.environ['FIPS_TEST_STORAGE_TOKEN'])
+with (root / '.fips-storage-test.json').open('x') as output:
+    json.dump(marker, output)
+PY
+cargo test -p fips-relay --all-features --test funding_costs \
+  filesystem_exhaustion::full_filesystem_preserves_wallet_and_channels \
+  -- --exact --ignored --test-threads=1 --nocapture
+hdiutil detach "$FIPS_TEST_STORAGE_VOLUME"
+```
+
+Use the matching dependency graph described in [readiness](READINESS.md).
+The marker permits filling the whole selected volume. Never place real accounts
+on it. The test leaves its relay state in the private image for diagnosis; keep
+the image until the result is understood, then remove that disposable image.

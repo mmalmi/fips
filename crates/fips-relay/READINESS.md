@@ -19,7 +19,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery and lost settlement replies across departure/rejoin. | Reconciliation when original native wallet evidence is missing or conflicting; physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on a disposable macOS HFS+ volume. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
@@ -45,6 +45,23 @@ tests, strict SDK/relay lint and the ordinary service restart/retirement regress
 The focused configuration, offline-wallet, shared-wallet and crash-recovery checks
 also pass. One opt-in SDK storage soak is excluded from the full-suite count;
 features and native dependencies are unchanged.
+
+The opt-in [filesystem exhaustion regression](SERVICE.md#filesystem-exhaustion-regression)
+reuses that four-node scenario on a 128 MiB HFS+ image on macOS arm64. Real writes
+exhaust the volume containing one transit relay. Its controller journal update
+fails with ENOSPC without replacing the saved journal; a 4 MiB wallet write that
+fits the logical limit fails with SQLite's disk-full error, leaving no value or
+capacity charge. After SIGKILL, startup also fails on the full volume. Removing
+the test ballast preserves the exact original unspent proofs and permits wallet
+writes again. Normal restart then delivers new paid traffic, settles all four
+channels, reconciles test funds and retains lifetime spending limits. The ordinary
+logical-capacity/restart case also passes with paid delivery after restart.
+
+This is failed-write and process-recovery evidence, not physical power-loss,
+router-filesystem or guaranteed settlement-while-full acceptance. The logical
+wallet limit does not reserve filesystem blocks, SQLite WAL growth or journal
+replacement space. This change adds shared test coverage and reproduction steps;
+it changes no production code or dependency versions.
 
 Incoming route admission checks capacity, existing bindings and replacement
 ownership before invoking receiver funding persistence. The payment boundary
