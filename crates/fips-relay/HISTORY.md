@@ -333,6 +333,15 @@ eligible spent originals, removes matching queue references, updates the lifetim
 count and commits custody pages and their cursor. No intermediate queue admission
 is required. A pending capture pauses only its own scope's collection.
 
+Native atomic proof comparison reads pages of at most 128 identities within
+4 MiB of stored payload. One larger expected record can progress alone, with its
+ceiling derived from the caller-owned original through the production row encoder.
+Stored growth cannot raise that ceiling. Each read is bounded before driver
+projection and decoding; full typed equality and atomic proof/checkpoint rollback
+are retained. Initial collection reads and optional operation-fence reads remain
+separate limits. This does not impose a smaller admission limit on original coins
+whose stored mint, witness or ownership metadata makes them larger than proof JSON.
+
 The version-4 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
 original owners to reserve its full serialized proof size plus 16 KiB per nonempty

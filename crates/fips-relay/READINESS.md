@@ -298,21 +298,31 @@ native retirement. Original and created-coin capture both retry smaller groups
 without advancing past unchecked inputs. Missing or individually oversized
 originals retain the send owners, cursor and wallet evidence.
 
-Native CDK `a119586f` passes 403 affected native tests and strict lint; SDK
-`a172483` passes 15 focused sender-capture tests, 411 workspace tests,
+Native atomic proof comparison now reads at most 128 identities within 4 MiB,
+or one larger expected record alone. The production row encoder sizes that
+record from the caller's original; stored growth cannot enlarge the ceiling.
+Reads are gated before driver projection and decoding. Full typed comparison and
+atomic proof/checkpoint rollback remain unchanged.
+
+Native CDK `53a3485a` passes 405 affected native tests and strict lint; SDK
+`cfe3691` passes 15 focused proof-history tests, 411 workspace tests,
 all 18 feature profiles and strict lint. The matching FIPS graph passes 296 relay tests,
 strict lint and the actual-expiry/restart refund-retirement process. All
-2,734 recorded source inputs and both executable hashes match. Local regressions
+2,736 recorded source inputs and both executable hashes match. Local regressions
 cover aggregate page overflow, smaller-page progress, late invalid inputs,
 full-capacity rollback, reopening/retry and separate fee/refund totals. The outgoing
 regression rejects oversized malformed inputs before decoding, preserves the
 receipt and coins, and retries after reopening without resetting costs or making
 another mint swap. Capture regressions cover oversized malformed originals and
 created coins, then restore the records and verify unchanged custody and progress.
-Large witness groups split without skipping coins. This is local test-money
-evidence; one opt-in SDK storage soak is excluded. Proof collection and imported
-proof reads, remaining stores, sustained aggregate storage pressure, physical
-disk/power loss and current device acceptance remain open.
+Large witness groups split without skipping coins. Atomic-comparison regressions
+also retain earlier records and checkpoints when a later page is oversized, and
+preserve larger caller-held originals and equivalent JSON encodings within the
+read budget. SDK collection still accepts near-limit proofs with a 2048-byte mint
+URL and later ownership metadata. This is local test-money evidence; one opt-in
+SDK storage soak is excluded. Initial collection and imported-proof reads,
+optional operation-fence reads, remaining stores, sustained aggregate storage
+pressure, physical disk/power loss and current device acceptance remain open.
 Service capacity accounting stays disabled.
 
 
