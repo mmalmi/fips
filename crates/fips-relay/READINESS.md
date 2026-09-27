@@ -402,6 +402,29 @@ disk/power loss and current device acceptance.
 That checkpoint did not configure service-level capacity.
 
 
+### Missing withdrawal journals
+
+Native CDK `5ff0b4b801ff` preserves withdrawal reservations whose original
+operation journal is missing. Preparation saves the journal and reservation atomically, so absence is
+not evidence that a payment was never submitted. Startup no longer bulk-loads all
+withdrawal quotes or unlocks them on that assumption. A status check rejects a
+missing, malformed or mismatched owner before querying the mint or changing
+custody. Normal recovery with the original journal remains available.
+
+Two regressions reproduced the old ownership loss/status acceptance. The fix
+passes 548 wallet tests, including preservation of quotes across scopes,
+original pending proofs and receipts, denial of a second preparation, and correct
+completion after the original journal is restored. The existing paged-recovery
+regression also forbids bulk withdrawal-quote reads. The full SDK suite passes
+413 tests (one opt-in soak excluded), with 296 relay unit tests and the
+four-node paid/restart/concurrent-settlement scenario; native, SDK and relay lint
+and CDK formatting pass. No public signatures, schema or wire messages change.
+
+This preserves uncertain evidence; it does not reconstruct missing journals or
+provide general orphan detection/reconciliation. The ARM64 package below predates
+this change and requires a rebuild. Physical power-loss and current-device
+acceptance remain open.
+
 ### Wallet read bounds
 
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
