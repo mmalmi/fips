@@ -40,8 +40,9 @@ tests, both three-test customer profiles, the controller scenarios, the four-nod
 shared-wallet recovery case and strict relay lint, formatting and source-size
 checks. These use the unchanged, previously accepted SDK and local test money.
 Native priced background envelopes can advance during recovery; that period is
-not assumed idle. The ARM64 package still predates this scheduler change and the
-latest SDK receipt fix, and current-device acceptance remains outstanding.
+not assumed idle. The current ARM64 package also passes both customer restart
+cases with these scheduler and SDK receipt changes. Current-device acceptance
+remains outstanding.
 
 Fresh services can opt into `terms.wallet_capacity_bytes` before initialization.
 The SDK creates the limited wallet before admitting financial work; normal reopening
@@ -533,7 +534,8 @@ without another source payment. The full SDK workspace passes 415 tests (one
 opt-in soak excluded), alongside 298 relay unit tests, the four-node paid/restart/
 concurrent-settlement case, strict SDK/relay lint, edited-source formatting and
 source-size checks. Nine unrelated baseline formatting differences are unchanged.
-These are native loopback checks; the r14 ARM64 package predates this SDK change.
+The SDK checks use native loopback; the current ARM64 package includes this
+revision and passes the transport, customer and storage cases below.
 Other native recovery/quote queries, total wallet growth, physical recovery and
 current-device acceptance remain separate requirements.
 
@@ -631,9 +633,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `ea69e5a5a` includes SDK `299b273b64f0` and CDK
-`4be21741c5eb`, contains 35,704 inventoried files and resolves 693 packages,
-including 672 vendored registry packages. All 2,753
+The source bundle at `b7c8d18958` includes SDK `30a6e0d4f17d` and CDK
+`4be21741c5eb`, contains 35,705 inventoried files and resolves 693 packages,
+including 672 vendored registry packages. All 2,754
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -643,8 +645,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,053,560
-bytes, static and stripped. The unsigned APK is 11,477,545 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,033,968
+bytes, static and stripped. The unsigned APK is 11,471,125 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -683,6 +685,15 @@ All five cases pass against this packaged executable. The source bundle now
 includes the corrected fixture, so reproduction builds the harness and daemon
 from the same archive. The earlier r13 failure remains recorded; the fixture
 correction changes no runtime policy, timer or payment protocol.
+
+The same package passes both customer entry-restart cases in isolated ARM64
+Linux. A default-feature customer harness keeps its client running while the
+packaged entry process is killed and reopened. Two fresh traffic cohorts deliver
+and advance automatic payment without another purchase command or manual flush.
+Original identities, profiles, purchases and spending limits survive; settlement
+collects all 384 test sats per tariff with positive entry earnings. The harness,
+daemon and source-manifest hashes remain unchanged, and both owned containers are
+removed. See [customer recovery](openwrt/README.md#customer-entry-restart).
 
 These passes do not explain the earlier intermittent delivery timeout or establish
 radio performance, remote TLS deployment, physical power loss or current-device

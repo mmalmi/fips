@@ -22,12 +22,12 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `ea69e5a5a` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+build at `b7c8d18958` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
 its APK is 10.9 MiB. It passes isolated Linux startup, package-content checks and
 the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
-against the packaged executable, plus the wallet-capacity and full-filesystem
-recovery cases below. These checks do not establish forwarding
-performance or current-router acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
+against the packaged executable, both [customer entry-restart cases](#customer-entry-restart),
+and the wallet-capacity and full-filesystem recovery cases below. These checks
+do not establish forwarding performance or current-router acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
 
 Use an APKv3 tool with the `mkpkg` applet. OpenWrt's installed package manager
 may omit that build applet; the SDK host tool or Alpine's full build tool can
@@ -154,7 +154,8 @@ temporary mint and TLS proxy:
 CARGO_TARGET_DIR="$PWD/target/linux-tests" CARGO_INCREMENTAL=0 \
   CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
   cargo +1.96.0 zigbuild --offline --locked -j 1 \
-  --target aarch64-unknown-linux-musl -p fips-relay --no-default-features --test service
+  --target aarch64-unknown-linux-musl -p fips-relay --no-default-features \
+  --test service --test customer
 ```
 
 Set `service_test_binary` to the resulting executable `service-<hash>` in
@@ -163,6 +164,16 @@ Set `service_test_binary` to the resulting executable `service-<hash>` in
 above. Each case mounts only the harness and the packaged executable:
 
 ```sh
+run_relay_case() {
+  docker run --rm --pull never --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --user 65534:65534 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
+    --memory 2g --cpus 2 --pids-limit 256 \
+    --mount "type=bind,source=$1,target=/candidate/relay-test,readonly" \
+    --mount "type=bind,source=$relay_program,target=$compiled_relay_path,readonly" \
+    --entrypoint /candidate/relay-test "$relay_test_image" \
+    "$2" --exact --test-threads=1 --nocapture
+}
 for relay_case in \
   mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart \
   mixed_udp_websocket_daemons_preserve_paid_limits_through_exhaustion_and_restart \
@@ -170,14 +181,7 @@ for relay_case in \
   mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid_limits \
   mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_paid_limits
 do
-  docker run --rm --pull never --network none --read-only --cap-drop ALL \
-    --security-opt no-new-privileges --user 65534:65534 \
-    --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
-    --memory 2g --cpus 2 --pids-limit 256 \
-    --mount "type=bind,source=$service_test_binary,target=/candidate/service,readonly" \
-    --mount "type=bind,source=$relay_program,target=$compiled_relay_path,readonly" \
-    --entrypoint /candidate/service "$relay_test_image" \
-    "mixed_transport::$relay_case" --exact --test-threads=1 --nocapture || exit
+  run_relay_case "$service_test_binary" "mixed_transport::$relay_case" || exit
 done
 ```
 
@@ -189,6 +193,29 @@ cumulative payment through the original channels with preserved spending limits.
 The TLS cases also check certificate/handshake rejection
 before peer admission or spending. Verify both executables and the source manifest
 afterward. Loopback TLS does not establish remote proxy or radio acceptance.
+
+### Customer entry restart
+
+The command above also builds `customer-<hash>` in the same `debug/deps/`
+directory. Set `customer_test_binary` to that executable's absolute path and
+reuse `run_relay_case` with the same packaged daemon and isolated Linux image:
+
+```sh
+for customer_case in \
+  customer_app_uses_forwarding_data_mesh_and_preserves_terms_across_reopen \
+  customer_app_uses_real_accounts_and_preserves_them_across_reopen
+do
+  run_relay_case "$customer_test_binary" "$customer_case" || exit
+done
+```
+
+Each case runs an embedded customer and two real relay processes. It reopens the
+customer, then kills and restarts the entry while the customer remains running.
+Fresh delivery and two advances of automatic payment must recover without another
+Buy or payment flush. Original accounts and spending limits survive, the entry
+earns, and all 384 test sats are collected. These are ARM64 Linux checks of shared
+customer logic; Android lifecycle, Wi-Fi binding and current devices still need
+their own acceptance. Verify the source manifest and both executable hashes again.
 
 ## Install and configure
 
