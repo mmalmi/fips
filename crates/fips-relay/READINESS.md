@@ -29,9 +29,9 @@ paid/restart/concurrent-settlement case pass. Strict native, SDK and relay lint
 and native workspace formatting also pass. PostgreSQL has compile/lint coverage
 only; relay runtime database acceptance uses SQLite. Ordinary exact quote and
 recovery reads, SQL engine memory, overall storage and current-device acceptance
-remain open. The r16 ARM64 package includes these native changes and passes
-the nine isolated Linux transport, customer-restart and storage-recovery cases
-described below. It has not been installed on the routers.
+remain open. The r17 ARM64 package includes these native changes and the expiry
+recovery below. It passes eleven isolated Linux transport, customer-restart,
+storage-recovery and expiry cases. It has not been installed on the routers.
 
 SDK `695a52dc0552` expiry recovery reconciles a provider settlement that occurred before
 recovery began, using the same complete, signature-verified output checks as the
@@ -44,8 +44,8 @@ The new regression fails before the fix. All eight focused expiry tests, the ful
 416-test SDK suite (one opt-in soak excluded), 301 relay unit tests, the fee-bearing
 paid settlement and interrupted-funding process cases, and strict SDK/relay lint
 pass. The changed Rust files pass formatting and size checks. This adds no message,
-journal field, feature or dependency. The r16 ARM64 package predates this SDK
-extension and the relay integration below; it has not accepted either change.
+journal field, feature or dependency. The r17 ARM64 package includes this SDK
+extension and accepts the relay integration below in isolated Linux.
 
 FIPS now coordinates automatic expiry for used channels, including channels shared
 across destinations. The seller seals usage at service expiry and collects its
@@ -686,9 +686,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `197400e2b5` includes SDK `c795797d55de` and CDK
-`1cce477c7166`, contains 35,707 inventoried files and resolves 693 packages,
-including 672 vendored registry packages. All 2,756
+The source bundle at `d7c9696fd7` includes SDK `695a52dc0552` and CDK
+`1cce477c7166`, contains 35,708 inventoried files and resolves 693 packages,
+including 672 vendored registry packages. All 2,757
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -698,12 +698,22 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,034,232
-bytes, static and stripped. The unsigned APK is 11,469,909 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,088,368
+bytes, static and stripped. The unsigned APK is 11,489,433 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
 installed on a router.
+
+The same packaged executable passes both expiry recovery process cases with the
+matching funding harness. A killed buyer's used channel spans two destinations;
+the seller collects a positive retained payment and retires without acknowledgment.
+The buyer later restarts with the seller offline and restores its original refund.
+All 512 test sats, fees, signed obligations and lifetime budgets reconcile. The
+separate interrupted-opening case also passes, conserving 384 test sats without
+replacement funding or route activation. These cases use the actual expiry clock
+and preserve source, harness and daemon hashes. A seller that misses its redemption
+deadline, physical power loss and current-router acceptance remain open.
 
 The current packaged executable passes five mixed-transport process cases in
 isolated ARM64 Linux: UDP-to-TCP, and UDP-to-WebSocket using configured peers,
@@ -2563,7 +2573,7 @@ unused refund and coordinated SDK/controller retirement after expiry. Spendable
 balances plus mint fees conserve all 384 issued test sats; lifetime accounting
 retains the original debit and verified refund.
 
-The current r16 packaged ARM64 daemon also passes this exact interrupted-funding
+The earlier r16 packaged ARM64 daemon also passes this exact interrupted-funding
 case in an isolated Linux container, using the existing funding harness and no
 fixture changes. It completes in 126 seconds, including the natural expiry wait.
 Original funding, debit, refund and the 384-test-sat conservation assertions pass;
