@@ -428,11 +428,11 @@ current-device acceptance remain open.
 ### Receipt completion read bounds
 
 Native CDK `9a8e9792f98f` bounds operation receipt publication and final
-withdrawal completion by reusing the
-indexed, bounded receipt reader. The ceiling is 4 MiB or the larger caller-owned
-receipt, sized through the production encoder and allowing status-only completion
-changes. Unexpected stored growth fails before SQL payload projection or decoding,
-without publishing a receipt or changing the original operation and quote. Large
+withdrawal completion by reusing the indexed, bounded receipt reader. The
+ceiling is 4 MiB or the larger caller-owned receipt, sized through the
+production encoder and allowing status-only completion changes. Unexpected
+stored growth fails before SQL payload projection or decoding, without
+publishing a receipt or changing the original operation and quote. Large
 legitimate receipts, typed conflicts and completed results on pending retries
 remain supported. This changes no public API, storage schema or network message.
 
@@ -445,9 +445,9 @@ paid/restart/concurrent-settlement check. Affected native, SDK and relay strict
 lint, CDK formatting and source-size checks pass.
 
 Other operation-admission, quote and receipt reads remain separate work. The ARM64
-package recorded below predates this dependency change and needs rebuilding before
-current-target acceptance. Physical power-loss and current-device checks remain
-open.
+package below includes this dependency change and passes the isolated Linux
+transport, restart, settlement and storage-recovery checks recorded below.
+Physical power-loss and current-device checks remain open.
 
 ### Wallet read bounds
 
@@ -543,8 +543,8 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `d75aae457` contains 35,703 inventoried files
-and resolves 693 packages, including 672 vendored registry packages. All 2,752
+The source bundle at `9c180baeb` contains 35,704 inventoried files
+and resolves 693 packages, including 672 vendored registry packages. All 2,753
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -554,8 +554,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,044,672
-bytes, static and stripped. The unsigned APK is 11,475,976 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,024,104
+bytes, static and stripped. The unsigned APK is 11,467,715 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -599,7 +599,7 @@ power-loss or OpenWrt service supervision checks. The container has no external
 network, a read-only root, no capabilities and only the executables mounted from
 the host. See the [process recovery recipe](openwrt/README.md#production-executable-and-storage-recovery).
 
-The current `d75aae457` bundle's separate all-features routing harness passes
+The earlier `d75aae457` bundle's separate all-features routing harness passes
 loss, delay and combined loss/neighbor-churn scenarios on ARM64 Linux. Native
 feedback moves the purchase away from an impaired route and back to the recovered
 cheaper provider. New paths first receive bounded trial agreements, and the
