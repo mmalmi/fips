@@ -33,6 +33,21 @@ remain open. The r16 ARM64 package includes these native changes and passes
 the nine isolated Linux transport, customer-restart and storage-recovery cases
 described below. It has not been installed on the routers.
 
+SDK `695a52dc0552` expiry recovery reconciles a provider settlement that occurred before
+recovery began, using the same complete, signature-verified output checks as the
+existing settlement-race path. Spent funding alone cannot establish a refund or
+create a new expiry intent. Verification precedes the signing fence and wallet
+import; no replacement swap is sent for spent funding. The shared tests cover an
+older redeemed payment, zero and full-capacity payments, rotated issuing keys, invalid
+signatures, unchanged state on failure, conservation and replay after spending.
+The new regression fails before the fix. All eight focused expiry tests, the full
+416-test SDK suite (one opt-in soak excluded), 301 relay unit tests, the fee-bearing
+paid settlement and interrupted-funding process cases, and strict SDK/relay lint
+pass. The changed Rust files pass formatting and size checks. This adds no message,
+journal field, feature or dependency. FIPS automatic expiry remains restricted to
+its verified zero-use path; used/shared-channel coordination still needs integration.
+The r16 ARM64 package predates this SDK extension and has not accepted it.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
