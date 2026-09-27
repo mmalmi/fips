@@ -22,8 +22,8 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `d7c9696fd7` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
-its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
+build at `18a1236edb` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+its APK is 10.9 MiB. It passes isolated Linux startup, package-content checks and
 the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
 against the packaged executable, both [customer entry-restart cases](#customer-entry-restart),
 and the wallet-capacity, full-filesystem and channel-expiry cases below. These checks
@@ -134,6 +134,8 @@ run_recovery wallet_costs_and_refunds_survive_restart_without_resetting_the_life
   --exact --test-threads=1 --nocapture
 run_recovery filesystem_exhaustion::full_filesystem_preserves_wallet_and_channels \
   --exact --ignored --test-threads=1 --nocapture
+run_recovery used_expiry::seller_recovers_after_missing_the_shared_channel_collection_deadline \
+  --exact --test-threads=1 --nocapture
 run_recovery used_expiry::shared_paid_channel_expires_with_each_counterparty_offline \
   --exact --test-threads=1 --nocapture
 run_recovery restore::interrupted_funding_restores_after_route_expiry_without_new_spending \
@@ -144,12 +146,13 @@ The second case verifies Linux ENOSPC and SQLite rollback before interrupted
 startup and recovery. Both storage cases require paid delivery after restart and settle
 the original channels without resetting lifetime spending limits. Tmpfs exercises
 Linux errors and process recovery; it does not model flash persistence or power
-loss. The expiry cases separately verify seller collection with the buyer offline,
-later shared-channel refund with the seller offline, and unused-funding recovery
-after an interrupted opening. They conserve 512 and 384 test sats respectively,
-including mint fees, without resetting lifetime budgets. A seller that misses its
-redemption deadline still needs separate acceptance. Verify the source manifest
-and both executable hashes afterward.
+loss. The expiry cases verify seller recovery after missing collection and buyer
+refund, seller collection with the buyer offline followed by refund with the seller
+offline, and unused-funding recovery after an interrupted opening. The two shared
+channel cases conserve 512 test sats each; interrupted opening conserves 384.
+All include mint fees and retain original obligations and lifetime budgets.
+Missed-collection recovery distinguishes accepted signed credit from actual zero
+collection. Verify the source manifest and both executable hashes afterward.
 
 ### TCP, WebSocket and TLS with the packaged executable
 
