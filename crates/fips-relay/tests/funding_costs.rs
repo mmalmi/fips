@@ -2,6 +2,8 @@
 //! Real service processes account for mint fees and replayed refunds.
 #[path = "funding_costs/cancelled_preopening.rs"]
 mod cancelled_preopening;
+#[path = "funding_costs/concurrent_settlement.rs"]
+mod concurrent_settlement;
 #[path = "funding_costs/connected_preopening.rs"]
 mod connected_preopening;
 #[path = "funding_costs/filesystem_exhaustion.rs"]
@@ -32,7 +34,7 @@ mod transit_preopening;
 mod wallet_crash;
 use cashu_service::{
     create_topup_quote, load_wallet_overview,
-    simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
+    simulation::{IssuerMode, LocalMint, MintProxy, PaymentNetwork, VirtualClock},
 };
 use fips_core::config::PeerConfig;
 use fips_relay::service::{AdminRequest, RelayService, request};
@@ -52,9 +54,10 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
     tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
         let (mint, network) = setup::start_mint(root.path(), 9616).await;
-        let url = mint.url().to_owned();
+        let proxy = MintProxy::start(mint.url()).await;
+        let url = proxy.url.clone();
         let setup::Bench {
-            mint,
+            mint: _mint,
             configs,
             paths,
             npubs,
@@ -117,21 +120,12 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
         assert_eq!(status["locked_sat"], budget["locked_sat"]);
         let wallet = configs[0].state_directory.join("wallet");
         assert_eq!(
-            128 - load_mint_balance(&wallet, mint.url())
-                .await
-                .unwrap()
-                .balance_sat,
+            128 - load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
             debit
         );
         if let Some(volume) = volume {
             volume
-                .interrupt(
-                    &configs[1],
-                    &paths[1],
-                    &mut children[1],
-                    &middle_db,
-                    mint.url(),
-                )
+                .interrupt(&configs[1], &paths[1], &mut children[1], &middle_db, &url)
                 .await;
         }
         for (index, child) in children.iter_mut().enumerate() {
@@ -153,12 +147,11 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
             middle_budget
         );
         send_shared_wallet_payload(&configs, &npubs).await;
-        let mut settlements = Vec::new();
-        for config in &configs {
-            let result = request(config, &AdminRequest::Settle).await.unwrap();
-            assert_eq!(result["settlements"].as_array().unwrap().len(), 1);
-            settlements.push(result["settlements"][0].clone());
+        if volume.is_none() {
+            let capacity = middle_db.storage_capacity().await.unwrap().unwrap();
+            assert_eq!(capacity.charged_bytes, capacity.maximum_bytes);
         }
+        let settlements = concurrent_settlement::settle(&configs, &proxy, &middle_db).await;
         let outgoing = &settlements[1];
         assert!(settlements[0]["paid_sat"].as_u64().unwrap() > 0);
         assert!(outgoing["paid_sat"].as_u64().unwrap() > 0);
@@ -173,7 +166,7 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
             .sum();
         let mut available = 0;
         for config in &configs {
-            available += load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+            available += load_mint_balance(&config.state_directory.join("wallet"), &url)
                 .await
                 .unwrap()
                 .balance_sat;
@@ -203,7 +196,7 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
         assert_eq!(middle_refund, outgoing["refunded_sat"].as_u64().unwrap());
         assert!(middle_refund > 0);
         assert_eq!(
-            load_mint_balance(&configs[1].state_directory.join("wallet"), mint.url())
+            load_mint_balance(&configs[1].state_directory.join("wallet"), &url)
                 .await
                 .unwrap()
                 .balance_sat,
@@ -223,26 +216,17 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
         assert!(refund > 0 && refund < debit);
         assert_eq!(settled["exposure_sat"], debit - refund);
         assert_eq!(
-            128 - load_mint_balance(&wallet, mint.url())
-                .await
-                .unwrap()
-                .balance_sat,
+            128 - load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
             debit - refund
         );
-        let before = load_mint_balance(&wallet, mint.url())
-            .await
-            .unwrap()
-            .balance_sat;
+        let before = load_mint_balance(&wallet, &url).await.unwrap().balance_sat;
         let error = request(&configs[0], &buy).await.unwrap_err();
         assert!(
             error.contains("lifetime wallet spending budget exhausted"),
             "{error}"
         );
         assert_eq!(
-            load_mint_balance(&wallet, mint.url())
-                .await
-                .unwrap()
-                .balance_sat,
+            load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
             before
         );
         for child in &mut children {

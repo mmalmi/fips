@@ -18,7 +18,11 @@ pub(super) fn now() -> u64 {
         .as_secs()
 }
 
-async fn wait_journal(path: &Path, seconds: u64, condition: impl Fn(&Value) -> bool) -> Value {
+pub(super) async fn wait_journal(
+    path: &Path,
+    seconds: u64,
+    condition: impl Fn(&Value) -> bool,
+) -> Value {
     tokio::time::timeout(Duration::from_secs(seconds), async {
         loop {
             let state = read(path);

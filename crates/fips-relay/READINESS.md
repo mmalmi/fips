@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, simultaneous wallet operations, arbitrary mint/keyset growth and physical recovery capacity. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -34,8 +34,14 @@ See [service configuration](SERVICE.md) for the configuration boundary.
 Focused local acceptance covers initialization/mismatch rejection and offline
 import/export, plus a four-node paid UDP line with 16 MiB per wallet. Its middle relay
 buys onward forwarding and accepts two incoming channels through one wallet. With
-all unreserved native space occupied, paid data crosses both relays, ordinary
-restart preserves spending totals, and all four original channels settle. The
+all unreserved native space occupied, paid data crosses both relays and ordinary
+restart preserves spending totals. The real mint then commits one incoming close
+while its reply is held. Concurrent settlement requests must let that same relay
+record its outgoing sealed usage before waiting for wallet access. Its native
+capacity snapshot stays unchanged while the close is held. Releasing the reply
+completes all four original settlements and reconciles funds, refunds, mint fees
+and lifetime budgets. This passes with all features and with optional features
+disabled; wallet writes remain deliberately serialized. The
 three-node payout/refund crash case also passes with the limit fixed before init,
 including original-proof recovery and actual-expiry retirement. These tests use
 local test money and logical database pressure; they do not establish router
@@ -61,8 +67,9 @@ fails with ENOSPC without replacing the saved journal; a 4 MiB wallet write that
 fits the logical limit fails with SQLite's disk-full error, leaving no value or
 capacity charge. After SIGKILL, startup also fails on the full volume. Removing
 the test ballast preserves the exact original unspent proofs and permits wallet
-writes again. Normal restart then delivers new paid traffic, settles all four
-channels, reconciles test funds and retains lifetime spending limits. The ordinary
+writes again. Normal restart then delivers new paid traffic and completes the
+same concurrent-settlement check, reconciles test funds and retains lifetime
+spending limits. The ordinary
 logical-capacity/restart case also passes with paid delivery after restart.
 
 This is failed-write and process-recovery evidence, not physical power-loss,
