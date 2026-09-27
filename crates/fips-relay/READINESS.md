@@ -425,6 +425,30 @@ provide general orphan detection/reconciliation. The ARM64 package below include
 this change and passes the isolated Linux checks below. Physical power-loss and
 current-device acceptance remain open.
 
+### Receipt completion read bounds
+
+Native CDK `9a8e9792f98f` bounds operation receipt publication and final
+withdrawal completion by reusing the
+indexed, bounded receipt reader. The ceiling is 4 MiB or the larger caller-owned
+receipt, sized through the production encoder and allowing status-only completion
+changes. Unexpected stored growth fails before SQL payload projection or decoding,
+without publishing a receipt or changing the original operation and quote. Large
+legitimate receipts, typed conflicts and completed results on pending retries
+remain supported. This changes no public API, storage schema or network message.
+
+The regression reproduced decoding of an unexpectedly enlarged receipt before
+the fix. The corrected graph passes all 168 SQLite wallet tests, including large
+legitimate receipts, typed conflicts, failure without mutation and preservation
+of completed results on pending retries. The full SDK workspace passes 413 tests
+(one opt-in storage soak excluded), with 298 relay unit tests and the four-node
+paid/restart/concurrent-settlement check. Affected native, SDK and relay strict
+lint, CDK formatting and source-size checks pass.
+
+Other operation-admission, quote and receipt reads remain separate work. The ARM64
+package recorded below predates this dependency change and needs rebuilding before
+current-target acceptance. Physical power-loss and current-device checks remain
+open.
+
 ### Wallet read bounds
 
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
