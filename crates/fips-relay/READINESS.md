@@ -404,6 +404,19 @@ That checkpoint did not configure service-level capacity.
 
 ### Wallet read bounds
 
+Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
+currency, in indexed pages of at most 128 records and 4 MiB of stored payload. Oversized pages
+shrink; a single oversized or corrupt selected record fails with evidence intact.
+An unrelated malformed quote no longer blocks funded recovery. The local mint
+regression recovers 16 test sats from two large records and verifies no duplicate
+payout after reopening. This bounds this read path, not mint metadata loading,
+legacy bulk listing, SQL engine memory or other wallet workflows. The r9 ARM64
+package below predates this recovery change and requires rebuilding and renewed
+target acceptance before deployment.
+This revision passes 413 native database tests, the full 413-test SDK suite
+(with one opt-in soak excluded), 296 relay unit tests, the four-node shared-wallet
+paid/restart/concurrent-settlement scenario, and strict native/SDK/relay lint.
+
 Output preparation bounds stored mint-key JSON before it reaches the SQL driver
 or decoder. The ceiling is 4 MiB or the larger caller-owned original encoded by
 production bindings. Typed equality, keyset identity checks and atomic ownership
@@ -423,7 +436,7 @@ operation checks still guard removal; refund receipts, original coins and unrela
 reservations remain. Failed release rolls back deletion. The sustained workload
 reproduced one leaked reservation per completed send before this correction.
 
-Native CDK `e2a9cb49` passes 411 affected tests, five focused history checks and
+Earlier native CDK `e2a9cb49` passed 411 affected tests, five focused history checks and
 strict lint. SDK `2f49ee1f` passes its full 411-test workspace suite, strict
 all-target lint and the explicit 300-cycle pressure/recovery soak. The matching
 graph passes 296 relay tests, relay lint and the actual-expiry, restart and
