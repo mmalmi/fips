@@ -14,6 +14,19 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+Native CDK `677fced07bdd` quote comparisons bound stored payloads before issuance acquisition or
+retirement and withdrawal acquisition or completion. The ceiling comes from the
+original held by the caller, with a 4 MiB floor; existing larger originals remain
+usable. SQLite regressions reject unexpected byte growth, including NUL-containing
+UTF-8 and malformed numeric/optional fields, while preserving every financial
+owner. The 417 native database tests, full 415-test SDK suite (one opt-in soak excluded),
+301 relay unit tests and the four-node paid/restart/concurrent-settlement case
+pass, together with strict affected-crate, SDK and relay lint. PostgreSQL has
+compile/lint coverage only; runtime database acceptance uses SQLite.
+Ordinary exact quote reads, overall storage and current-device acceptance remain
+open. The r15 ARM64 package predates this native change and needs refreshing before
+deployment.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
