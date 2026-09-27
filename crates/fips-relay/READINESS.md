@@ -29,8 +29,9 @@ paid/restart/concurrent-settlement case pass. Strict native, SDK and relay lint
 and native workspace formatting also pass. PostgreSQL has compile/lint coverage
 only; relay runtime database acceptance uses SQLite. Ordinary exact quote and
 recovery reads, SQL engine memory, overall storage and current-device acceptance
-remain open. The r15 ARM64 package predates these native changes and needs
-refreshing before deployment.
+remain open. The r16 ARM64 package includes these native changes and passes
+the nine isolated Linux transport, customer-restart and storage-recovery cases
+described below. It has not been installed on the routers.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -651,9 +652,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `b7c8d18958` includes SDK `30a6e0d4f17d` and CDK
-`4be21741c5eb`, contains 35,705 inventoried files and resolves 693 packages,
-including 672 vendored registry packages. All 2,754
+The source bundle at `197400e2b5` includes SDK `c795797d55de` and CDK
+`1cce477c7166`, contains 35,707 inventoried files and resolves 693 packages,
+including 672 vendored registry packages. All 2,756
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -663,8 +664,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,033,968
-bytes, static and stripped. The unsigned APK is 11,471,125 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,034,232
+bytes, static and stripped. The unsigned APK is 11,469,909 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -682,7 +683,7 @@ stream while every service stays running. Fresh authenticated connectivity,
 bidirectional delivery and a new cumulative payment recover through the original
 channels, preserving funding history and spending limits. The plaintext seed
 also recovers from silent loss on retained sockets. After the middle-relay crash,
-all three seed transports automatically replace channels consumed by retained
+all five carrier cases automatically replace channels consumed by retained
 crash exposure before the fixed round-trip cohort. The old exposure remains
 recorded and unbilled, and the original spending limits stay in force. The TLS
 cases reject untrusted issuers, wrong server names or forged handshake signatures
@@ -696,17 +697,21 @@ recovery renewal can refund or replace a channel while aggregate counters are
 being compared. The current fixture keeps renewals enabled throughout restart.
 It preserves every original funding record and purchase, permits at most one
 bounded replacement per buyer, and checks exact budget arithmetic, spending
-limits and nonincreasing lifetime allowances. All three seeded cases require
+limits and nonincreasing lifetime allowances. All five cases require
 that replacement to occur. After settlement, each buyer's actual wallet balance
 reconciles with its recorded exposure, alongside total fund conservation.
 All five cases pass against this packaged executable. The source bundle now
 includes the corrected fixture, so reproduction builds the harness and daemon
-from the same archive. The earlier r13 failure remains recorded; the fixture
-correction changes no runtime policy, timer or payment protocol.
+from the same archive. A later native configured-WebSocket repeat exposed
+another fixture race: a small recovery warmup could leave the automatic replacement
+until after the stable-history snapshot. Every carrier now sends the same 512-byte
+recovery warmup and waits for that replacement before the fixed cohort. Both
+failures remain recorded; these fixture corrections change no runtime policy,
+timer or payment protocol.
 
 The same package passes both customer entry-restart cases in isolated ARM64
-Linux. A default-feature customer harness keeps its client running while the
-packaged entry process is killed and reopened. Two fresh traffic cohorts deliver
+Linux. The customer harness keeps its client running while the packaged entry
+process is killed and reopened. Two fresh traffic cohorts deliver
 and advance automatic payment without another purchase command or manual flush.
 Original identities, profiles, purchases and spending limits survive; settlement
 collects all 384 test sats per tariff with positive entry earnings. The harness,
