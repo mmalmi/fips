@@ -1454,14 +1454,30 @@ pass. This covers a finite loopback carrier interruption, not sustained loss,
 remote proxy deployment or current-device acceptance; it does not establish the
 cause of the original intermittent timeout.
 
-One no-default-feature seed-only service run nevertheless timed out in paid
-delivery. Its original failure lacked a phase snapshot. Bounded failure-only
-diagnostics now retain the purchase/renewal/restart phase, safe payment state,
-native routes/sessions and daemon-log tails without changing the original retries
-or deadlines. Four isolated diagnostic runs and a full sequence on the fixed code,
-plus two full sequences before the lifecycle fix, passed. These passing reruns do
-not resolve the earlier timeout or establish whether it relates to this change.
-Intermittent paid delivery therefore remains an open readiness item.
+One no-default-feature seed-only service run timed out in paid delivery. Its
+original failure lacked a phase snapshot. Bounded failure-only diagnostics now
+retain the purchase/renewal/restart phase, safe payment state, native
+routes/sessions and daemon-log tails without changing retries or deadlines.
+Subsequent passing runs do not establish the cause of that timeout. Intermittent
+paid delivery remains an open readiness item.
+
+A later configured-WebSocket run exposed a separate fixture race: delivery and
+payment passed, but automatic renewal changed channel history before the fixed
+round-trip check finished. The small post-restart warm-up could remain covered
+by the previous rounded payment, leaving the round trip to trigger a fresh usage
+claim and crash-exposure renewal. Every carrier now uses the seed fixture's
+recovery sequence: exceed the previous whole-sat payment, observe automatic
+replacement, and verify that retained crash exposure remains unbilled before
+starting the unchanged fixed cohort. Each paying endpoint must add exactly one
+replacement while preserving original purchases, funding intents and spending
+limits. Renewals remain enabled; no additional purchase command, payment flush,
+retry or longer deadline is introduced.
+
+All five carrier cases pass with no default features and with all features,
+plus two further configured-WebSocket runs without default features. Each of the
+12 process cases settles all 384 test sats; strict all-target relay lint,
+workspace formatting and source-size checks pass. This changes only the shared
+fixture and does not attribute the older delivery timeout or accept new hardware.
 
 The seed fixture also tests silent loss: the proxy retains existing sockets and
 discards their traffic while new connections remain usable. Production keepalive
@@ -1487,7 +1503,7 @@ This does not attribute the older timeout or prove whole-device power-loss
 recovery. The current ARM64 package above includes this fix and passes the same
 recovery sequence in isolated Linux.
 
-The final source passes 298 relay unit tests, 12 durable-accounting tests and
+That production change passes 298 relay unit tests, 12 durable-accounting tests and
 strict all-target lint. Seed WebSocket passes without default features and with
 all features; ordinary TLS passes without default features and self-signed
 FIPS-authenticated TLS passes with all features. Each process case conserves

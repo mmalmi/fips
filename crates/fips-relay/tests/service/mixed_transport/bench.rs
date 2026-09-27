@@ -707,7 +707,7 @@ impl MixedBench {
             }
         })
         .await
-        .expect("explicitly resumed renewals replace both exhausted channels");
+        .expect("automatic renewals replace both channels");
     }
 }
 

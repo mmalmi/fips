@@ -193,49 +193,44 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         }
         bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
-            if second_hop.is_seed() {
-                bench.deliver_sized(source, destination, 512).await;
-            } else {
-                bench.deliver(source, destination).await;
-            }
+            // Exceed the previous whole-sat payment so both buyers request
+            // fresh usage and observe the provider's retained crash exposure.
+            bench.deliver_sized(source, destination, 512).await;
         }
-        if second_hop.is_seed() {
-            bench.set_stage("crash-allowance-renewal");
-            let channels: Vec<_> = [0, 2]
-                .into_iter()
-                .map(|source| {
-                    before[source]["purchases"][0]["channel"]["id"]
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
-                })
-                .collect();
-            // Recovery traffic plus the lost checkpoint window requires
-            // renewal. Observe automatic replacement before starting
-            // the fixed cohort, which deliberately must not cross a settlement.
-            bench.wait_replacements(&channels).await;
-            let ledger: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(bench.configs[1].state_directory.join("seller/ledger.json"))
-                    .unwrap(),
-            )
-            .unwrap();
-            for channel in &channels {
-                let usage = &ledger["ledger"]["channels"]
-                    .as_array()
+        bench.set_stage("crash-allowance-renewal");
+        let channels: Vec<_> = [0, 2]
+            .into_iter()
+            .map(|source| {
+                before[source]["purchases"][0]["channel"]["id"]
+                    .as_str()
                     .unwrap()
-                    .iter()
-                    .find(|row| row["terms"]["id"] == *channel)
-                    .unwrap()["usage"];
-                let submitted = usage["submitted_msat"].as_u64().unwrap();
-                assert!(usage["lost_msat"].as_u64().unwrap() > 0);
-                assert_eq!(usage["paid_msat"], submitted.div_ceil(1_000) * 1_000);
-                assert!(
-                    usage["paid_msat"].as_u64().unwrap() < usage["reserved_msat"].as_u64().unwrap(),
-                    "crash exposure stays retained and unbilled after replacement"
-                );
-            }
+                    .to_owned()
+            })
+            .collect();
+        // Recovery traffic plus the lost checkpoint window requires
+        // renewal. Observe automatic replacement before starting
+        // the fixed cohort, which deliberately must not cross a settlement.
+        bench.wait_replacements(&channels).await;
+        let ledger: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(bench.configs[1].state_directory.join("seller/ledger.json")).unwrap(),
+        )
+        .unwrap();
+        for channel in &channels {
+            let usage = &ledger["ledger"]["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["terms"]["id"] == *channel)
+                .unwrap()["usage"];
+            let submitted = usage["submitted_msat"].as_u64().unwrap();
+            assert!(usage["lost_msat"].as_u64().unwrap() > 0);
+            assert_eq!(usage["paid_msat"], submitted.div_ceil(1_000) * 1_000);
+            assert!(
+                usage["paid_msat"].as_u64().unwrap() < usage["reserved_msat"].as_u64().unwrap(),
+                "crash exposure stays retained and unbilled after replacement"
+            );
         }
-        assert_restart_accounts(&bench, &before, &original_funding, second_hop.is_seed()).await;
+        assert_restart_accounts(&bench, &before, &original_funding).await;
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"65".repeat(16)).await;
         }
@@ -277,7 +272,6 @@ async fn assert_restart_accounts(
     bench: &MixedBench,
     before: &[Value],
     original_funding: &[serde_json::Map<String, Value>],
-    renewed: bool,
 ) {
     let after = bench.states().await;
     let funding = bench.funding_intents();
@@ -319,7 +313,7 @@ async fn assert_restart_accounts(
             recovered["remaining_budget_sat"].as_u64().unwrap()
                 <= old["remaining_budget_sat"].as_u64().unwrap()
         );
-        if renewed && node != 1 {
+        if node != 1 {
             assert_eq!(history.len(), previous.len() + 1);
             assert_eq!(funding[node].len(), original_funding[node].len() + 1);
             assert_eq!(
