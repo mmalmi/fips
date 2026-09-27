@@ -78,10 +78,17 @@ docker run --rm --pull never --network none --read-only --cap-drop ALL \
   --exact --test-threads=1 --nocapture
 ```
 
+For combined loss and neighbor departure/rejoin, use the same container command
+with the test filter
+`automatic_quality::churn::quality_failover_survives_alternative_departure_without_refunding_or_rebuying`.
+It checks delivery and new payments through the original channels while the
+working alternative leaves and returns, then restores the cheaper route.
+
 Loopback remains available to the fixture mint; wallets live only in temporary
-container storage. Each scenario has a 180-second deadline. Verify the source
-manifest and executable checksum again afterward. This checks Linux execution
-and simulated routing, not OpenWrt services, physical links or router performance.
+container storage. Each loss/delay scenario has a 180-second deadline; the combined
+churn scenario has a 360-second deadline. Verify the source manifest and executable
+checksum again afterward. This checks Linux execution and simulated routing;
+OpenWrt services, physical links and router performance require separate acceptance.
 
 ### Production executable and storage recovery
 

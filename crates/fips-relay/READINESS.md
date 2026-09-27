@@ -575,14 +575,26 @@ power-loss or OpenWrt service supervision checks. The container has no external
 network, a read-only root, no capabilities and only the executables mounted from
 the host. See the [process recovery recipe](openwrt/README.md#production-executable-and-storage-recovery).
 
-The earlier `bb287843d` bundle's separate all-features routing harness passes both automatic
-loss and delay scenarios on ARM64 Linux. Native feedback moves the purchase away
-from an impaired route and back to the recovered cheaper provider, preserving
-the original channels across reuse and controller reload. Settlement conserves
-all 518 test sats across the two scenarios. These use simulated links and real
-controllers, not the packaged daemon or physical radios. All source-manifest and
-executable hashes remain unchanged after the three Linux checks. Their durations
-are test completion times, not router performance measurements.
+The current `d75aae457` bundle's separate all-features routing harness passes
+loss, delay and combined loss/neighbor-churn scenarios on ARM64 Linux. Native
+feedback moves the purchase away from an impaired route and back to the recovered
+cheaper provider. New paths first receive bounded trial agreements, and the
+original channels survive reuse and controller/selector reload.
+
+In the combined scenario, the healthy alternative leaves while the original
+forward path still loses 35% of packets. The source falls back to that remaining
+path, delivers traffic and advances payment on its original channel. When the
+alternative rejoins, it also delivers and advances payment without refunding or
+rebuying either account. Only the original two 64-sat channels are funded; the
+source's wallet debit and locked capital remain 128 sats. The cheaper path is
+then restored and selected again. Settlement conserves 259 test sats in each
+scenario, 777 across all three.
+
+These checks run real controllers and native FIPS feedback over simulated links.
+They do not exercise the packaged daemon, physical radios or arbitrary network
+topologies. Source-manifest and harness hashes remain unchanged afterward. Test
+completion times do not establish router performance or optimal monetary routing
+for every topology.
 
 The fee-bearing process fixture sends SIGKILL after seller payout import and
 again after buyer refund completion, before each controller records completion.
