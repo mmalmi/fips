@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::process::Child;
 
-use super::tls::TlsProxy;
+use super::{proxy::StreamProxy, tls::TlsProxy};
 use crate::process_support::{command, config, ready, start};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +54,7 @@ impl SecondHop {
         }
     }
 
-    fn is_seed(self) -> bool {
+    pub(super) fn is_seed(self) -> bool {
         matches!(
             self,
             Self::WebSocketSeed | Self::WebSocketTls | Self::WebSocketSelfSigned
@@ -69,6 +69,7 @@ pub struct MixedBench {
     pub npubs: Vec<String>,
     pub children: Vec<Child>,
     pub tls: Option<TlsProxy>,
+    proxy: Option<StreamProxy>,
     second_hop: SecondHop,
     next_probe: AtomicU64,
     stage: &'static str,
@@ -106,8 +107,19 @@ impl MixedBench {
         } else {
             None
         };
+        let proxy = if second_hop == SecondHop::WebSocketSeed {
+            Some(StreamProxy::start(tcp[0].local_addr().unwrap(), None).await)
+        } else {
+            None
+        };
         let seed_url = tls.as_ref().map_or_else(
-            || second_hop.address(tcp[0].local_addr().unwrap()),
+            || {
+                second_hop.address(
+                    proxy
+                        .as_ref()
+                        .map_or_else(|| tcp[0].local_addr().unwrap(), |proxy| proxy.address),
+                )
+            },
             |proxy| proxy.url.clone(),
         );
         let (mut configs, mut paths, mut npubs) = (Vec::new(), Vec::new(), Vec::new());
@@ -270,6 +282,7 @@ impl MixedBench {
             npubs,
             children,
             tls,
+            proxy,
             second_hop,
             next_probe: AtomicU64::new(1),
             stage: "other-mixed-fixture",
@@ -286,6 +299,51 @@ impl MixedBench {
 
     pub fn second_hop_kind(&self) -> &'static str {
         self.second_hop.kind()
+    }
+
+    pub async fn recover_seed_carrier(&mut self) {
+        let before = self.states().await;
+        let proxy = self
+            .proxy
+            .as_ref()
+            .or_else(|| self.tls.as_ref().map(TlsProxy::carrier))
+            .unwrap();
+        let accepted = proxy.connections();
+        assert!(accepted > 0);
+        assert!(
+            proxy.interrupt().await > 0,
+            "interrupt a live physical stream"
+        );
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while proxy.connections() == accepted {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("seed must establish a fresh physical connection");
+        ready(&self.configs, &self.paths, &self.npubs, &mut self.children).await;
+        self.assert_carriers().await;
+        for (source, destination) in [(0, 2), (2, 0)] {
+            let channel = before[source]["purchases"][0]["channel"]["id"]
+                .as_str()
+                .unwrap();
+            let (_, paid) = self.relay_usage_msat(channel);
+            // More than one sat of usage exceeds any prior whole-sat rounding.
+            self.deliver_sized(source, destination, 512).await;
+            self.wait_paid_beyond(channel, paid).await;
+        }
+        for (old, recovered) in before.iter().zip(self.states().await) {
+            assert_eq!(recovered["history"], old["history"]);
+            assert_eq!(recovered["funding_budget"], old["funding_budget"]);
+            assert_eq!(
+                recovered["purchases"], old["purchases"],
+                "carrier recovery and subsequent paid delivery must reuse existing purchases"
+            );
+            assert!(
+                recovered["remaining_budget_sat"].as_u64().unwrap()
+                    <= old["remaining_budget_sat"].as_u64().unwrap()
+            );
+        }
     }
 
     pub async fn states(&self) -> Vec<Value> {
@@ -407,10 +465,14 @@ impl MixedBench {
     }
 
     pub async fn deliver(&self, source: usize, destination: usize) {
+        self.deliver_sized(source, destination, 128).await;
+    }
+
+    async fn deliver_sized(&self, source: usize, destination: usize, bytes: usize) {
         // Application retries stay separately billable, as in the existing
         // process restart fixture. No transport ACK is a payment receipt.
         for _ in 0..3 {
-            self.send_probe(source, destination, 2, 128, 4).await;
+            self.send_probe(source, destination, 2, bytes, 4).await;
             if tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let status = request(&self.configs[destination], &AdminRequest::Status)
@@ -504,21 +566,31 @@ impl MixedBench {
     }
 
     pub async fn wait_paid(&self, channel: &str) {
+        self.wait_paid_beyond(channel, 0).await;
+    }
+
+    fn relay_usage_msat(&self, channel: &str) -> (u64, u64) {
+        let ledger: Value = serde_json::from_slice(
+            &std::fs::read(self.configs[1].state_directory.join("seller/ledger.json")).unwrap(),
+        )
+        .unwrap();
+        let usage = &ledger["ledger"]["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["terms"]["id"] == channel)
+            .unwrap()["usage"];
+        (
+            usage["submitted_msat"].as_u64().unwrap(),
+            usage["paid_msat"].as_u64().unwrap(),
+        )
+    }
+
+    async fn wait_paid_beyond(&self, channel: &str, already_paid_msat: u64) {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                let ledger: Value = serde_json::from_slice(
-                    &std::fs::read(self.configs[1].state_directory.join("seller/ledger.json"))
-                        .unwrap(),
-                )
-                .unwrap();
-                let usage = &ledger["ledger"]["channels"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|row| row["terms"]["id"] == channel)
-                    .unwrap()["usage"];
-                let submitted = usage["submitted_msat"].as_u64().unwrap();
-                if submitted > 0 && usage["paid_msat"].as_u64().unwrap() >= submitted {
+                let (submitted, paid) = self.relay_usage_msat(channel);
+                if submitted > already_paid_msat && paid >= submitted {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;

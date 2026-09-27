@@ -11,17 +11,10 @@ use std::{
     ffi::OsStr,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
-use tokio::{
-    net::{TcpListener, TcpStream},
-    process::Child,
-    task::{JoinHandle, JoinSet},
-};
+use tokio::process::Child;
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{
@@ -32,6 +25,7 @@ use tokio_rustls::{
     },
 };
 
+use super::proxy::StreamProxy;
 use crate::process_support::{start_with_env, stop};
 
 pub struct TlsProxy {
@@ -40,8 +34,7 @@ pub struct TlsProxy {
     trusted_ca: PathBuf,
     unrelated_ca: PathBuf,
     empty_cert_dir: PathBuf,
-    connections: Arc<AtomicUsize>,
-    tasks: Vec<JoinHandle<()>>,
+    proxies: Vec<StreamProxy>,
     self_signed: bool,
 }
 
@@ -55,18 +48,22 @@ impl TlsProxy {
         std::fs::write(&trusted_ca, ca.pem()).unwrap();
         std::fs::write(&unrelated_ca, unrelated.pem()).unwrap();
         std::fs::create_dir(&empty_cert_dir).unwrap();
-        let connections = Arc::new(AtomicUsize::new(0));
-        let mut tasks = Vec::new();
+        let mut proxies = Vec::new();
         let mut urls = Vec::new();
         for (index, name) in ["127.0.0.1", "wrong.invalid"].into_iter().enumerate() {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            urls.push(format!("wss://{}/fips", listener.local_addr().unwrap()));
-            tasks.push(tokio::spawn(serve(
-                listener,
+            let proxy = StreamProxy::start(
                 backend,
-                acceptor(&ca, &key, name, self_signed, self_signed && index == 1),
-                connections.clone(),
-            )));
+                Some(acceptor(
+                    &ca,
+                    &key,
+                    name,
+                    self_signed,
+                    self_signed && index == 1,
+                )),
+            )
+            .await;
+            urls.push(format!("wss://{}/fips", proxy.address));
+            proxies.push(proxy);
         }
         Self {
             url: urls.remove(0),
@@ -74,14 +71,17 @@ impl TlsProxy {
             trusted_ca,
             unrelated_ca,
             empty_cert_dir,
-            connections,
-            tasks,
+            proxies,
             self_signed,
         }
     }
 
     pub fn connections(&self) -> usize {
-        self.connections.load(Ordering::SeqCst)
+        self.proxies.iter().map(StreamProxy::connections).sum()
+    }
+
+    pub fn carrier(&self) -> &StreamProxy {
+        &self.proxies[0]
     }
 
     async fn client_with_ca(&self, path: &Path, ca: &Path) -> Child {
@@ -183,14 +183,6 @@ impl TlsProxy {
     }
 }
 
-impl Drop for TlsProxy {
-    fn drop(&mut self) {
-        for task in &self.tasks {
-            task.abort();
-        }
-    }
-}
-
 fn authority(name: &str) -> (Certificate, KeyPair) {
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -256,34 +248,5 @@ struct FixedCertificate(Arc<CertifiedKey>);
 impl ResolvesServerCert for FixedCertificate {
     fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         Some(self.0.clone())
-    }
-}
-
-async fn serve(
-    listener: TcpListener,
-    backend: SocketAddr,
-    acceptor: TlsAcceptor,
-    connections: Arc<AtomicUsize>,
-) {
-    let mut sessions = JoinSet::new();
-    loop {
-        tokio::select! {
-            accepted = listener.accept(), if sessions.len() < 16 => {
-                let (stream, _) = accepted.unwrap();
-                let acceptor = acceptor.clone();
-                let connections = connections.clone();
-                sessions.spawn(async move {
-                    let Ok(Ok(mut tls)) = tokio::time::timeout(
-                        Duration::from_secs(5), acceptor.accept(stream),
-                    ).await else { return };
-                    let Ok(mut upstream) = TcpStream::connect(backend).await else { return };
-                    connections.fetch_add(1, Ordering::SeqCst);
-                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut upstream).await;
-                });
-            }
-            finished = sessions.join_next(), if !sessions.is_empty() => {
-                finished.unwrap().unwrap();
-            }
-        }
     }
 }

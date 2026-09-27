@@ -1215,6 +1215,25 @@ recovery and settlement with all 384 test sats conserved. The ARM64 package at
 fixes. These local results do not establish current-device acceptance or explain
 the original intermittent delivery timeout.
 
+Paid seed-bootstrap acceptance now also interrupts the physical stream while all
+three relay processes keep running. A bounded loopback proxy closes and joins its
+owned stream workers before acknowledging the interruption, while retaining the
+listener. The fixture requires a fresh physical connection and authenticated
+adjacency, then delivers and acknowledges payment in both directions through the
+original purchases. New traffic must exceed the previously paid amount,
+including whole-sat rounding, and receive a new cumulative payment. An earlier
+acknowledgment cannot satisfy this check. Channel history and funding totals
+remain unchanged, and remaining spending budgets cannot increase. The same run
+subsequently exercises the existing middle-process crash/restart and settlement
+checks.
+The proxy shares plaintext and TLS forwarding; the previous TLS-only loop was
+removed. Plain WebSocket passes in both relay feature modes, and ordinary TLS and
+FIPS-authenticated self-signed TLS pass with all features. Each case conserves all
+384 test sats. Strict all-target relay lint, formatting and source-size checks
+pass. This covers a finite loopback carrier interruption, not sustained loss,
+remote proxy deployment or current-device acceptance; it does not establish the
+cause of the original intermittent timeout.
+
 One no-default-feature seed-only service run nevertheless timed out in paid
 delivery. Its original failure lacked a phase snapshot. Bounded failure-only
 diagnostics now retain the purchase/renewal/restart phase, safe payment state,

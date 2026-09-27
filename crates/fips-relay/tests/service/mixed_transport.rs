@@ -21,6 +21,8 @@ mod accept_barrier;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
+#[path = "mixed_transport/proxy.rs"]
+mod proxy;
 #[path = "mixed_transport/round_trip.rs"]
 mod round_trip;
 #[path = "mixed_transport/service_carrier.rs"]
@@ -159,6 +161,11 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             bench
                 .wait_paid(state["purchases"][0]["channel"]["id"].as_str().unwrap())
                 .await;
+        }
+
+        if second_hop.is_seed() {
+            bench.set_stage("carrier-interruption");
+            bench.recover_seed_carrier().await;
         }
 
         // A process crash preserves accounts. Whether any individual stream write
