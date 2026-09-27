@@ -75,7 +75,7 @@ async fn failed_initial_hint_write_releases_address_for_a_fresh_dial() {
     // fail. A dropped duplex reader deterministically returns BrokenPipe.
     let (websocket, peer) = raw_pair().await;
     drop(peer);
-    let error = run_connection(
+    let error = run_framing_connection(
         transport.runtime.clone(),
         addr.clone(),
         websocket,
@@ -141,7 +141,7 @@ async fn old_connection_completion_preserves_the_replacement_state_and_writer() 
     transport.start_async().await.unwrap();
     let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
     let (old_socket, mut old_peer) = raw_pair().await;
-    let mut old = Box::pin(run_connection(
+    let mut old = Box::pin(run_framing_connection(
         transport.runtime.clone(),
         addr.clone(),
         old_socket,
@@ -157,7 +157,7 @@ async fn old_connection_completion_preserves_the_replacement_state_and_writer() 
 
     let (replacement_socket, mut replacement_peer) = raw_pair().await;
     let generation = transport.runtime.next_generation();
-    let mut replacement = Box::pin(run_connection(
+    let mut replacement = Box::pin(run_framing_connection(
         transport.runtime.clone(),
         addr.clone(),
         replacement_socket,
@@ -221,15 +221,17 @@ async fn old_connection_completion_preserves_the_replacement_state_and_writer() 
 }
 
 #[tokio::test]
-async fn late_dial_failure_does_not_overwrite_an_established_replacement() {
+async fn late_dial_completion_preserves_pending_and_established_replacement() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = TransportAddr::from_string(&format!("ws://{}/fips", listener.local_addr().unwrap()));
     let mut transport = test_transport(8);
     transport.start_async().await.unwrap();
-    transport
-        .runtime
-        .set_state(&addr, ConnectionState::Connecting);
-    let mut old = Box::pin(run_one_shot_dial(transport.runtime.clone(), addr.clone()));
+    let attempt = transport.runtime.prepare_dial(&addr).unwrap();
+    let mut old = Box::pin(run_one_shot_dial(
+        transport.runtime.clone(),
+        addr.clone(),
+        attempt,
+    ));
     let (old_stream, _) = tokio::time::timeout(Duration::from_secs(2), async {
         tokio::select! {
             _ = old.as_mut() => panic!("old dial ended before reaching HTTP upgrade"),
@@ -242,21 +244,14 @@ async fn late_dial_failure_does_not_overwrite_an_established_replacement() {
     // A physical close permits a new dial while the old HTTP upgrade is pending.
     transport.close_connection_async(&addr).await;
     transport.connect_async(&addr).await.unwrap();
-    let mut replacement_peer = tokio::time::timeout(Duration::from_secs(2), async {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
-        answer_hint(&mut peer, Identity::generate().pubkey().serialize()).await;
-        peer
-    })
-    .await
-    .unwrap();
-    wait_for_connection(&transport, &addr).await;
-    let generation = transport
-        .runtime
-        .connections()
-        .get(&addr)
+    let (replacement_stream, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+        .await
         .unwrap()
-        .generation;
+        .unwrap();
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connecting
+    );
 
     // Tungstenite fixes the callback's HTTP error type.
     #[allow(clippy::result_large_err)]
@@ -271,8 +266,27 @@ async fn late_dial_failure_does_not_overwrite_an_established_replacement() {
         tokio::join!(old, rejection)
     })
     .await
-    .expect("old dial must publish its failed HTTP upgrade result");
+    .expect("retired dial must finish without changing the pending replacement");
     assert!(rejected.is_err());
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::Connecting
+    );
+    let mut replacement_peer = tokio_tungstenite::accept_async(replacement_stream)
+        .await
+        .unwrap();
+    answer_hint(
+        &mut replacement_peer,
+        Identity::generate().pubkey().serialize(),
+    )
+    .await;
+    wait_for_connection(&transport, &addr).await;
+    let generation = transport
+        .runtime
+        .connections()
+        .get(&addr)
+        .unwrap()
+        .generation;
     {
         let pool = transport.runtime.connections();
         assert_eq!(pool.get(&addr).unwrap().generation, generation);
@@ -304,7 +318,7 @@ async fn detached_close_cannot_remove_a_replacement() {
         let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
         if had_original {
             let (socket, peer) = raw_pair().await;
-            let mut old = Box::pin(run_connection(
+            let mut old = Box::pin(run_framing_connection(
                 transport.runtime.clone(),
                 addr.clone(),
                 socket,
@@ -326,7 +340,7 @@ async fn detached_close_cannot_remove_a_replacement() {
         }
         let (socket, mut peer) = raw_pair().await;
         let generation = transport.runtime.next_generation();
-        let mut replacement = Box::pin(run_connection(
+        let mut replacement = Box::pin(run_framing_connection(
             transport.runtime.clone(),
             addr.clone(),
             socket,
@@ -382,7 +396,7 @@ async fn unconsumed_seed_hints_retire_with_their_physical_connection() {
             }
             let pubkey = Identity::generate().pubkey().serialize();
             let (socket, mut peer) = raw_pair().await;
-            let mut connection = Box::pin(run_connection(
+            let mut connection = Box::pin(run_framing_connection(
                 transport.runtime.clone(),
                 addr.clone(),
                 socket,
@@ -428,4 +442,149 @@ async fn unconsumed_seed_hints_retire_with_their_physical_connection() {
         assert_eq!(transport.stats().connections_closed, 2);
         transport.stop_async().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn cancelled_outbound_upgrade_cannot_register_or_hold_the_connection_slot() {
+    for (seeded, detached) in [(false, false), (false, true), (true, false), (true, true)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr =
+            TransportAddr::from_string(&format!("ws://{}/fips", listener.local_addr().unwrap()));
+        let identity = Identity::generate();
+        let (tx, _rx) = packet_channel(8);
+        let mut client = WebSocketTransport::new(
+            TransportId::new(1),
+            None,
+            WebSocketConfig {
+                seed_urls: if seeded {
+                    vec![addr.to_string()]
+                } else {
+                    Vec::new()
+                },
+                max_connections: Some(1),
+                max_inbound_connections: Some(1),
+                connect_timeout_ms: Some(10_000),
+                key_hint_timeout_ms: Some(10_000),
+                reconnect_initial_ms: Some(5_000),
+                reconnect_max_ms: Some(5_000),
+                ping_interval_secs: Some(0),
+                idle_timeout_secs: Some(0),
+                ..Default::default()
+            },
+            tx,
+            &identity,
+        );
+        client.start_async().await.unwrap();
+        if !seeded {
+            client.connect_async(&addr).await.unwrap();
+        }
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(client.runtime.total_slots.available_permits(), 0);
+        assert_eq!(
+            client.connection_state_sync(&addr),
+            ConnectionState::Connecting
+        );
+        assert_eq!(client.stats().connections_opened, 0);
+
+        if detached {
+            client.close_connection_detached(&addr);
+        } else {
+            client.close_connection_async(&addr).await;
+        }
+        // Finish the old server handshake only after cancellation. Its reply
+        // must not promote an abandoned dial, even if the HTTP write succeeds.
+        let late = tokio::time::timeout(
+            Duration::from_secs(1),
+            tokio_tungstenite::accept_async(stream),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
+        let released = tokio::time::timeout(Duration::from_millis(500), async {
+            while client.runtime.total_slots.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let stale_state = client.connection_state_sync(&addr);
+        let stale_opened = client.stats().connections_opened;
+        drop(late);
+        if !released {
+            client.stop_async().await.unwrap();
+        }
+        assert!(
+            released,
+            "cancelled outbound upgrade retained its connection slot: seeded={seeded} detached={detached} state={stale_state:?} opened={stale_opened}"
+        );
+        assert_eq!(stale_state, ConnectionState::None);
+        assert_eq!(stale_opened, 0);
+        assert!(client.discover().unwrap().is_empty());
+
+        // Reuse the same URL and sole connection slot without stopping the
+        // transport or waiting for the configured seed's five-second backoff.
+        client.connect_async(&addr).await.unwrap();
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut replacement = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let pubkey = Identity::generate().pubkey().serialize();
+        answer_hint(&mut replacement, pubkey).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let hints = client.discover().unwrap();
+                if !hints.is_empty() {
+                    assert_eq!(hints.len(), 1);
+                    assert_eq!(hints[0].pubkey_hint.unwrap().serialize(), pubkey);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the replacement must complete fresh discovery");
+        let expected = record();
+        client.send_async(&addr, &expected).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            expect_record(&mut replacement, &expected),
+        )
+        .await
+        .unwrap();
+        client.stop_async().await.unwrap();
+        assert_eq!(client.runtime.total_slots.available_permits(), 1);
+        assert_eq!(client.stats().connections_opened, 1);
+        assert_eq!(client.stats().connections_closed, 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn outbound_dial_limit_is_reserved_before_workers_run() {
+    let mut client = test_transport(8);
+    client.start_async().await.unwrap();
+    let limit = client.config.max_connections();
+    let first = TransportAddr::from_string("ws://127.0.0.1:1/0");
+    for index in 0..limit {
+        let addr = TransportAddr::from_string(&format!("ws://127.0.0.1:1/{index}"));
+        client.connect_async(&addr).await.unwrap();
+    }
+    // No pending worker has been polled on this current-thread runtime.
+    assert_eq!(client.runtime.total_slots.available_permits(), 0);
+    assert_eq!(client.runtime.statuses().len(), limit);
+    client.connect_async(&first).await.unwrap();
+    let extra = TransportAddr::from_string("ws://127.0.0.1:1/excess");
+    assert!(matches!(
+        client.connect_async(&extra).await,
+        Err(TransportError::ConnectionRefused)
+    ));
+    assert_eq!(client.connection_state_sync(&extra), ConnectionState::None);
+    assert_eq!(client.runtime.statuses().len(), limit);
+    assert_eq!(client.stats().connections_opened, 0);
+    client.stop_async().await.unwrap();
+    assert_eq!(client.runtime.total_slots.available_permits(), limit);
+    assert!(client.runtime.statuses().is_empty());
 }

@@ -49,7 +49,13 @@ struct Connection {
 }
 
 type ConnectionPool = Arc<StdMutex<HashMap<TransportAddr, Connection>>>;
-type ConnectionStates = Arc<StdMutex<HashMap<TransportAddr, ConnectionState>>>;
+struct ConnectionStatus {
+    generation: u64,
+    state: ConnectionState,
+    _cancel: Option<oneshot::Sender<()>>,
+}
+
+type ConnectionStates = Arc<StdMutex<HashMap<TransportAddr, ConnectionStatus>>>;
 
 #[derive(Debug, Default)]
 struct WebSocketStats {
@@ -154,19 +160,10 @@ impl Runtime {
         self.generation.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn set_state(&self, addr: &TransportAddr, state: ConnectionState) {
+    fn statuses(&self) -> MutexGuard<'_, HashMap<TransportAddr, ConnectionStatus>> {
         self.states
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(addr.clone(), state);
-    }
-
-    fn set_disconnected_state(&self, addr: &TransportAddr, state: ConnectionState) {
-        let pool = self.connections();
-        // A late dial result must not overwrite an established replacement.
-        if !pool.contains_key(addr) {
-            self.set_state(addr, state);
-        }
     }
 
     fn remove_connection(&self, addr: &TransportAddr, generation: Option<u64>) {
@@ -306,7 +303,6 @@ impl WebSocketTransport {
 
         for seed_url in self.config.seed_urls.clone() {
             let addr = TransportAddr::from_string(&seed_url);
-            self.runtime.set_state(&addr, ConnectionState::Connecting);
             self.runtime
                 .spawn(run_seed_dialer(self.runtime.clone(), addr));
         }
@@ -403,22 +399,16 @@ impl WebSocketTransport {
         candidate
             .validate()
             .map_err(TransportError::InvalidAddress)?;
-        if self.connection_state_sync(addr) == ConnectionState::Connected {
-            return Ok(());
-        }
-        {
-            let mut states = self
-                .runtime
-                .states
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if matches!(states.get(addr), Some(ConnectionState::Connecting)) {
-                return Ok(());
-            }
-            states.insert(addr.clone(), ConnectionState::Connecting);
-        }
-        self.runtime
-            .spawn(run_one_shot_dial(self.runtime.clone(), addr.clone()));
+        let attempt = match self.runtime.prepare_dial(addr) {
+            Ok(attempt) => attempt,
+            Err(TransportError::AlreadyStarted) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        self.runtime.spawn(run_one_shot_dial(
+            self.runtime.clone(),
+            addr.clone(),
+            attempt,
+        ));
         Ok(())
     }
 
@@ -433,7 +423,7 @@ impl WebSocketTransport {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(addr)
-            .cloned()
+            .map(|status| status.state.clone())
             .unwrap_or(ConnectionState::None)
     }
 
@@ -631,102 +621,6 @@ async fn accept_connection(
     .await
 }
 
-async fn run_seed_dialer(runtime: Runtime, addr: TransportAddr) {
-    let mut delay_ms = runtime.config.reconnect_initial_ms();
-    let mut network_rebind_generation = runtime.network_rebind_generation.subscribe();
-    let mut observed_network_rebind = *network_rebind_generation.borrow_and_update();
-    while runtime.running.load(Ordering::Acquire) {
-        runtime.set_disconnected_state(&addr, ConnectionState::Connecting);
-        runtime
-            .stats
-            .reconnect_attempts
-            .fetch_add(1, Ordering::Relaxed);
-        let result = tokio::select! {
-            result = dial_and_run(runtime.clone(), addr.clone()) => result,
-            changed = network_rebind_generation.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                observed_network_rebind = *network_rebind_generation.borrow_and_update();
-                continue;
-            }
-        };
-        if !runtime.running.load(Ordering::Acquire) {
-            break;
-        }
-        match result {
-            Ok(()) => {
-                delay_ms = runtime.config.reconnect_initial_ms();
-            }
-            Err(error) => {
-                runtime.set_disconnected_state(&addr, ConnectionState::Failed(error.to_string()));
-                debug!(remote_addr = %addr, %error, "WebSocket seed connection failed");
-                delay_ms = delay_ms
-                    .saturating_mul(2)
-                    .min(runtime.config.reconnect_max_ms());
-            }
-        }
-        let requested_network_rebind = *network_rebind_generation.borrow_and_update();
-        if requested_network_rebind != observed_network_rebind {
-            observed_network_rebind = requested_network_rebind;
-            // The rebind itself closed this connection, so make one prompt replacement attempt.
-            continue;
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
-            changed = network_rebind_generation.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                observed_network_rebind = *network_rebind_generation.borrow_and_update();
-            }
-        }
-    }
-}
-
-async fn run_one_shot_dial(runtime: Runtime, addr: TransportAddr) {
-    let result = dial_and_run(runtime.clone(), addr.clone()).await;
-    if let Err(error) = result {
-        runtime.set_disconnected_state(&addr, ConnectionState::Failed(error.to_string()));
-    }
-}
-
-async fn dial_and_run(runtime: Runtime, addr: TransportAddr) -> Result<(), TransportError> {
-    let network_rebind_generation = *runtime.network_rebind_generation.borrow();
-    let _slot = runtime
-        .total_slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| TransportError::ConnectionRefused)?;
-    let url = addr
-        .as_str()
-        .ok_or_else(|| TransportError::InvalidAddress(addr.to_string()))?;
-    let connect = connect_async_tls_with_config(
-        url,
-        Some(runtime.websocket_config()),
-        false,
-        tls::connector(runtime.config.tls_verification())?,
-    );
-    let (websocket, _) = tokio::time::timeout(
-        Duration::from_millis(runtime.config.connect_timeout_ms()),
-        connect,
-    )
-    .await
-    .map_err(|_| TransportError::Timeout)?
-    .map_err(|error| TransportError::StartFailed(error.to_string()))?;
-    let generation = runtime.next_generation();
-    run_connection(
-        runtime,
-        addr,
-        websocket,
-        generation,
-        Direction::Outbound,
-        true,
-        network_rebind_generation,
-    )
-    .await
-}
-
 async fn run_connection<S>(
     runtime: Runtime,
     addr: TransportAddr,
@@ -752,6 +646,16 @@ where
         if pool.contains_key(&addr) {
             return Err(TransportError::AlreadyStarted);
         }
+        let mut statuses = runtime.statuses();
+        if direction == Direction::Outbound
+            && !statuses.get(&addr).is_some_and(|status| {
+                status.generation == generation && status.state == ConnectionState::Connecting
+            })
+        {
+            return Err(TransportError::StartFailed(
+                "WebSocket dial retired during handshake".into(),
+            ));
+        }
         pool.insert(
             addr.clone(),
             Connection {
@@ -761,7 +665,14 @@ where
                 _close: close_tx,
             },
         );
-        runtime.set_state(&addr, ConnectionState::Connected);
+        statuses.insert(
+            addr.clone(),
+            ConnectionStatus {
+                generation,
+                state: ConnectionState::Connected,
+                _cancel: None,
+            },
+        );
     }
     runtime
         .stats
@@ -800,6 +711,8 @@ fn validate_websocket_record(data: &[u8]) -> Result<(), String> {
 }
 
 mod connection;
+mod dial;
+use dial::{run_one_shot_dial, run_seed_dialer};
 mod tls;
 
 #[cfg(test)]

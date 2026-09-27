@@ -50,7 +50,7 @@ async fn stalled(
     let (local, peer) = tokio::io::duplex(1);
     let websocket = WebSocketStream::from_raw_socket(local, Role::Client, None).await;
     let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
-    let mut worker = Box::pin(run_connection(
+    let mut worker = Box::pin(run_framing_connection(
         transport.runtime.clone(),
         addr.clone(),
         websocket,

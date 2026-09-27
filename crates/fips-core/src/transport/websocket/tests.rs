@@ -4,6 +4,42 @@ mod connection_cleanup;
 mod handshake_lifetime;
 mod write_lifetime;
 
+// Framing fixtures start after HTTP upgrade. Install the matching attempt
+// ownership normally created by prepare_dial before entering the common loop.
+async fn run_framing_connection<S>(
+    runtime: Runtime,
+    addr: TransportAddr,
+    websocket: WebSocketStream<S>,
+    generation: u64,
+    direction: Direction,
+    request_key_hint: bool,
+    network_generation: u64,
+) -> Result<(), TransportError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    if direction == Direction::Outbound {
+        runtime.statuses().insert(
+            addr.clone(),
+            ConnectionStatus {
+                generation,
+                state: ConnectionState::Connecting,
+                _cancel: None,
+            },
+        );
+    }
+    run_connection(
+        runtime,
+        addr,
+        websocket,
+        generation,
+        direction,
+        request_key_hint,
+        network_generation,
+    )
+    .await
+}
+
 #[test]
 fn tls_verification_requires_an_explicit_recognized_policy() {
     use crate::config::WebSocketTlsVerification;

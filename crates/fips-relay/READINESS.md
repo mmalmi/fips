@@ -1191,6 +1191,30 @@ relay features disabled, including recovery and settlement of all 384 test sats.
 The packaged ARM64 build at `993304961` predates this discovery-hint change; the
 original intermittent timeout and current-device acceptance remain open.
 
+Retiring an outbound WebSocket attempt now cancels its pending HTTP/TLS upgrade.
+Previously, explicit close removed the status but left the dial running; a late
+upgrade could register an abandoned connection and hold the only available slot.
+Each attempt now owns its slot and cancellation before network work is queued.
+Its generation guards both connection registration and failure publication, so
+an old worker cannot replace a newer pending or established connection. Seed and
+one-shot dials share this path in the outbound-dial module; reconnect backoff,
+wire messages, TLS policy and payment rules are unchanged.
+
+The real HTTP-upgrade regression fails before the fix and passes afterward for
+both close APIs and both dial types. It releases the sole slot promptly, rejects
+stale discovery and sends a physical record over a fresh connection at the same
+URL without restarting the transport. Admission coverage also reserves the
+configured connection limit before workers run, while the delayed-completion
+case preserves a pending replacement through establishment and record delivery.
+All 25 transport, six node, seven public-transit and six preparation checks pass,
+along with strict core/relay lint, formatting and source-size checks. Paid seed
+bootstrap passes in both relay feature modes; ordinary TLS and FIPS-authenticated
+self-signed TLS pass with all features. Each of these four process cases includes
+recovery and settlement with all 384 test sats conserved. The ARM64 package at
+`993304961` predates the discovery-hint, failed-preparation and outbound-dial
+fixes. These local results do not establish current-device acceptance or explain
+the original intermittent delivery timeout.
+
 One no-default-feature seed-only service run nevertheless timed out in paid
 delivery. Its original failure lacked a phase snapshot. Bounded failure-only
 diagnostics now retain the purchase/renewal/restart phase, safe payment state,
