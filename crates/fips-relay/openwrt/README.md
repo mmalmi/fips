@@ -22,10 +22,11 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `95d40d178` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+build at `ea69e5a5a` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
 its APK is 10.9 MiB. It passes isolated Linux startup, package-content checks and
 the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
-against the packaged executable. These checks do not establish forwarding
+against the packaged executable, plus the wallet-capacity and full-filesystem
+recovery cases below. These checks do not establish forwarding
 performance or current-router acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
 
 Use an APKv3 tool with the `mkpkg` applet. OpenWrt's installed package manager
@@ -143,11 +144,11 @@ loss. Verify the source manifest and both executable hashes afterward.
 
 ### TCP, WebSocket and TLS with the packaged executable
 
-Build the current service harness with optional relay features disabled, matching
-the packaged daemon. The archived r13 source bundle predates the restart-fixture
-correction; use the current fixture with the matching dependency revisions. Its
-production sources are unchanged. The fixture supplies its own temporary mint
-and TLS proxy:
+Build the service harness from the same source bundle with optional relay features
+disabled, matching the packaged daemon. The accepted bundle includes the corrected
+restart fixture, which keeps automatic renewals enabled and verifies original
+funding records and spending limits through recovery. The fixture supplies its own
+temporary mint and TLS proxy:
 
 ```sh
 CARGO_TARGET_DIR="$PWD/target/linux-tests" CARGO_INCREMENTAL=0 \

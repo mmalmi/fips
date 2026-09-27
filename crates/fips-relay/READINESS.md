@@ -490,8 +490,8 @@ unit tests and the four-node paid/restart/concurrent-settlement case. SDK and
 relay strict lint, edited-source formatting and source-size checks pass. The
 whole SDK format check still reports pre-existing differences in nine untouched
 files, verified against the baseline; its failed result is retained. These are native
-loopback results. The r13 ARM64 source bundle and package predate this SDK change;
-target acceptance must be refreshed before deployment. Transfer counts, native
+loopback results. The refreshed ARM64 package below includes this SDK change and
+passes its Linux paid-forwarding and storage-recovery checks. Transfer counts, native
 quote/transaction reads, total storage and physical recovery remain separate
 limits; the record-size check does not reserve filesystem space.
 
@@ -589,8 +589,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `95d40d178` contains 35,704 inventoried files
-and resolves 693 packages, including 672 vendored registry packages. All 2,753
+The source bundle at `ea69e5a5a` includes SDK `299b273b64f0` and CDK
+`4be21741c5eb`, contains 35,704 inventoried files and resolves 693 packages,
+including 672 vendored registry packages. All 2,753
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -600,8 +601,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,048,264
-bytes, static and stripped. The unsigned APK is 11,475,595 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,053,560
+bytes, static and stripped. The unsigned APK is 11,477,545 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -636,10 +637,10 @@ bounded replacement per buyer, and checks exact budget arithmetic, spending
 limits and nonincreasing lifetime allowances. All three seeded cases require
 that replacement to occur. After settlement, each buyer's actual wallet balance
 reconciles with its recorded exposure, alongside total fund conservation.
-All five cases pass against the unchanged packaged executable; the native
-all-features plaintext-seed case also passes. The r13 source archive retains the
-earlier fixture, so reproduction uses the current test harness with the matching
-dependency revisions. No runtime policy, timer or payment protocol changes.
+All five cases pass against this packaged executable. The source bundle now
+includes the corrected fixture, so reproduction builds the harness and daemon
+from the same archive. The earlier r13 failure remains recorded; the fixture
+correction changes no runtime policy, timer or payment protocol.
 
 These passes do not explain the earlier intermittent delivery timeout or establish
 radio performance, remote TLS deployment, physical power loss or current-device
