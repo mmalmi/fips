@@ -410,9 +410,8 @@ shrink; a single oversized or corrupt selected record fails with evidence intact
 An unrelated malformed quote no longer blocks funded recovery. The local mint
 regression recovers 16 test sats from two large records and verifies no duplicate
 payout after reopening. This bounds this read path, not mint metadata loading,
-legacy bulk listing, SQL engine memory or other wallet workflows. The r9 ARM64
-package below predates this recovery change and requires rebuilding and renewed
-target acceptance before deployment.
+legacy bulk listing, SQL engine memory or other wallet workflows. Matching ARM64 package and isolated Linux acceptance
+are recorded below.
 This revision passes 413 native database tests, the full 413-test SDK suite
 (with one opt-in soak excluded), 296 relay unit tests, the four-node shared-wallet
 paid/restart/concurrent-settlement scenario, and strict native/SDK/relay lint.
@@ -497,8 +496,8 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The 27 September source bundle at `7ca69d1c3` contains 35,696 inventoried files
-and resolves 693 packages, including 672 vendored registry packages. All 2,745
+The source bundle at `400a985bd` contains 35,702 inventoried files
+and resolves 693 packages, including 672 vendored registry packages. All 2,751
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -508,8 +507,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,041,672
-bytes, static and stripped. The unsigned APK is 11,474,483 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,056,392
+bytes, static and stripped. The unsigned APK is 11,482,036 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -536,8 +535,8 @@ These passes do not explain the earlier intermittent delivery timeout or establi
 radio performance, remote TLS deployment, physical power loss or current-device
 acceptance.
 
-Earlier acceptance at `bb287843d` runs the four-node funding/recovery fixture
-against that revision's production executable in ARM64 Linux. A separate
+The same current package passes the four-node funding/recovery fixture
+in ARM64 Linux, including concurrent incoming and outgoing settlements. A separate
 all-features test harness provides the local mint and test wallets; each child relay uses the default-feature OpenWrt binary.
 Both the logical-wallet-limit case and the real Linux ENOSPC case pass, including
 paid delivery after restart, original-channel settlement, fund reconciliation and
@@ -549,7 +548,7 @@ power-loss or OpenWrt service supervision checks. The container has no external
 network, a read-only root, no capabilities and only the executables mounted from
 the host. See the [process recovery recipe](openwrt/README.md#production-executable-and-storage-recovery).
 
-That earlier bundle's separate all-features routing harness passes both automatic
+The earlier `bb287843d` bundle's separate all-features routing harness passes both automatic
 loss and delay scenarios on ARM64 Linux. Native feedback moves the purchase away
 from an impaired route and back to the recovered cheaper provider, preserving
 the original channels across reuse and controller reload. Settlement conserves
