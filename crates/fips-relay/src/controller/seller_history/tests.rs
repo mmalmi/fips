@@ -179,29 +179,21 @@ fn seller_history_retains_receiver_fee_reserves_without_rebilling_them() {
 }
 
 #[test]
-fn unacknowledged_or_unexpired_sales_keep_their_reports() {
-    let root = tempfile::tempdir().unwrap();
-    let (mut store, seller, t) = fixture(root.path());
-    let t = append(&mut store, &seller, &t, 1, false);
-    assert_eq!(
-        retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
-        0
-    );
-    assert!(store.journal.seller_settlements[&t.id].report.is_some());
-    store
-        .journal
-        .seller_settlements
-        .get_mut(&t.id)
-        .unwrap()
-        .released = true;
-    assert_eq!(
-        retire_sales(&mut store, &seller, t.expires_unix + 60).unwrap(),
-        0
-    );
-    assert_eq!(
-        retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
-        1
-    );
+fn completed_sales_keep_reports_until_immutable_refund_expiry() {
+    for released in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, seller, t) = fixture(root.path());
+        let t = append(&mut store, &seller, &t, 1, released);
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.expires_unix + 60).unwrap(),
+            0
+        );
+        assert!(store.journal.seller_settlements[&t.id].report.is_some());
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+            1
+        );
+    }
 }
 
 #[test]
@@ -265,7 +257,7 @@ fn changed_retirement_evidence_and_missing_modern_history_are_rejected() {
     let (mut store, seller, t) = fixture(root.path());
     let t = append(&mut store, &seller, &t, 1, true);
     prepare_sales(&mut store, &seller, t.expires_unix + 61).unwrap();
-    for field in ["history", "fees", "release", "paid"] {
+    for field in ["history", "fees", "report", "paid"] {
         let mut j = store.journal.clone();
         match field {
             "history" => j.history.as_mut().unwrap().seller = None,
@@ -282,7 +274,7 @@ fn changed_retirement_evidence_and_missing_modern_history_are_rejected() {
                     .after
                     .fee_sat += 1
             }
-            "release" => j.seller_settlements.get_mut(&t.id).unwrap().released = false,
+            "report" => j.seller_settlements.get_mut(&t.id).unwrap().report = None,
             _ => {
                 j.history
                     .as_mut()

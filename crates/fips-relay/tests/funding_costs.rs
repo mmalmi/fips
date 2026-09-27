@@ -29,6 +29,8 @@ mod setup;
 mod terminal_history;
 #[path = "funding_costs/transit_preopening.rs"]
 mod transit_preopening;
+#[path = "funding_costs/used_expiry.rs"]
+mod used_expiry;
 #[cfg(feature = "testbench")]
 #[path = "funding_costs/wallet_crash.rs"]
 mod wallet_crash;

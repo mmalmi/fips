@@ -44,16 +44,35 @@ The new regression fails before the fix. All eight focused expiry tests, the ful
 416-test SDK suite (one opt-in soak excluded), 301 relay unit tests, the fee-bearing
 paid settlement and interrupted-funding process cases, and strict SDK/relay lint
 pass. The changed Rust files pass formatting and size checks. This adds no message,
-journal field, feature or dependency. FIPS automatic expiry remains restricted to
-its verified zero-use path; used/shared-channel coordination still needs integration.
-The r16 ARM64 package predates this SDK extension and has not accepted it.
+journal field, feature or dependency. The r16 ARM64 package predates this SDK
+extension and the relay integration below; it has not accepted either change.
+
+FIPS now coordinates automatic expiry for used channels, including channels shared
+across destinations. The seller seals usage at service expiry and collects its
+retained payment without a final buyer request. After original wallet expiry, the
+buyer can recover a verified refund without the seller, preserving its highest
+signed obligation, original funding identity and lifetime limits. Completed seller
+reports can retire after immutable expiry without waiting for a departed buyer;
+original payout custody and cumulative unpaid exposure still have to reconcile.
+The four-daemon, fee-bearing case passes with optional features enabled and disabled:
+the buyer is killed after the seller accepts a positive payment, the seller collects
+and retires its report, and the buyer later recovers with the seller stopped. All
+512 test sats are conserved including mint fees. The earlier implementation fails
+because the absent buyer cannot initiate seller settlement. See [reproduction and
+limits](FUNDING-COSTS.md). A seller that misses its own redemption deadline, missing
+or conflicting financial evidence, and physical power loss remain outside this
+acceptance. No protocol message, journal field or dependency is added.
+The matching production graph passes 301 relay unit tests, both shared-expiry
+feature profiles, ordinary fee-bearing settlement, interrupted unused-funding
+recovery and strict all-target relay lint. SDK and dependency sources are unchanged
+from the full 416-test SDK acceptance above.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; used/shared-channel unilateral expiry recovery; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Seller recovery after missing its redemption deadline; reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
@@ -2593,12 +2612,13 @@ all recovered funds are spent into another wallet before reload; replay preserve
 the exact refund without importing it twice. This exercises the SDK-to-controller
 boundary, not an additional HTTP response-loss injection. All 186 library tests,
 strict all-target linting, formatting and the 730-file size gate pass. Hardware
-power-loss and used/shared-channel unilateral refunds remain unverified.
+power loss and used/shared-channel unilateral refunds were not covered by that
+earlier check; the current used/shared-channel acceptance is recorded above.
 
 An intent with no recovered channel must retain its full reservation:
 the SDK's empty lookup result also covers incomplete wallet operations, so it
-does not prove that no money was spent. Used/shared-channel unilateral recovery
-also remains outside the verified zero-use path.
+does not prove that no money was spent. Missing or conflicting original financial
+evidence remains outside the verified recovery paths.
 These retained records can exhaust bounded slots, and an early unresolved funding
 sequence can block retirement of later completed channels. Safe retention alone
 does not establish indefinitely reusable accounts.

@@ -6,7 +6,7 @@ use cashu_service::restore_streaming_route_cashu_spilman_refund;
 
 mod state;
 pub use state::SettlementReport;
-use state::valid_report;
+pub(super) use state::valid_report;
 pub(super) use state::valid_usage;
 pub(super) use state::{BuyerSettlement, SellerSettlement, SettlementKind};
 
@@ -47,6 +47,16 @@ impl Controller {
         let Some(_claim) = self.settlement_claim(id) else {
             return Ok(ControllerResponse::Pending);
         };
+        Ok(ControllerResponse::Sealed {
+            channel_id: id.into(),
+            usage: self.seal_sale(channel).await?,
+        })
+    }
+
+    // Caller owns settlement_claim and has authenticated the buyer or observed
+    // the original channel expiry. Neither path invents a new usage claim.
+    pub(super) async fn seal_sale(&self, channel: ChannelTerms) -> Result<ChannelUsage, String> {
+        let id = channel.id.clone();
         let saved = channel.clone();
         self.change(move |j| {
             for incoming in j.incoming.values_mut().filter(|i| i.channel.id == saved.id) {
@@ -74,11 +84,8 @@ impl Controller {
         for incoming in state.incoming.values().filter(|i| i.channel.id == id) {
             self.services.quotes.stop_reusing(&incoming.offer.id)?;
         }
-        if let Some(usage) = state.seller_settlements[id].usage {
-            return Ok(ControllerResponse::Sealed {
-                channel_id: id.into(),
-                usage,
-            });
+        if let Some(usage) = state.seller_settlements[&id].usage {
+            return Ok(usage);
         }
         let seller = self.services.seller.clone();
         let channel_id = id.to_string();
@@ -93,10 +100,7 @@ impl Controller {
             Ok(())
         })
         .await?;
-        Ok(ControllerResponse::Sealed {
-            channel_id: id.into(),
-            usage,
-        })
+        Ok(usage)
     }
 
     pub(super) async fn handle_settle(
@@ -152,7 +156,7 @@ impl Controller {
 
     // Caller owns settlement_claim. Mint close and proof import are idempotent;
     // the upstream receiver and wallet retain recovery state before our report.
-    async fn finish_sale(&self, id: &str) -> Result<SettlementReport, String> {
+    pub(super) async fn finish_sale(&self, id: &str) -> Result<SettlementReport, String> {
         let sale = self
             .snapshot()
             .await?
@@ -163,8 +167,12 @@ impl Controller {
         if let Some(report) = sale.report {
             return Ok(report);
         }
-        let payment = sale.payment.ok_or("final signed payment missing")?;
+        if sale.payment.is_none() && now()? <= sale.channel.expires_unix {
+            return Err("final signed payment missing before channel expiry".into());
+        }
+        let usage = sale.usage.ok_or("seal channel before mint settlement")?;
         let control = self.services.payment_control.clone();
+        let seller = self.services.seller.clone();
         let wallet_guard = self.wallet.clone().lock_owned().await;
         let runtime = tokio::runtime::Handle::current();
         let report = blocking(move || {
@@ -174,12 +182,25 @@ impl Controller {
                 let report = SettlementReport::from_close(&closed)?;
                 if closed.mint_url != sale.channel.mint_url
                     || closed.unit != "sat"
-                    || closed.closed_amount != payment.balance
-                    || !valid_report(&sale.channel, &report, payment.balance)
+                    || sale
+                        .payment
+                        .as_ref()
+                        .is_some_and(|p| closed.closed_amount != p.balance)
+                    || closed.closed_amount > sale.channel.capacity_sat
+                    || closed.closed_amount.saturating_mul(1_000) < usage.paid_msat
+                    || !valid_report(&sale.channel, &report, closed.closed_amount)
                 {
                     return Err("mint close does not match final agreement".into());
                 }
                 control.import_wallet_payout(&sale.channel.id).await?;
+                // A retained receiver signature can have reached its journal
+                // before the corresponding ledger update was interrupted.
+                let paid_msat = closed.closed_amount * 1_000;
+                if seller.channel_usage(&sale.channel.id).map(|u| u.paid_msat) != Some(paid_msat) {
+                    seller
+                        .apply_verified_balance(&sale.channel.id, paid_msat)
+                        .map_err(|e| e.to_string())?;
+                }
                 Ok(report)
             })
         })
@@ -461,7 +482,10 @@ impl Controller {
         let snapshot = self.snapshot().await?;
         let mut first_error = None;
         for (id, sale) in snapshot.seller_settlements {
-            if sale.payment.is_some() && sale.report.is_none() {
+            if sale.usage.is_some()
+                && sale.report.is_none()
+                && (sale.payment.is_some() || now()? > sale.channel.expires_unix)
+            {
                 let Some(_claim) = self.settlement_claim(&id) else {
                     continue;
                 };

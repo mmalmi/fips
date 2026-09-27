@@ -333,6 +333,25 @@ power-loss durability remains a separate boundary. Run the focused case with:
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs restore::interrupted_funding_restores_after_route_expiry_without_new_spending
 ```
 
+The shared-channel expiry case uses four daemons and a fee-bearing local mint.
+Two destinations share one source channel. After both receive paid traffic and
+the seller durably accepts a positive payment, the buyer is killed before any
+cooperative settlement intent. The seller automatically collects its retained
+payment at service expiry and later retires its completed report without a buyer
+acknowledgment. With that seller stopped, the buyer restarts after wallet expiry,
+recovers its verified refund and retires the original funding. Highest signed
+obligations, lifetime budgets and funding sequence remain unchanged; spendable
+balances plus mint fees conserve all 512 test sats. Run with either feature profile:
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs used_expiry::shared_paid_channel_expires_with_each_counterparty_offline
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --no-default-features --test funding_costs used_expiry::shared_paid_channel_expires_with_each_counterparty_offline
+```
+
+This covers a seller that reaches the mint during its settlement window. It does
+not prove recovery after the seller misses that deadline, missing/conflicting
+original financial evidence, or physical storage loss.
+
 The companion pre-opening cases interrupt the original wallet preparation before
 a channel opening exists. The committed-send case kills the source after its mint
 swap commits. After the quote expires and the provider stops, ordinary restart

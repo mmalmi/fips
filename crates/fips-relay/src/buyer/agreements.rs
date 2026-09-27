@@ -136,6 +136,27 @@ impl BuyerAuthorizer {
         Ok(())
     }
 
+    /// Read only a durable authorization belonging to the exact funded channel.
+    pub(crate) fn expiry_authorization(
+        &self,
+        provider: NodeAddr,
+        terms: &ChannelTerms,
+    ) -> Result<Option<u64>, BuyerError> {
+        let ready = self.writer_ready.lock().map_err(|_| BuyerError::Format)?;
+        if !*ready {
+            return Err(DurableError::Suspended.into());
+        }
+        let state = self.state.lock().map_err(|_| BuyerError::Format)?;
+        if terms.buyer != state.local {
+            return Err(BuyerError::InvalidAgreement);
+        }
+        match state.channels.get(&terms.id) {
+            Some(c) if c.provider == provider && c.terms == *terms => Ok(Some(c.authorized_sat)),
+            Some(_) => Err(BuyerError::InvalidAgreement),
+            None => Ok(None),
+        }
+    }
+
     pub fn close_quote(&self, id: &str) -> Result<(), BuyerError> {
         // Withdrawal must stop packet admission even if a previous write failed.
         // Keep writer -> state ordering, and retain the error for recovery.

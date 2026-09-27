@@ -71,7 +71,9 @@ packets. Confirmed idle channels suppress unnecessary polling. Seal and Settle a
 separate so final usage stops changing before the final balance is signed.
 StopRoute affects one agreement; channel operations affect all its agreements.
 ReleaseSettlement follows durable refund recovery and permits safe retirement
-of the seller's settlement report.
+of the buyer's cooperative settlement record. After immutable wallet expiry,
+verified recovery and completed seller-report retirement can finish independently
+of the absent peer; see [financial history](HISTORY.md).
 
 These are bounded application records over existing authenticated TCP/FIPS, not
 ten new native FIPS packet types. Existing native MMP supplies quality evidence;

@@ -75,7 +75,7 @@ impl BuyerSettlement {
     }
 
     pub(in crate::controller) fn final_signed_sat(&self) -> Result<u64, String> {
-        if self.kind == SettlementKind::Expiry {
+        if self.kind == SettlementKind::Expiry && self.payment.is_none() {
             return Ok(0);
         }
         self.payment
@@ -104,7 +104,11 @@ pub(in crate::controller) fn valid_usage(channel: &ChannelTerms, usage: ChannelU
     })
 }
 
-pub(super) fn valid_report(channel: &ChannelTerms, report: &SettlementReport, paid: u64) -> bool {
+pub(in crate::controller) fn valid_report(
+    channel: &ChannelTerms,
+    report: &SettlementReport,
+    paid: u64,
+) -> bool {
     report.channel_id == channel.id
         && report.paid_sat == paid
         && report.value_after_stage1_sat >= channel.capacity_sat
@@ -167,9 +171,11 @@ impl Controller {
                     s.usage.is_none() || p.channel_id != *id || p.balance > s.channel.capacity_sat
                 })
                 || s.report.as_ref().is_some_and(|r| {
-                    s.payment
-                        .as_ref()
-                        .is_none_or(|p| !valid_report(&s.channel, r, p.balance))
+                    let paid = s.payment.as_ref().map_or(r.paid_sat, |p| p.balance);
+                    !valid_report(&s.channel, r, paid)
+                        || paid > s.channel.capacity_sat
+                        || s.usage
+                            .is_none_or(|u| paid.saturating_mul(1_000) < u.paid_msat)
                 })
             {
                 return Err("invalid seller settlement".into());

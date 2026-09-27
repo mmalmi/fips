@@ -16,6 +16,9 @@ impl Controller {
         // Recover financial identity before applying quote expiry/pause gates.
         // Restoring original funding never authorizes route activation.
         let mut first_error = self.recover_funding().await.err();
+        if let Err(error) = self.recover_expired_sales().await {
+            first_error.get_or_insert(error);
+        }
         if let Err(error) = self.recover_expired_funding().await {
             first_error.get_or_insert(error);
         }

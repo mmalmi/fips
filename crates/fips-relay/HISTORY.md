@@ -94,14 +94,29 @@ intent govern recovery; unrelated new provider selection cannot prevent recordin
 an already verified refund. Its actual amount is immutable across retries.
 No provider usage, payment, report or release acknowledgment is manufactured.
 
+Used channels, including one shared across destinations, can also recover after
+the original wallet expiry. The controller requires the exact local buyer terms
+and preserves its highest durable signed authorization. It closes local authority
+before reproducing that same payment; recovery cannot authorize a higher amount.
+An unfinished cooperative settlement can become an expiry intent without losing
+its payment or report. The SDK verifies the original mint outputs before the
+controller records the refund, retires the purchases or releases locked capital.
+Lifetime signed and wallet-spend totals remain charged.
+
+At service expiry the seller seals usage and collects its retained payment through
+the existing mint-close path, without needing a final buyer request. Only a verified
+close and payout import permit a completed report. The seller must still reach the
+mint before its redemption opportunity is lost; recovery of a seller that missed
+that deadline needs separate reconciliation and must not erase its claim.
+
 Funding installation checks the original offer and funding under the controller
 lock. When a channel never reached the local buyer, coordinated retirement uses
 an explicit never-installed entry instead of pretending it was accepted. The
 buyer rechecks absence and saves an expiry floor to reject delayed installation.
 Its rollup includes the known funded capacity and channel count, with zero signed
 authorization, advance and route use. Controller and SDK totals must still match
-exactly. Uncertain funding and used/shared-channel unilateral recovery remain
-retained; absence of an outgoing route alone never establishes zero use.
+exactly. Uncertain funding remains retained; absence of an outgoing route alone
+never establishes zero use.
 
 The journal keeps the `0x100` authorization-format bit after all markers retire,
 so older binaries reject the state instead of ignoring a withdrawal. Each base
@@ -123,8 +138,9 @@ fences and states that still block retirement.
 
 After route compaction, the recovery worker retires a completed numbered funding
 prefix when every cooperative member has a final payment, verified refund and
-acknowledged report release. A zero-use expiry member instead needs its verified
-SDK refund and exact retained expiry intent. Every member must have no remaining
+acknowledged report release. An expiry member instead needs its verified SDK
+refund, exact retained expiry intent and, if used, highest signed payment.
+Every member must have no remaining
 route or renewal references and must have passed the immutable
 wallet expiry (service expiry plus 60 seconds). An unfinished earlier numbered
 request stops the prefix. Funding and buyer limits apply to retained records; eligible completed records recycle
@@ -190,19 +206,22 @@ After the buyer has durably recovered its refund, it sends one
 neighbor control connection. `SettlementReleased { channel_id }` acknowledges
 release of the saved report. This happens once per settled channel; payment and
 packet-delivery cadence are unchanged. The buyer saves the acknowledgment before
-its own outgoing-channel records can retire. A lost reply remains retryable.
+its own cooperative outgoing-channel records can retire. A lost reply remains
+retryable; after immutable wallet expiry it may use independent refund recovery.
 
 The seller requires the original FIPS buyer identity and a completed settlement
-report, which already follows its verified payout import. Unfinished or
-unacknowledged reports stay retained. After removal, another release of an absent
+report, which already follows its verified payout import. Unfinished reports stay
+retained. A completed report can retire after route compaction and immutable wallet
+expiry even without acknowledgment: the buyer can recover from the mint's original
+verified outputs. After removal, another release of an absent
 ID is a no-op acknowledgment: it certifies neither channel existence nor a payment, creates no
 future release permission or tombstone, and writes no journal. Known unfinished
 channels and wrong buyers cannot use that acknowledgment path to remove evidence.
 
-Following release, route compaction and immutable wallet expiry, the controller
+Following route compaction and immutable wallet expiry, the controller
 asks the receiver SDK to verify custody of the original payout in the wallet.
 It binds the SDK's exact channel identities, expiry, mint, currency, capacity,
-signed amount and both original payout values to the released settlement reports.
+signed amount and both original payout values to the completed settlement reports.
 The SDK retains ownership of its nominal funding and usage accounting. An
 ineligible payout retains its records without saving a new cleanup intent.
 
@@ -258,7 +277,7 @@ Debt relationships are bounded by the ledger's channel limit. If a new unpaid
 relationship would exceed it, cleanup retains the channel and all evidence; it
 never drops another identity to create room. This conservative bound can require
 operator intervention after enough distinct unpaid peers. Active, unexpired,
-unacknowledged, pending, legacy or otherwise unresolved records also retain slots.
+pending, legacy or otherwise unresolved records also retain slots.
 The controller and ledger's channel bounds now count retained records on both sides.
 
 **Remaining history work:** unreleased spent proof records, unreleased or unrelated
@@ -512,15 +531,10 @@ value or evidence to make space.
 The supported v1 scope uses fresh profiles. Automated migration of legacy/full
 profiles and version-1 funding-cost records is unsupported; missing original
 evidence must never be replaced with zero costs.
-Expiry alone does not settle or refund an unfinished channel.
-
-The release exchange requires matching controller versions to complete cleanup.
-Old journals load with `released: false`, preserving retrieval rights until the
-buyer acknowledges them. An older peer that does not support release may already
-have completed the financial settlement; the new buyer then reports that its
-refund is recovered and report release remains pending. Existing records remain
-available. Profiles whose old buyer already removed its records without a release
-need separate reconciliation; do not fabricate an acknowledgment.
+Expiry starts recovery; it is not evidence of settlement or refund. Missing or
+conflicting original evidence retains the financial reservation. Report release
+remains part of cooperative cleanup, while verified expiry recovery does not
+require a peer acknowledgment. Neither path may fabricate one.
 
 ## Journal compatibility and checks
 

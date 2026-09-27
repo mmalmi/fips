@@ -317,7 +317,15 @@ impl Controller {
     // renewal_work excludes another replacement worker and orderly pausing.
     // Settlement takes the payment mutex only for its own final balance/refund.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
-        self.settle_channel(id).await?;
+        if !self
+            .snapshot()
+            .await?
+            .buyer_settlements
+            .get(id)
+            .is_some_and(|s| s.kind == SettlementKind::Expiry && s.refunded)
+        {
+            self.settle_channel(id).await?;
+        }
         if self
             .services
             .buyer

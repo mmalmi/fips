@@ -1,4 +1,4 @@
-//! Retain seller debt and settlement totals after the buyer releases its report.
+//! Retain seller debt and settlement totals after release or immutable expiry.
 use super::*;
 use crate::ledger::channel_history::{History as LedgerHistory, Plan as LedgerPlan};
 use cashu_service::{
@@ -81,8 +81,9 @@ impl Totals {
 }
 
 fn completed(j: &Journal, sale: &SellerSettlement, timestamp: u64) -> bool {
-    sale.released
-        && sale.report.is_some()
+    // After the immutable refund deadline the buyer can recover directly from
+    // the mint's signed outputs. Its absence need not retain this report forever.
+    sale.report.is_some()
         && sale
             .channel
             .expires_unix
