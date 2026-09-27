@@ -495,6 +495,29 @@ passes its Linux paid-forwarding and storage-recovery checks. Transfer counts, n
 quote/transaction reads, total storage and physical recovery remain separate
 limits; the record-size check does not reserve filesystem space.
 
+### Exact cross-mint payment receipts
+
+SDK `30a6e0d4f17d` binds each transfer to the native source-payment operation ID,
+saved before confirming payment and included in completion-size admission.
+Recovery uses the existing bounded receipt lookup for that exact operation,
+with a 4 MiB stored-payload limit, instead of scanning outgoing history for a
+matching quote ID. It validates the completed receipt's operation, mint, currency,
+amount, quote, invoice and payment method. No CDK API or dependency changes are
+needed. A paid quote without its original operation ID or matching receipt stops
+recovery and retains the evidence rather than adopting another operation's fee.
+
+The regression reproduces an incorrect fee when another stored payment shares
+the quote ID. It now recovers the original fee and leaves the other receipt
+untouched. A missing operation ID or a mismatched, pending or oversized receipt
+prevents destination issuance; restoring the original record finishes the same transfer
+without another source payment. The full SDK workspace passes 415 tests (one
+opt-in soak excluded), alongside 298 relay unit tests, the four-node paid/restart/
+concurrent-settlement case, strict SDK/relay lint, edited-source formatting and
+source-size checks. Nine unrelated baseline formatting differences are unchanged.
+These are native loopback checks; the r14 ARM64 package predates this SDK change.
+Other native recovery/quote queries, total wallet growth, physical recovery and
+current-device acceptance remain separate requirements.
+
 ### Wallet read bounds
 
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
