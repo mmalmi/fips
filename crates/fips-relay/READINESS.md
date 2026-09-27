@@ -1489,6 +1489,15 @@ plus two further configured-WebSocket runs without default features. Each of the
 workspace formatting and source-size checks pass. This changes only the shared
 fixture and does not attribute the older delivery timeout or accept new hardware.
 
+The current r16 source graph also passes four serial configured-WebSocket/seed
+pairs on macOS loopback, preserving the original test order and using no optional
+relay features. Both executables are built offline from the same immutable source
+bundle as the ARM64 package. All eight process cases reach automatic replacement
+and settlement, conserving 384 test sats per case; source and executable hashes
+match before and after every pair. No delivery timeout recurs in this bounded
+repeat. It does not identify the original failure's cause or establish sustained
+or current-device acceptance; the failure-only diagnostics remain in place.
+
 The seed fixture also tests silent loss: the proxy retains existing sockets and
 discards their traffic while new connections remain usable. Production keepalive
 and idle timers are unchanged. After authenticated reconnection, both directions
