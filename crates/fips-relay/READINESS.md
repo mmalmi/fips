@@ -449,6 +449,27 @@ package below includes this dependency change and passes the isolated Linux
 transport, restart, settlement and storage-recovery checks recorded below.
 Physical power-loss and current-device checks remain open.
 
+### Receipt existence during issuance
+
+Native CDK `4be21741c5eb` checks for an existing issuance receipt by its indexed ID,
+without loading or decoding the payload. A normal duplicate or an oversized,
+malformed duplicate rejects acquisition inside the same transaction; its saved
+receipt, quotes, signing keys and counters remain unchanged. The extended
+regression reproduced the unnecessary decode before the fix. This adds no API,
+schema, network message or dependency and leaves full receipt reads unchanged.
+
+The corrected graph passes all 168 SQLite wallet tests, the full 413-test SDK
+workspace (one opt-in storage soak excluded), 298 relay unit tests and the
+four-node paid/restart/concurrent-settlement scenario. Affected native, SDK and
+relay strict lint, CDK formatting and the source-size check pass. The SDK tests
+run serially. An initial two-worker run missed the refund fixture's 30-second
+setup expiry before its recovery race; the unchanged case passed alone and the
+full serial suite passed. The failed run remains recorded; this does not prove
+an opening-latency bound under concurrent large cryptographic workloads.
+Other quote, operation-admission and receipt reads remain open. The existing r12
+ARM64 package and cadence results predate this small dependency change; current target
+packaging and runtime acceptance must be refreshed before deployment.
+
 ### Wallet read bounds
 
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
