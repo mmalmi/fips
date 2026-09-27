@@ -1957,6 +1957,19 @@ mobility, arbitrary mesh merge/split, throughput or production readiness.
 
 ## Guarded cadence measurement
 
+The current r12 source bundle also passes the existing eight-trial cadence
+matrix on isolated ARM64 Linux with the OpenWrt optimization profile and
+measurement instrumentation. All 285,696 packets arrive and all 40,960 test sats
+are recovered after 48 channel settlements. The unchanged analyzer passes all
+120 regression tests and its strict delivery, credit and interval reconciliation
+checks. At 500 ms, the high-rate workload averages 8.01 ms of payment CPU per MiB
+and locally attributed payment carriers equal 0.325% of application bytes; idle
+payment and journal work remain zero. The source bundle and accepted r12 package
+are unchanged. These are instrumented software measurements with wallets and
+journals on tmpfs, not current router, physical disk or radio acceptance. The
+500-ms default is retained; see the [27 September comparison](CADENCE-RESULTS.md#accepted-arm64-linux-comparison--27-september-2026)
+for policy results, environment and limits.
+
 The accepted 23 September optimized loopback comparison covers
 250/500/1000/2000-ms policies with two opposite-order repetitions. All 285,696
 original packets arrived, all six channels settled in each trial, and all 40,960
