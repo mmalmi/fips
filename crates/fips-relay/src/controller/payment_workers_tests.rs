@@ -10,6 +10,33 @@ impl Drop for OnDrop {
 }
 
 #[tokio::test]
+async fn successful_reply_does_not_cover_sends_after_the_exchange_started() {
+    let mut payment = ChannelPayment {
+        started_evidence_msat: 9_584,
+        job: Some(tokio::spawn(async {
+            Ok(Some(ChannelUsage {
+                submitted_msat: 7_094,
+                reserved_msat: 11_094,
+                lost_msat: 4_000,
+                paid_msat: 8_000,
+            }))
+        })),
+        schedule: ChannelSchedule::default(),
+        #[cfg(feature = "measurements")]
+        progress: None,
+    };
+    let now = tokio::time::Instant::now();
+    for _ in 0..8 {
+        payment.schedule.acknowledge(now, 9_584, 8_000);
+    }
+    payment.finish().await.unwrap();
+    let now = tokio::time::Instant::now();
+    let policy = PaymentCadence::default();
+    assert!(!payment.schedule.due(now, 9_584, 8, 8_000, &policy));
+    assert!(payment.schedule.due(now, 14_000, 8, 8_000, &policy));
+}
+
+#[tokio::test]
 async fn aborting_a_draining_scheduler_cancels_the_pending_exchange() {
     let (dropped, was_dropped) = oneshot::channel();
     let (started, was_started) = oneshot::channel();
@@ -23,8 +50,9 @@ async fn aborting_a_draining_scheduler_cancels_the_pending_exchange() {
     workers.channels.insert(
         "pending".into(),
         ChannelPayment {
-            schedule: ChannelSchedule::default(),
             job: Some(job),
+            schedule: ChannelSchedule::default(),
+            started_evidence_msat: 0,
             #[cfg(feature = "measurements")]
             progress: None,
         },
@@ -59,9 +87,10 @@ async fn payment_progress_stays_in_flight_until_harvest_and_failures_are_unknown
     let (finish, ready) = oneshot::channel();
     progress.lock().unwrap().started();
     let mut payment = ChannelPayment {
-        schedule: ChannelSchedule::default(),
         job: Some(tokio::spawn(async move { ready.await.unwrap() })),
         progress: Some(progress.clone()),
+        schedule: ChannelSchedule::default(),
+        started_evidence_msat: 0,
     };
     assert!(progress.lock().unwrap().in_flight);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);

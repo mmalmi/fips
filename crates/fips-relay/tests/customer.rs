@@ -1,9 +1,9 @@
 #![cfg(unix)]
 #[path = "process_support/idle.rs"]
 mod idle;
-#[path = "process_support/transports.rs"]
-mod transports;
-use transports::{udp_bind, udp_transports};
+#[allow(dead_code)]
+mod process_support;
+use process_support::{udp_bind, udp_transports};
 
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -12,6 +12,7 @@ use cashu_service::{
 };
 use fips_core::{Identity, config::PeerConfig};
 use fips_relay::{
+    controller::FundingBudget,
     customer::{CustomerClient, CustomerCommand as Action, CustomerProfile},
     ledger::BillingBasis,
     service::{AdminRequest, RelayService, ServiceConfig, request},
@@ -93,6 +94,112 @@ async fn deliver(client: &mut CustomerClient, destination: &ServiceConfig, epoch
     );
 }
 
+fn paid_usage(entry: &ServiceConfig, customer: &Value) -> (u64, u64) {
+    let ledger: Value = serde_json::from_slice(
+        &std::fs::read(entry.state_directory.join("seller/ledger.json")).unwrap(),
+    )
+    .unwrap();
+    let history = customer["relay"]["history"].as_array().unwrap();
+    ledger["ledger"]["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            history
+                .iter()
+                .any(|p| p["channel"]["id"] == row["terms"]["id"])
+        })
+        .fold((0, 0), |(submitted, paid), row| {
+            (
+                submitted + row["usage"]["submitted_msat"].as_u64().unwrap(),
+                paid + row["usage"]["paid_msat"].as_u64().unwrap(),
+            )
+        })
+}
+
+async fn paid_after(
+    client: &mut CustomerClient,
+    entry: &ServiceConfig,
+    previous: (u64, u64),
+) -> Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = client.execute(Action::Status).await.unwrap();
+            let (submitted, paid) = paid_usage(entry, &state);
+            if submitted > previous.0 && paid > previous.1 && paid >= submitted {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("automatic payment must advance and cover the retained provider claim")
+}
+
+async fn restart_entry(
+    client: &mut CustomerClient,
+    configs: &[ServiceConfig],
+    path: &Path,
+    entry: &mut tokio::process::Child,
+) {
+    idle::assert_idle(&configs[..1]).await;
+    let before = client.execute(Action::Status).await.unwrap();
+    let before_usage = paid_usage(&configs[0], &before);
+    assert!(before_usage.0 > 0 && before_usage.1 >= before_usage.0);
+
+    entry.kill().await.unwrap();
+    *entry = process_support::start(path).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(status) = request(&configs[0], &AdminRequest::Status).await {
+                assert_eq!(status["npub"], before["profile"]["entry_npub"]);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("entry router must reopen its original account");
+
+    // Keep the customer running: no Start, Buy or payment flush rescues recovery.
+    for epoch in 2..6 {
+        deliver(client, &configs[1], epoch).await;
+    }
+    let paid = paid_after(client, &configs[0], before_usage).await;
+    let usage_before_new = paid_usage(&configs[0], &paid);
+    // Fresh traffic after recovery must advance the automatic payment again.
+    for epoch in 6..8 {
+        deliver(client, &configs[1], epoch).await;
+    }
+    let after = paid_after(client, &configs[0], usage_before_new).await;
+    assert_eq!(after["running"], true);
+    assert_eq!(after["npub"], before["npub"]);
+    assert_eq!(after["profile"], before["profile"]);
+    let history = after["relay"]["history"].as_array().unwrap();
+    for purchase in before["relay"]["history"].as_array().unwrap() {
+        assert!(
+            history.contains(purchase),
+            "original purchase must remain owned"
+        );
+    }
+    let original: FundingBudget =
+        serde_json::from_value(before["relay"]["funding_budget"].clone()).unwrap();
+    let current: FundingBudget =
+        serde_json::from_value(after["relay"]["funding_budget"].clone()).unwrap();
+    assert!(current.wallet_debited_sat >= original.wallet_debited_sat);
+    assert!(current.wallet_refunded_sat >= original.wallet_refunded_sat);
+    assert_eq!(
+        current.exposure_sat,
+        current.wallet_debited_sat + current.pending_reserved_sat - current.wallet_refunded_sat
+    );
+    assert!(current.exposure_sat <= after["profile"]["budget_sat"].as_u64().unwrap());
+    assert!(current.locked_sat <= 2 * after["profile"]["channel_capacity_sat"].as_u64().unwrap());
+    assert!(
+        after["relay"]["remaining_budget_sat"].as_u64().unwrap()
+            <= before["relay"]["remaining_budget_sat"].as_u64().unwrap()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn customer_app_uses_real_accounts_and_preserves_them_across_reopen() {
     exercise(BillingBasis::ForwardingAttempt).await;
@@ -104,7 +211,7 @@ async fn customer_app_uses_forwarding_data_mesh_and_preserves_terms_across_reope
 }
 
 async fn exercise(billing: BillingBasis) {
-    tokio::time::timeout(Duration::from_secs(160), async {
+    tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -150,16 +257,14 @@ async fn exercise(billing: BillingBasis) {
         configs[0].customer_network = Some("127.0.0.1/32".parse().unwrap());
         drop(sockets);
         let mut servers = Vec::new();
-        for cfg in &configs {
-            let service = RelayService::load(cfg.clone()).await.unwrap();
-            let (send, recv) = tokio::sync::oneshot::channel::<()>();
-            servers.push((
-                send,
-                tokio::spawn(service.serve(async {
-                    let _ = recv.await;
-                })),
-            ));
+        let mut paths = Vec::new();
+        for (index, cfg) in configs.iter().enumerate() {
+            let path = root.path().join(format!("relay-{index}.json"));
+            std::fs::write(&path, serde_json::to_vec(cfg).unwrap()).unwrap();
+            servers.push(process_support::start(&path).await);
+            paths.push(path);
         }
+        process_support::ready(&configs, &paths, &npubs, &mut servers).await;
         let directory = root.path().join("customer");
         let mut profile = profile(
             &npubs[0],
@@ -285,7 +390,7 @@ async fn exercise(billing: BillingBasis) {
                 assert_eq!(before["relay"]["history"], after["relay"]["history"]);
             }
         }
-        idle::assert_idle(&configs[..1]).await;
+        restart_entry(&mut client, &configs, &paths[0], &mut servers[0]).await;
         let final_wallet = client.execute(Action::Finish).await.unwrap();
         let amount = final_wallet["balance_sat"].as_u64().unwrap();
         let export = client
@@ -323,9 +428,8 @@ async fn exercise(billing: BillingBasis) {
         for cfg in &configs {
             request(cfg, &AdminRequest::Settle).await.unwrap();
         }
-        for (send, task) in servers {
-            send.send(()).unwrap();
-            task.await.unwrap().unwrap();
+        for server in &mut servers {
+            process_support::stop(server).await;
         }
         for (i, cfg) in configs.iter().enumerate() {
             let wallet = cfg.state_directory.join("wallet");

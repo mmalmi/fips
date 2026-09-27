@@ -165,6 +165,7 @@ impl Controller {
 struct ChannelPayment {
     schedule: ChannelSchedule,
     job: Option<JoinHandle<PaymentResult>>,
+    started_evidence_msat: u64,
     #[cfg(feature = "measurements")]
     progress: Option<Arc<Mutex<super::payment_progress::ScheduleProgress>>>,
 }
@@ -188,7 +189,11 @@ impl ChannelPayment {
         }
         match result {
             Ok(Some(usage)) => {
-                self.schedule.acknowledge(usage.paid_msat);
+                self.schedule.acknowledge(
+                    tokio::time::Instant::now(),
+                    self.started_evidence_msat,
+                    usage.paid_msat,
+                );
                 Ok(())
             }
             Ok(None) => Ok(()),
@@ -276,6 +281,8 @@ impl PaymentWorkers {
                 continue;
             }
             let payer = controller.clone();
+            // Later sends must wake the schedule, even if they race this reply.
+            work.started_evidence_msat = evidence;
             #[cfg(feature = "measurements")]
             if let Some(progress) = &work.progress {
                 progress.lock().unwrap().started();

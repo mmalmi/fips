@@ -24,6 +24,25 @@ and phone demonstrations do not accept the latest software for deployment.
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
+Customer entry recovery now has local process acceptance under both tariffs and
+both relay feature profiles. The entry process is killed while the customer stays
+live; fresh payloads and two advances of automatic payment recover without a new
+purchase command or manual flush. Original identities, profiles, purchases and
+spending limits survive, the entry earns, and all 384 test sats are collected.
+A provider crash can leave local sends above its retained claim. Successful,
+unchanged claims now use capped rechecks instead of perpetual fast polling;
+evidence remains intact and late claims remain payable. New sends and failed
+payments restore prompt checks. See [cadence](CADENCE.md) for the 30-second cap
+and the distinction between an unclaimed gap and confirmed idle.
+
+The focused regression fails before the fix. Final checks pass 301 relay unit
+tests, both three-test customer profiles, the controller scenarios, the four-node
+shared-wallet recovery case and strict relay lint, formatting and source-size
+checks. These use the unchanged, previously accepted SDK and local test money.
+Native priced background envelopes can advance during recovery; that period is
+not assumed idle. The ARM64 package still predates this scheduler change and the
+latest SDK receipt fix, and current-device acceptance remains outstanding.
+
 Fresh services can opt into `terms.wallet_capacity_bytes` before initialization.
 The SDK creates the limited wallet before admitting financial work; normal reopening
 preserves its maximum. Service startup and offline wallet commands compare that

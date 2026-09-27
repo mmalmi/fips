@@ -35,9 +35,16 @@ usage and, when needed, sends a signed cumulative payment when either:
 The first trigger uses monetary value, not a universal byte count. All flows
 sharing the same neighbor channel share the trigger. Whole-sat payment rounding
 can cover later fractional usage, which should not cause another payment.
-Confirmed idle channels send no payment-control polls. Outstanding local evidence
-that the provider has not claimed remains reconcilable; it is not declared paid
-just to make the connection quiet.
+Confirmed idle channels send no payment-control polls. Lost or delayed forwarding
+can leave local send evidence above the provider's supported claim, including
+after a provider crash. Successful exchanges with unchanged evidence and payment
+back off their next usage check from 500 ms through 1, 2, 4, 8 and 16 seconds to a
+30-second maximum. This preserves reconciliation of late claims without requiring
+another packet; the gap is never declared paid or removed from durable evidence.
+Fresh local sends or unacknowledged signed liability restore the normal value/age
+trigger, and payment progress resets the recheck delay. The worker records evidence
+before starting the exchange so a reply cannot hide sends made while it was in
+flight. No new message, configuration field or spending authority is introduced.
 
 After a failed exchange the scheduler retries after 500 ms without requiring
 another data packet. Its cache contains no financial authority and is discarded
@@ -46,6 +53,7 @@ flush and settlement paths still reconcile regardless of normal cadence.
 
 `max_delay_ms` is a scheduling target, not a bound on network or disk latency.
 The scan adds up to 50 ms, and control, signing or disk work can delay it.
+An unchanged, unclaimed evidence gap uses the bounded recheck schedule above.
 Each channel has its own payment worker, bounded by the existing 16-channel
 account limit. A network await on one channel does not block payment checks or
 exchanges for another. Payment and settlement share a lock only for the same
@@ -97,8 +105,14 @@ whole-sat quantization, independent schedules, failed-exchange retries, retained
 signed liability and compatible configuration. A durable integration check
 advances a window with no payment and then proves crash exposure is preserved.
 The actual customer/mint test checks payment-control counters remain unchanged
-during an idle period after paid delivery and app reopen; final settlement still
-conserves funds. Multi-process tests exercise paid traffic and router recovery.
+during an idle period after paid delivery and app reopen. It then kills and
+restarts the entry process while the customer stays running, requires fresh
+payload delivery and advancing automatic payments for two subsequent cohorts,
+and conserves all funds at settlement under both supported tariffs. Native
+background envelopes can be priced during those cohorts, so they are not assumed
+to be idle. Deterministic schedule tests cover exact backoff, delayed claims,
+new sends, signed liability and failures; the payment-worker test covers sends
+racing a successful reply. Multi-process tests also exercise shared wallets.
 
 The first milestone passed 43 focused tests: 21 library, two customer lifecycle,
 12 durable-accounting, three multi-process service and five controller tests.

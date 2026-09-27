@@ -134,10 +134,14 @@ Cloud backup and device transfer of account state are disabled.
 
 The `fips-relay` customer integration test uses a real local simulated mint, an
 entry that has no static customer enrollment, and a real destination. It imports
-funds, buys forwarding, delivers payloads before/after a stop and reopen, verifies
-identity/history preservation, settles, repeats an export safely, and collects
-all 384 issued test sats with positive entry earnings. It also exercises exclusive
-ownership and rejects unsafe profiles. Existing process tests cover the longer
+funds, buys forwarding and delivers payloads before/after a stop and reopen.
+It also kills and restarts the entry process while the customer remains running,
+then verifies fresh delivery and two advances of automatic payment without
+another Buy or manual payment flush. Both supported tariffs preserve the original
+identity, profile, purchases and spending limits. Settlement and an idempotent
+export collect all 384 issued test sats with positive entry earnings. These are
+local process checks, not current Android or radio acceptance. The test also
+exercises exclusive ownership and rejects unsafe profiles. Existing process tests cover the longer
 three-relay path, both paid directions, longer streams and router crash recovery.
 
 ```sh

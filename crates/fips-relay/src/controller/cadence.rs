@@ -4,6 +4,7 @@ use tokio::time::Instant;
 
 pub(super) const SCAN_INTERVAL: Duration = Duration::from_millis(50);
 const RETRY_DELAY: Duration = Duration::from_millis(500);
+const MAX_RECHECK_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -41,6 +42,13 @@ pub(super) struct ChannelSchedule {
     acknowledged_msat: Option<u64>,
     dirty_since: Option<Instant>,
     retry_at: Option<Instant>,
+    unclaimed: Option<UnclaimedUsage>,
+}
+
+struct UnclaimedUsage {
+    evidence_msat: u64,
+    delay: Duration,
+    check_at: Instant,
 }
 
 impl ChannelSchedule {
@@ -52,8 +60,8 @@ impl ChannelSchedule {
         grace_msat: u64,
         policy: &PaymentCadence,
     ) -> bool {
-        if self.retry_at.is_some_and(|when| now < when) {
-            return false;
+        if let Some(when) = self.retry_at {
+            return now >= when;
         }
         // One reconciliation after creation/restart also retries durable signed
         // balances whose reply was lost. No financial fact lives in this cache.
@@ -64,21 +72,47 @@ impl ChannelSchedule {
         let debt = liability.saturating_sub(paid);
         if debt == 0 {
             self.dirty_since = None;
+            self.unclaimed = None;
             return false;
         }
+        if let Some(unclaimed) = &self.unclaimed
+            && evidence_msat == unclaimed.evidence_msat
+            && authorized_sat.saturating_mul(1_000) <= paid
+        {
+            return now >= unclaimed.check_at;
+        }
+        self.unclaimed = None;
         let since = *self.dirty_since.get_or_insert(now);
         let threshold =
             ((u128::from(grace_msat) * u128::from(policy.unpaid_percent)) / 100).max(1) as u64;
         debt >= threshold || now.duration_since(since) >= Duration::from_millis(policy.max_delay_ms)
     }
 
-    pub(super) fn acknowledge(&mut self, paid_msat: u64) {
+    pub(super) fn acknowledge(&mut self, now: Instant, evidence_msat: u64, paid_msat: u64) {
+        // Lost or delayed forwarding can leave local sends above the provider's
+        // claim. Recheck unchanged evidence less often without forgiving it;
+        // a late claim must remain payable even if no new traffic arrives.
+        self.unclaimed = (evidence_msat > paid_msat).then(|| {
+            let delay = self
+                .unclaimed
+                .as_ref()
+                .filter(|old| {
+                    old.evidence_msat == evidence_msat && self.acknowledged_msat == Some(paid_msat)
+                })
+                .map_or(RETRY_DELAY, |old| (old.delay * 2).min(MAX_RECHECK_DELAY));
+            UnclaimedUsage {
+                evidence_msat,
+                delay,
+                check_at: now + delay,
+            }
+        });
         self.acknowledged_msat = Some(paid_msat);
         self.dirty_since = None;
         self.retry_at = None;
     }
 
     pub(super) fn failed(&mut self, now: Instant) {
+        self.unclaimed = None;
         self.retry_at = Some(now + RETRY_DELAY);
     }
 }
