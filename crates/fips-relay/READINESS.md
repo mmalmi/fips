@@ -605,14 +605,18 @@ manifest, harness and executable hashes remain unchanged.
 All five containers use a read-only root, no external network or capabilities,
 and only the two executables mounted from the host; all are removed afterward.
 See the [TCP/WebSocket reproduction steps](openwrt/README.md#tcp-websocket-and-tls-with-the-packaged-executable).
-The r13 attempt exposed a race in the process fixture: automatic recovery
-renewal could refund a channel between snapshots that required an unchanged
-funding budget. The fixture now pauses renewals only around that restart
-comparison and resumes them afterward. Exact history/budget equality, later
-automatic renewal, retained unbilled crash exposure and final fund conservation
-remain asserted. These five passes use the corrected test harness against the
-unchanged packaged executable; the r13 source archive retains the earlier
-fixture. No runtime policy, timer or payment protocol changes.
+The initial r13 attempt exposed an invalid snapshot assumption: automatic
+recovery renewal can refund or replace a channel while aggregate counters are
+being compared. The current fixture keeps renewals enabled throughout restart.
+It preserves every original funding record and purchase, permits at most one
+bounded replacement per buyer, and checks exact budget arithmetic, spending
+limits and nonincreasing lifetime allowances. All three seeded cases require
+that replacement to occur. After settlement, each buyer's actual wallet balance
+reconciles with its recorded exposure, alongside total fund conservation.
+All five cases pass against the unchanged packaged executable; the native
+all-features plaintext-seed case also passes. The r13 source archive retains the
+earlier fixture, so reproduction uses the current test harness with the matching
+dependency revisions. No runtime policy, timer or payment protocol changes.
 
 These passes do not explain the earlier intermittent delivery timeout or establish
 radio performance, remote TLS deployment, physical power loss or current-device

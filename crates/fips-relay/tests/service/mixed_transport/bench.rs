@@ -389,6 +389,21 @@ impl MixedBench {
         states
     }
 
+    pub fn funding_intents(&self) -> Vec<serde_json::Map<String, Value>> {
+        self.configs
+            .iter()
+            .map(|config| {
+                let saved: Value = serde_json::from_slice(
+                    &std::fs::read(config.state_directory.join("controller/controller.json"))
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(saved["renewals_paused"], false);
+                saved["funding"].as_object().unwrap().clone()
+            })
+            .collect()
+    }
+
     pub async fn set_renewals_paused(&self, paused: bool) {
         let command = if paused {
             AdminRequest::PauseRenewals

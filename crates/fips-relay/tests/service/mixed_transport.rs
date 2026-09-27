@@ -5,7 +5,11 @@ use cashu_service::{
     load_mint_balance,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
-use fips_relay::service::{AdminRequest, request};
+use fips_relay::{
+    controller::FundingBudget,
+    service::{AdminRequest, request},
+};
+use serde_json::Value;
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -171,9 +175,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
-        // Recovery can immediately renew a channel consumed by lost allowance.
-        // Compare restart state before allowing that separate financial transition.
-        bench.set_renewals_paused(true).await;
+        let original_funding = bench.funding_intents();
         let before = bench.states().await;
         let tls_connections = bench.tls.as_ref().map(tls::TlsProxy::connections);
         bench.children[1].kill().await.unwrap();
@@ -189,16 +191,6 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         if let Some(previous) = tls_connections {
             assert!(bench.tls.as_ref().unwrap().connections() > previous);
         }
-        let after = bench.states().await;
-        for (old, recovered) in before.iter().zip(&after) {
-            assert_eq!(recovered["history"], old["history"]);
-            assert_eq!(recovered["funding_budget"], old["funding_budget"]);
-            assert!(
-                recovered["remaining_budget_sat"].as_u64().unwrap()
-                    <= old["remaining_budget_sat"].as_u64().unwrap()
-            );
-        }
-        bench.set_renewals_paused(false).await;
         bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
             if second_hop.is_seed() {
@@ -243,6 +235,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                 );
             }
         }
+        assert_restart_accounts(&bench, &before, &original_funding, second_hop.is_seed()).await;
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"65".repeat(16)).await;
         }
@@ -250,6 +243,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         for config in &bench.configs {
             request(config, &AdminRequest::Settle).await.unwrap();
         }
+        let settled = bench.states().await;
         #[cfg(feature = "measurements")]
         payment_progress::assert_empty(&bench).await;
         for child in &mut bench.children {
@@ -263,6 +257,12 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                 .balance_sat;
             if node == 1 {
                 assert!(amount > 128, "the relay must redeem its earned payment");
+            } else {
+                let budget: FundingBudget =
+                    serde_json::from_value(settled[node]["funding_budget"].clone()).unwrap();
+                assert_eq!(budget.pending_reserved_sat, 0);
+                assert_eq!(budget.locked_sat, 0);
+                assert_eq!(amount + budget.exposure_sat, 128);
             }
             total += amount;
         }
@@ -271,4 +271,61 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
     })
     .await
     .expect("mixed native transport acceptance deadline");
+}
+
+async fn assert_restart_accounts(
+    bench: &MixedBench,
+    before: &[Value],
+    original_funding: &[serde_json::Map<String, Value>],
+    renewed: bool,
+) {
+    let after = bench.states().await;
+    let funding = bench.funding_intents();
+    for (node, (old, recovered)) in before.iter().zip(&after).enumerate() {
+        // A completed refund or replacement may change aggregate counters.
+        // Original wallet operations and purchase identities must remain exact.
+        for (id, intent) in &original_funding[node] {
+            assert!(
+                funding[node].get(id) == Some(intent),
+                "restart changed an original funding intent at node {node}"
+            );
+        }
+        let previous = old["history"].as_array().unwrap();
+        let history = recovered["history"].as_array().unwrap();
+        assert!(previous.iter().all(|purchase| history.contains(purchase)));
+        let replacements = usize::from(node != 1);
+        assert!(funding[node].len() <= original_funding[node].len() + replacements);
+        assert!(history.len() <= previous.len() + replacements);
+
+        let old_budget: FundingBudget =
+            serde_json::from_value(old["funding_budget"].clone()).unwrap();
+        let budget: FundingBudget =
+            serde_json::from_value(recovered["funding_budget"].clone()).unwrap();
+        let policy = &bench.configs[node].terms.controller;
+        assert!(budget.wallet_debited_sat >= old_budget.wallet_debited_sat);
+        assert!(budget.wallet_refunded_sat >= old_budget.wallet_refunded_sat);
+        assert!(
+            budget.wallet_debited_sat + budget.pending_reserved_sat
+                <= old_budget.wallet_debited_sat
+                    + replacements as u64 * policy.channel_capacity_sat
+        );
+        assert_eq!(
+            budget.exposure_sat,
+            budget.pending_reserved_sat + budget.wallet_debited_sat - budget.wallet_refunded_sat
+        );
+        assert!(budget.exposure_sat <= policy.max_wallet_spend_sat);
+        assert!(budget.locked_sat <= policy.max_locked_sat);
+        assert!(
+            recovered["remaining_budget_sat"].as_u64().unwrap()
+                <= old["remaining_budget_sat"].as_u64().unwrap()
+        );
+        if renewed && node != 1 {
+            assert_eq!(history.len(), previous.len() + 1);
+            assert_eq!(funding[node].len(), original_funding[node].len() + 1);
+            assert_eq!(
+                budget.wallet_debited_sat,
+                old_budget.wallet_debited_sat + policy.channel_capacity_sat
+            );
+        }
+    }
 }
