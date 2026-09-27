@@ -469,8 +469,8 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The 27 September source bundle at `993304961` contains 35,694 inventoried files
-and resolves 693 packages, including 672 vendored registry packages. All 2,743
+The 27 September source bundle at `7ca69d1c3` contains 35,696 inventoried files
+and resolves 693 packages, including 672 vendored registry packages. All 2,745
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -480,8 +480,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,021,128
-bytes, static and stripped. The unsigned APK is 11,465,006 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,041,672
+bytes, static and stripped. The unsigned APK is 11,474,483 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -494,8 +494,12 @@ separate harness with optional relay features disabled starts the real
 default-feature production executable.
 Each case verifies unpaid denial, paid delivery, allowance exhaustion, renewal,
 middle-relay crash/restart, paid delivery after recovery and settlement conserving
-all 384 test sats. The TLS cases reject untrusted issuers, wrong server names or
-forged handshake signatures according to the selected policy before admission
+all 384 test sats. The three seeded WebSocket cases also interrupt the physical
+stream while every service stays running. Fresh authenticated connectivity,
+bidirectional delivery and a new cumulative payment recover through the original
+channels, preserving funding history and spending limits. The TLS cases reject
+untrusted issuers, wrong server names or forged handshake signatures according to
+the selected policy before admission
 or spending. The source manifest, harness and executable hashes remain unchanged.
 All four containers use a read-only root, no external network or capabilities,
 and only the two executables mounted from the host; all are removed afterward.
@@ -1032,7 +1036,7 @@ ready-preparation ACL test, strict core/relay lint, formatting and source-size c
 The paid UDP-to-TCP process case above passes with all features and with optional
 relay features disabled. Core test filters `tcp_peer_disconnect` and
 `tcp_peer_removal_preserves` reproduce the node regressions. This does not enable
-Tor in the paid service or accept new hardware. The ARM64 package at `993304961`
+Tor in the paid service or accept new hardware. The ARM64 package at `7ca69d1c3`
 includes these connection-lifecycle fixes and passes the paid TCP/WebSocket
 process checks above.
 
@@ -1047,7 +1051,7 @@ check; completed DNS errors are cleared before cleanup can await.
 All six preparation, ten TCP-node, six WebSocket-node and one pending-connection
 expiry checks pass, with strict core/relay lint. The paid seed-bootstrap process
 case also passes in both feature modes, including restart and settlement of all
-384 test sats. The ARM64 package at `993304961` predates this preparation change;
+384 test sats. The ARM64 package at `7ca69d1c3` includes this preparation change;
 current-device acceptance remains outstanding.
 
 A matching three-process UDP-to-WebSocket test passes the same payment,
@@ -1188,7 +1192,7 @@ completion case preserves the replacement's hint and writer. All 23 transport,
 six node and seven public-transit checks pass, along with strict core/relay lint.
 The paid seed-bootstrap process case passes with all features and with optional
 relay features disabled, including recovery and settlement of all 384 test sats.
-The packaged ARM64 build at `993304961` predates this discovery-hint change; the
+The packaged ARM64 build at `7ca69d1c3` includes this discovery-hint change; the
 original intermittent timeout and current-device acceptance remain open.
 
 Retiring an outbound WebSocket attempt now cancels its pending HTTP/TLS upgrade.
@@ -1211,9 +1215,9 @@ along with strict core/relay lint, formatting and source-size checks. Paid seed
 bootstrap passes in both relay feature modes; ordinary TLS and FIPS-authenticated
 self-signed TLS pass with all features. Each of these four process cases includes
 recovery and settlement with all 384 test sats conserved. The ARM64 package at
-`993304961` predates the discovery-hint, failed-preparation and outbound-dial
-fixes. These local results do not establish current-device acceptance or explain
-the original intermittent delivery timeout.
+`7ca69d1c3` includes the discovery-hint, failed-preparation and outbound-dial
+fixes and passes the process checks above. These results do not establish
+current-device acceptance or explain the original intermittent delivery timeout.
 
 Paid seed-bootstrap acceptance now also interrupts the physical stream while all
 three relay processes keep running. A bounded loopback proxy closes and joins its
