@@ -472,6 +472,29 @@ transport, restart, settlement and storage-recovery checks. The r12 cadence
 measurements retain their earlier dependency revision; current-device and
 physical power-loss acceptance remain open.
 
+### Cross-mint journal admission
+
+SDK `299b273b64f0` caps each cross-mint transfer journal at 4 MiB before database
+payload projection and on writes. Before preparing a source payment, it sizes
+the completed record with the actual quote IDs and invoice, including result
+duplication and maximal later numeric fields. The shared result encoder keeps
+admission and completion aligned. Rejection preserves the saved preflight,
+original wallet balance and unreserved source quote; admissible large quotes
+still complete. Oversized saved records fail without erasing their evidence,
+and restoring the original completed record returns the same result without
+another payment. No public signatures, record fields or dependency versions change.
+
+The new checks fail on the previous implementation and pass with the fix. The
+full SDK workspace passes 414 tests (one opt-in soak excluded), with 298 relay
+unit tests and the four-node paid/restart/concurrent-settlement case. SDK and
+relay strict lint, edited-source formatting and source-size checks pass. The
+whole SDK format check still reports pre-existing differences in nine untouched
+files, verified against the baseline; its failed result is retained. These are native
+loopback results. The r13 ARM64 source bundle and package predate this SDK change;
+target acceptance must be refreshed before deployment. Transfer counts, native
+quote/transaction reads, total storage and physical recovery remain separate
+limits; the record-size check does not reserve filesystem space.
+
 ### Wallet read bounds
 
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
