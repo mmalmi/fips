@@ -14,18 +14,23 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-Native CDK `677fced07bdd` quote comparisons bound stored payloads before issuance acquisition or
-retirement and withdrawal acquisition or completion. The ceiling comes from the
-original held by the caller, with a 4 MiB floor; existing larger originals remain
-usable. SQLite regressions reject unexpected byte growth, including NUL-containing
-UTF-8 and malformed numeric/optional fields, while preserving every financial
-owner. The 417 native database tests, full 415-test SDK suite (one opt-in soak excluded),
-301 relay unit tests and the four-node paid/restart/concurrent-settlement case
-pass, together with strict affected-crate, SDK and relay lint. PostgreSQL has
-compile/lint coverage only; runtime database acceptance uses SQLite.
-Ordinary exact quote reads, overall storage and current-device acceptance remain
-open. The r15 ARM64 package predates this native change and needs refreshing before
-deployment.
+Native CDK `1cce477c7166` quote and issuance receipt comparisons bound stored payloads
+before SQL projection. The ceiling comes from the caller's original, with a 4 MiB
+floor; existing larger originals remain usable. Issuance completion and cancellation
+derive each receipt budget from the original journal and reuse the indexed reader
+and exact conflict rules. Unexpected growth, including NUL-containing UTF-8 and
+malformed numeric/optional fields, retains quotes, proofs, receipts and recovery
+ownership. Completed matching receipts remain unchanged. The retirement plan
+shares its canonical originals instead of allocating a second list of their IDs.
+
+The 419 SQLite/shared database tests, 88 Redb compatibility tests, full 415-test
+SDK suite (one opt-in soak excluded), 301 relay unit tests and the four-node
+paid/restart/concurrent-settlement case pass. Strict native, SDK and relay lint
+and native workspace formatting also pass. PostgreSQL has compile/lint coverage
+only; relay runtime database acceptance uses SQLite. Ordinary exact quote and
+recovery reads, SQL engine memory, overall storage and current-device acceptance
+remain open. The r15 ARM64 package predates these native changes and needs
+refreshing before deployment.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
