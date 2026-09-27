@@ -1036,6 +1036,20 @@ Tor in the paid service or accept new hardware. The ARM64 package at `993304961`
 includes these connection-lifecycle fixes and passes the paid TCP/WebSocket
 process checks above.
 
+Failed connection preparations now use the same owned-carrier retirement as
+rejected ready connections. Previously the node removed its logical link but left
+WebSocket's failed-attempt state behind. The real HTTP-rejection regression
+`failed_websocket_preparations_release_transport_state_and_keep_retry` fails
+before the fix and passes afterward across three distinct endpoints. Cleanup
+releases transport, preparation, link and Noise-allocation state while retaining
+the configured retry. Shared carriers remain protected by the existing owner
+check; completed DNS errors are cleared before cleanup can await.
+All six preparation, ten TCP-node, six WebSocket-node and one pending-connection
+expiry checks pass, with strict core/relay lint. The paid seed-bootstrap process
+case also passes in both feature modes, including restart and settlement of all
+384 test sats. The ARM64 package at `993304961` predates this preparation change;
+current-device acceptance remains outstanding.
+
 A matching three-process UDP-to-WebSocket test passes the same payment,
 exhaustion, renewal, middle restart and 384-test-sat conservation checks. Its
 final endpoint has only WebSocket, and runtime adapter/peer checks establish

@@ -128,3 +128,103 @@ fn assert_pending_owner(
     assert!(node.pending_outbound.is_empty());
     assert_eq!(node.index_allocator.count(), 0);
 }
+
+#[tokio::test]
+async fn failed_websocket_preparations_release_transport_state_and_keep_retry() {
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    let mut node = Node::new(config).unwrap();
+    let result = AssertUnwindSafe(rejected_websocket_attempts(&mut node))
+        .catch_unwind()
+        .await;
+    for transport in node.transports.values_mut() {
+        transport.stop().await.unwrap();
+    }
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn rejected_websocket_attempts(node: &mut Node) {
+    use crate::config::WebSocketConfig;
+    use crate::transport::websocket::WebSocketTransport;
+    use tokio::io::AsyncWriteExt;
+
+    let transport_id = TransportId::new(1);
+    let (tx, _rx) = packet_channel(8);
+    let mut websocket = WebSocketTransport::new(
+        transport_id,
+        None,
+        WebSocketConfig::default(),
+        tx,
+        node.identity(),
+    );
+    websocket.start_async().await.unwrap();
+    node.transports.insert(
+        transport_id,
+        TransportHandle::WebSocket(Box::new(websocket)),
+    );
+    // Reserve distinct real endpoints before making attempts so address reuse
+    // cannot hide retention across failures at different destinations.
+    let mut listeners = Vec::new();
+    for _ in 0..3 {
+        listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+    }
+    let mut retired = Vec::new();
+    for listener in listeners {
+        let remote =
+            TransportAddr::from_string(&format!("ws://{}/fips", listener.local_addr().unwrap()));
+        let peer = make_peer_identity();
+        node.config.peers.push(crate::config::PeerConfig::new(
+            peer.npub(),
+            "websocket",
+            remote.to_string(),
+        ));
+        node.configured_peers = crate::node::ConfiguredPeerLookup::from_config(&node.config);
+        node.initiate_connection(transport_id, remote.clone(), peer)
+            .await
+            .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    node.transports[&transport_id].connection_state(&remote),
+                    ConnectionState::Failed(_)
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the real HTTP upgrade must fail before node cleanup");
+        let link = node.pending_connects[0].link_id;
+        assert_pending_owner(node, link, transport_id, &remote, &peer);
+        tokio::time::timeout(Duration::from_secs(1), node.poll_pending_connects())
+            .await
+            .unwrap();
+        assert!(node.pending_connects.is_empty());
+        assert_eq!(node.links.len(), 0);
+        assert!(node.peers.connection_is_empty());
+        assert!(node.pending_outbound.is_empty());
+        assert_eq!(node.index_allocator.count(), 0);
+        let retry = node.retry_pending.get(peer.node_addr()).unwrap();
+        assert_eq!(retry.peer_config.addresses[0].addr, remote.to_string());
+        retired.push(remote);
+        for remote in &retired {
+            assert_eq!(
+                node.transports[&transport_id].connection_state(remote),
+                ConnectionState::None,
+                "failed preparation must retire transport state after scheduling retry"
+            );
+        }
+    }
+}

@@ -33,6 +33,7 @@ impl Node {
                 match resolution.as_mut().now_or_never() {
                     None => crate::transport::ConnectionState::Connecting,
                     Some(Err(error)) => {
+                        pending.address_resolution = None;
                         crate::transport::ConnectionState::Failed(error.to_string())
                     }
                     Some(Ok(addr)) => {
@@ -71,11 +72,27 @@ impl Node {
                 }
             };
             let pending = &self.pending_connects[i];
+            if let Some(reason) = reason {
+                let link = pending.link_id;
+                let peer = *pending.peer_identity.node_addr();
+                warn!(
+                    peer = %self.peer_display_name(&peer),
+                    transport_id = %pending.transport_id,
+                    remote_addr = %pending.remote_addr,
+                    link_id = %link,
+                    %reason,
+                    "Transport connect failed"
+                );
+                // Keep ownership until transport cleanup completes, just as
+                // for a rejected ready carrier. Shared paths remain owned.
+                self.retire_connection_preparation(link).await;
+                self.schedule_retry(peer, Self::now_ms());
+                continue;
+            }
             // DNS can reveal that this preparation duplicates an existing
             // rekey. Coalesce now: replaying it after local cutover could still
             // retire the responder's keys before its first new-epoch frame.
             if resolved_hostname.is_some()
-                && reason.is_none()
                 && self.fmp_rekey_owns_path(
                     pending.peer_identity.node_addr(),
                     pending.transport_id,
@@ -99,13 +116,11 @@ impl Node {
                 // Only the temporary link is gone; its active carrier stays open.
                 continue;
             }
-            if reason.is_none()
-                && let Err(error) = self.preflight_connection_handshake(
-                    &pending.peer_identity,
-                    pending.transport_id,
-                    &pending.remote_addr,
-                )
-            {
+            if let Err(error) = self.preflight_connection_handshake(
+                &pending.peer_identity,
+                pending.transport_id,
+                &pending.remote_addr,
+            ) {
                 let link = pending.link_id;
                 let peer = *pending.peer_identity.node_addr();
                 self.retire_connection_preparation(link).await;
@@ -115,56 +130,40 @@ impl Node {
             }
             let pending = self.pending_connects.remove(i);
 
-            if reason.is_none() {
-                // Mark link as Connected
-                if let Some(link) = self.links.get_mut(&pending.link_id) {
-                    link.set_connected();
-                }
+            // Mark link as Connected
+            if let Some(link) = self.links.get_mut(&pending.link_id) {
+                link.set_connected();
+            }
 
-                debug!(
-                    peer = %self.peer_display_name(pending.peer_identity.node_addr()),
-                    transport_id = %pending.transport_id,
-                    remote_addr = %pending.remote_addr,
-                    link_id = %pending.link_id,
-                    "Transport connected, starting handshake"
-                );
+            debug!(
+                peer = %self.peer_display_name(pending.peer_identity.node_addr()),
+                transport_id = %pending.transport_id,
+                remote_addr = %pending.remote_addr,
+                link_id = %pending.link_id,
+                "Transport connected, starting handshake"
+            );
 
-                // Start the handshake now that the transport is connected
-                if let Err(e) = self
-                    .start_handshake(
-                        pending.link_id,
-                        pending.transport_id,
-                        pending.remote_addr.clone(),
-                        pending.peer_identity,
-                    )
-                    .await
-                {
-                    warn!(
-                        link_id = %pending.link_id,
-                        error = %e,
-                        "Failed to start handshake after transport connect"
-                    );
-                    // start_handshake already retires failed Noise/link state.
-                    self.schedule_retry_after_error(
-                        *pending.peer_identity.node_addr(),
-                        Self::now_ms(),
-                        &e,
-                    );
-                }
-            } else {
-                let reason = reason.unwrap_or_default();
+            // Start the handshake now that the transport is connected
+            if let Err(e) = self
+                .start_handshake(
+                    pending.link_id,
+                    pending.transport_id,
+                    pending.remote_addr.clone(),
+                    pending.peer_identity,
+                )
+                .await
+            {
                 warn!(
-                    peer = %self.peer_display_name(pending.peer_identity.node_addr()),
-                    transport_id = %pending.transport_id,
-                    remote_addr = %pending.remote_addr,
                     link_id = %pending.link_id,
-                    reason = %reason,
-                    "Transport connect failed"
+                    error = %e,
+                    "Failed to start handshake after transport connect"
                 );
-
-                // Clean up link and schedule retry
-                self.remove_link(&pending.link_id);
-                self.schedule_retry(*pending.peer_identity.node_addr(), Self::now_ms());
+                // start_handshake already retires failed Noise/link state.
+                self.schedule_retry_after_error(
+                    *pending.peer_identity.node_addr(),
+                    Self::now_ms(),
+                    &e,
+                );
             }
         }
     }
