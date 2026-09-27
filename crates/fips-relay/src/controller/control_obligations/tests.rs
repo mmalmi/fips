@@ -102,6 +102,7 @@ fn completed_refund_and_released_report_keep_protection_until_record_retirement(
         report: Some(SettlementReport {
             channel_id: channel.id.clone(),
             value_after_stage1_sat: channel.capacity_sat,
+            signed_sat: 0,
             paid_sat: 0,
             receiver_fee_reserve_sat: 0,
             refunded_sat: channel.capacity_sat,

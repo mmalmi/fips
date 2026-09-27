@@ -304,7 +304,7 @@ fn verified_retirement_prunes_the_marker_and_keeps_an_expiry_replay_fence() {
         j.buyer_settlements.insert(channel.id.clone(), serde_json::from_value(serde_json::json!({
             "provider":old.purchase.provider.as_bytes(), "channel":channel,
             "usage":crate::ledger::ChannelUsage::default(), "payment":opening,
-            "report":{"channel_id":channel.id,"value_after_stage1_sat":32,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
+            "report":{"channel_id":channel.id,"value_after_stage1_sat":32,"signed_sat":0,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
             "refunded":true,"wallet_refund_sat":32
         })).unwrap());
         Controller::retire_refunded_purchases(j, &channel.id)

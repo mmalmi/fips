@@ -59,20 +59,39 @@ the buyer is killed after the seller accepts a positive payment, the seller coll
 and retires its report, and the buyer later recovers with the seller stopped. All
 512 test sats are conserved including mint fees. The earlier implementation fails
 because the absent buyer cannot initiate seller settlement. See [reproduction and
-limits](FUNDING-COSTS.md). A seller that misses its own redemption deadline, missing
-or conflicting financial evidence, and physical power loss remain outside this
-acceptance. No protocol message, journal field or dependency is added.
-The matching production graph passes 301 relay unit tests, both shared-expiry
+limits](FUNDING-COSTS.md). Missing or conflicting financial evidence and physical
+power loss remain outside this acceptance. Recovery when the provider misses
+collection is described below.
+This shared-expiry change added no protocol message, journal field or dependency.
+That revision passed 301 relay unit tests, both shared-expiry
 feature profiles, ordinary fee-bearing settlement, interrupted unused-funding
-recovery and strict all-target relay lint. SDK and dependency sources are unchanged
+recovery and strict all-target relay lint. SDK and dependency sources were unchanged
 from the full 416-test SDK acceptance above.
+
+Provider recovery now also reconciles a buyer refund after the provider misses
+its collection deadline. A complete mint-issued, signature-verified zero-balance
+distribution is required; spent funding, expiry or missing outputs alone cannot
+prove a zero collection. Signed authorizations remain separate from actual
+collection in close results, settlement reports and receiver/seller history.
+The same retirement handoff verifies the empty receiver payout without erasing
+the original usage or resetting lifetime spending limits. Receiver history uses
+version 2; these record changes target fresh profiles. No request operation or
+dependency is added. See [reproduction and limits](FUNDING-COSTS.md).
+
+The matching graph passes 118 native tests, the full 417-test SDK suite
+(one opt-in soak excluded), 301 relay unit tests, both missed-deadline
+feature profiles, ordinary shared expiry, fee-bearing settlement, interrupted
+unused-funding recovery and strict native/SDK/relay lint. The SDK regression
+also covers key rotation, malformed restore evidence and replay after spending.
+The current r17 ARM64 package predates this extension; refreshed package and
+current-device acceptance remain pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Seller recovery after missing its redemption deadline; reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |

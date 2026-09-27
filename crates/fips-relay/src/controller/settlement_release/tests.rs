@@ -25,6 +25,7 @@ fn release_requires_the_original_buyer_and_complete_report_and_has_no_future_eff
     sale.report = Some(SettlementReport {
         channel_id: channel.id.clone(),
         value_after_stage1_sat: 32,
+        signed_sat: 0,
         paid_sat: 0,
         receiver_fee_reserve_sat: 0,
         refunded_sat: 32,

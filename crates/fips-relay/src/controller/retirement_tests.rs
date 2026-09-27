@@ -82,7 +82,7 @@ fn completed_settlement_retires_accepted_routes_without_waiting_for_a_replacemen
     store.journal.buyer_settlements.insert(channel.id.clone(), serde_json::from_value(serde_json::json!({
         "provider": old.purchase.provider.as_bytes(), "channel": channel,
         "usage": crate::ledger::ChannelUsage::default(), "payment": payment,
-        "report": {"channel_id":channel.id, "value_after_stage1_sat":32,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
+        "report": {"channel_id":channel.id, "value_after_stage1_sat":32,"signed_sat":0,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
         "refunded":true,"wallet_refund_sat":32,
     })).unwrap());
     assert!(old.accepted && !old.retired);
@@ -548,7 +548,7 @@ fn completed_renewal_retires_route_references_but_keeps_refund_and_capital_evide
         "provider":provider,"channel":old.purchase.channel,
         "usage":{"paid_msat":0,"reserved_msat":0,"submitted_msat":0,"lost_msat":0},
         "payment":{"channel_id":"channel","balance":0,"signature":"fixture","params":null,"funding_proofs":null},
-        "report":{"channel_id":"channel","value_after_stage1_sat":32,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
+        "report":{"channel_id":"channel","value_after_stage1_sat":32,"signed_sat":0,"paid_sat":0,"refunded_sat":32,"fee_sat":0},
         "refunded":true,"wallet_refund_sat":32
     })).unwrap();
     store

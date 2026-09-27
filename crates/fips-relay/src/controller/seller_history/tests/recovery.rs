@@ -111,6 +111,7 @@ fn receiver_proof_queue_backpressure_retains_the_exact_plan_across_reload() {
     sale.payment.as_mut().unwrap().balance = 3;
     sale.usage.as_mut().unwrap().paid_msat = 3_000;
     let report = sale.report.as_mut().unwrap();
+    report.signed_sat = 3;
     report.paid_sat = 3;
     report.receiver_fee_reserve_sat = 1;
     report.refunded_sat -= 4;
@@ -297,6 +298,7 @@ fn ineligible_or_changed_receiver_evidence_never_saves_a_new_cleanup_intent() {
     assert!(failed.is_err());
     for field in [
         "capacity",
+        "signed_amount",
         "closed_amount",
         "receiver_sum",
         "sender_sum",
@@ -350,8 +352,11 @@ fn ineligible_or_changed_receiver_evidence_never_saves_a_new_cleanup_intent() {
             }
             p = serde_json::from_value(encoded).unwrap();
         }
-        if field == "unit" {
-            assert!(p.validate().is_err(), "SDK release requires sat payouts");
+        if matches!(field, "unit" | "closed_amount") {
+            assert!(
+                p.validate().is_err(),
+                "SDK release checks currency and the signed bound"
+            );
         } else {
             // Internally sound SDK values still need the FIPS channel binding.
             p.validate().unwrap();

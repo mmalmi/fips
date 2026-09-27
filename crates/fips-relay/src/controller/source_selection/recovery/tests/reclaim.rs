@@ -59,7 +59,7 @@ fn retained_history(
         "usage": {"paid_msat":2_000,"reserved_msat":1_234,"submitted_msat":1_234,"lost_msat":0},
         "payment": payment,
         "report": {"channel_id":old.purchase.channel.id,"value_after_stage1_sat":32,
-            "paid_sat":2,"refunded_sat":30,"fee_sat":0},
+            "signed_sat":2,"paid_sat":2,"refunded_sat":30,"fee_sat":0},
         "refunded":true,"released":true,"wallet_refund_sat":30
     }))
     .unwrap();

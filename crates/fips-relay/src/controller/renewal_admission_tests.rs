@@ -161,6 +161,7 @@ fn accepted_before_completion(directory: &Path) -> (Store, Outgoing, Outgoing) {
                     report: Some(SettlementReport {
                         channel_id: channel.id.clone(),
                         value_after_stage1_sat: channel.capacity_sat,
+                        signed_sat: channel.capacity_sat,
                         paid_sat: channel.capacity_sat,
                         receiver_fee_reserve_sat: 0,
                         refunded_sat: 0,

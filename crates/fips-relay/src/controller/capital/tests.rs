@@ -45,7 +45,7 @@ fn reservations_actual_costs_and_refunds_preserve_lifetime_spending() {
     let settlement = serde_json::json!({
         "provider": serde_json::to_value(&old.purchase).unwrap()["provider"],
         "channel": funded.terms, "usage": {"reserved_msat":7000,"submitted_msat":7000,"lost_msat":0,"paid_msat":7000},
-        "payment":payment, "report":{"channel_id": funded.terms.id,"value_after_stage1_sat":32,"paid_sat":7,"refunded_sat":25,"fee_sat":0},
+        "payment":payment, "report":{"channel_id": funded.terms.id,"value_after_stage1_sat":32,"signed_sat":7,"paid_sat":7,"refunded_sat":25,"fee_sat":0},
         "refunded":true,"wallet_refund_sat":25
     });
     store

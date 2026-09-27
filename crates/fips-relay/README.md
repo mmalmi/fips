@@ -73,7 +73,8 @@ StopRoute affects one agreement; channel operations affect all its agreements.
 ReleaseSettlement follows durable refund recovery and permits safe retirement
 of the buyer's cooperative settlement record. After immutable wallet expiry,
 verified recovery and completed seller-report retirement can finish independently
-of the absent peer; see [financial history](HISTORY.md).
+of the absent peer. A seller recovering after the buyer refunds records zero
+collection while retaining its signed claim; see [financial history](HISTORY.md).
 
 These are bounded application records over existing authenticated TCP/FIPS, not
 ten new native FIPS packet types. Existing native MMP supplies quality evidence;

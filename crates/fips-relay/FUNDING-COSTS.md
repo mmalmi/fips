@@ -143,12 +143,20 @@ verified refund determine the lifetime cost.
 
 ## Signed charges and payout reserves
 
-`SettlementReport.paid_sat` is the final signed traffic charge. The separate
+`SettlementReport.signed_sat` retains the highest traffic charge authorized by
+the buyer and accepted by the provider. `paid_sat` records what the provider
+actually collected, excluding redemption-fee reserves. The separate
 `receiver_fee_reserve_sat` retains extra receiver proof value reserved for later
-redemption. Their sum is the original receiver payout proof value. For example,
+redemption. Adding that reserve to `paid_sat` gives the original receiver payout
+proof value. For example,
 a three-sat signed payment can close with four sats of receiver proofs: three
 charged sats plus one reserve sat. Importing those proofs increases the wallet's
 stored proof value by four; it does not authorize billing four sats for traffic.
+If the provider misses collection and the buyer completes an expiry refund, the
+report may instead retain seven signed sats with zero collected. The original
+authorization remains in the ledger and lifetime history. The ledger
+`paid_msat` still represents accepted credit; settlement `paid_sat` records
+collection.
 
 `refunded_sat` remains the original sender refund proof value, before later
 redemption fees. `fee_sat` retains the difference between the reported
@@ -157,15 +165,16 @@ earlier wallet funding fees. A reserve is not evidence that a later fee was paid
 Actual wallet debits/refunds continue to control lifetime exposure independently.
 
 Settlement validates these values before importing the receiver payout. Seller
-cleanup preserves signed payments, receiver reserves, refunds and reported fees
-separately; a reserve never consumes the traffic-signing budget or becomes another
-usage claim. Checked arithmetic rejects overflow and inconsistent reports.
+cleanup preserves signed authorizations, collected payments, receiver reserves,
+refunds and reported fees separately; a reserve never consumes the traffic-signing
+budget or becomes another usage claim. Checked arithmetic rejects overflow and
+inconsistent reports.
 
-Older reports and seller rollups load with zero receiver reserve. Their original
-accounting must still conserve value; removing a nonzero reserve from a new record
-fails validation. Older executables reject nonzero-reserve reports and histories
-under their original value-sum checks. Use matching settlement implementations;
-this adds one report field over existing control, not another request operation.
+Reports and seller rollups require the signed amount separately from collection.
+The receiver SDK retains both in version-2 history. Use fresh profiles and
+matching settlement implementations; older histories are not converted. Removing
+a required amount or a nonzero reserve fails validation. This extends existing
+settlement records without adding a request operation.
 
 `status.funding_budget` exposes pending reservations, total recorded debits,
 confirmed refunds, locked capital and worst-case lifetime exposure. The historical
@@ -348,9 +357,25 @@ cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-feature
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --no-default-features --test funding_costs used_expiry::shared_paid_channel_expires_with_each_counterparty_offline
 ```
 
-This covers a seller that reaches the mint during its settlement window. It does
-not prove recovery after the seller misses that deadline, missing/conflicting
-original financial evidence, or physical storage loss.
+The companion missed-deadline case stops the seller after it accepts a positive
+payment and lets all buyers refund after original wallet expiry. The seller
+then restarts with the source buyer stopped. It verifies the complete mint-issued
+zero-balance outputs, records zero collection without erasing signed credit, and
+retires its original records. Another buyer restart preserves its refund,
+spending limit and released capital; balances plus mint fees conserve all 512
+test sats. The shared scenario passes with optional features enabled and disabled:
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs used_expiry::seller_recovers_after_missing_the_shared_channel_collection_deadline
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --no-default-features --test funding_costs used_expiry::seller_recovers_after_missing_the_shared_channel_collection_deadline
+```
+
+The SDK regression also covers zero/nonzero mint fees, issuing-key rotation,
+empty/partial restores, missing/invalid signatures, retirement, and replay after
+spending the refund. Invalid evidence keeps the original claim unresolved.
+These cases do not establish recovery from missing/conflicting original local
+records or physical storage loss. The provider still needs timely collection to
+avoid losing its authorized revenue.
 
 The companion pre-opening cases interrupt the original wallet preparation before
 a channel opening exists. The committed-send case kills the source after its mint

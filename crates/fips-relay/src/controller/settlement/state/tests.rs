@@ -5,6 +5,7 @@ fn close(id: &str, capacity: u64) -> cashu_service::CashuSpilmanReceiverCloseRes
         channel_id: id.into(),
         mint_url: "https://mint.invalid".into(),
         unit: "sat".into(),
+        signed_amount: 3,
         closed_amount: 3,
         total_value: capacity + 4,
         receiver_sum: 4,
@@ -24,6 +25,7 @@ fn settlement_keeps_signed_amounts_proof_reserves_and_reported_fees_distinct() {
     let closed = close(&t.id, t.capacity_sat);
     let report = SettlementReport::from_close(&closed).unwrap();
     assert!(valid_report(&t, &report, 3));
+    assert_eq!(report.signed_sat, 3);
     assert_eq!(report.paid_sat, 3);
     assert_eq!(report.receiver_fee_reserve_sat, 1);
     assert_eq!(report.receiver_value_sat(), Some(4));
@@ -35,6 +37,10 @@ fn settlement_keeps_signed_amounts_proof_reserves_and_reported_fees_distinct() {
     changed.receiver_fee_reserve_sat = u64::MAX;
     assert!(!valid_report(&t, &changed, 3));
     for invalid in [
+        cashu_service::CashuSpilmanReceiverCloseResult {
+            signed_amount: 2,
+            ..closed.clone()
+        },
         cashu_service::CashuSpilmanReceiverCloseResult {
             receiver_sum: 2,
             ..closed.clone()
@@ -53,13 +59,16 @@ fn settlement_keeps_signed_amounts_proof_reserves_and_reported_fees_distinct() {
 }
 
 #[test]
-fn legacy_reports_load_without_fabricating_reserves_and_missing_nonzero_reserves_reject() {
+fn reports_require_signed_history_and_account_for_fee_reserves() {
     let root = tempfile::tempdir().unwrap();
     let (_, purchase) =
         crate::controller::transition_tests::fixture(&root.path().join("controller"));
     let t = purchase.purchase.channel;
     let mut old = serde_json::json!({"channel_id":t.id, "value_after_stage1_sat":t.capacity_sat,
-        "paid_sat":3, "refunded_sat":t.capacity_sat - 3, "fee_sat":0});
+        "signed_sat":3,"paid_sat":3, "refunded_sat":t.capacity_sat - 3, "fee_sat":0});
+    let mut missing_signed = old.clone();
+    missing_signed.as_object_mut().unwrap().remove("signed_sat");
+    assert!(serde_json::from_value::<SettlementReport>(missing_signed).is_err());
     let report: SettlementReport = serde_json::from_value(old.clone()).unwrap();
     assert_eq!(report.receiver_fee_reserve_sat, 0);
     assert!(valid_report(&t, &report, 3));

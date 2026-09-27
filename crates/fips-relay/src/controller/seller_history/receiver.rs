@@ -13,6 +13,7 @@ pub(super) fn valid_history(r: &ReceiverHistory, t: &Totals, mint: &str) -> bool
                 && s.unit == "sat"
                 && s.channels <= t.accounting.channels
                 && s.capacity <= t.accounting.capacity_sat
+                && s.signed_amount <= t.signed_sat
                 && s.closed_amount <= t.paid_sat
                 && s.value_after_stage1 <= t.value_sat
                 && t.paid_sat
@@ -91,6 +92,7 @@ impl Plan {
                 || t.mint != c.terms.mint_url
                 || t.unit != "sat"
                 || t.capacity != c.terms.capacity_sat
+                || t.signed_amount != report.signed_sat
                 || t.closed_amount != report.paid_sat
                 || Some(t.receiver_sum) != report.receiver_value_sat()
                 || t.sender_sum != report.refunded_sat

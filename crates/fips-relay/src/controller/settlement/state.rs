@@ -5,7 +5,9 @@ pub struct SettlementReport {
     pub channel_id: String,
     /// Value after the funding swap, including reserves for settlement fees.
     pub value_after_stage1_sat: u64,
-    /// Final signed traffic charge, excluding redemption-fee reserves.
+    /// Highest signed traffic charge retained by the provider.
+    pub signed_sat: u64,
+    /// Traffic charge collected at the mint, excluding redemption-fee reserves.
     pub paid_sat: u64,
     /// Extra receiver proof value reserved for later redemption, not a paid fee.
     #[serde(default)]
@@ -24,6 +26,9 @@ impl SettlementReport {
     pub(super) fn from_close(
         closed: &cashu_service::CashuSpilmanReceiverCloseResult,
     ) -> Result<Self, String> {
+        if closed.closed_amount > closed.signed_amount {
+            return Err("mint collection exceeds signed payment".into());
+        }
         let returned = closed
             .receiver_sum
             .checked_add(closed.sender_sum)
@@ -31,11 +36,12 @@ impl SettlementReport {
         Ok(Self {
             channel_id: closed.channel_id.clone(),
             value_after_stage1_sat: closed.total_value,
+            signed_sat: closed.signed_amount,
             paid_sat: closed.closed_amount,
             receiver_fee_reserve_sat: closed
                 .receiver_sum
                 .checked_sub(closed.closed_amount)
-                .ok_or("receiver proof value below signed payment")?,
+                .ok_or("receiver proof value below collected payment")?,
             refunded_sat: closed.sender_sum,
             fee_sat: closed
                 .total_value
@@ -107,10 +113,12 @@ pub(in crate::controller) fn valid_usage(channel: &ChannelTerms, usage: ChannelU
 pub(in crate::controller) fn valid_report(
     channel: &ChannelTerms,
     report: &SettlementReport,
-    paid: u64,
+    signed: u64,
 ) -> bool {
     report.channel_id == channel.id
-        && report.paid_sat == paid
+        && report.signed_sat == signed
+        && report.paid_sat <= report.signed_sat
+        && report.signed_sat <= channel.capacity_sat
         && report.value_after_stage1_sat >= channel.capacity_sat
         && report
             .receiver_value_sat()
@@ -171,11 +179,10 @@ impl Controller {
                     s.usage.is_none() || p.channel_id != *id || p.balance > s.channel.capacity_sat
                 })
                 || s.report.as_ref().is_some_and(|r| {
-                    let paid = s.payment.as_ref().map_or(r.paid_sat, |p| p.balance);
-                    !valid_report(&s.channel, r, paid)
-                        || paid > s.channel.capacity_sat
+                    let signed = s.payment.as_ref().map_or(r.signed_sat, |p| p.balance);
+                    !valid_report(&s.channel, r, signed)
                         || s.usage
-                            .is_none_or(|u| paid.saturating_mul(1_000) < u.paid_msat)
+                            .is_none_or(|u| signed.saturating_mul(1_000) < u.paid_msat)
                 })
             {
                 return Err("invalid seller settlement".into());

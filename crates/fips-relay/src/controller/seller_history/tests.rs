@@ -55,6 +55,7 @@ fn append(
             report: Some(SettlementReport {
                 channel_id: t.id.clone(),
                 value_after_stage1_sat: t.capacity_sat,
+                signed_sat: 0,
                 paid_sat: 0,
                 receiver_fee_reserve_sat: 0,
                 refunded_sat: t.capacity_sat - 1,
@@ -143,6 +144,7 @@ fn seller_history_retains_receiver_fee_reserves_without_rebilling_them() {
     sale.payment.as_mut().unwrap().balance = 3;
     sale.usage.as_mut().unwrap().paid_msat = 3_000;
     let report = sale.report.as_mut().unwrap();
+    report.signed_sat = 3;
     report.paid_sat = 3;
     report.receiver_fee_reserve_sat = 1;
     report.refunded_sat -= 4;

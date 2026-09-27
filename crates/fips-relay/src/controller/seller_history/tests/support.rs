@@ -30,7 +30,7 @@ pub(super) fn receiver_plan(j: &Journal, ids: &[String]) -> Result<ReceiverPlan,
         let report = sale.report.as_ref().unwrap();
         let totals = json!({"mint":sale.channel.mint_url, "unit":"sat", "channels":1,
             "capacity":sale.channel.capacity_sat, "funding_token_amount":report.value_after_stage1_sat + 2,
-            "closed_amount":report.paid_sat, "value_after_stage1":report.value_after_stage1_sat,
+            "signed_amount":report.signed_sat, "closed_amount":report.paid_sat, "value_after_stage1":report.value_after_stage1_sat,
             "receiver_sum":report.receiver_value_sat().unwrap(), "sender_sum":report.refunded_sat,
             "usage":{"fixture_requests":1}});
         let expiry = sale.channel.expires_unix + 60;
@@ -44,6 +44,7 @@ pub(super) fn receiver_plan(j: &Journal, ids: &[String]) -> Result<ReceiverPlan,
                 "channels",
                 "capacity",
                 "funding_token_amount",
+                "signed_amount",
                 "closed_amount",
                 "value_after_stage1",
                 "receiver_sum",

@@ -17,6 +17,7 @@ pub(super) struct SellerHistory {
 struct Totals {
     accounting: LedgerHistory,
     value_sat: u64,
+    signed_sat: u64,
     paid_sat: u64,
     #[serde(default)]
     receiver_fee_reserve_sat: u64,
@@ -51,7 +52,8 @@ impl Totals {
                 .and_then(|n| n.checked_add(self.returned_sat))
                 .and_then(|n| n.checked_add(self.fee_sat))
                 == Some(self.value_sat)
-            && self.paid_sat as u128 * 1000 == self.accounting.usage.paid_msat as u128
+            && self.paid_sat <= self.signed_sat
+            && self.signed_sat as u128 * 1000 == self.accounting.usage.paid_msat as u128
             && self
                 .receiver
                 .as_ref()
@@ -68,6 +70,7 @@ impl Totals {
         Ok(Self {
             accounting: self.accounting.clone(),
             value_sat: add(self.value_sat, report.value_after_stage1_sat)?,
+            signed_sat: add(self.signed_sat, report.signed_sat)?,
             paid_sat: add(self.paid_sat, report.paid_sat)?,
             receiver_fee_reserve_sat: add(
                 self.receiver_fee_reserve_sat,
@@ -117,7 +120,7 @@ impl Plan {
                 .ok_or("retiring sale missing")?;
             if s.channel != c.terms
                 || !completed(j, s, u64::MAX)
-                || s.report.as_ref().unwrap().paid_sat as u128 * 1000 != c.usage.paid_msat as u128
+                || s.report.as_ref().unwrap().signed_sat as u128 * 1000 != c.usage.paid_msat as u128
             {
                 return Err("retiring sale changed".into());
             }

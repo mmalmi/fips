@@ -106,8 +106,10 @@ Lifetime signed and wallet-spend totals remain charged.
 At service expiry the seller seals usage and collects its retained payment through
 the existing mint-close path, without needing a final buyer request. Only a verified
 close and payout import permit a completed report. The seller must still reach the
-mint before its redemption opportunity is lost; recovery of a seller that missed
-that deadline needs separate reconciliation and must not erase its claim.
+mint before its redemption opportunity is lost. If the buyer has already
+refunded, the seller can reconcile the complete signature-verified zero-balance
+mint outputs. Its report retains the accepted signed amount while recording zero
+collection. Empty or invalid outputs retain the unresolved original claim.
 
 Funding installation checks the original offer and funding under the controller
 lock. When a channel never reached the local buyer, coordinated retirement uses
@@ -221,7 +223,8 @@ channels and wrong buyers cannot use that acknowledgment path to remove evidence
 Following route compaction and immutable wallet expiry, the controller
 asks the receiver SDK to verify custody of the original payout in the wallet.
 It binds the SDK's exact channel identities, expiry, mint, currency, capacity,
-signed amount and both original payout values to the completed settlement reports.
+signed authorization, collected amount and both original payout values to the
+completed settlement reports.
 The SDK retains ownership of its nominal funding and usage accounting. An
 ineligible payout retains its records without saving a new cleanup intent.
 
@@ -230,9 +233,9 @@ payout identities and wallet/receiver binding. It commits the seller ledger, ret
 receiver records through the SDK, and hands those exact payout identities to the
 wallet's proof-release queue. Only after that handoff and the returned history
 have been checked does it remove its channel terms and settlement records.
-It retains cumulative settlement value, signed payments, receiver redemption-fee
-reserves, returned funds and reported fees. Reserves remain distinct from both
-signed spending and fees already paid;
+It retains cumulative settlement value, signed authorizations, collected payments,
+receiver redemption-fee reserves, returned funds and reported fees. Reserves remain
+distinct from both signed spending and fees already paid;
 see [settlement values and compatibility](FUNDING-COSTS.md#signed-charges-and-payout-reserves).
 The wallet owner guard spans this local operation even if its async caller is
 cancelled. It performs no payout import, payment or network exchange. Startup

@@ -185,17 +185,16 @@ impl Controller {
                     || sale
                         .payment
                         .as_ref()
-                        .is_some_and(|p| closed.closed_amount != p.balance)
-                    || closed.closed_amount > sale.channel.capacity_sat
-                    || closed.closed_amount.saturating_mul(1_000) < usage.paid_msat
-                    || !valid_report(&sale.channel, &report, closed.closed_amount)
+                        .is_some_and(|p| closed.signed_amount != p.balance)
+                    || closed.signed_amount.saturating_mul(1_000) < usage.paid_msat
+                    || !valid_report(&sale.channel, &report, closed.signed_amount)
                 {
                     return Err("mint close does not match final agreement".into());
                 }
                 control.import_wallet_payout(&sale.channel.id).await?;
                 // A retained receiver signature can have reached its journal
                 // before the corresponding ledger update was interrupted.
-                let paid_msat = closed.closed_amount * 1_000;
+                let paid_msat = closed.signed_amount * 1_000;
                 if seller.channel_usage(&sale.channel.id).map(|u| u.paid_msat) != Some(paid_msat) {
                     seller
                         .apply_verified_balance(&sale.channel.id, paid_msat)
