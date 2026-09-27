@@ -20,7 +20,7 @@ and phone demonstrations do not accept the latest software for deployment.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, broader overlapping channel pressure and physical recovery capacity. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, simultaneous wallet operations, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the local TollGate adapter remains a design proposal. | Review the complete supported deployment and stable peer API; client/adapter/TollGate interoperability remains untested. |
 
@@ -40,11 +40,19 @@ three-node payout/refund crash case also passes with the limit fixed before init
 including original-proof recovery and actual-expiry retirement. These tests use
 local test money and logical database pressure; they do not establish router
 memory sizing, filesystem/WAL reservation or physical power-loss safety.
-The matching graph passes the full 412-test SDK workspace suite, 296 relay unit
-tests, strict SDK/relay lint and the ordinary service restart/retirement regression.
-The focused configuration, offline-wallet, shared-wallet and crash-recovery checks
-also pass. One opt-in SDK storage soak is excluded from the full-suite count;
-features and native dependencies are unchanged.
+The SDK's existing 130-channel lifecycle check admits groups of four before
+settling any channel, with both wallets fixed at 16 MiB. Four groups complete
+after the receiver wallet reopens at capacity; released space is reoccupied before
+each subsequent settlement. All payouts, refunds, expiry retirement and lifetime
+totals remain checked. This covers overlapping funded channels and reservations;
+the wallet calls themselves are sequential. Production code and dependencies are
+unchanged, so this acceptance does not require a new router package.
+The updated test passes in the full 412-test SDK workspace suite and under strict
+lint for that integration test. Prior acceptance of the unchanged production
+sources covers 296 relay unit tests, strict SDK/relay lint, the ordinary service
+restart/retirement regression, and the focused configuration, offline-wallet,
+shared-wallet and crash-recovery checks. One opt-in SDK storage soak is excluded
+from the full-suite count; features and native dependencies are unchanged.
 
 The opt-in [filesystem exhaustion regression](SERVICE.md#filesystem-exhaustion-regression)
 reuses that four-node scenario on a 128 MiB HFS+ image on macOS arm64. Real writes
