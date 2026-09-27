@@ -389,6 +389,17 @@ impl MixedBench {
         states
     }
 
+    pub async fn set_renewals_paused(&self, paused: bool) {
+        let command = if paused {
+            AdminRequest::PauseRenewals
+        } else {
+            AdminRequest::ResumeRenewals
+        };
+        for config in &self.configs {
+            request(config, &command).await.unwrap();
+        }
+    }
+
     pub async fn assert_carriers(&self) {
         if self.second_hop.is_seed() {
             let report = native_request(

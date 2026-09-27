@@ -466,9 +466,11 @@ run serially. An initial two-worker run missed the refund fixture's 30-second
 setup expiry before its recovery race; the unchanged case passed alone and the
 full serial suite passed. The failed run remains recorded; this does not prove
 an opening-latency bound under concurrent large cryptographic workloads.
-Other quote, operation-admission and receipt reads remain open. The existing r12
-ARM64 package and cadence results predate this small dependency change; current target
-packaging and runtime acceptance must be refreshed before deployment.
+Other quote, operation-admission and receipt reads remain open. The r13 ARM64
+package below includes this dependency change and passes the isolated Linux
+transport, restart, settlement and storage-recovery checks. The r12 cadence
+measurements retain their earlier dependency revision; current-device and
+physical power-loss acceptance remain open.
 
 ### Wallet read bounds
 
@@ -564,7 +566,7 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `9c180baeb` contains 35,704 inventoried files
+The source bundle at `95d40d178` contains 35,704 inventoried files
 and resolves 693 packages, including 672 vendored registry packages. All 2,753
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
@@ -575,18 +577,18 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,024,104
-bytes, static and stripped. The unsigned APK is 11,467,715 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,048,264
+bytes, static and stripped. The unsigned APK is 11,475,595 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
 installed on a router.
 
-The current packaged executable passes four mixed-transport process cases in
-isolated ARM64 Linux: UDP-to-TCP, and UDP-to-WebSocket using URL-only plaintext
-bootstrap, ordinary TLS and explicit FIPS-authenticated self-signed TLS. A
-separate harness with optional relay features disabled starts the real
-default-feature production executable.
+The current packaged executable passes five mixed-transport process cases in
+isolated ARM64 Linux: UDP-to-TCP, and UDP-to-WebSocket using configured peers,
+URL-only plaintext bootstrap, ordinary TLS and explicit FIPS-authenticated
+self-signed TLS. A separate harness with optional relay features disabled starts
+the real default-feature production executable.
 Each case verifies unpaid denial, paid delivery, allowance exhaustion, renewal,
 middle-relay crash/restart, paid delivery after recovery and settlement conserving
 all 384 test sats. The three seeded WebSocket cases also interrupt the physical
@@ -600,9 +602,18 @@ recorded and unbilled, and the original spending limits stay in force. The TLS
 cases reject untrusted issuers, wrong server names or forged handshake signatures
 according to the selected policy before admission or spending. The source
 manifest, harness and executable hashes remain unchanged.
-All four containers use a read-only root, no external network or capabilities,
+All five containers use a read-only root, no external network or capabilities,
 and only the two executables mounted from the host; all are removed afterward.
 See the [TCP/WebSocket reproduction steps](openwrt/README.md#tcp-websocket-and-tls-with-the-packaged-executable).
+The r13 attempt exposed a race in the process fixture: automatic recovery
+renewal could refund a channel between snapshots that required an unchanged
+funding budget. The fixture now pauses renewals only around that restart
+comparison and resumes them afterward. Exact history/budget equality, later
+automatic renewal, retained unbilled crash exposure and final fund conservation
+remain asserted. These five passes use the corrected test harness against the
+unchanged packaged executable; the r13 source archive retains the earlier
+fixture. No runtime policy, timer or payment protocol changes.
+
 These passes do not explain the earlier intermittent delivery timeout or establish
 radio performance, remote TLS deployment, physical power loss or current-device
 acceptance.
@@ -1978,7 +1989,7 @@ mobility, arbitrary mesh merge/split, throughput or production readiness.
 
 ## Guarded cadence measurement
 
-The current r12 source bundle also passes the existing eight-trial cadence
+The earlier r12 source bundle also passes the existing eight-trial cadence
 matrix on isolated ARM64 Linux with the OpenWrt optimization profile and
 measurement instrumentation. All 285,696 packets arrive and all 40,960 test sats
 are recovered after 48 channel settlements. The unchanged analyzer passes all

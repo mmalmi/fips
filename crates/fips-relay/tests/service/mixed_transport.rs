@@ -94,8 +94,8 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                     .balance_sat,
                 128
             );
-            request(config, &AdminRequest::PauseRenewals).await.unwrap();
         }
+        bench.set_renewals_paused(true).await;
 
         bench.set_stage("initial-paid");
         let mut original_channels = Vec::new();
@@ -140,11 +140,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         }
         bench.set_stage("renewal");
         let exhausted = bench.states().await;
-        for config in &bench.configs {
-            request(config, &AdminRequest::ResumeRenewals)
-                .await
-                .unwrap();
-        }
+        bench.set_renewals_paused(false).await;
         bench.wait_replacements(&original_channels).await;
         for (source, destination) in [(0, 2), (2, 0)] {
             bench.deliver(source, destination).await;
@@ -175,6 +171,9 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
+        // Recovery can immediately renew a channel consumed by lost allowance.
+        // Compare restart state before allowing that separate financial transition.
+        bench.set_renewals_paused(true).await;
         let before = bench.states().await;
         let tls_connections = bench.tls.as_ref().map(tls::TlsProxy::connections);
         bench.children[1].kill().await.unwrap();
@@ -199,6 +198,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                     <= old["remaining_budget_sat"].as_u64().unwrap()
             );
         }
+        bench.set_renewals_paused(false).await;
         bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
             if second_hop.is_seed() {
