@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::{
     io::{Read, Seek, SeekFrom},
     net::{SocketAddr, TcpListener, UdpSocket},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -301,7 +301,7 @@ impl MixedBench {
         self.second_hop.kind()
     }
 
-    pub async fn recover_seed_carrier(&mut self) {
+    pub async fn recover_seed_carrier(&mut self, silent: bool) {
         let before = self.states().await;
         let proxy = self
             .proxy
@@ -310,19 +310,50 @@ impl MixedBench {
             .unwrap();
         let accepted = proxy.connections();
         assert!(accepted > 0);
-        assert!(
-            proxy.interrupt().await > 0,
-            "interrupt a live physical stream"
-        );
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let dropped = proxy.dropped_bytes();
+        let started = tokio::time::Instant::now();
+        let wait = if silent {
+            // Preserve production timers. Silent loss may last until the
+            // configured idle deadline; a clean close retains its 20-s bound.
+            let idle = self.configs[2]
+                .transports
+                .websocket
+                .iter()
+                .next()
+                .unwrap()
+                .1
+                .idle_timeout_secs();
+            assert!(idle > 0);
+            proxy.blackhole().await;
+            Duration::from_secs(idle + 20)
+        } else {
+            assert!(
+                proxy.interrupt().await > 0,
+                "interrupt a live physical stream"
+            );
+            Duration::from_secs(20)
+        };
+        tokio::time::timeout(wait, async {
             while proxy.connections() == accepted {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("seed must establish a fresh physical connection");
+        if silent {
+            assert!(
+                proxy.dropped_bytes() > dropped,
+                "the old connection carried discarded traffic"
+            );
+        }
+        eprintln!(
+            "carrier recovery silent={silent} fresh_connection_ms={}",
+            started.elapsed().as_millis()
+        );
+
         ready(&self.configs, &self.paths, &self.npubs, &mut self.children).await;
         self.assert_carriers().await;
+        let authenticated_ms = started.elapsed().as_millis();
         for (source, destination) in [(0, 2), (2, 0)] {
             let channel = before[source]["purchases"][0]["channel"]["id"]
                 .as_str()
@@ -344,6 +375,10 @@ impl MixedBench {
                     <= old["remaining_budget_sat"].as_u64().unwrap()
             );
         }
+        eprintln!(
+            "carrier recovery silent={silent} authenticated_ms={authenticated_ms} paid_progress_ms={}",
+            started.elapsed().as_millis()
+        );
     }
 
     pub async fn states(&self) -> Vec<Value> {
@@ -468,7 +503,7 @@ impl MixedBench {
         self.deliver_sized(source, destination, 128).await;
     }
 
-    async fn deliver_sized(&self, source: usize, destination: usize, bytes: usize) {
+    pub(super) async fn deliver_sized(&self, source: usize, destination: usize, bytes: usize) {
         // Application retries stay separately billable, as in the existing
         // process restart fixture. No transport ACK is a payment receipt.
         for _ in 0..3 {
@@ -500,9 +535,9 @@ impl MixedBench {
         );
     }
 
-    async fn delivery_failure(&self, source: usize, destination: usize) {
+    pub(super) async fn delivery_failure(&self, source: usize, destination: usize) {
         eprintln!(
-            "mixed-carrier delivery-failure stage={} second_hop={:?} flow={source}->{destination} attempts=3",
+            "mixed-carrier delivery-failure stage={} second_hop={:?} flow={source}->{destination}",
             self.stage, self.second_hop
         );
         let captured = tokio::time::timeout(Duration::from_secs(4), async {
@@ -515,7 +550,7 @@ impl MixedBench {
                     Ok(Ok(status)) => {
                         let mut safe = selected(&status, &[
                             "peers", "funding_budget", "remaining_budget_sat", "locked_sat",
-                            "probe", "data_carrier", "control_traffic", "payment_progress",
+                            "probe", "data_carrier", "control_traffic", "payment_progress", "bootstrap", "return_allowance",
                         ]);
                         safe["last_error_present"] = json!(!status["last_error"].is_null());
                         safe["history_count"] = json!(status["history"].as_array().map(Vec::len));
@@ -530,13 +565,7 @@ impl MixedBench {
                 }
                 // Never serialize the journal: it contains wallet material.
                 // Project only the saved route phases and renewal switches.
-                let journal = std::fs::File::open(config.state_directory.join("controller/controller.json"))
-                    .ok().and_then(|file| {
-                        let mut bytes = Vec::new();
-                        file.take(1_048_577).read_to_end(&mut bytes).ok()?;
-                        if bytes.len() > 1_048_576 { return None; }
-                        serde_json::from_slice::<Value>(&bytes).ok()
-                    });
+                let journal = read_journal(&config.state_directory.join("controller/controller.json"));
                 if let Some(journal) = journal {
                     let mut safe = selected(&journal, &["renewals_paused", "selling_stopped"]);
                     for (field, keys) in [
@@ -551,6 +580,22 @@ impl MixedBench {
                     diagnostic(node, "controller-phases", &safe);
                 } else {
                     diagnostic(node, "controller-phases", &json!({"unavailable": true}));
+                }
+                if let Some(journal) = read_journal(&config.state_directory.join("seller/ledger.json")) {
+                    let ledger = &journal["ledger"];
+                    let mut safe = selected(&journal, &["window_msat", "ceilings"]);
+                    safe["channels"] = json!(ledger["channels"].as_array().map(|rows| rows.iter().take(16)
+                        .map(|row| json!({
+                            "terms": selected(&row["terms"], &["id", "buyer", "capacity_sat", "grace_msat", "expires_unix"]),
+                            "usage": row["usage"], "active": row["active"], "retired": row["retired"],
+                        })).collect::<Vec<_>>()));
+                    diagnostic(node, "seller-allowances", &safe);
+                    let accounts = json!(ledger["accounts"].as_array().map(|rows| rows.iter().take(16)
+                        .map(|row| json!({
+                            "contract": selected(&row["contract"], &["id", "channel_id", "destination", "next_hop", "expires_unix", "max_units"]),
+                            "usage": row["usage"], "active": row["active"], "completed": row["completed"],
+                        })).collect::<Vec<_>>()));
+                    diagnostic(node, "seller-routes", &accounts);
                 }
                 for command in ["show_connections", "show_tree", "show_routing", "show_sessions", "show_transports"] {
                     match tokio::time::timeout(Duration::from_millis(250), native_request(config, &json!({"command": command}))).await {
@@ -710,4 +755,13 @@ fn daemon_tail(node: usize, path: &std::path::Path) {
             }
         );
     }
+}
+
+fn read_journal(path: &Path) -> Option<Value> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(1_048_577).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 1_048_576)
+        .then(|| serde_json::from_slice(&bytes).ok())
+        .flatten()
 }

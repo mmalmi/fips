@@ -1297,6 +1297,37 @@ plus two full sequences before the lifecycle fix, passed. These passing reruns d
 not resolve the earlier timeout or establish whether it relates to this change.
 Intermittent paid delivery therefore remains an open readiness item.
 
+The seed fixture also tests silent loss: the proxy retains existing sockets and
+discards their traffic while new connections remain usable. Production keepalive
+and idle timers are unchanged. After authenticated reconnection, both directions
+must advance paid usage on the original channels before the middle-relay crash.
+This exposed a separate recovery gap: retained crash exposure can exhaust a
+seller's funded capacity before the buyer's local usage reaches its renewal
+threshold. The existing authenticated usage response now triggers ordinary
+renewal when reported crash exposure takes reservations past that threshold.
+The controller rechecks the active purchase, renewal policy, pause switch and
+trial exclusion in its durable store. Duplicate hints do not rewrite the journal.
+
+This adds no messages or delivery receipts. Payment signatures still cover only
+the locally supported portion of submitted usage; lost exposure stays unbilled
+and consumes the relationship's grace after replacement. Settlement and verified
+refund precede new funding, under the existing price, capital, fee and lifetime
+spending limits. A dishonest provider can accelerate renewal and consume allowed
+funding overhead, but cannot make its reported loss billable. Repeated crashes
+can still exhaust the finite grace budget. Renewal may interrupt datagrams: the
+post-crash fixture observes automatic replacement before its unchanged fixed
+round-trip cohort, then checks retained unbilled loss and total fund conservation.
+This does not attribute the older timeout, prove whole-device power-loss recovery
+or update the previously built ARM64 package.
+
+The final source passes 298 relay unit tests, 12 durable-accounting tests and
+strict all-target lint. Seed WebSocket passes without default features and with
+all features; ordinary TLS passes without default features and self-signed
+FIPS-authenticated TLS passes with all features. Each process case conserves
+384 test sats. The two silent-loss runs resume paid traffic in 34.8 and 35.2
+seconds with production timers; these loopback observations are not a radio
+failover benchmark. Formatting and the 600-line relay source limit also pass.
+
 These results establish bounded link behavior. They do not establish radio
 mobility, congestion fairness, throughput, remote TLS proxy deployment or
 support for every core adapter.

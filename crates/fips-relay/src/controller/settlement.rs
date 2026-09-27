@@ -6,8 +6,9 @@ use cashu_service::restore_streaming_route_cashu_spilman_refund;
 
 mod state;
 pub use state::SettlementReport;
+use state::valid_report;
+pub(super) use state::valid_usage;
 pub(super) use state::{BuyerSettlement, SellerSettlement, SettlementKind};
-use state::{valid_report, valid_usage};
 
 impl Controller {
     pub(super) fn settlement_claim(&self, id: &str) -> Option<AcceptGuard<'_>> {

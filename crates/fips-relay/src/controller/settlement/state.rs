@@ -95,7 +95,7 @@ pub(in crate::controller) struct SellerSettlement {
     pub(in crate::controller) released: bool,
 }
 
-pub(super) fn valid_usage(channel: &ChannelTerms, usage: ChannelUsage) -> bool {
+pub(in crate::controller) fn valid_usage(channel: &ChannelTerms, usage: ChannelUsage) -> bool {
     channel.capacity_sat.checked_mul(1_000).is_some_and(|cap| {
         usage.paid_msat <= cap
             && usage.reserved_msat <= cap

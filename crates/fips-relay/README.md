@@ -310,9 +310,10 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   creates another grace period. Expired buyers may reproduce their previously
   authorized balance for closure, but cannot authorize a larger amount.
 * Optional `RenewalPolicy` schedules channel replacement from local submission
-  evidence, byte limits or approaching expiry. It settles the old channel and
-  confirms its refund before funding a replacement. Fresh offers must retain the
-  provider, next hop, price, mint and byte allowance; changed service stops for a
+  evidence, byte limits, approaching expiry, or capacity consumed by reported
+  crash exposure. Such reports cannot authorize payment. The controller settles
+  the old channel and confirms its refund before funding a replacement. Fresh
+  offers must retain the provider, next hop, price, mint and byte allowance; changed service stops for a
   new agreement. Historical channels and authorizations remain retained.
 * A second native controller test exhausts and replaces all six original channels
   while sending both ways across the three routers. It keeps the capital cap and

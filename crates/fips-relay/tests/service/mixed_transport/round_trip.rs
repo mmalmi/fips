@@ -42,7 +42,7 @@ async fn measure(bench: &MixedBench, id: &str, count: u32) {
 }
 
 async fn wait_probe(bench: &MixedBench, index: usize, count: u32) -> Value {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    let result = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             let state = request(&bench.configs[index], &AdminRequest::Status)
                 .await
@@ -53,8 +53,17 @@ async fn wait_probe(bench: &MixedBench, index: usize, count: u32) -> Value {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("probe delivery")
+    .await;
+    match result {
+        Ok(probe) => probe,
+        Err(_) => {
+            // The failed cohort stays failed; snapshots cannot rescue delivery.
+            bench
+                .delivery_failure(if index == 0 { 2 } else { 0 }, index)
+                .await;
+            panic!("round-trip probe delivery at endpoint {index} timed out");
+        }
+    }
 }
 
 pub(super) async fn assert_paid_round_trip(bench: &MixedBench, id: &str) {

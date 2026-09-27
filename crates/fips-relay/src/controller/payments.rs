@@ -69,8 +69,8 @@ impl Controller {
         else {
             return Err("provider rejected usage".into());
         };
-        if channel_id != purchase.channel.id {
-            return Err("usage response changed channel".into());
+        if channel_id != purchase.channel.id || !settlement::valid_usage(&purchase.channel, usage) {
+            return Err("invalid usage response".into());
         }
         let prior = self
             .services
@@ -90,7 +90,7 @@ impl Controller {
         );
         if usage.paid_msat / 1_000 >= supported.div_ceil(1_000) && usage.paid_msat / 1_000 >= prior
         {
-            return Ok(Some(usage));
+            return self.reconcile_payment_usage(purchase, usage).await;
         }
         let payment = {
             let buyer = self.services.buyer.clone();
@@ -127,9 +127,37 @@ impl Controller {
             PaymentResponse::Status {
                 channel_id: id,
                 usage,
-            } if id == channel_id && usage.paid_msat >= expected => Ok(Some(usage)),
+            } if id == channel_id
+                && usage.paid_msat >= expected
+                && settlement::valid_usage(&purchase.channel, usage) =>
+            {
+                self.reconcile_payment_usage(purchase, usage).await
+            }
             _ => Err("provider did not accept signed balance".into()),
         }
+    }
+
+    async fn reconcile_payment_usage(
+        &self,
+        purchase: Purchase,
+        usage: ChannelUsage,
+    ) -> PaymentResult {
+        if self
+            .policy
+            .renewal
+            .as_ref()
+            .is_some_and(|policy| policy.recovery_due(&purchase.channel, usage))
+        {
+            let store = self.store.clone();
+            blocking(move || {
+                store
+                    .lock()
+                    .map_err(|_| "controller poisoned")?
+                    .renew_after_recovery(&purchase, usage)
+            })
+            .await?;
+        }
+        Ok(Some(usage))
     }
 }
 

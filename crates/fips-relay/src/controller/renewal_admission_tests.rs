@@ -1,7 +1,102 @@
 //! Durable acceptance can precede its parent renewal's completion checkpoint.
 use super::*;
 use crate::controller::transition_tests::{fixture, reload};
-use crate::ledger::ChannelUsage;
+
+#[test]
+fn crash_exposure_reserves_one_durable_renewal_without_spending_or_billing_loss() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old) = fixture(&root.path().join("controller"));
+    let policy = RenewalPolicy {
+        at_capacity_percent: 75,
+        before_expiry_secs: 30,
+    };
+    let usage = ChannelUsage {
+        submitted_msat: 21_000,
+        reserved_msat: 25_000,
+        lost_msat: 4_000,
+        paid_msat: 21_000,
+    };
+    assert!(!policy.due(&old.purchase, usage.submitted_msat, 21_000, now().unwrap()));
+    store
+        .change(|j| {
+            j.policy.renewal = Some(policy);
+            Ok(())
+        })
+        .unwrap();
+    let capital = Controller::capital(&store.journal).unwrap();
+    let funding = serde_json::to_value(&store.journal.funding).unwrap();
+    store.renew_after_recovery(&old.purchase, usage).unwrap();
+    let mut store = reload(store);
+    let saved = std::fs::read(store.directory.join("controller.json")).unwrap();
+    // A duplicate hint leaves the durable state unchanged.
+    store.renew_after_recovery(&old.purchase, usage).unwrap();
+    assert_eq!(
+        std::fs::read(store.directory.join("controller.json")).unwrap(),
+        saved
+    );
+    assert_eq!(store.journal.renewals.len(), 1);
+    let renewal = &store.journal.renewals[&old.purchase.channel.id];
+    assert_eq!(renewal.previous[0].purchase, old.purchase);
+    assert!(!renewal.completed);
+    assert!(renewal.replacements.is_none());
+    assert!(store.journal.buyer_settlements.is_empty());
+    assert_eq!(Controller::capital(&store.journal).unwrap(), capital);
+    assert_eq!(
+        serde_json::to_value(&store.journal.funding).unwrap(),
+        funding
+    );
+}
+
+#[test]
+fn recovery_hints_respect_renewal_controls_and_reject_invalid_or_stale_usage() {
+    let root = tempfile::tempdir().unwrap();
+    for case in 0..9 {
+        let (mut store, old) = fixture(&root.path().join(case.to_string()));
+        let mut usage = ChannelUsage {
+            submitted_msat: 21_000,
+            reserved_msat: 25_000,
+            lost_msat: 4_000,
+            paid_msat: 21_000,
+        };
+        let mut purchase = old.purchase.clone();
+        store
+            .change(|j| {
+                j.policy.renewal = Some(RenewalPolicy {
+                    at_capacity_percent: 75,
+                    before_expiry_secs: 30,
+                });
+                match case {
+                    0 => j.renewals_paused = true,
+                    1 => j.policy.renewal = None,
+                    2 => {
+                        let outgoing = j.outgoing.get_mut(&old.purchase.contract.id).unwrap();
+                        outgoing.offer.trial = true;
+                        j.requested
+                            .insert(outgoing.offer.id.clone(), outgoing.offer.clone());
+                    }
+                    3 => usage.lost_msat = 0,
+                    4 => {
+                        usage.reserved_msat = 23_999;
+                        usage.submitted_msat = 19_999;
+                    }
+                    5 => usage.reserved_msat = 32_001,
+                    6 => usage.lost_msat = 4_001,
+                    7 => usage.paid_msat = 32_001,
+                    _ => purchase.provider = NodeAddr::from_bytes([99; 16]),
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut store = reload(store);
+        let saved = std::fs::read(store.directory.join("controller.json")).unwrap();
+        store.renew_after_recovery(&purchase, usage).unwrap();
+        assert!(store.journal.renewals.is_empty(), "case {case}");
+        assert_eq!(
+            std::fs::read(store.directory.join("controller.json")).unwrap(),
+            saved
+        );
+    }
+}
 
 fn funded_replacement(journal: &mut Journal, old: &Outgoing, provider: NodeAddr) -> Outgoing {
     let sequence = journal.next_funding;

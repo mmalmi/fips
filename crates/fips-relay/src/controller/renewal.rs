@@ -1,6 +1,7 @@
 //! Replace settled neighbor channels while retaining price and risk boundaries.
 
 use super::*;
+use crate::ledger::ChannelUsage;
 
 #[cfg(test)]
 #[path = "renewal_admission_tests.rs"]
@@ -8,8 +9,8 @@ mod admission_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenewalPolicy {
-    /// Use local submission evidence, never an untrusted usage report, to decide
-    /// when the funded channel is near capacity. 100 also tests exhaustion.
+    /// Renew near capacity using local submissions or the provider's retained
+    /// crash exposure. Neither renewal hint authorizes a payment.
     pub at_capacity_percent: u8,
     pub before_expiry_secs: u64,
 }
@@ -25,12 +26,53 @@ impl RenewalPolicy {
         let nearing = timestamp.saturating_add(self.before_expiry_secs);
         purchase.channel.expires_unix <= nearing
             || purchase.contract.expires_unix <= nearing
-            || u128::from(evidence_msat) * 100
-                >= u128::from(purchase.channel.capacity_sat)
-                    * 1_000
-                    * u128::from(self.at_capacity_percent)
+            || self.capacity_due(&purchase.channel, evidence_msat)
             || u128::from(observed_units) * 100
                 >= u128::from(purchase.contract.max_units) * u128::from(self.at_capacity_percent)
+    }
+
+    fn capacity_due(&self, channel: &ChannelTerms, reserved_msat: u64) -> bool {
+        u128::from(reserved_msat) * 100
+            >= u128::from(channel.capacity_sat) * 1_000 * u128::from(self.at_capacity_percent)
+    }
+
+    pub(super) fn recovery_due(&self, channel: &ChannelTerms, usage: ChannelUsage) -> bool {
+        usage.lost_msat > 0
+            && settlement::valid_usage(channel, usage)
+            && self.capacity_due(channel, usage.reserved_msat)
+    }
+}
+
+impl Store {
+    /// A provider can consume its allowance on recovery without a billable
+    /// submission. Reuse the normal settlement/refund-before-funding path;
+    /// never erase that exposure or sign a payment for the reported loss.
+    pub(super) fn renew_after_recovery(
+        &mut self,
+        purchase: &Purchase,
+        usage: ChannelUsage,
+    ) -> Result<(), String> {
+        self.ensure_ready()?;
+        let j = &self.journal;
+        if j.renewals_paused
+            || j.renewals.contains_key(&purchase.channel.id)
+            || !j
+                .policy
+                .renewal
+                .as_ref()
+                .is_some_and(|policy| policy.recovery_due(&purchase.channel, usage))
+            || !j.outgoing.values().any(|o| {
+                o.accepted && o.purchase == *purchase && Controller::routing_eligible(j, o)
+            })
+            || j.outgoing.values().any(|o| {
+                o.purchase.channel.id == purchase.channel.id
+                    && Controller::routing_eligible(j, o)
+                    && o.offer.trial
+            })
+        {
+            return Ok(());
+        }
+        self.change(|j| Controller::reserve_renewal(j, purchase.channel.id.clone()))
     }
 }
 
