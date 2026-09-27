@@ -177,14 +177,16 @@ above. Each case mounts only the harness and the packaged executable:
 
 ```sh
 run_relay_case() {
+  relay_case_binary=$1
+  shift
   docker run --rm --pull never --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges --user 65534:65534 \
     --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
-    --memory 2g --cpus 2 --pids-limit 256 \
-    --mount "type=bind,source=$1,target=/candidate/relay-test,readonly" \
+    --memory 2g --cpus "${relay_test_cpus:-2}" --pids-limit 256 \
+    --mount "type=bind,source=$relay_case_binary,target=/candidate/relay-test,readonly" \
     --mount "type=bind,source=$relay_program,target=$compiled_relay_path,readonly" \
     --entrypoint /candidate/relay-test "$relay_test_image" \
-    "$2" --exact --test-threads=1 --nocapture
+    "$@" --exact --test-threads=1 --nocapture
 }
 for relay_case in \
   mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart \
@@ -205,6 +207,28 @@ cumulative payment through the original channels with preserved spending limits.
 The TLS cases also check certificate/handshake rejection
 before peer admission or spending. Verify both executables and the source manifest
 afterward. Loopback TLS does not establish remote proxy or radio acceptance.
+
+### CPU-pressure check
+
+The r18 packaged executable passes two ordered configured-WebSocket/seed pairs
+with a half-CPU limit shared by the test harness and its three relay processes.
+Using the function and binaries above, run both cases in each fresh container:
+
+```sh
+relay_test_cpus=0.5
+for relay_trial in 1 2; do
+  run_relay_case "$service_test_binary" \
+    mixed_transport::mixed_udp_websocket_daemons_preserve_paid_limits_through_exhaustion_and_restart \
+    mixed_transport::mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster || exit
+done
+unset relay_test_cpus
+```
+
+This retains the ordinary deadlines, retries and payment rules, and stops after
+the first failed pair. All four accepted cases conserve 384 test sats each;
+source and executable hashes remain unchanged. The bounded CPU-pressure check
+does not reproduce or explain the earlier delivery timeout and is not a radio
+performance measurement.
 
 ### Customer entry restart
 

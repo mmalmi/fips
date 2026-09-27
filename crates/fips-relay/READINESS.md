@@ -1557,14 +1557,22 @@ plus two further configured-WebSocket runs without default features. Each of the
 workspace formatting and source-size checks pass. This changes only the shared
 fixture and does not attribute the older delivery timeout or accept new hardware.
 
-The current r16 source graph also passes four serial configured-WebSocket/seed
+The earlier r16 source graph also passes four serial configured-WebSocket/seed
 pairs on macOS loopback, preserving the original test order and using no optional
 relay features. Both executables are built offline from the same immutable source
 bundle as the ARM64 package. All eight process cases reach automatic replacement
 and settlement, conserving 384 test sats per case; source and executable hashes
-match before and after every pair. No delivery timeout recurs in this bounded
-repeat. It does not identify the original failure's cause or establish sustained
-or current-device acceptance; the failure-only diagnostics remain in place.
+match before and after every pair.
+
+The r18 packaged executable additionally passes two ordered configured-WebSocket/
+seed pairs in isolated ARM64 Linux with a shared half-CPU limit for the harness
+and all three relays. Deadlines, retries, payment rules and binaries are unchanged.
+The pairs complete in 146.1 and 164.8 seconds; each of the four cases conserves
+384 test sats, and source and executable hashes match afterward. See the
+[CPU-pressure reproduction](openwrt/README.md#cpu-pressure-check).
+Neither bounded check reproduces the original delivery timeout or identifies its
+cause. Sustained and current-device acceptance remain open; failure-only
+diagnostics remain in place.
 
 The seed fixture also tests silent loss: the proxy retains existing sockets and
 discards their traffic while new connections remain usable. Production keepalive
