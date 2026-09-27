@@ -267,12 +267,21 @@ to bypass one. Watch polling yields to existing channel renewal when due.
 Background recovery first reconciles unresolved funding intents against the
 local wallet's committed channel records, even if their offers have expired,
 are paused, or are no longer retained. It uses the original request identity,
-receiver, mint, capacity and expiry. This step cannot contact the mint, spend
-another token, accept a quote or activate a route. Missing or conflicting records
-keep their capital reservation; preserve the entire state directory for
-reconciliation. Recovering a channel record does not refund it or renew routing
-permission. An orphan channel without an accepted contract still needs separate
-refund/reconciliation work; automatic expiry refunds are not implemented.
+receiver, mint, capacity and expiry. Completed funding is recovered locally;
+an incomplete persisted opening can query the mint to restore its original
+committed outputs. Recovery cannot create an opening, spend another token, fall
+back to a funding swap, accept a quote or activate a route. Missing or conflicting
+evidence keeps its capital reservation; preserve the entire state directory for
+reconciliation.
+
+A fully identified, never-used channel whose funding is exclusively withdrawn
+from routing can then recover its refund after the original wallet expiry. This
+also covers channels with no accepted route. The controller saves an expiry
+intent before refunding, fences delayed route installation and records the SDK's
+actual recovered amount without inventing provider usage or acceptance. Used or
+shared channels are ineligible for this automatic expiry path. Missing or
+conflicting funding evidence and used/shared-channel unilateral recovery still
+require separate reconciliation; see [recovery acceptance](READINESS.md#earlier-funding-recovery-after-quote-expiry).
 
 `settle` pauses route watches and renewals, seals outgoing channels, completes mint closure and
 recovers refunds. `pause_renewals` and `resume_renewals` control replacement work

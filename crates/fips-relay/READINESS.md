@@ -38,7 +38,7 @@ described below. It has not been installed on the routers.
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; used/shared-channel unilateral expiry recovery; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
@@ -2528,6 +2528,15 @@ observes retained funding before the original wallet expiry, then verifies its
 unused refund and coordinated SDK/controller retirement after expiry. Spendable
 balances plus mint fees conserve all 384 issued test sats; lifetime accounting
 retains the original debit and verified refund.
+
+The current r16 packaged ARM64 daemon also passes this exact interrupted-funding
+case in an isolated Linux container, using the existing funding harness and no
+fixture changes. It completes in 126 seconds, including the natural expiry wait.
+Original funding, debit, refund and the 384-test-sat conservation assertions pass;
+the source bundle and both executable hashes remain unchanged. This extends the
+nine r16 transport, customer-restart and storage checks with unused-funding expiry
+acceptance. It does not accept used/shared-channel unilateral recovery, current
+routers or physical power loss.
 
 The shared SDK cases cover idempotent completion, empty and partial restore,
 invalid signatures, changed terms, missing custody evidence and a missing opening
