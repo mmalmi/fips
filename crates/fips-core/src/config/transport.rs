@@ -363,7 +363,7 @@ pub struct EthernetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ethertype: Option<u16>,
 
-    /// MTU override. Defaults to the interface's MTU minus 1 (for frame type prefix).
+    /// MTU override. Defaults to the interface's MTU minus 3 (frame type and length).
     /// Cannot exceed the interface's actual MTU.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,

@@ -43,7 +43,13 @@ impl PacketSocket {
         }
 
         // Look up interface index
-        let if_index = get_if_index(fd, interface)?;
+        let if_index = match get_if_index(fd, interface) {
+            Ok(index) => index,
+            Err(error) => {
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+        };
 
         // Bind to the interface
         let mut sll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
@@ -312,7 +318,7 @@ fn get_mac_addr(fd: RawFd, if_index: i32) -> Result<[u8; 6], TransportError> {
     unsafe {
         std::ptr::copy_nonoverlapping(
             name_buf.as_ptr(),
-            ifr.ifr_name.as_mut_ptr() as *mut u8,
+            ifr.ifr_name.as_mut_ptr().cast::<u8>(),
             copy_len,
         );
     }
@@ -333,7 +339,7 @@ fn get_mac_addr(fd: RawFd, if_index: i32) -> Result<[u8; 6], TransportError> {
     unsafe {
         let sa_data = ifr.ifr_ifru.ifru_hwaddr.sa_data;
         for (i, byte) in mac.iter_mut().enumerate() {
-            *byte = sa_data[i] as u8;
+            *byte = sa_data[i].to_ne_bytes()[0];
         }
     }
 
@@ -368,7 +374,7 @@ fn get_if_mtu(fd: RawFd, if_index: i32) -> Result<u16, TransportError> {
     unsafe {
         std::ptr::copy_nonoverlapping(
             name_buf.as_ptr(),
-            ifr.ifr_name.as_mut_ptr() as *mut u8,
+            ifr.ifr_name.as_mut_ptr().cast::<u8>(),
             copy_len,
         );
     }

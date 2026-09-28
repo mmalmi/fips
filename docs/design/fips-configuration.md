@@ -674,6 +674,13 @@ Ethernet transport sends raw frames via AF_PACKET SOCK_DGRAM sockets on Linux
 and BPF devices on macOS. Requires `CAP_NET_RAW`/root on Linux or root access
 to `/dev/bpf*` on macOS.
 
+A configured interface may be absent or administratively down at startup.
+The transport reports `down` while waiting and checks interface presence once
+per second. When the interface returns or is recreated, it replaces the data
+socket, receive worker, and beacon worker together, refreshing MAC and MTU.
+Binding failures retry with delays capped at 30 seconds. Stopping the node
+also stops a transport that is still waiting for its interface.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `interface` | string | *(required)* | Network interface name (e.g., `"eth0"`, `"enp3s0"`) |

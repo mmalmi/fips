@@ -5,6 +5,7 @@
 //! Works on wired Ethernet and WiFi interfaces (kernel mac80211 abstracts
 //! 802.11 transparently on Linux).
 
+mod binding;
 pub mod discovery;
 pub mod socket;
 mod socket_stats;
@@ -22,8 +23,9 @@ use discovery::{
 use socket::{AsyncPacketSocket, ETHERNET_BROADCAST, PacketSocket};
 use stats::EthernetStats;
 
+use binding::{Binding, BindingSupervisor};
 use secp256k1::XOnlyPublicKey;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -41,20 +43,14 @@ pub struct EthernetTransport {
     config: EthernetConfig,
     /// Current state.
     state: TransportState,
-    /// Async socket (None until started).
-    socket: Option<Arc<AsyncPacketSocket>>,
+    /// Current interface binding, shared with the recovery task.
+    binding: Arc<RwLock<Option<Arc<Binding>>>>,
     /// Channel for delivering received packets to Node.
     packet_tx: PacketTx,
-    /// Receive loop task handle.
-    recv_task: Option<JoinHandle<()>>,
-    /// Beacon sender task handle.
-    beacon_task: Option<JoinHandle<()>>,
-    /// Local MAC address (after start).
-    local_mac: Option<[u8; 6]>,
+    /// Watches interface presence and replaces the complete binding after churn.
+    binding_task: Option<JoinHandle<()>>,
     /// Interface name (from config).
     interface: String,
-    /// Effective MTU (interface MTU - 1 for frame type prefix).
-    effective_mtu: u16,
     /// Discovery buffer for discovered peers.
     discovery_buffer: Arc<DiscoveryBuffer>,
     /// Transport-level statistics.
@@ -85,13 +81,10 @@ impl EthernetTransport {
             name,
             config,
             state: TransportState::Configured,
-            socket: None,
+            binding: Arc::new(RwLock::new(None)),
             packet_tx,
-            recv_task: None,
-            beacon_task: None,
-            local_mac: None,
+            binding_task: None,
             interface,
-            effective_mtu: 1497, // default, updated on start
             discovery_buffer,
             stats,
             local_pubkey: None,
@@ -111,7 +104,7 @@ impl EthernetTransport {
 
     /// Get the local MAC address (only valid after start).
     pub fn local_mac(&self) -> Option<[u8; 6]> {
-        self.local_mac
+        self.current_binding().map(|binding| binding.local_mac)
     }
 
     /// Set the node's public key for beacon construction.
@@ -137,153 +130,49 @@ impl EthernetTransport {
     /// Socket-local diagnostics, unavailable before start or on unsupported platforms.
     pub(crate) fn socket_stats(&self) -> socket_stats::SocketStats {
         #[cfg(target_os = "linux")]
-        if let Some(socket) = &self.socket {
-            return socket.get_ref().socket_stats();
+        if let Some(binding) = self.current_binding() {
+            return binding.socket.get_ref().socket_stats();
         }
         socket_stats::SocketStats::default()
     }
 
-    /// Start the transport asynchronously.
-    ///
-    /// Creates the AF_PACKET socket, spawns the receive loop, and
-    /// optionally spawns the beacon sender task.
+    fn current_binding(&self) -> Option<Arc<Binding>> {
+        self.binding
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Start the interface supervisor. A missing or down interface remains
+    /// configured and is bound when it becomes available.
     pub async fn start_async(&mut self) -> Result<(), TransportError> {
         if !self.state.can_start() {
             return Err(TransportError::AlreadyStarted);
         }
-
+        let mut supervisor = BindingSupervisor::new(self)?;
         self.state = TransportState::Starting;
-
-        // Create and bind AF_PACKET socket
-        let raw_socket = PacketSocket::open(&self.config.interface, self.config.ethertype())?;
-
-        // Get local MAC and MTU
-        let local_mac = raw_socket.local_mac()?;
-        let if_mtu = raw_socket.interface_mtu()?;
-
-        // Effective MTU: interface MTU minus 3 bytes for frame header
-        // (1 byte frame type + 2 bytes LE payload length)
-        let effective_mtu = if let Some(configured_mtu) = self.config.mtu {
-            // Config MTU cannot exceed interface MTU - 3
-            configured_mtu.min(if_mtu.saturating_sub(3))
-        } else {
-            if_mtu.saturating_sub(3)
-        };
-        self.effective_mtu = effective_mtu;
-        self.local_mac = Some(local_mac);
-
-        // Set buffer sizes
-        raw_socket.set_recv_buffer_size(self.config.recv_buf_size())?;
-        raw_socket.set_send_buffer_size(self.config.send_buf_size())?;
-
-        // Wrap in async
-        let async_socket = raw_socket.into_async()?;
-        let socket = Arc::new(async_socket);
-        self.socket = Some(socket.clone());
-
-        let recv_task = tokio::spawn(ethernet_receive_loop(EthernetReceiveContext {
-            socket: socket.clone(),
-            transport_id: self.transport_id,
-            packet_tx: self.packet_tx.clone(),
-            mtu: self.effective_mtu,
-            discovery_enabled: self.config.discovery(),
-            discovery_buffer: self.discovery_buffer.clone(),
-            stats: self.stats.clone(),
-            local_mac,
-        }));
-        self.recv_task = Some(recv_task);
-
-        // Spawn beacon sender if announce is enabled
-        if self.config.announce() {
-            if let Some(pubkey) = self.local_pubkey {
-                let beacon_task = tokio::spawn(beacon_sender_loop(EthernetBeaconContext {
-                    socket: socket.clone(),
-                    pubkey,
-                    discovery_scope: self.config.discovery_scope().map(str::to_string),
-                    discovery_root: self.discovery_root.clone(),
-                    interval_secs: self.config.beacon_interval_secs(),
-                    stats: self.stats.clone(),
-                    transport_id: self.transport_id,
-                    interface: self.config.interface.clone(),
-                    ethertype: self.config.ethertype(),
-                }));
-                self.beacon_task = Some(beacon_task);
-            } else {
-                warn!(
-                    transport_id = %self.transport_id,
-                    "Announce enabled but no local pubkey set; beacons disabled"
-                );
-            }
-        }
-
+        supervisor.refresh().await;
+        self.binding_task = Some(tokio::spawn(supervisor.run()));
         self.state = TransportState::Up;
-
-        if let Some(ref name) = self.name {
-            info!(
-                name = %name,
-                interface = %self.interface,
-                mac = %format_mac(&local_mac),
-                mtu = effective_mtu,
-                if_mtu = if_mtu,
-                "Ethernet transport started"
-            );
-        } else {
-            info!(
-                interface = %self.interface,
-                mac = %format_mac(&local_mac),
-                mtu = effective_mtu,
-                if_mtu = if_mtu,
-                "Ethernet transport started"
-            );
-        }
-
         Ok(())
     }
 
-    /// Stop the transport asynchronously.
     pub async fn stop_async(&mut self) -> Result<(), TransportError> {
         if !self.state.is_operational() {
             return Err(TransportError::NotStarted);
         }
-
-        // Signal the socket to shut down. On macOS this writes to the
-        // shutdown pipe, waking the reader thread's select() immediately.
-        // On Linux this is a no-op (AsyncFd cancellation handles it).
-        if let Some(ref socket) = self.socket {
-            socket.shutdown();
-        }
-
-        // Abort tasks. On Linux, safe to await since all I/O is
-        // AsyncFd-based and cancellation-safe. On macOS, do NOT await —
-        // on a current_thread runtime the aborted task can't be polled
-        // while we're blocked on the JoinHandle, causing a deadlock.
-        if let Some(task) = self.beacon_task.take() {
+        self.binding
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = self.binding_task.take() {
             task.abort();
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = task.await;
-            }
+            let _ = task.await;
         }
-        if let Some(task) = self.recv_task.take() {
-            task.abort();
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = task.await;
-            }
-        }
-
-        // Drop socket
-        self.socket.take();
-        self.local_mac = None;
-
+        self.discovery_buffer.take();
         self.state = TransportState::Down;
-
-        info!(
-            transport_id = %self.transport_id,
-            interface = %self.interface,
-            "Ethernet transport stopped"
-        );
-
+        info!(transport_id = %self.transport_id, interface = %self.interface,
+            "Ethernet transport stopped");
         Ok(())
     }
 
@@ -300,15 +189,19 @@ impl EthernetTransport {
             return Err(TransportError::NotStarted);
         }
 
-        if data.len() > self.effective_mtu as usize {
+        let binding = self.current_binding().ok_or(TransportError::NotStarted)?;
+        if data.len() > binding.mtu as usize {
             return Err(TransportError::MtuExceeded {
                 packet_size: data.len(),
-                mtu: self.effective_mtu,
+                mtu: binding.mtu,
             });
         }
 
         let dest_mac = parse_mac_addr(addr)?;
-        let socket = self.socket.as_ref().ok_or(TransportError::NotStarted)?;
+        let mut shutdown = binding.shutdown.subscribe();
+        if *shutdown.borrow() {
+            return Err(TransportError::NotStarted);
+        }
 
         // Prepend frame type prefix and 2-byte LE payload length.
         // The length field lets the receiver trim Ethernet minimum-frame padding
@@ -319,7 +212,10 @@ impl EthernetTransport {
         frame.extend_from_slice(&(data.len() as u16).to_le_bytes());
         frame.extend_from_slice(data);
 
-        let bytes_sent = socket.send_to(&frame, &dest_mac).await?;
+        let bytes_sent = tokio::select! {
+            result = binding.socket.send_to(&frame, &dest_mac) => result?,
+            _ = shutdown.changed() => return Err(TransportError::NotStarted),
+        };
         self.stats.record_send(bytes_sent);
 
         trace!(
@@ -334,6 +230,22 @@ impl EthernetTransport {
     }
 }
 
+impl Drop for EthernetTransport {
+    fn drop(&mut self) {
+        if let Some(binding) = self
+            .binding
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            binding.shutdown();
+        }
+        if let Some(task) = self.binding_task.take() {
+            task.abort();
+        }
+    }
+}
+
 impl Transport for EthernetTransport {
     fn transport_id(&self) -> TransportId {
         self.transport_id
@@ -344,11 +256,16 @@ impl Transport for EthernetTransport {
     }
 
     fn state(&self) -> TransportState {
-        self.state
+        if self.state == TransportState::Up && self.current_binding().is_none() {
+            TransportState::Down
+        } else {
+            self.state
+        }
     }
 
     fn mtu(&self) -> u16 {
-        self.effective_mtu
+        self.current_binding()
+            .map_or(self.config.mtu.unwrap_or(1497), |b| b.mtu)
     }
 
     fn start(&mut self) -> Result<(), TransportError> {
@@ -504,8 +421,9 @@ async fn ethernet_receive_loop(ctx: EthernetReceiveContext) {
                 warn!(
                     transport_id = %transport_id,
                     error = %e,
-                    "Ethernet receive error"
+                    "Ethernet receive error; rebinding"
                 );
+                break;
             }
         }
     }
@@ -517,12 +435,8 @@ async fn ethernet_receive_loop(ctx: EthernetReceiveContext) {
 // Beacon Sender
 // ============================================================================
 
-/// Periodic beacon sender loop.
-///
-/// Detects stale AF_PACKET sockets (ENXIO / os error 6) that occur when
-/// the underlying veth interface is destroyed and recreated (e.g., during
-/// node churn in chaos tests). After `REOPEN_THRESHOLD` consecutive send
-/// failures, attempts to open a fresh socket on the same interface.
+/// Beacons use the same binding as data send and receive. The supervisor
+/// replaces all three together if either worker fails or the interface changes.
 struct EthernetBeaconContext {
     socket: Arc<AsyncPacketSocket>,
     pubkey: XOnlyPublicKey,
@@ -531,111 +445,23 @@ struct EthernetBeaconContext {
     interval_secs: u64,
     stats: Arc<EthernetStats>,
     transport_id: TransportId,
-    interface: String,
-    ethertype: u16,
 }
 
 async fn beacon_sender_loop(ctx: EthernetBeaconContext) {
-    let EthernetBeaconContext {
-        mut socket,
-        pubkey,
-        discovery_scope,
-        discovery_root,
-        interval_secs,
-        stats,
-        transport_id,
-        interface,
-        ethertype,
-    } = ctx;
-
-    /// Number of consecutive ENXIO errors before attempting socket reopen.
-    const REOPEN_THRESHOLD: u32 = 3;
-
-    let interval = tokio::time::Duration::from_secs(interval_secs);
-
-    debug!(
-        transport_id = %transport_id,
-        interval_secs,
-        "Beacon sender starting"
-    );
-
-    // Send an initial beacon immediately at startup
-    let beacon = build_current_beacon(&pubkey, discovery_scope.as_deref(), &discovery_root);
-    if let Err(e) = socket.send_to(&beacon, &ETHERNET_BROADCAST).await {
-        warn!(
-            transport_id = %transport_id,
-            error = %e,
-            "Failed to send initial beacon"
-        );
-    } else {
-        stats.record_beacon_sent();
-    }
-
-    let mut interval_timer = tokio::time::interval(interval);
-    interval_timer.tick().await; // consume the immediate first tick
-    let mut consecutive_errors: u32 = 0;
-
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(ctx.interval_secs));
     loop {
-        interval_timer.tick().await;
-
-        let beacon = build_current_beacon(&pubkey, discovery_scope.as_deref(), &discovery_root);
-        match socket.send_to(&beacon, &ETHERNET_BROADCAST).await {
-            Ok(_) => {
-                if consecutive_errors > 0 {
-                    debug!(
-                        transport_id = %transport_id,
-                        "Beacon send recovered after {} errors", consecutive_errors,
-                    );
-                }
-                consecutive_errors = 0;
-                stats.record_beacon_sent();
-                trace!(
-                    transport_id = %transport_id,
-                    "Beacon sent"
-                );
-            }
-            Err(e) => {
-                consecutive_errors += 1;
-                stats.record_send_error();
-
-                let is_enxio = format!("{e}").contains("os error 6");
-
-                // Log only the first error in a streak to avoid log spam
-                if consecutive_errors == 1 {
-                    warn!(
-                        transport_id = %transport_id,
-                        error = %e,
-                        "Failed to send beacon"
-                    );
-                }
-
-                if is_enxio && consecutive_errors >= REOPEN_THRESHOLD {
-                    info!(
-                        transport_id = %transport_id,
-                        consecutive_errors,
-                        interface = %interface,
-                        "Stale veth detected (ENXIO), attempting socket reopen"
-                    );
-                    match reopen_beacon_socket(&interface, ethertype) {
-                        Ok(new_socket) => {
-                            socket = Arc::new(new_socket);
-                            consecutive_errors = 0;
-                            info!(
-                                transport_id = %transport_id,
-                                interface = %interface,
-                                "Beacon socket reopened successfully"
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                transport_id = %transport_id,
-                                error = %e,
-                                interface = %interface,
-                                "Failed to reopen beacon socket, will retry"
-                            );
-                        }
-                    }
-                }
+        interval.tick().await;
+        let beacon = build_current_beacon(
+            &ctx.pubkey,
+            ctx.discovery_scope.as_deref(),
+            &ctx.discovery_root,
+        );
+        match ctx.socket.send_to(&beacon, &ETHERNET_BROADCAST).await {
+            Ok(_) => ctx.stats.record_beacon_sent(),
+            Err(error) => {
+                ctx.stats.record_send_error();
+                warn!(transport_id = %ctx.transport_id, %error, "Ethernet beacon send failed; rebinding");
+                break;
             }
         }
     }
@@ -648,18 +474,6 @@ fn build_current_beacon(
 ) -> Vec<u8> {
     let root = *discovery_root.lock().unwrap_or_else(|e| e.into_inner());
     build_topology_beacon(pubkey, scope, root)
-}
-
-/// Attempt to open a fresh AF_PACKET socket for beacon sending.
-///
-/// This is called when the beacon sender detects that the underlying veth
-/// has been recreated and the old socket FD is stale (ENXIO).
-fn reopen_beacon_socket(
-    interface: &str,
-    ethertype: u16,
-) -> Result<AsyncPacketSocket, TransportError> {
-    let raw_socket = PacketSocket::open(interface, ethertype)?;
-    raw_socket.into_async()
 }
 
 // ============================================================================
@@ -749,8 +563,8 @@ mod tests {
             previous_wire.unwrap(),
             discovery::build_scoped_beacon(&pubkey, Some("scope-a"))
         );
-        assert!(transport.socket.is_none());
-        assert!(transport.beacon_task.is_none());
+        assert!(transport.current_binding().is_none());
+        assert!(transport.binding_task.is_none());
     }
 
     #[test]

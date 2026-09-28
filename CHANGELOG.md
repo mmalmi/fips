@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback. Preserve mappings when scans fail and honor DNS renewals during
   draining. Keep the OpenWrt gateway disabled until explicitly configured.
   Adapted from gateway fixes in jmcorgan/fips.
-
+- Recover Ethernet data and discovery together when an interface appears,
+  goes down, or is recreated; refresh MAC/MTU and release failed socket binds.
+  Adapted from the dynamic-interface ideas in jmcorgan/fips.
 - Keep ephemeral private keys in memory and preserve any saved identity key.
   Refuse persistent startup when the key path cannot be inspected, and prefer
   the published public identity in `fipsctl address`.
