@@ -25,7 +25,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::{Mutex as AsyncMutex, Semaphore, mpsc, watch},
+    sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock, Semaphore, mpsc, watch},
     task::{JoinHandle, JoinSet},
 };
 
@@ -74,6 +74,7 @@ pub use settlement::SettlementReport;
 use settlement::{BuyerSettlement, SellerSettlement, SettlementKind};
 
 mod renewal;
+mod renewal_workers;
 use renewal::Renewal;
 pub use renewal::RenewalPolicy;
 
@@ -310,7 +311,7 @@ pub struct Controller {
     channel_work: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
     #[cfg(feature = "measurements")]
     payment_progress: payment_progress::ProgressRegistry,
-    renewal_work: AsyncMutex<()>,
+    renewal_work: AsyncRwLock<()>,
     route_work: AsyncMutex<()>,
     refresh_work: AsyncMutex<()>,
     refresh_checks: Mutex<BTreeMap<String, refresh::RefreshCheck>>,
@@ -440,7 +441,7 @@ impl Controller {
             channel_work: Mutex::new(BTreeMap::new()),
             #[cfg(feature = "measurements")]
             payment_progress: Default::default(),
-            renewal_work: AsyncMutex::new(()),
+            renewal_work: AsyncRwLock::new(()),
             route_work: AsyncMutex::new(()),
             refresh_work: AsyncMutex::new(()),
             refresh_checks: Mutex::new(BTreeMap::new()),

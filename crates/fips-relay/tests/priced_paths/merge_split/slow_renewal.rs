@@ -1,7 +1,25 @@
 //! Delayed replacement funding preserves other neighbors' paid service.
 use super::*;
-use cashu_service::spilman_client_store_path;
+use cashu_service::{simulation::MintProxy, spilman_client_store_path};
 use pending_funding::{healthy_progress, journal, read};
+
+async fn start() -> (Bench, MintProxy, String, String) {
+    let (mut bench, proxy) = bench::start_with_renewal_proxy(0, 122).await;
+    bench.network.set_link("2", "3", SimLink::default());
+    converge(&bench, true, "connected mesh before slow renewal").await;
+    for (source, destination, tag) in [(2, 0, 20), (2, 5, 21)] {
+        watch(&bench, source, destination).await;
+        traffic(&mut bench, source, destination, tag).await;
+    }
+    payments(&bench).await;
+    let hops = hop_usage(&bench).await;
+    (
+        bench,
+        proxy,
+        hops[&(2, 1)].channel.clone(),
+        hops[&(2, 3)].channel.clone(),
+    )
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_renewal_funding_preserves_healthy_credit_and_original_authority() {
@@ -11,18 +29,8 @@ async fn slow_renewal_funding_preserves_healthy_credit_and_original_authority() 
 }
 
 async fn exercise() {
-    let (mut bench, proxy) = bench::start_with_renewal_proxy(0, 122).await;
-    bench.network.set_link("2", "3", SimLink::default());
-    converge(&bench, true, "connected mesh before slow renewal").await;
-    for (source, destination, tag) in [(2, 0, 20), (2, 5, 21)] {
-        watch(&bench, source, destination).await;
-        traffic(&mut bench, source, destination, tag).await;
-    }
-    payments(&bench).await;
+    let (mut bench, proxy, healthy, previous) = start().await;
     let original = journal(&bench, 2);
-    let hops = hop_usage(&bench).await;
-    let healthy = hops[&(2, 1)].channel.clone();
-    let previous = hops[&(2, 3)].channel.clone();
     let store = spilman_client_store_path(&bench.wallets[2]);
     let saved = read(&store);
     let pending_store = store.clone();
@@ -139,6 +147,125 @@ async fn exercise() {
     }
     payments(&bench).await;
     collect(bench).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_neighbor_close_does_not_block_newly_due_renewal() {
+    tokio::time::timeout(Duration::from_secs(480), independent_renewal())
+        .await
+        .expect("independent renewal and settlement deadline");
+}
+
+async fn independent_renewal() {
+    let (mut bench, proxy, healthy, previous) = start().await;
+    let saved = read(&spilman_client_store_path(&bench.wallets[2]));
+    let funding: Vec<cashu::nuts::Proof> = serde_json::from_str(
+        saved["funding"][&previous]["funding_proofs_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let originals: std::collections::BTreeSet<_> = funding
+        .iter()
+        .map(|proof| proof.y().unwrap().to_string())
+        .collect();
+    assert!(!originals.is_empty());
+    let (mut committed, release) = proxy.state.pause_matching_swap_reply(move |swap| {
+        swap.inputs().len() == originals.len()
+            && swap
+                .inputs()
+                .iter()
+                .all(|proof| proof.y().is_ok_and(|y| originals.contains(&y.to_string())))
+    });
+    tokio::time::timeout(Duration::from_secs(120), async {
+        for tag in 30..50 {
+            tokio::select! {
+                signal = &mut committed => {
+                    signal.expect("original neighbor close committed at the mint");
+                    return;
+                }
+                _ = traffic(&mut bench, 2, 5, tag) => {}
+            }
+        }
+        committed.await.unwrap();
+    })
+    .await
+    .expect("automatic renewal must reach the held close");
+    let held = journal(&bench, 2);
+    assert_eq!(held["renewals"][&previous]["completed"], false);
+    assert!(held["renewals"][&healthy].is_null());
+    assert!(held["buyer_settlements"][&previous]["report"].is_null());
+    assert!(held["buyer_settlements"][&previous]["payment"].is_object());
+
+    // The slow provider holds its own wallet, not the buyer's. Make the other
+    // channel due only now, after the first renewal is already waiting.
+    let started = Instant::now();
+    let renewed = tokio::time::timeout(Duration::from_secs(20), async {
+        for tag in 70..90 {
+            traffic(&mut bench, 2, 0, tag).await;
+            let active = hop_usage(&bench).await;
+            if active.get(&(2, 1)).is_some_and(|hop| {
+                hop.channel != healthy
+                    && hop.submitted > 0
+                    && bench.sellers[1]
+                        .channel_usage(&hop.channel)
+                        .unwrap()
+                        .paid_msat
+                        > 0
+            }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+    let after = journal(&bench, 2);
+    let old_usage = bench.sellers[1].channel_usage(&healthy).unwrap();
+    eprintln!(
+        "independent renewal: renewed={renewed}, elapsed={:.3}s, healthy_intent={}, old_submitted={}, slow_close_pending={}",
+        started.elapsed().as_secs_f64(),
+        after["renewals"][&healthy].is_object(),
+        old_usage.submitted_msat,
+        after["buyer_settlements"][&previous]["report"].is_null(),
+    );
+    assert!(
+        !release.is_closed(),
+        "observation precedes the mint timeout"
+    );
+    assert!(after["buyer_settlements"][&previous]["report"].is_null());
+    assert_eq!(after["renewals"][&previous]["completed"], false);
+    if renewed {
+        assert_eq!(after["renewals"][&healthy]["completed"], true);
+        assert_eq!(after["funding"].as_object().unwrap().len(), 3);
+    }
+    let budget = bench.controllers[2].funding_budget().await.unwrap();
+    assert!(budget.locked_sat <= bench.controller_policy.max_locked_sat);
+    assert!(budget.exposure_sat <= bench.controller_policy.max_wallet_spend_sat);
+    let controller = bench.controllers[2].clone();
+    let mut pause = Box::pin(controller.pause_renewals());
+    std::future::poll_fn(|cx| {
+        use std::{future::Future, task::Poll};
+        assert!(pause.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(30), pause)
+        .await
+        .expect("orderly pause drains the original close and replacement")
+        .unwrap();
+    assert_eq!(journal(&bench, 2)["renewals_paused"], true);
+    controller.resume_renewals().await.unwrap();
+    for (destination, tag) in [(0, 100), (5, 101)] {
+        traffic(&mut bench, 2, destination, tag).await;
+    }
+    payments(&bench).await;
+    collect(bench).await;
+    assert!(
+        renewed,
+        "one neighbor's close blocked another neighbor's renewal"
+    );
 }
 
 async fn collect(mut bench: Bench) {

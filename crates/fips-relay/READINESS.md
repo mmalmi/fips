@@ -1852,6 +1852,39 @@ in both modes, and the TLS process/status case pass. The r24 package predates
 this status-field addition; historical timeout causes and current-device
 acceptance remain open. See the [observation semantics](../../testing/relay-cadence/README.md).
 
+A separate six-node regression reproduces interference between neighbor renewals.
+It holds the real mint's successful close response for one provider, then drives
+the source's other channel to its renewal threshold. The previous serial recovery
+pass leaves that second channel without a renewal intent for the full 20-second
+observation window. Releasing the held response restores service; all 1,536 test
+sats reconcile before the regression reports failure.
+
+Renewals now have an independent two-second scan and up to sixteen owned workers,
+with one claim per channel. Newly due channels can advance while an earlier close
+waits. Each waiting worker retains its selected renewal, releasing the full
+journal snapshot before network work. The existing per-channel payment/settlement
+lock and serialized wallet writes
+remain; this does not make funding independent of another operation holding the
+same wallet. Orderly pause waits for active renewals, graceful shutdown drains
+owned work and forced cancellation aborts it. No peer request, journal field,
+funding authority or dependency changes.
+
+The final six-node runs complete the healthy renewal and credit new traffic after
+11.776 seconds with optional features and 11.932 seconds without them, while the
+other close remains held. Each checks pause/drain and reconciles all 1,536 test
+sats. The existing delayed-funding scenario also passes in both profiles. All 303
+relay unit tests, 289 without optional features, both complete seven-test controller
+suites, strict all-target lint in both modes and the TLS process case pass on the
+same frozen source graph. The source-size gate and changed-file formatting pass.
+Reproduce the two neighbor-isolation cases with the `merge_split::slow_renewal::`
+filter in the `priced_paths` test target and the development dependency overrides
+in [funding and recovery](FUNDING-COSTS.md).
+
+This is a demonstrated scheduling fault and controlled recovery evidence, not an
+attribution of the earlier intermittent TLS, payment or delivery failures. Current
+ARM64 packaging and physical-device acceptance of this scheduler change remain
+outstanding.
+
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during
 automatic renewal, and an all-feature route-change run failed ordinary delivery

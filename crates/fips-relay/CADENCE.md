@@ -70,8 +70,17 @@ them to keep acting after controller ownership is returned. Already-started
 blocking disk work retains its existing locks until completion. Durable financial
 intents still require the existing recovery procedures. The explicit flush visits
 all selected channels before returning; unrelated background workers keep running
-while it waits. Route recovery and renewal are separate workers and do not yet
-have a demonstrated fairness bound under many simultaneous unavailable peers.
+while it waits.
+
+Automatic renewal scans every two seconds independently of route recovery. At
+most one worker per retained channel, and sixteen workers total, can settle and
+replace channels. A slow neighbor's close cannot stop newly due renewals from
+being scheduled for other neighbors. A per-channel claim also excludes concurrent
+manual recovery of the same renewal. Pausing waits for active renewal operations
+before preventing new ones; shutdown drains them and forced cancellation aborts
+owned tasks. Wallet writes remain serialized, so a slow mint operation holding
+the same wallet can still delay new funding. There is no demonstrated fairness
+bound under many simultaneous unavailable peers.
 
 The shared control transport keeps the existing 32 total / four-per-peer TCP
 connection limits. Up to 16 live outgoing requests, including queued requests,

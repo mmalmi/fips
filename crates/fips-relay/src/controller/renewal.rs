@@ -195,7 +195,7 @@ impl Controller {
     /// Wait for current renewal work before preventing new automatic purchases.
     /// Keep incomplete intents for explicit recovery; never discard funding.
     pub async fn pause_renewals(&self) -> Result<(), String> {
-        let _work = self.renewal_work.lock().await;
+        let _work = self.renewal_work.write().await;
         self.change(|j| {
             j.renewals_paused = true;
             Ok(())
@@ -204,7 +204,7 @@ impl Controller {
     }
 
     pub async fn resume_renewals(&self) -> Result<(), String> {
-        let _work = self.renewal_work.lock().await;
+        let _work = self.renewal_work.write().await;
         self.change(|j| {
             j.renewals_paused = false;
             Ok(())
@@ -274,10 +274,20 @@ impl Controller {
     }
 
     pub(super) async fn maintain_renewals(&self) -> Result<(), String> {
-        let _work = self.renewal_work.lock().await;
+        let (pending, mut first_error) = self.pending_renewals().await?;
+        for id in pending {
+            if let Err(error) = self.resume_renewal(&id).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    pub(super) async fn pending_renewals(&self) -> Result<(Vec<String>, Option<String>), String> {
+        let _work = self.renewal_work.read().await;
         let snapshot = self.snapshot().await?;
         if snapshot.renewals_paused {
-            return Ok(());
+            return Ok((Vec::new(), None));
         }
         let mut first_error = None;
         if let Some(policy) = &self.policy.renewal {
@@ -303,19 +313,45 @@ impl Controller {
                 }
             }
         }
-        let snapshot = self.snapshot().await?;
-        for (id, renewal) in snapshot.renewals {
-            if !renewal.completed
-                && let Err(error) = self.advance_renewal(&id, renewal).await
-            {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        let pending = self
+            .snapshot()
+            .await?
+            .renewals
+            .into_iter()
+            .filter_map(|(id, renewal)| (!renewal.completed).then_some(id))
+            .collect();
+        Ok((pending, first_error))
     }
 
-    // renewal_work excludes another replacement worker and orderly pausing.
-    // Settlement takes the payment mutex only for its own final balance/refund.
+    pub(super) async fn resume_renewal(&self, id: &str) -> Result<(), String> {
+        // Readers allow independent channels to progress. An orderly pause
+        // waits for them all before persisting the gate against new work.
+        let _work = self.renewal_work.read().await;
+        let claim = format!("renew/{id}");
+        if !self.accepting.lock().unwrap().insert(claim.clone()) {
+            return Ok(());
+        }
+        let _claim = AcceptGuard {
+            claims: &self.accepting,
+            id: claim,
+        };
+        let renewal = {
+            let mut snapshot = self.snapshot().await?;
+            if snapshot.renewals_paused {
+                return Ok(());
+            }
+            snapshot.renewals.remove(id)
+        };
+        if let Some(renewal) = renewal
+            && !renewal.completed
+        {
+            self.advance_renewal(id, renewal).await?;
+        }
+        Ok(())
+    }
+
+    // The caller owns this renewal's claim and a shared pause guard. Settlement
+    // separately serializes payment and closure of this particular channel.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
         if !self
             .snapshot()

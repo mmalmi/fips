@@ -1,6 +1,7 @@
 //! Resume retained work and supervise control and payment workers.
 use super::cadence::SCAN_INTERVAL;
 use super::payments::PaymentWorkers;
+use super::renewal_workers::RenewalWorkers;
 use super::*;
 use crate::measurements::{Operation, measure};
 
@@ -9,6 +10,14 @@ impl Controller {
     /// allocate a new funding identity or another channel. Expired/changed routes
     /// remain stopped until a separate replacement agreement is authorized.
     pub async fn resume_pending(&self) -> Result<(), String> {
+        let mut error = self.resume_recovery().await.err();
+        if let Err(reason) = self.maintain_renewals().await {
+            error.get_or_insert(reason);
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    async fn resume_recovery(&self) -> Result<(), String> {
         self.withdraw_expired_purchases().await?;
         self.retire_unfunded_reservations().await?;
         self.withdraw_disconnected_purchases().await?;
@@ -113,9 +122,6 @@ impl Controller {
         if let Err(error) = self.resume_settlements().await {
             first_error.get_or_insert(error);
         }
-        if let Err(error) = self.maintain_renewals().await {
-            first_error.get_or_insert(error);
-        }
         if let Err(error) = self.retire_history().await {
             first_error.get_or_insert(error);
         }
@@ -131,6 +137,7 @@ pub struct ControllerTasks {
     payments: JoinHandle<()>,
     checkpoints: JoinHandle<()>,
     recovery: JoinHandle<()>,
+    renewals: JoinHandle<()>,
     refresh: JoinHandle<()>,
     stopping: watch::Sender<bool>,
 }
@@ -150,6 +157,7 @@ impl ControllerTasks {
         let mut stop_payments = stop_requests.clone();
         let mut stop_checkpoints = stop_requests.clone();
         let mut stop_recovery = stop_requests.clone();
+        let mut stop_renewals = stop_requests.clone();
         let mut stop_refresh = stop_requests.clone();
         let handler = controller.clone();
         let requests = tokio::spawn(async move {
@@ -243,6 +251,25 @@ impl ControllerTasks {
                 }
             }
         });
+        let renewer = controller.clone();
+        let renewals = tokio::spawn(async move {
+            let mut workers = RenewalWorkers::default();
+            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stop_renewals.changed() => break,
+                    _ = ticker.tick() => {
+                        if let Err(error) = workers.tick(&renewer).await {
+                            *renewer.last_error.lock().unwrap() = Some(error);
+                        }
+                    }
+                }
+            }
+            if let Err(error) = workers.drain().await {
+                *renewer.last_error.lock().unwrap() = Some(error);
+            }
+        });
         let recovery = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(2));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -250,7 +277,7 @@ impl ControllerTasks {
                 tokio::select! {
                     _ = stop_recovery.changed() => break,
                     _ = ticker.tick() => {
-                        if let Err(error) = controller.resume_pending().await {
+                        if let Err(error) = controller.resume_recovery().await {
                             *controller.last_error.lock().unwrap() = Some(error);
                         }
                     }
@@ -262,6 +289,7 @@ impl ControllerTasks {
             payments,
             checkpoints,
             recovery,
+            renewals,
             refresh,
             stopping,
         })
@@ -274,6 +302,7 @@ impl ControllerTasks {
         let _ = (&mut self.payments).await;
         let _ = (&mut self.checkpoints).await;
         let _ = (&mut self.recovery).await;
+        let _ = (&mut self.renewals).await;
         let _ = (&mut self.refresh).await;
         incoming
     }
@@ -284,6 +313,7 @@ impl Drop for ControllerTasks {
         self.payments.abort();
         self.checkpoints.abort();
         self.recovery.abort();
+        self.renewals.abort();
         self.refresh.abort();
     }
 }
