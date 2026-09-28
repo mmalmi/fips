@@ -14,6 +14,13 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+The current r21 ARM64 package includes the withdrawal-recovery read bounds and
+Ethernet and gateway fixes at the source revision recorded below. Its matching
+source bundle includes the partitioned-restart fixture. All twelve isolated Linux
+process cases pass against the exact packaged executable. This supersedes r20
+package acceptance; the intermittent recovery timeouts, current-device checks and
+other outstanding requirements remain open.
+
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
 update existing credit. The unused manual `Open` and `StopForwarding` operations
@@ -732,9 +739,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `f84976ac03` includes SDK `8d9befb4d773` and CDK
-`fad41f2eb0c3`, contains 35,708 inventoried files and resolves 693 packages,
-including 672 vendored registry packages. All 2,757
+The source bundle at `8b62fa1bcd` includes SDK `948b92afec21` and CDK
+`dd45a9c0861b`, contains 36,066 inventoried files and resolves 697 packages,
+including 676 vendored registry packages. All 2,772
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -744,8 +751,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,078,592
-bytes, static and stripped. The unsigned APK is 11,487,340 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,149,088
+bytes, static and stripped. The unsigned APK is 11,521,654 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -776,7 +783,10 @@ all 384 test sats. The three seeded WebSocket cases also interrupt the physical
 stream while every service stays running. Fresh authenticated connectivity,
 bidirectional delivery and a new cumulative payment recover through the original
 channels, preserving funding history and spending limits. The plaintext seed
-also recovers from silent loss on retained sockets. After the middle-relay crash,
+also recovers from silent loss on retained sockets. The three seeded cases keep
+the carrier unavailable across the middle-relay restart, require repeated rejected
+reconnects without new funding or restored spending allowance, then recover fresh
+authentication and paid traffic after the carrier returns. After that crash,
 all five carrier cases automatically replace channels consumed by retained
 crash exposure before the fixed round-trip cohort. The old exposure remains
 recorded and unbilled, and the original spending limits stay in force. The TLS
@@ -1108,8 +1118,8 @@ PostgreSQL compilation, and native workspace formatting pass. Runtime acceptance
 uses SQLite and local test money; SDK and relay executable sources are unchanged.
 
 Legacy bulk enumeration retains its existing behavior. Record admission does not
-reserve physical storage or grant spending authority. The r20 package predates
-both configured-read extensions.
+reserve physical storage or grant spending authority. The r21 package includes
+both configured-read extensions and passes the isolated Linux process cases.
 
 These bounds cover individual records crossing the storage interface, not SQL
 engine memory, total wallet/custody capacity, uncapped SDK stores or other native
@@ -1149,10 +1159,10 @@ All 190 shared SQL/SQLite tests, 420 SDK tests (one opt-in soak excluded), 301 r
 unit tests, fee-bearing paid settlement, interrupted-funding recovery after route
 expiry and seeded WebSocket restart/recovery pass. Strict native, SDK and relay
 lint, native workspace formatting and changed SDK formatting pass. PostgreSQL
-has compilation coverage only. These checks use local test money. The r20 package
-predates these read-bound extensions. Other wallet stores and queries, combined
-interrupted transitions, physical storage capacity and current-device acceptance
-remain open.
+has compilation coverage only. These checks use local test money. The r21 package
+includes these read-bound extensions and passes the isolated Linux process cases.
+Other wallet stores and queries, combined interrupted transitions, physical storage
+capacity and current-device acceptance remain open.
 
 
 ## Native mint response bounds

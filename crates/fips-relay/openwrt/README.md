@@ -22,7 +22,7 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `f84976ac03` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+r21 build at `8b62fa1bcd` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 24.0 MiB;
 its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
 the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
 against the packaged executable, both [customer entry-restart cases](#customer-entry-restart),
@@ -204,6 +204,9 @@ exhausts and renews paid allowances, crashes/restarts the middle relay and settl
 all original test funds. The three seeded WebSocket cases also drop the physical
 stream while every service keeps running, then require delivery and a new
 cumulative payment through the original channels with preserved spending limits.
+They also restart the middle relay while the carrier rejects reconnects, preserve
+funding identities and budgets during the partition, then recover fresh
+authentication and paid traffic after the carrier returns.
 The TLS cases also check certificate/handshake rejection
 before peer admission or spending. Verify both executables and the source manifest
 afterward. Loopback TLS does not establish remote proxy or radio acceptance.
