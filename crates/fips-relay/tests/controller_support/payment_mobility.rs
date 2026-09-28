@@ -268,9 +268,9 @@ pub(super) async fn exercise(
         sellers,
     };
     // Complementary payment faults share the original traffic budget: measured
-    // runs lose an applied reply; ordinary runs delay a request before handling.
+    // runs lose an update and an applied reply; ordinary runs delay handling.
     #[cfg(feature = "measurements")]
-    payment_replies::accepted_update_reply_loss_recovers_automatically(
+    payment_replies::lost_updates_and_replies_recover_automatically(
         root,
         &mut traffic,
         &payment_gate.replies,

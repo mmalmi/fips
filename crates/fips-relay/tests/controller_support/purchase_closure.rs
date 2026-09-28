@@ -1,6 +1,74 @@
 //! Cancel acceptance, then hold a real Seal while another route is requested.
 use super::*;
 
+pub(super) struct BudgetSnapshot {
+    limit: u64,
+    retired: u64,
+    authorizations: std::collections::BTreeMap<String, u64>,
+}
+
+impl BudgetSnapshot {
+    pub(super) fn read(root: &std::path::Path, node: usize) -> Self {
+        let path = root.join(format!("buyer-{node}/buyer.json"));
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        Self {
+            limit: saved["total_budget_sat"].as_u64().unwrap(),
+            retired: saved["history"]["authorized_sat"].as_u64().unwrap_or(0),
+            authorizations: saved["channels"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(id, channel)| (id.clone(), channel["authorized_sat"].as_u64().unwrap()))
+                .collect(),
+        }
+    }
+
+    pub(super) fn assert_repurchase(
+        &self,
+        root: &std::path::Path,
+        node: usize,
+        buyer: &BuyerAuthorizer,
+    ) {
+        let after = Self::read(root, node);
+        assert_eq!(
+            after.limit, self.limit,
+            "repurchase preserves the original budget"
+        );
+        assert_eq!(
+            after.retired, self.retired,
+            "repurchase preserves retired obligations"
+        );
+        for (id, authorized) in &self.authorizations {
+            assert_eq!(
+                after.authorizations.get(id),
+                Some(authorized),
+                "repurchase preserves every closed channel's signed obligation"
+            );
+        }
+        // Session reports can use the new route before the next application
+        // payload. Their payments may reduce the budget, but need real evidence.
+        let mut added = 0;
+        for (id, authorized) in &after.authorizations {
+            if !self.authorizations.contains_key(id) {
+                assert!(
+                    *authorized <= buyer.evidence_msat(id).unwrap().div_ceil(1_000),
+                    "new authorization requires locally observed usage"
+                );
+                added += authorized;
+            }
+        }
+        let remaining = self.limit - self.retired - self.authorizations.values().sum::<u64>();
+        assert!(
+            buyer.remaining_budget_sat().unwrap() <= remaining - added,
+            "repurchase cannot reset lifetime authorization"
+        );
+        if added > 0 {
+            eprintln!("repurchase node={node} new evidence-backed authorization={added} sat");
+        }
+    }
+}
+
 pub(super) async fn exercise(
     controllers: &[Arc<Controller>],
     services: &[ControllerServices],

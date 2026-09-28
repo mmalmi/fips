@@ -137,11 +137,8 @@ async fn controller_scenario(
             let mut config = Config::new();
             config.node.identity.nsec =
                 Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
-            config.node.control.enabled = false;
-            if route_change && (1..=3).contains(&i) {
-                config.node.control.enabled = true;
-                config.node.control.socket_path = root.path().join(format!("native-{i}.sock")).to_str().unwrap().into();
-            }
+            config.node.control.enabled = cfg!(unix);
+            config.node.control.socket_path = root.path().join(format!("native-{i}.sock")).to_str().unwrap().into();
             config.node.discovery.nostr.enabled = false;
             config.node.discovery.lan.enabled = false;
             config.node.discovery.local.enabled = false;
@@ -428,7 +425,7 @@ async fn controller_scenario(
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![round; 1_000];
                 payload[0] = source as u8;
-                tokio::time::timeout(Duration::from_secs(30), async {
+                let delivery = tokio::time::timeout(Duration::from_secs(30), async {
                     loop {
                         nodes[source].send_datagram(peers[destination], 44_740, 44_740, payload.clone()).await.unwrap();
                         let mut received = Vec::new();
@@ -439,13 +436,20 @@ async fn controller_scenario(
                             result.unwrap();
                             if received.iter().any(|m| m.data.as_slice() == payload) { break; }
                         }
+                        #[cfg(unix)]
+                        if !automatic_renewal {
+                            controller_support::delivery_snapshot(root.path(), &peers).await;
+                        }
                         assert!(automatic_renewal,
-                            "ordinary delivery needed a retry: round={round} direction={source}->{destination}; errors={:?}; usage={:?}",
+                            "ordinary delivery needed a retry: round={round} direction={source}->{destination}; received={:?}; errors={:?}; usage={:?}",
+                            received.iter().map(|m| (m.source_port, m.destination_port, m.data.len(), m.data.as_slice().iter().copied().take(2).collect::<Vec<_>>())).collect::<Vec<_>>(),
                             errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>());
                     }
                 })
-                .await
-                .unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
+                .await;
+                #[cfg(unix)]
+                if delivery.is_err() { controller_support::delivery_snapshot(root.path(), &peers).await; }
+                delivery.unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
             }
             for controller in &controllers {
                 assert!(controller.locked_capital_sat().await.unwrap() <= capacity * 2);
@@ -779,7 +783,7 @@ async fn controller_scenario(
                     "the unsupported remainder stays unpaid after settlement");
                 assert_eq!(usage.paid_msat, buyers[2].authorized_sat(&p.channel.id).unwrap()*1000);
             }
-            let remaining: Vec<_> = buyers.iter().map(|b| b.remaining_budget_sat().unwrap()).collect();
+            let budgets: Vec<_> = (0..buyers.len()).map(|i| purchase_closure::BudgetSnapshot::read(root.path(), i)).collect();
             let (forward, reverse) = tokio::join!(
                 controllers[0].buy_route(peers[4]),
                 controllers[4].buy_route(peers[0])
@@ -789,9 +793,8 @@ async fn controller_scenario(
             assert_ne!(forward.channel.id, a.channel.id);
             assert_ne!(reverse.channel.id, b.channel.id);
             assert_eq!(controllers[0].buy_route(peers[4]).await.unwrap(), forward);
-            for (buyer, left) in buyers.iter().zip(remaining) {
-                assert_eq!(buyer.remaining_budget_sat().unwrap(), left,
-                    "repurchase cannot reset lifetime authorization");
+            for (i, (buyer, budget)) in buyers.iter().zip(budgets).enumerate() {
+                budget.assert_repurchase(root.path(), i, buyer);
             }
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![117; 1_000];

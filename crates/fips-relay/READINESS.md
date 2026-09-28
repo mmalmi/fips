@@ -122,7 +122,7 @@ recovery. Current-device and physical power-loss acceptance remain pending.
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery and payment timeouts described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
@@ -1407,16 +1407,28 @@ payment checks below cover two distinct interruption boundaries.
 See the [reproducible harness](../../testing/chaos/README.md#paid-ethernet-acceptance)
 for its configuration and runtime requirements.
 
-With `measurements` enabled, the five-node controller test discards a successful
-Update reply only after the real payment handler has persisted the received
-balance and seller credit. Another neighbor keeps paying while the reply is held.
-After it is discarded, the first recovery request must be Usage; the automatic
-scheduler acknowledges the saved balance without repeating that cumulative
-Update, then pays for further traffic. Funding identities and the original
-64-sat lifetime limits remain unchanged. The ordinary feature mode instead pauses
-a request before handling. Both scenarios pass their held-settlement phase and
-complete test-fund collection. Recovery itself uses no manual payment flush or
-settlement; this is a lost-response test, not a process-crash test.
+With `measurements` enabled, the five-node controller test loses payments on both
+sides of the real handler. First it discards a successful Update reply after the
+handler has persisted the payment and seller credit. Another neighbor keeps paying
+while that reply is held. Recovery starts with Usage and acknowledges the retained
+credit without repeating that cumulative Update. The same scenario's next traffic
+then loses a durably authorized Update before the handler applies it. Seller credit
+must remain unchanged while it is held; automatic recovery must reconcile Usage
+and send an actual Update. Unchanged buyer evidence requires exactly the retained
+balance, while additional evidence may support a higher cumulative payment.
+Neither interruption changes funding identities, purchase records or funding
+budgets. The ordinary feature mode instead pauses a request before handling.
+
+Repurchase checks preserve the original 64-sat lifetime limit, retired obligations
+and every closed channel's authorization. They allow only evidence-backed payments
+on new channels: session reports can use a replacement route before its next
+application packet. A former equality check failed when the remaining budget
+legitimately decreased; later runs observed these additional one-sat authorizations
+with all old obligations intact. Final focused checks pass in both feature modes,
+including held settlement and collection of all 640 test sats, as does strict
+all-target lint. Recovery itself uses no manual payment flush or settlement.
+These are test-only changes with no new wire messages or dependency versions;
+the broader intermittent failures below remain open.
 
 The optional `--payment-faults` Ethernet run passes all 20 phases in about
 176 seconds with `testbench,measurements` binaries. Reverse carrier loss lasts
@@ -1762,6 +1774,19 @@ renewal with 8,000 msat submitted and 6,000 paid. Later passes do not explain ei
 failure, or attribute the original intermittent delivery/payment timeouts to the
 retired-channel fixture defect. No production-readiness claim follows from these
 bounded local checks.
+
+Broader five-node controller runs also retained two failures before the new
+payment-loss or repurchase checks: a no-default-feature run timed out during
+automatic renewal, and an all-feature route-change run failed ordinary delivery
+before changing topology. Each suite had six passes and one failure. A focused
+renewal pass and two subsequent route-change passes do not establish their causes.
+Failure-only diagnostics now query every generated node's routing, sessions and
+tree within a four-second budget, retain bounded unfinished funding/offer and
+active-purchase projections, and report the received batch's lengths and test tags.
+The earlier ordinary-delivery errors did not distinguish a receive timeout from
+a nonmatching batch. Delivery deadlines and retry limits remain unchanged; no
+wallet secrets are included in the diagnostics. These failures prevent broad
+controller-readiness acceptance despite the focused payment checks above.
 
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed
