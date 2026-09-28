@@ -14,13 +14,20 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r22 ARM64 package includes the wallet seed identity check, withdrawal
-recovery read bounds, and Ethernet and gateway fixes at the source revision below.
+The current r23 ARM64 package at `3066fad1e4` includes the wallet main-file
+preservation guard, configurable funding request pacing, and the withdrawal
+recovery fixes for unconfirmed channels and interrupted upgrades of shared channels.
+See [funding and recovery](FUNDING-COSTS.md) for their focused regressions and limits.
 All twelve isolated Linux process cases pass against the exact packaged executable.
+
 A separate unfunded-profile check verifies wrong-seed rejection by both wallet
-commands and service startup, unchanged stored files, and reopening after seed
-restoration. This supersedes r21 package acceptance; the intermittent recovery
-timeouts, current-device checks and other outstanding requirements remain open.
+commands and service startup. It also preserves six incomplete database families:
+each SQLite recovery-file kind with and without the seed. Stored bytes remain
+unchanged and restoring the original files restores wallet access. Missing files
+are rejected by the existing service profile preflight, before the SDK guard;
+this does not replace the SDK's direct regression or prove financial reconstruction.
+This supersedes r22 package acceptance; the intermittent recovery timeouts,
+current-device checks and other outstanding requirements remain open.
 
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
@@ -588,8 +595,12 @@ All four focused seed-identity tests and the full 424-test SDK workspace pass
 fee-bearing paid settlement/restart and interrupted funding recovery after route
 expiry also pass against the same source graph. These tests preserve recovery
 files; they do not demonstrate reconstruction of a valid financial WAL after
-loss of its main database. The r22 package predates this additional check;
-updated package, current-device and physical power-loss acceptance remain pending.
+loss of its main database. The r23 package includes this additional check.
+Its unfunded wallet-command and service-startup checks preserve all three remaining
+recovery-file kinds, with the seed present and absent, and reopen the restored
+original database. Those command-line checks stop at the earlier service profile
+preflight; the direct SDK regression above exercises its main-file guard.
+Current-device and physical power-loss acceptance remain pending.
 
 ### Receipt completion read bounds
 
@@ -779,9 +790,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `2153973b46` includes SDK `235b15f12424` and CDK
-`dd45a9c0861b`, contains 36,069 inventoried files and resolves 697 packages,
-including 676 vendored registry packages. All 2,775
+The source bundle at `3066fad1e4` includes SDK `2c9788782422` and CDK
+`dd45a9c0861b`, contains 36,070 inventoried files and resolves 697 packages,
+including 676 vendored registry packages. All 2,776
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -791,8 +802,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,152,768
-bytes, static and stripped. The unsigned APK is 11,525,259 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,130,360
+bytes, static and stripped. The unsigned APK is 11,515,378 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is

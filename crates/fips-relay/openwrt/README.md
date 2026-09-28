@@ -21,16 +21,10 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 ```
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
-executable. Inspect the result with `file` before packaging. The accepted ARM64
-r22 build at `2153973b46` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 24.0 MiB;
-its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
-the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
-against the packaged executable, both [customer entry-restart cases](#customer-entry-restart),
-and the wallet-capacity, full-filesystem and channel-expiry cases below. A separate
-unfunded-profile check verifies wrong-seed rejection by wallet commands and service
-startup, unchanged stored files, and reopening after restoring the original seed.
-These checks do not establish forwarding performance or current-router acceptance;
-see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
+executable. Inspect the result with `file` before packaging. The accepted revision,
+package size, tool versions and isolated Linux results are recorded in the
+[readiness record](../READINESS.md#scope-and-outstanding-acceptance). These checks
+do not establish forwarding performance or current-router acceptance.
 
 Use an APKv3 tool with the `mkpkg` applet. OpenWrt's installed package manager
 may omit that build applet; the SDK host tool or Alpine's full build tool can
