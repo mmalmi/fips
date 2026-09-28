@@ -115,8 +115,9 @@ impl Node {
         let Some(batch) = NodeEndpointDataBatch::from_payloads(remote, vec![payload], None) else {
             return;
         };
-        self.handle_endpoint_data_batch_no_established_flush(batch)
-            .await;
+        // Capability replies can run inside authenticated handshake dispatch.
+        // Keep the outbound dataplane future out of those nested poll frames.
+        Box::pin(self.handle_endpoint_data_batch_no_established_flush(batch)).await;
     }
 
     pub(super) async fn announce_local_capabilities(&mut self, anchor: PeerIdentity) {

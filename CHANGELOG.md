@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bound nested local-capability send futures so debug endpoint handshakes stay
+  within the normal Tokio worker stack without changing packet behavior.
+
 - Harden the LAN gateway with supervised DNS on default port 5365, bounded
   mapping admission, atomic firewall replacements, and conntrack netlink
   fallback. Preserve mappings when scans fail and honor DNS renewals during
