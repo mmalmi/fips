@@ -35,6 +35,7 @@ pub(super) struct ReplyGate {
 struct HeldUpdate {
     balance: u64,
     discard: oneshot::Sender<()>,
+    expired: oneshot::Receiver<Duration>,
 }
 
 impl ReplyGate {
@@ -63,16 +64,30 @@ impl Drop for ReplyGate {
 async fn discard_reply(
     capture: oneshot::Sender<HeldUpdate>,
     balance: u64,
-    respond: oneshot::Sender<Vec<u8>>,
+    mut respond: oneshot::Sender<Vec<u8>>,
 ) {
+    let started = tokio::time::Instant::now();
     let (discard, release) = oneshot::channel();
-    assert!(capture.send(HeldUpdate { balance, discard }).is_ok());
-    tokio::time::timeout(Duration::from_secs(20), release)
-        .await
-        .unwrap()
-        .unwrap();
-    // The real TCP/FIPS cancellation path fails this exchange. Only the
-    // scheduler may reconcile credit and decide whether to resend an update.
+    let (expired, expiry) = oneshot::channel();
+    assert!(
+        capture
+            .send(HeldUpdate {
+                balance,
+                discard,
+                expired: expiry
+            })
+            .is_ok()
+    );
+    // The transport's real 30-second deadline must discard a silent request.
+    // Applied replies can also be lost promptly through the cancellation path.
+    tokio::time::timeout(Duration::from_secs(35), async {
+        tokio::select! {
+            _ = respond.closed() => { let _ = expired.send(started.elapsed()); }
+            released = release => released.unwrap(),
+        }
+    })
+    .await
+    .unwrap();
     drop(respond);
 }
 
@@ -241,9 +256,6 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
             .is_none_or(|paid| paid < applied.balance * 1_000)
     );
 
-    traffic
-        .paid_bursts(healthy, &purchases[1], sellers, buyer, 173)
-        .await;
     assert_eq!(
         buyer.authorized_sat(channel),
         Some(applied.balance),
@@ -332,7 +344,29 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     );
     let captured_evidence = buyer.evidence_msat(channel).unwrap();
     let requests_before = gate.observed().len();
-    held.discard.send(()).unwrap();
+    traffic
+        .paid_bursts(healthy, &purchases[1], sellers, buyer, 173)
+        .await;
+    assert_eq!(buyer.authorized_sat(channel), Some(held.balance));
+    assert_eq!(
+        sellers[slow].channel_usage(channel).unwrap().paid_msat,
+        previous_credit
+    );
+    assert_eq!(controller.funding_budget().await.unwrap(), budget);
+    // Keep the responder alive without applying the update or canceling it.
+    // Only the production request deadline may wake the automatic retry.
+    let elapsed = tokio::time::timeout(Duration::from_secs(35), held.expired)
+        .await
+        .expect("silent payment request must expire")
+        .unwrap();
+    assert!(
+        elapsed >= Duration::from_secs(25),
+        "request canceled before its deadline"
+    );
+    eprintln!(
+        "silent payment update expired after {:.3}s",
+        elapsed.as_secs_f64()
+    );
     let due = buyer.evidence_msat(channel).unwrap().div_ceil(1_000) * 1_000;
     assert!(due > authorized * 1_000);
     acknowledged(&controller, channel, due).await;

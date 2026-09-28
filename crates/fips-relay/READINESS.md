@@ -1827,6 +1827,18 @@ failure, or attribute the original intermittent delivery/payment timeouts to the
 retired-channel fixture defect. No production-readiness claim follows from these
 bounded local checks.
 
+The existing five-node payment-loss fixture now holds an unapplied signed update
+through the production request deadline. The transport releases it after 30.007
+seconds in the measured run; automatic recovery queries usage and resends credit
+on the original channel. The other neighbor makes three new payments while the
+update is held. Original purchases, funding identities, lifetime budgets and
+settlement checks remain intact, using the same traffic budget as before. Loss
+of an already applied reply still exercises prompt cancellation and reconciliation.
+The focused scenario and strict controller-test lint pass. A separate TLS run
+with temporary failure-stage tracing also passes; tracing was removed. Runtime,
+wire messages and production deadlines are unchanged. These checks cover silent request
+expiry, without identifying the historical intermittent failure causes.
+
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during
 automatic renewal, and an all-feature route-change run failed ordinary delivery
