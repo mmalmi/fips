@@ -56,7 +56,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
         None
     );
     let observer = registry.track(&terms.id).unwrap();
-    observer.lock().unwrap().finished(Some(0));
+    observer.lock().unwrap().finished(Some(0), None);
     let token = buyer
         .observe(&OriginatedSessionRequest {
             source: local,
@@ -79,6 +79,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
             authorized_sat: 1,
             acknowledged_msat: Some(0),
             in_flight: false,
+            last_failure_stage: None,
         }
     );
     assert!(registry.sample(&buyer, "missing").is_err());

@@ -269,6 +269,11 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     let requests_before = gate.observed().len();
     applied.discard.send(()).unwrap();
     acknowledged(&controller, channel, applied.balance * 1_000).await;
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert_eq!(
+        progress[channel]["last_failure_stage"], "update_request",
+        "a successful retry must retain the failed exchange stage for diagnosis"
+    );
     let requests = gate.observed();
     assert_eq!(
         requests.get(requests_before),
@@ -370,6 +375,11 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     let due = buyer.evidence_msat(channel).unwrap().div_ceil(1_000) * 1_000;
     assert!(due > authorized * 1_000);
     acknowledged(&controller, channel, due).await;
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert_eq!(
+        progress[channel]["last_failure_stage"], "update_request",
+        "a successful retry must retain the failed exchange stage for diagnosis"
+    );
     let requests = gate.observed();
     assert_eq!(requests.get(requests_before), Some(&Request::Usage));
     let resent: Vec<_> = requests[requests_before..]

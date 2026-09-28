@@ -1839,6 +1839,19 @@ with temporary failure-stage tracing also passes; tracing was removed. Runtime,
 wire messages and production deadlines are unchanged. These checks cover silent request
 expiry, without identifying the historical intermittent failure causes.
 
+Optional payment progress now retains a fixed failure-stage label per channel.
+The shared controller error can be overwritten by unrelated recovery or route
+work; this observation survives successful payment retries within the existing
+bounded scheduler registry. It separates request, response, signing, preparation,
+reconciliation and worker failures without retaining raw errors or payment
+material. It is volatile diagnostic state, not financial evidence or peer traffic.
+The existing lost-update fixture fails its new diagnostic assertion before the
+change and passes afterward for both prompt cancellation and silent timeout.
+All 302 relay unit tests, 288 without optional features, strict all-target lint
+in both modes, and the TLS process/status case pass. The r24 package predates
+this status-field addition; historical timeout causes and current-device
+acceptance remain open. See the [observation semantics](../../testing/relay-cadence/README.md).
+
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during
 automatic renewal, and an all-feature route-change run failed ordinary delivery

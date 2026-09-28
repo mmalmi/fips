@@ -18,7 +18,7 @@ pub(super) async fn assert_reconciled(bench: &MixedBench, channels: &[String]) {
                 let progress = state["payment_progress"].as_object().unwrap();
                 for (id, channel) in progress {
                     assert!(observed.insert(id.clone()), "channel belongs to one payer");
-                    assert_eq!(channel.as_object().unwrap().len(), 4);
+                    assert_eq!(channel.as_object().unwrap().len(), 5);
                     let evidence = channel["evidence_msat"].as_u64().unwrap();
                     let authorized = channel["authorized_sat"].as_u64().unwrap();
                     let in_flight = channel["in_flight"].as_bool().unwrap();

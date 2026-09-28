@@ -80,7 +80,7 @@ async fn aborting_a_draining_scheduler_cancels_the_pending_exchange() {
 
 #[cfg(feature = "measurements")]
 #[tokio::test]
-async fn payment_progress_stays_in_flight_until_harvest_and_failures_are_unknown() {
+async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
     let progress = Arc::new(Mutex::new(
         super::super::payment_progress::ScheduleProgress::default(),
     ));
@@ -118,15 +118,33 @@ async fn payment_progress_stays_in_flight_until_harvest_and_failures_are_unknown
     assert_eq!(progress.lock().unwrap().acknowledged_msat, Some(1_000));
 
     progress.lock().unwrap().started();
-    payment.job = Some(tokio::spawn(async { Err("lost acknowledgment".into()) }));
-    assert!(payment.finish().await.is_err());
+    payment.job = Some(tokio::spawn(async {
+        Err(Stage::UpdateRequest.error("lost acknowledgment"))
+    }));
+    assert_eq!(payment.finish().await.unwrap_err(), "lost acknowledgment");
     assert!(!progress.lock().unwrap().in_flight);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
-    progress.lock().unwrap().finished(Some(2_000));
+    assert_eq!(
+        progress.lock().unwrap().last_failure_stage,
+        Some(Stage::UpdateRequest)
+    );
+    progress.lock().unwrap().finished(Some(2_000), None);
+    assert_eq!(
+        progress.lock().unwrap().last_failure_stage,
+        Some(Stage::UpdateRequest)
+    );
     payment.job = Some(tokio::spawn(async { Ok(None) }));
     payment.finish().await.unwrap();
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
-    progress.lock().unwrap().finished(Some(3_000));
+    let failed = tokio::spawn(std::future::pending::<PaymentResult>());
+    failed.abort();
+    payment.job = Some(failed);
+    assert!(payment.finish().await.is_err());
+    assert_eq!(
+        progress.lock().unwrap().last_failure_stage,
+        Some(Stage::Worker)
+    );
+    progress.lock().unwrap().finished(Some(3_000), None);
     drop(payment);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
 }

@@ -53,6 +53,8 @@ mod payment_progress;
 mod payments;
 #[cfg(feature = "measurements")]
 pub use payment_progress::PaymentProgress;
+#[cfg(feature = "measurements")]
+pub use payments::PaymentFailureStage;
 mod purchase_state;
 mod purchases;
 pub use purchases::FundingRequestBudget;

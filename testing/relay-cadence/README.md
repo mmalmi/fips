@@ -453,6 +453,12 @@ clock semantics are documented in the [Linux manual](https://man7.org/linux/man-
 `payment_progress` is an optional read-only observation of the scheduler and
 current buyer state. It is neither an atomic financial snapshot nor payment
 authority. Unknown state stays unknown after scheduler teardown or restart.
+`last_failure_stage` retains the latest failed automatic exchange's local stage,
+including after a successful retry. It contains a fixed label, never error text
+or payment material. Request and response labels distinguish transport/request
+work from validation of the peer's reply; they do not establish the root cause.
+Use acknowledged credit and `in_flight` for current progress. A null failure stage
+means no failure was observed by this scheduler, or its state is unavailable.
 Snapshots bracket a quiescent workload; they do not freeze packet processing.
 Normalized payment CPU, journal bytes and record bytes use delivered application
 bytes. CPU per update includes usage polls and signing in the same window, not

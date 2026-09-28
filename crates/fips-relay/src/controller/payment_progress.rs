@@ -11,12 +11,16 @@ pub struct PaymentProgress {
     pub acknowledged_msat: Option<u64>,
     /// Includes completed jobs whose result has not yet been harvested.
     pub in_flight: bool,
+    /// Latest failed exchange since this scheduler started, retained after recovery.
+    /// Contains no error text, payment material, or durable financial authority.
+    pub last_failure_stage: Option<PaymentFailureStage>,
 }
 
 #[derive(Default)]
 pub(super) struct ScheduleProgress {
     pub(super) acknowledged_msat: Option<u64>,
     pub(super) in_flight: bool,
+    pub(super) last_failure_stage: Option<PaymentFailureStage>,
 }
 
 impl ScheduleProgress {
@@ -24,9 +28,16 @@ impl ScheduleProgress {
         self.in_flight = true;
     }
 
-    pub(super) fn finished(&mut self, acknowledged_msat: Option<u64>) {
+    pub(super) fn finished(
+        &mut self,
+        acknowledged_msat: Option<u64>,
+        failure: Option<PaymentFailureStage>,
+    ) {
         self.acknowledged_msat = acknowledged_msat;
         self.in_flight = false;
+        if failure.is_some() {
+            self.last_failure_stage = failure;
+        }
     }
 }
 
@@ -67,6 +78,7 @@ impl ProgressRegistry {
             authorized_sat: buyer.authorized_sat(id).ok_or("buyer channel missing")?,
             acknowledged_msat: progress.as_ref().and_then(|p| p.acknowledged_msat),
             in_flight: progress.as_ref().is_some_and(|p| p.in_flight),
+            last_failure_stage: progress.as_ref().and_then(|p| p.last_failure_stage),
         })
     }
 }
