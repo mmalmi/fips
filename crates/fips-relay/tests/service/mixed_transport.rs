@@ -27,6 +27,8 @@ mod accept_barrier;
 mod payment_progress;
 #[path = "mixed_transport/proxy.rs"]
 mod proxy;
+#[path = "mixed_transport/restart.rs"]
+mod restart;
 #[path = "mixed_transport/round_trip.rs"]
 mod round_trip;
 #[path = "mixed_transport/service_carrier.rs"]
@@ -177,20 +179,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         bench.set_stage("middle-restart");
         let original_funding = bench.funding_intents();
         let before = bench.states().await;
-        let tls_connections = bench.tls.as_ref().map(tls::TlsProxy::connections);
-        bench.children[1].kill().await.unwrap();
-        bench.children[1] = process_support::start(&bench.paths[1]).await;
-        process_support::ready(
-            &bench.configs,
-            &bench.paths,
-            &bench.npubs,
-            &mut bench.children,
-        )
-        .await;
-        bench.assert_carriers().await;
-        if let Some(previous) = tls_connections {
-            assert!(bench.tls.as_ref().unwrap().connections() > previous);
-        }
+        restart::middle(&mut bench, &before, &original_funding).await;
         bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
             // Exceed the previous whole-sat payment so both buyers request

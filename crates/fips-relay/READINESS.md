@@ -115,7 +115,7 @@ recovery. Current-device and physical power-loss acceptance remain pending.
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery and payment timeouts described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
@@ -1681,14 +1681,20 @@ original purchases. New traffic must exceed the previously paid amount,
 including whole-sat rounding, and receive a new cumulative payment. An earlier
 acknowledgment cannot satisfy this check. Channel history and funding totals
 remain unchanged, and remaining spending budgets cannot increase. The same run
-subsequently exercises the existing middle-process crash/restart and settlement
-checks.
-The proxy shares plaintext and TLS forwarding; the previous TLS-only loop was
-removed. Plain WebSocket passes in both relay feature modes, and ordinary TLS and
-FIPS-authenticated self-signed TLS pass with all features. Each case conserves all
-384 test sats. Strict all-target relay lint, formatting and source-size checks
-pass. This covers a finite loopback carrier interruption, not sustained loss,
-remote proxy deployment or current-device acceptance; it does not establish the
+also keeps the proxy unavailable across the middle-process crash/restart. It
+requires at least two rejected reconnection attempts, absent authenticated
+adjacency and unchanged funding identities, history, wallet debits and pending
+reservations while partitioned. After restoring the carrier, fresh authentication,
+paid traffic, bounded crash-exposure renewal and final settlement must succeed.
+The proxy shares plaintext and TLS forwarding. All five carrier cases pass with
+all features, and three instrumented seed runs pass without default features.
+Each conserves all 384 test sats. Strict all-target relay lint passes in both
+modes after correcting an unrelated mobile-mesh diagnostic's optional measurement
+access; unavailable buyer payment counters serialize as null. All five changed
+test files pass formatting and the 1000-line limit. The repository-wide size gate
+still flags five unchanged oversized core files. These checks cover finite
+loopback interruptions and a partitioned process restart, not sustained loss,
+remote proxy deployment or current-device acceptance; they do not establish the
 cause of the original intermittent timeout.
 
 One no-default-feature seed-only service run timed out in paid delivery. Its
@@ -1697,6 +1703,14 @@ retain the purchase/renewal/restart phase, safe payment state, native
 routes/sessions and daemon-log tails without changing retries or deadlines.
 Subsequent passing runs do not establish the cause of that timeout. Intermittent
 paid delivery remains an open readiness item.
+
+A later no-default-feature seed run delivered the recovery packets after silent
+loss but timed out waiting for payment progress within the existing 20-second
+bound, before the new partitioned restart. Payment-wait failures now reuse the
+bounded, read-only delivery snapshot and record the channel's submitted, paid and
+previously paid amounts. The payment timeout's cause remains unproven; subsequent
+passes do not close it or establish that it shares the earlier delivery timeout's
+cause.
 
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed

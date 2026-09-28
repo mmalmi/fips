@@ -9,7 +9,10 @@ pub(super) async fn capture(bench: &Bench, stage: &str, encounter: Option<u8>) {
     let mut nodes = Vec::new();
     for (buyer, controller) in bench.controllers.iter().enumerate() {
         let before_us = start.elapsed().as_micros();
-        let progress = controller.payment_progress().await.unwrap();
+        #[cfg(feature = "measurements")]
+        let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+        #[cfg(not(feature = "measurements"))]
+        let progress = serde_json::Value::Null;
         let eligible = controller.purchases().await.unwrap();
         let history = controller.purchase_history().await.unwrap();
         assert!(history.len() <= 16, "bounded encounter purchase snapshot");

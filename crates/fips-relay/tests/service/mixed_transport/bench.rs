@@ -301,13 +301,15 @@ impl MixedBench {
         self.second_hop.kind()
     }
 
-    pub async fn recover_seed_carrier(&mut self, silent: bool) {
-        let before = self.states().await;
-        let proxy = self
-            .proxy
+    pub(super) fn seed_carrier(&self) -> Option<&StreamProxy> {
+        self.proxy
             .as_ref()
             .or_else(|| self.tls.as_ref().map(TlsProxy::carrier))
-            .unwrap();
+    }
+
+    pub async fn recover_seed_carrier(&mut self, silent: bool) {
+        let before = self.states().await;
+        let proxy = self.seed_carrier().unwrap();
         let accepted = proxy.connections();
         assert!(accepted > 0);
         let dropped = proxy.dropped_bytes();
@@ -328,7 +330,7 @@ impl MixedBench {
             Duration::from_secs(idle + 20)
         } else {
             assert!(
-                proxy.interrupt().await > 0,
+                proxy.set_available(true).await > 0,
                 "interrupt a live physical stream"
             );
             Duration::from_secs(20)
@@ -566,6 +568,10 @@ impl MixedBench {
             "mixed-carrier delivery-failure stage={} second_hop={:?} flow={source}->{destination}",
             self.stage, self.second_hop
         );
+        self.failure_snapshot().await;
+    }
+
+    async fn failure_snapshot(&self) {
         let captured = tokio::time::timeout(Duration::from_secs(4), async {
             for (node, config) in self.configs.iter().enumerate() {
                 daemon_tail(node, &self.paths[node].with_extension("log"));
@@ -658,7 +664,7 @@ impl MixedBench {
     }
 
     async fn wait_paid_beyond(&self, channel: &str, already_paid_msat: u64) {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let (submitted, paid) = self.relay_usage_msat(channel);
                 if submitted > already_paid_msat && paid >= submitted {
@@ -667,8 +673,16 @@ impl MixedBench {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await
-        .expect("automatic payment reaches relay");
+        .await;
+        if result.is_err() {
+            let (submitted, paid) = self.relay_usage_msat(channel);
+            eprintln!(
+                "mixed-carrier payment-failure stage={} second_hop={:?} channel={channel} submitted_msat={submitted} paid_msat={paid} previous_paid_msat={already_paid_msat}",
+                self.stage, self.second_hop
+            );
+            self.failure_snapshot().await;
+            panic!("automatic payment reaches relay");
+        }
     }
 
     pub async fn wait_exhausted(&self, source: usize) {

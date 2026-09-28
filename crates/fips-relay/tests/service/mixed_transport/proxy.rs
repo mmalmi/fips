@@ -18,7 +18,8 @@ use tokio_rustls::TlsAcceptor;
 pub struct StreamProxy {
     pub address: SocketAddr,
     connections: Arc<AtomicUsize>,
-    interrupt: mpsc::Sender<oneshot::Sender<usize>>,
+    availability: mpsc::Sender<(bool, oneshot::Sender<usize>)>,
+    rejected: Arc<AtomicUsize>,
     task: JoinHandle<()>,
     blackhole: watch::Sender<u64>,
     loss: Arc<Loss>,
@@ -35,7 +36,9 @@ impl StreamProxy {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let connections = Arc::new(AtomicUsize::new(0));
-        let (interrupt, mut requests) = mpsc::channel::<oneshot::Sender<usize>>(1);
+        let (availability, mut requests) = mpsc::channel::<(bool, oneshot::Sender<usize>)>(1);
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let blocked = rejected.clone();
         let accepted = connections.clone();
         let (blackhole, _) = watch::channel(0);
         let faults = blackhole.clone();
@@ -43,9 +46,11 @@ impl StreamProxy {
         let dropped = loss.clone();
         let task = tokio::spawn(async move {
             let mut sessions = JoinSet::new();
+            let mut available = true;
             loop {
                 tokio::select! {
-                    Some(reply) = requests.recv() => {
+                    Some((next, reply)) = requests.recv() => {
+                        available = next;
                         let count = sessions.len();
                         sessions.abort_all();
                         while let Some(result) = sessions.join_next().await {
@@ -58,6 +63,11 @@ impl StreamProxy {
                     }
                     stream = listener.accept(), if sessions.len() < 16 => {
                         let (stream, _) = stream.unwrap();
+                        if !available {
+                            blocked.fetch_add(1, Ordering::SeqCst);
+                            drop(stream);
+                            continue;
+                        }
                         let acceptor = acceptor.clone();
                         let accepted = accepted.clone();
                         let mut fault = faults.subscribe();
@@ -84,7 +94,8 @@ impl StreamProxy {
         Self {
             address,
             connections,
-            interrupt,
+            availability,
+            rejected,
             task,
             blackhole,
             loss,
@@ -113,9 +124,14 @@ impl StreamProxy {
         .expect("a live proxy stream must enter silent loss");
     }
 
-    pub async fn interrupt(&self) -> usize {
+    pub fn rejected_connections(&self) -> usize {
+        self.rejected.load(Ordering::SeqCst)
+    }
+
+    /// Close current streams and either allow or reject subsequent connections.
+    pub async fn set_available(&self, available: bool) -> usize {
         let (reply, received) = oneshot::channel();
-        self.interrupt.send(reply).await.unwrap();
+        self.availability.send((available, reply)).await.unwrap();
         received.await.unwrap()
     }
 }
