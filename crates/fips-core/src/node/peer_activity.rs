@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_data_history_follows_actual_carrier_and_keeps_frozen_expiry() {
+    async fn local_data_history_follows_actual_carrier_without_control_refresh() {
         for outbound in [false, true] {
             for routed in [false, true] {
                 for lost_at in [4_100, 4_101] {
@@ -393,8 +393,16 @@ mod tests {
                         );
                     }
                     node.config.node.rate_limit.handshake_timeout_secs = 60;
+                    // An unused preference survives waiting for admission, but
+                    // later control and old data cannot refresh its remembrance.
                     assert_eq!(history_prefers(&node, carrier, lost_at + 5_999), qualifies);
-                    assert!(!history_prefers(&node, carrier, lost_at + 6_000));
+                    assert_eq!(history_prefers(&node, carrier, lost_at + 60_000), qualifies);
+                    assert_eq!(
+                        node.neighbor_rotation.lost_neighbors.get(&carrier).copied(),
+                        qualifies.then_some(lost_at)
+                    );
+                    node.forget_neighbor_reconnection(&carrier);
+                    assert!(!history_prefers(&node, carrier, lost_at + 60_000));
                     node.remove_link_dead_discovered_peer(&other, lost_at, Duration::from_secs(3));
                     assert!(!history_prefers(&node, other, lost_at));
                 }
