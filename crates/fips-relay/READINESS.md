@@ -1116,6 +1116,25 @@ engine memory, total wallet/custody capacity, uncapped SDK stores or other nativ
 recovery payloads and results. Current-device and physical power-loss acceptance
 remain open; no hardware services changed.
 
+Prepared-send recovery now bounds every coin reserved by the saved operation
+before confirmation. The original plan sets the row count; the same 4 MiB ceiling
+as its complete native preparation bounds stored payloads. The SQL query shares
+the existing inventory reader, probes one extra owner to reject overflow, and
+includes every mint, unit and state. It does not silently select only expected
+identities or truncate results. No database trait, schema, dependency or peer
+message changes.
+
+The real-mint regression fails on the old code, rejects oversized, malformed,
+missing or changed coins and an extra foreign/spent owned coin without spending
+or changing original evidence, then completes the same send once after restoration.
+All 188 shared SQL/SQLite tests, 419 SDK tests (one opt-in soak excluded), 301 relay
+unit tests, fee-bearing paid settlement, interrupted-funding recovery after
+route expiry and seeded WebSocket restart/recovery pass. Strict native, SDK and relay lint pass; PostgreSQL has compilation
+coverage only. Native workspace and changed SDK formatting pass. These checks use
+local test money. The r20 package predates this fix. Native withdrawal recovery's legacy reserved/selected-proof queries,
+other wallet stores and physical capacity remain open.
+
+
 ## Native mint response bounds
 
 Wallet funding and recovery use a 4 MiB response-body limit in both native HTTP
