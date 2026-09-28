@@ -22,8 +22,8 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
 executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `18a1236edb` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
-its APK is 10.9 MiB. It passes isolated Linux startup, package-content checks and
+build at `9354797d64` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
+its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
 the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
 against the packaged executable, both [customer entry-restart cases](#customer-entry-restart),
 and the wallet-capacity, full-filesystem and channel-expiry cases below. These checks

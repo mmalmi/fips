@@ -29,9 +29,10 @@ paid/restart/concurrent-settlement case pass. Strict native, SDK and relay lint
 and native workspace formatting also pass. PostgreSQL has compile/lint coverage
 only; relay runtime database acceptance uses SQLite. Other exact quote and
 native recovery reads, SQL engine memory, overall storage and current-device
-acceptance remain open. The r18 ARM64 package includes these native changes and the expiry
-recovery below. It passes twelve isolated Linux transport, customer-restart,
-storage-recovery and expiry cases. It has not been installed on the routers.
+acceptance remain open. The r19 ARM64 package includes these native changes and
+the expiry recovery below. It passes twelve isolated Linux transport,
+customer-restart, storage-recovery and expiry cases. It has not been installed
+on the routers.
 
 SDK `695a52dc0552` expiry recovery reconciles a provider settlement that occurred before
 recovery began, using the same complete, signature-verified output checks as the
@@ -44,7 +45,7 @@ The new regression fails before the fix. All eight focused expiry tests, the ful
 416-test SDK suite (one opt-in soak excluded), 301 relay unit tests, the fee-bearing
 paid settlement and interrupted-funding process cases, and strict SDK/relay lint
 pass. The changed Rust files pass formatting and size checks. This adds no message,
-journal field, feature or dependency. The r18 ARM64 package includes this SDK
+journal field, feature or dependency. The r19 ARM64 package includes this SDK
 extension and accepts the relay integration below in isolated Linux.
 
 FIPS now coordinates automatic expiry for used channels, including channels shared
@@ -83,7 +84,7 @@ The matching graph passes 118 native tests, the full 417-test SDK suite
 feature profiles, ordinary shared expiry, fee-bearing settlement, interrupted
 unused-funding recovery and strict native/SDK/relay lint. The SDK regression
 also covers key rotation, malformed restore evidence and replay after spending.
-The r18 ARM64 package includes this extension and passes the missed-collection
+The r19 ARM64 package includes this extension and passes the missed-collection
 case in isolated Linux, alongside ordinary shared expiry and interrupted-opening
 recovery. Current-device and physical power-loss acceptance remain pending.
 
@@ -706,7 +707,7 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `18a1236edb` includes SDK `72f27c33717f` and CDK
+The source bundle at `9354797d64` includes SDK `0c9c3d507b04` and CDK
 `1cce477c7166`, contains 35,709 inventoried files and resolves 693 packages,
 including 672 vendored registry packages. All 2,758
 recorded source/dependency inputs match the accepted native graph, with the
@@ -718,8 +719,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,064,528
-bytes, static and stripped. The unsigned APK is 11,481,578 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,092,304
+bytes, static and stripped. The unsigned APK is 11,492,821 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -1025,10 +1026,10 @@ This follow-up passes 28 focused send tests, the full
 418-test SDK workspace suite (one opt-in soak excluded),
 strict all-target SDK lint, 301 relay unit tests, fee-bearing paid
 settlement and interrupted funding recovery after route expiry. All use the
-matched local source graph and test money. The accepted r18 ARM64 package
-predates this SDK change; refreshed package and current-device acceptance remain
-pending. Discovery scans and CDK's subsequent internal recovery reads retain
-their existing behavior and are not covered by the new exact-read bound.
+matched local source graph and test money. The r19 ARM64 package includes this
+SDK change and passes twelve isolated Linux process cases. Current-device
+acceptance remains pending. Discovery scans and CDK's subsequent internal recovery
+reads retain their existing behavior and are not covered by the new exact-read bound.
 
 These bounds cover individual records crossing the storage interface, not SQL
 engine memory, total wallet/custody capacity, uncapped SDK stores or other native
