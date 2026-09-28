@@ -14,12 +14,13 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r21 ARM64 package includes the withdrawal-recovery read bounds and
-Ethernet and gateway fixes at the source revision recorded below. Its matching
-source bundle includes the partitioned-restart fixture. All twelve isolated Linux
-process cases pass against the exact packaged executable. This supersedes r20
-package acceptance; the intermittent recovery timeouts, current-device checks and
-other outstanding requirements remain open.
+The current r22 ARM64 package includes the wallet seed identity check, withdrawal
+recovery read bounds, and Ethernet and gateway fixes at the source revision below.
+All twelve isolated Linux process cases pass against the exact packaged executable.
+A separate unfunded-profile check verifies wrong-seed rejection by both wallet
+commands and service startup, unchanged stored files, and reopening after seed
+restoration. This supersedes r21 package acceptance; the intermittent recovery
+timeouts, current-device checks and other outstanding requirements remain open.
 
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
@@ -558,9 +559,12 @@ wallet repository. File-backed and secure-store reopen checks reject a changed
 seed or missing, mismatched or oversized identity; restoring the original
 evidence permits reopening. Existing databases without this identity are not
 automatically adopted. See the SDK's `docs/wallet-history.md` for the fresh-profile
-boundary and backup requirements. The r21 packaged executable predates this
-source change; new package and current-device acceptance remain pending. This
-does not reconstruct lost financial evidence or establish physical durability.
+boundary and backup requirements. The r22 packaged executable includes this check
+and passes the twelve isolated Linux process cases below. On a separate unfunded
+profile, both its offline wallet command and service startup reject a different
+valid seed without changing stored files; restoring the original seed restores
+wallet access and the original balance. Current-device acceptance remains pending.
+This does not reconstruct lost financial evidence or establish physical durability.
 
 The changed-seed regression fails before the check. Three focused tests cover
 file-backed and secure seed stores, missing or invalid identity records, and
@@ -758,9 +762,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `8b62fa1bcd` includes SDK `948b92afec21` and CDK
-`dd45a9c0861b`, contains 36,066 inventoried files and resolves 697 packages,
-including 676 vendored registry packages. All 2,772
+The source bundle at `2153973b46` includes SDK `235b15f12424` and CDK
+`dd45a9c0861b`, contains 36,069 inventoried files and resolves 697 packages,
+including 676 vendored registry packages. All 2,775
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -770,8 +774,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,149,088
-bytes, static and stripped. The unsigned APK is 11,521,654 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,152,768
+bytes, static and stripped. The unsigned APK is 11,525,259 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
