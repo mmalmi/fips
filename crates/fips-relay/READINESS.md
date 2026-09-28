@@ -1127,12 +1127,32 @@ message changes.
 The real-mint regression fails on the old code, rejects oversized, malformed,
 missing or changed coins and an extra foreign/spent owned coin without spending
 or changing original evidence, then completes the same send once after restoration.
-All 188 shared SQL/SQLite tests, 419 SDK tests (one opt-in soak excluded), 301 relay
-unit tests, fee-bearing paid settlement, interrupted-funding recovery after
-route expiry and seeded WebSocket restart/recovery pass. Strict native, SDK and relay lint pass; PostgreSQL has compilation
-coverage only. Native workspace and changed SDK formatting pass. These checks use
-local test money. The r20 package predates this fix. Native withdrawal recovery's legacy reserved/selected-proof queries,
-other wallet stores and physical capacity remain open.
+
+Native withdrawal recovery now shares configured 4-MiB aggregate reserved and
+selected-proof reads. Admission measures original and future replacement rows
+through the production encoders before spending, including later ownership
+metadata and distinct change outputs. Oversized inventories produce one error
+row instead of projecting every rejected payload. The real-mint regression
+rejects corrupted originals before and after a preparatory swap, preserves the
+saved operation and ownership without new spending, and completes the same
+cancellation after restoration without reviving spent coins.
+
+History collection uses an explicit 8 MiB + 16 KiB stored-byte allowance for the
+admitted proof, its parsed spending conditions and mint/provenance framing.
+This does not change ordinary withdrawal read limits. Existing near-limit
+collection regressions cover large derived conditions and later metadata;
+oversized or malformed witness growth retains the original and release journal,
+and collection resumes after restoring the original. No database trait, Wallet
+API, schema, dependency or peer message changes.
+
+All 190 shared SQL/SQLite tests, 420 SDK tests (one opt-in soak excluded), 301 relay
+unit tests, fee-bearing paid settlement, interrupted-funding recovery after route
+expiry and seeded WebSocket restart/recovery pass. Strict native, SDK and relay
+lint, native workspace formatting and changed SDK formatting pass. PostgreSQL
+has compilation coverage only. These checks use local test money. The r20 package
+predates these read-bound extensions. Other wallet stores and queries, combined
+interrupted transitions, physical storage capacity and current-device acceptance
+remain open.
 
 
 ## Native mint response bounds
