@@ -1,9 +1,10 @@
 # Running a paid relay service
 
 `fips-relay` assembles the native endpoint, durable buyer/seller accounting,
-Spilman receiver, quotes and autonomous controller in one Unix process. Linux
-and macOS local process tests cover UDP and native TCP; macOS also covers native
-WebSocket. Three OpenWrt routers have earned test payments over native Wi-Fi links.
+Spilman receiver, quotes and autonomous controller in one Unix process. Isolated
+ARM64 Linux and macOS process tests cover UDP, native TCP and WebSocket, including
+ordinary TLS and explicit FIPS-authenticated self-signed TLS. Earlier builds
+earned test payments over native Wi-Fi links on three OpenWrt routers.
 See [TESTBENCH.md](TESTBENCH.md) for the
 historical hardware evidence and [PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for
 the completed bounded customer demonstration and current limits.
@@ -18,20 +19,15 @@ and backup requirements before using a newer executable with existing journals.
 
 ## OpenWrt build
 
-The ARM64 Linux executable cross-builds with an installed Rust musl target,
-Zig and `cargo-zigbuild`:
+Use the [OpenWrt build instructions](openwrt/README.md#build) and their matched
+source-bundle workflow for the current development dependencies. The ARM64
+executable is statically linked; the size-oriented profile preserves normal panic
+semantics. The package guide records its verified revision and size.
 
-```sh
-cargo zigbuild -p fips-relay --bin fips-relay --locked \
-  --target aarch64-unknown-linux-musl --profile openwrt -j 4
-```
-
-This produces a statically linked executable of about 19 MiB, using a size-oriented
-profile that preserves normal panic semantics. The early hardware payment
-runs used the larger release build; r5 has separate
+The early hardware payment runs used the larger release build; r5 has separate
 [wireless measurements](WIRELESS-ACCOUNTING.md) on the size-oriented profile.
-See [openwrt/README.md](openwrt/README.md) for APKv3
-packaging, installation, backups and device acceptance checks.
+See [the package guide](openwrt/README.md) for APKv3 packaging, installation,
+backups and device acceptance checks.
 
 ## OpenWrt service supervision
 
@@ -53,9 +49,9 @@ packaging remain separate work.
 
 ## Initialization and configuration
 
-Build with `cargo build -p fips-relay --bin fips-relay`. Copy
-`service.example.json` to a private local configuration file and replace its
-documentation-only mint address with the local test mint. Direct service startup
+After building from the matched source bundle, copy `service.example.json`
+to a private local configuration file and replace its example mint address with
+the local test mint. Direct service startup
 loads local receiver state without contacting the mint; new paid funding refreshes
 mint keys before verification. Funding and settlement remain mint-dependent.
 The OpenWrt readiness wrapper separately still waits for the mint. Create the
@@ -145,7 +141,9 @@ is required: a URL-only hint and link-quality measurements cannot establish that
 identity. Browser clients retain the browser's certificate policy. Native
 Wi-Fi/Ethernet links do not require TLS certificates.
 
-The key-hint and idle deadlines also apply during blocked WebSocket writes.
+WebSocket keeps reading during blocked writes. The key-hint and idle deadlines
+still apply; incoming activity can refresh the idle deadline. Control-reply
+buffers stay bounded, and overflowing them closes the connection.
 Closing a connection or rebinding after a network change interrupts its pending
 writes, including when the idle timeout is disabled. A partially written frame
 is discarded with the old stream; it is not resumed on a replacement connection.

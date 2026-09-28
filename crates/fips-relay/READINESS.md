@@ -26,7 +26,8 @@ the duplicate manually orchestrated settlement fixture.
 Measurement snapshot version 2 removes the two unused lifecycle counters.
 The cadence analyser still validates complete version-1 records for historical
 results and rejects counter-version changes within an interval. Existing cadence
-results and the r19 ARM64 package predate this peer API simplification.
+results predate this peer API simplification. The r20 ARM64 package includes it
+and passes the twelve isolated Linux process cases below.
 
 The matching graph passes 301 relay unit tests with all features,
 287 without optional features, 12 buyer tests and all seven controller tests,
@@ -34,8 +35,8 @@ including six five-node scenarios. The focused receiver regression fails before
 removal of the manual handlers and passes afterward. Strict all-target relay lint,
 formatting and source size checks pass. All 121 cadence-analyser tests pass, including complete historical
 and current counter sets and rejection of changed/missing counters. No wallet or
-native CDK source, feature or dependency changes in this step. Refreshed package,
-device, physical power-loss and complete deployment threat acceptance remain open.
+native CDK source, feature or dependency changes in this step. Current-device,
+physical power-loss and complete deployment threat acceptance remain open.
 
 Native CDK `1cce477c7166` quote and issuance receipt comparisons bound stored payloads
 before SQL projection. The ceiling comes from the caller's original, with a 4 MiB
@@ -52,7 +53,7 @@ paid/restart/concurrent-settlement case pass. Strict native, SDK and relay lint
 and native workspace formatting also pass. PostgreSQL has compile/lint coverage
 only; relay runtime database acceptance uses SQLite. Other exact quote and
 native recovery reads, SQL engine memory, overall storage and current-device
-acceptance remain open. The r19 ARM64 package includes these native changes and
+acceptance remain open. The r20 ARM64 package includes these native changes and
 the expiry recovery below. It passes twelve isolated Linux transport,
 customer-restart, storage-recovery and expiry cases. It has not been installed
 on the routers.
@@ -68,7 +69,7 @@ The new regression fails before the fix. All eight focused expiry tests, the ful
 416-test SDK suite (one opt-in soak excluded), 301 relay unit tests, the fee-bearing
 paid settlement and interrupted-funding process cases, and strict SDK/relay lint
 pass. The changed Rust files pass formatting and size checks. This adds no message,
-journal field, feature or dependency. The r19 ARM64 package includes this SDK
+journal field, feature or dependency. The r20 ARM64 package includes this SDK
 extension and accepts the relay integration below in isolated Linux.
 
 FIPS now coordinates automatic expiry for used channels, including channels shared
@@ -107,7 +108,7 @@ The matching graph passes 118 native tests, the full 417-test SDK suite
 feature profiles, ordinary shared expiry, fee-bearing settlement, interrupted
 unused-funding recovery and strict native/SDK/relay lint. The SDK regression
 also covers key rotation, malformed restore evidence and replay after spending.
-The r19 ARM64 package includes this extension and passes the missed-collection
+The r20 ARM64 package includes this extension and passes the missed-collection
 case in isolated Linux, alongside ordinary shared expiry and interrupted-opening
 recovery. Current-device and physical power-loss acceptance remain pending.
 
@@ -731,9 +732,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `9354797d64` includes SDK `0c9c3d507b04` and CDK
-`1cce477c7166`, contains 35,709 inventoried files and resolves 693 packages,
-including 672 vendored registry packages. All 2,758
+The source bundle at `f84976ac03` includes SDK `8d9befb4d773` and CDK
+`fad41f2eb0c3`, contains 35,708 inventoried files and resolves 693 packages,
+including 672 vendored registry packages. All 2,757
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -743,8 +744,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,092,304
-bytes, static and stripped. The unsigned APK is 11,492,821 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,078,592
+bytes, static and stripped. The unsigned APK is 11,487,340 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -1058,11 +1059,10 @@ The matching graph passes 412 native shared/storage tests,
 excluded), strict native/SDK lint, 301 relay unit tests, fee-bearing paid
 settlement and interrupted funding recovery after route expiry. Formatting and
 source-size checks pass. All use the matched local source graph and test money.
-The accepted r19 ARM64 package includes the earlier exact-read bounds and passes
-twelve isolated Linux process cases; it predates the discovery extension.
-Refreshed package and current-device acceptance remain pending. CDK's subsequent
-internal recovery reads retain their existing behavior and are not covered by
-this SDK bound.
+The r20 ARM64 package includes both the exact-read bounds and the discovery
+extension, and passes twelve isolated Linux process cases. Current-device
+acceptance remains pending. CDK's subsequent internal recovery reads retain their
+existing behavior and are not covered by this SDK bound.
 
 These bounds cover individual records crossing the storage interface, not SQL
 engine memory, total wallet/custody capacity, uncapped SDK stores or other native
@@ -1526,8 +1526,8 @@ idle expiry and bounded control-flood closure with idle expiry disabled.
 The matching source graph passes all 27 transport, six authenticated-node and
 seven public-transit checks, plus six service/startup checks in each relay feature
 mode. All eight paid process scenarios conserve 384 test sats each. Strict
-core/relay lint, formatting and source-size checks pass. The r19 ARM64 package
-predates this change; current-target acceptance still requires a package refresh.
+core/relay lint, formatting and source-size checks pass. The r20 ARM64 package
+includes this change and passes the isolated Linux process cases above.
 These results do not identify the cause of the historical intermittent delivery
 timeout or establish current-device acceptance.
 
