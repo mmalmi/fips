@@ -55,6 +55,7 @@ mod payments;
 pub use payment_progress::PaymentProgress;
 mod purchase_state;
 mod purchases;
+pub use purchases::FundingRequestBudget;
 mod recovery_only;
 mod runtime;
 mod source_selection;
@@ -303,6 +304,7 @@ pub struct Controller {
     store: Arc<Mutex<Store>>,
     control_obligations: ControlObligations,
     wallet: Arc<AsyncMutex<()>>,
+    funding_request_budget: Option<FundingRequestBudget>,
     channel_work: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
     #[cfg(feature = "measurements")]
     payment_progress: payment_progress::ProgressRegistry,
@@ -432,6 +434,7 @@ impl Controller {
             control_obligations: store.control_obligations.clone(),
             store: Arc::new(Mutex::new(store)),
             wallet,
+            funding_request_budget: None,
             channel_work: Mutex::new(BTreeMap::new()),
             #[cfg(feature = "measurements")]
             payment_progress: Default::default(),

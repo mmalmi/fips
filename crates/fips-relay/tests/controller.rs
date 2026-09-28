@@ -259,13 +259,13 @@ async fn controller_scenario(
                         buyer: buyers[i].clone(),
                         wallet_directory: wallets[i].clone(),
                     });
-            let controller = Arc::new(
+            let controller = controller_support::controller(
                 Controller::create(
                     &root.path().join(format!("controller-{i}")),
                     policy(mint.url(), automatic_renewal, capacity),
                     services[i].clone(),
-                )
-                .unwrap(),
+                ),
+                automatic_renewal,
             );
             tasks.push(ControllerTasks::start(controller.clone(), incoming));
             controllers.push(controller);
@@ -361,13 +361,13 @@ async fn controller_scenario(
         }
         let mut controllers = Vec::new();
         for (i, receiver) in incoming.into_iter().enumerate() {
-            let controller = Arc::new(
+            let controller = controller_support::controller(
                 Controller::load(
                     &root.path().join(format!("controller-{i}")),
                     policy(mint.url(), automatic_renewal, capacity),
                     services[i].clone(),
-                )
-                .unwrap(),
+                ),
+                automatic_renewal,
             );
             if i == 0 || i == 4 {
                 assert!(controller.purchases().await.unwrap().is_empty());
@@ -858,7 +858,7 @@ async fn controller_scenario(
             std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
             controllers = Vec::new();
             for (i, incoming) in receiver_streams.into_iter().enumerate() {
-                let controller = Arc::new(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true, capacity), services[i].clone()).unwrap());
+                let controller = controller_support::controller(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true, capacity), services[i].clone()), true);
                 tasks.push(ControllerTasks::start(controller.clone(), incoming));
                 controllers.push(controller);
             }

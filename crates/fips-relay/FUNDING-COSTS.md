@@ -23,6 +23,56 @@ The existing `buyer_budget_sat` separately bounds cumulative relay payment
 signatures. It does not include wallet/mint fees. Set all limits explicitly.
 Zero funding overhead allows only funding that needs no value above capacity.
 
+## Funding request pacing
+
+Channel opening uses CDK's persistent per-origin HTTP request budget. The pinned
+CDK default permits a burst of 20 requests and replenishes 20 requests per minute.
+CDK persists pacing state on a best-effort basis across wallet reopenings. Small
+channels renewed often can therefore pause forwarding while settlement and
+replacement funding finish.
+Channel capacity, traffic price and the mint's permitted request rate must suit
+the intended workload; a payment interval does not bound renewal latency.
+
+An operator may set the top-level service option `funding_request_budget` for a
+mint whose request allowance they know. For example, the disposable local-mint
+renewal test uses:
+
+```json
+"funding_request_budget": {"burst": 128, "requests_per_minute": 60000}
+```
+
+Both values must be positive. Omission retains CDK's defaults. This is a local
+runtime setting, outside the saved financial terms; it cannot increase capital,
+spending or forwarding allowances. Service startup reapplies it on reload.
+Library callers use `Controller::with_funding_request_budget` after creation or
+loading. It applies to CDK HTTP requests during wallet-backed channel opening,
+including recovery of that opening through the purchase path. Separate Spilman
+settlement/refund clients and wallet recovery helpers keep their own behavior.
+CDK preserves pacing state when reconfigured, so an already scheduled wait may
+still apply. Do not infer permission to exceed a public mint's limits from this
+test configuration.
+
+In an instrumented five-node run, a 30-second delivery timeout at renewal round
+12 coincided with 17.830 seconds of deliberate CDK rate waits during the last
+18.265 seconds of unfinished replacement funding. With only the opening budget
+changed through the SDK API, all 36 delivery batches completed; the longest wait
+was 12.018 seconds and recorded pacing sleeps were below one millisecond.
+Financial limits, channel sizes, retry intervals and delivery deadlines were
+unchanged. This identifies the cause of that reproduced funding stall. It does
+not explain the separate historical delivery/payment failures or establish
+latency under slow mints, physical power loss or current router workloads.
+
+The configuration regression fails before this option and passes afterward.
+All 302 relay unit tests, all seven controller cases, the existing renewal case
+with optional features disabled, and strict all-target relay lint pass on the
+matching source graph. The renewal case reapplies the owned mint's budget after
+restart and retains the original channel, payment and lifetime spending limits;
+other controller scenarios retain default pacing. Formatting and source-size
+checks also pass. No SDK/CDK source, dependency, financial record or wire message
+changed. The accepted r22 package predates this setting.
+
+## Interrupted funding
+
 Recovery reads the original wallet cost even if its quote has expired or the route
 is paused. For a persisted channel opening, the SDK restores its exact mint outputs
 without creating another opening, sending wallet funds or falling back to a mint

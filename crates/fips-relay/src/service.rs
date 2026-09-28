@@ -397,11 +397,13 @@ impl RelayService {
             buyer: buyer.clone(),
             wallet_directory: root.join("wallet"),
         };
-        let controller = Arc::new(if create {
+        let controller = if create {
             Controller::create(&root.join("controller"), t.controller.clone(), services)
         } else {
             Controller::load(&root.join("controller"), t.controller.clone(), services)
-        }?);
+        }?;
+        let controller =
+            Arc::new(controller.with_funding_request_budget(config.funding_request_budget));
         #[cfg(feature = "testbench")]
         let (incoming, accept_barrier) =
             accept_barrier::AcceptBarrier::interpose(incoming, *endpoint.node_addr());

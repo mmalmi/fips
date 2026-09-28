@@ -109,6 +109,7 @@ impl CustomerProfile {
             free_bandwidth: None,
             price_selection: None,
             payment_cadence: Default::default(),
+            funding_request_budget: None,
             neighbors: vec![PeerConfig::new(
                 &self.entry_npub,
                 "udp",

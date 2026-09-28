@@ -70,6 +70,10 @@ pub struct ServiceConfig {
     /// Local timing only; does not change saved financial terms or authority.
     #[serde(default, skip_serializing_if = "PaymentCadence::is_default")]
     pub payment_cadence: PaymentCadence,
+    /// Optional local CDK HTTP pacing for wallet-backed channel opening.
+    /// Omission retains CDK defaults; use only within the mint operator's limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_request_budget: Option<crate::controller::FundingRequestBudget>,
 }
 
 #[derive(Serialize, Deserialize)]

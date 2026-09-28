@@ -12,6 +12,33 @@ fn zero_default_fee_config() -> ServiceConfig {
 }
 
 #[test]
+fn funding_request_budget_is_local_optional_and_requires_positive_limits() {
+    let mut value: Value =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    let original: ServiceConfig = serde_json::from_value(value.clone()).unwrap();
+    assert!(
+        serde_json::to_value(&original)
+            .unwrap()
+            .get("funding_request_budget")
+            .is_none()
+    );
+    let budget = json!({"burst": 128, "requests_per_minute": 60_000});
+    value["funding_request_budget"] = budget.clone();
+    let configured: ServiceConfig = serde_json::from_value(value.clone()).unwrap();
+    configured.validate().unwrap();
+    assert_eq!(configured.terms, original.terms);
+    assert_eq!(
+        serde_json::to_value(&configured).unwrap()["funding_request_budget"],
+        budget
+    );
+    for field in ["burst", "requests_per_minute"] {
+        let mut invalid = value.clone();
+        invalid["funding_request_budget"][field] = 0.into();
+        assert!(serde_json::from_value::<ServiceConfig>(invalid).is_err());
+    }
+}
+
+#[test]
 fn public_configuration_accepts_zero_default_fee_and_free_only_ceiling() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("service.json");

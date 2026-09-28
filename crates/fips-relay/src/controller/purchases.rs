@@ -1,8 +1,26 @@
 //! Fund adjacent purchases and authorize cumulative outgoing payments.
 use super::*;
-use cashu_service::open_streaming_route_cashu_spilman_channel_from_wallet;
+use cashu_service::CashuWalletService;
+use std::num::NonZeroU32;
+
+/// CDK HTTP pacing for wallet-backed channel opening, per destination origin.
+/// Configure only within the mint operator's limits; this grants no spending authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FundingRequestBudget {
+    pub burst: NonZeroU32,
+    pub requests_per_minute: NonZeroU32,
+}
 
 impl Controller {
+    /// Set local channel-funding HTTP pacing. Omission retains CDK's defaults.
+    /// This runtime setting neither changes saved financial terms nor configures
+    /// separate Spilman settlement/refund clients. Reapply it after loading.
+    pub fn with_funding_request_budget(mut self, budget: Option<FundingRequestBudget>) -> Self {
+        self.funding_request_budget = budget;
+        self
+    }
+
     pub async fn open_route(&self, destination: PeerIdentity) -> Result<RouteAccess, String> {
         self.authorize_source_selection(destination).await?;
         let offer = self.services.quotes.request_route(destination).await?;
@@ -102,12 +120,25 @@ impl Controller {
             let request = f.wallet_request(&self.policy)?;
             let directory = self.services.wallet_directory.clone();
             let runtime = tokio::runtime::Handle::current();
+            let budget = self.funding_request_budget;
             // The upstream wallet's file-store future is intentionally !Send.
             // Drive it entirely on one blocking worker, keeping the native node
             // loop free and retaining the idempotent intent if its reply is lost.
             let (opened, _wallet) = blocking(move || {
                 let opened = runtime.block_on(async move {
-                    open_streaming_route_cashu_spilman_channel_from_wallet(&directory, request)
+                    let wallet = CashuWalletService::open_file_backed(&directory)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some(budget) = budget {
+                        wallet
+                            .set_request_budget(
+                                budget.burst.get(),
+                                budget.requests_per_minute.get(),
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    wallet
+                        .open_streaming_route_cashu_spilman_channel(request)
                         .await
                         .map_err(|e| e.to_string())
                 });

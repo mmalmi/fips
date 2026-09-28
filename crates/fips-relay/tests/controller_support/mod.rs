@@ -3,6 +3,16 @@ use fips_relay::controller::{Purchase, RouteAccess};
 mod delivery_trace;
 pub(super) use delivery_trace::DeliveryTrace;
 
+pub(super) fn controller(result: Result<Controller, String>, renewal: bool) -> Arc<Controller> {
+    // The small-channel renewal workload owns its disposable mint. Its request
+    // allowance is independent of channel capital, payment and delivery limits.
+    let budget = renewal.then_some(fips_relay::controller::FundingRequestBudget {
+        burst: 128.try_into().unwrap(),
+        requests_per_minute: 60_000.try_into().unwrap(),
+    });
+    Arc::new(result.unwrap().with_funding_request_budget(budget))
+}
+
 pub(super) fn require_paid(access: RouteAccess) -> Purchase {
     let RouteAccess::Paid(purchase) = access else {
         panic!("paid scenario returned a free route");
