@@ -132,6 +132,16 @@ impl Node {
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
+        // Payload can still arrive through an old UDP tuple while the new
+        // outbound path is unusable. Keep its recovery handshake and Msg2
+        // receiver index until the peer has answered that fresh probe.
+        if self
+            .peers
+            .get(dest)
+            .is_some_and(|peer| peer.rekey_in_progress())
+        {
+            return false;
+        }
         let changed = self.session_direct_degradation.clear(dest);
         if changed {
             // The direct FMP/FSP carrier has now authenticated payload again.

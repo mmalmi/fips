@@ -987,3 +987,34 @@ async fn test_initiate_peer_connections_schedules_retry_on_no_transport() {
 // ============================================================================
 // transport_mtu() — ISSUE-2026-0011 regression coverage
 // ============================================================================
+
+#[test]
+fn inbound_payload_cannot_cancel_an_unanswered_recovery_handshake() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) =
+        make_completed_connection_for_identity(&mut node, link_id, transport_id, 1_000, &peer_full);
+    let node_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+    let pending_index = SessionIndex::new(0x5050);
+    arm_test_fmp_rekey(node.get_peer_mut(&node_addr).unwrap(), pending_index);
+    node.pending_outbound
+        .insert((transport_id, pending_index.as_u32()), link_id);
+
+    // The old address may still deliver payload while the outbound route has
+    // changed. Its traffic cannot acknowledge the new Noise handshake.
+    assert!(!node.clear_session_direct_path_degraded(&node_addr));
+    let peer = node.get_peer(&node_addr).unwrap();
+    assert!(peer.rekey_in_progress());
+    assert_eq!(peer.rekey_our_index(), Some(pending_index));
+    assert!(peer.rekey_msg1().is_some());
+    assert_eq!(
+        node.pending_outbound
+            .get(&(transport_id, pending_index.as_u32())),
+        Some(&link_id)
+    );
+}

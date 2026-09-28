@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh runtime peer aliases in DNS, display names, and alias-based peer
   access rules, retaining hosts-file overrides and retrying failed ACL reads.
   Adapted from the identity and alias fixes in jmcorgan/fips.
+
+## [0.4.82] - 2026-09-15
+
+### Fixed
+
+- Preserve an unanswered recovery handshake when the old UDP path still returns
+  payload, allowing the new path to finish authenticating instead of discarding
+  its response.
 - Recover an unresponsive end-to-end session after a single unanswered request,
   even when the sender stops transmitting and link heartbeats remain healthy.
   Outstanding receiver-report feedback now survives the recent-send window;
