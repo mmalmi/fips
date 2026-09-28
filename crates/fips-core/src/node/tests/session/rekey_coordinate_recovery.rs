@@ -5,6 +5,12 @@ fn routine_rekey_rediscovers_coordinates_while_cached_routed_payload_still_flows
     run_large_stack_async_test("fips-rekey-coordinate-recovery", || async {
         let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
         verify_tree_convergence(&nodes);
+        // The current root has coordinates in the live ancestry even after
+        // cache eviction. Exercise missing coordinates with a non-root target.
+        if nodes[2].node.tree_state().is_root() {
+            nodes.swap(0, 2);
+        }
+        assert!(!nodes[2].node.tree_state().is_root());
         populate_all_coord_caches(&mut nodes);
         let local = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
         let remote = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
