@@ -84,9 +84,12 @@ the short period when successfully closed streams still occupy TCP slots.
 ## Independent durable windows
 
 A separate local worker scans saved forwarding windows every 50 ms. Once new
-reservations consume at least half a window, it checkpoints before publishing
-more allowance. No new reservation means no periodic checkpoint write. The
-worker cannot create credit or exceed the existing reservation limit, and a
+reservations consume at least half a window, or a packet that fits a fresh window
+is blocked by its consumed allowance, it checkpoints before publishing more
+allowance. Packets rejected for lack of financial credit or because they exceed
+a full window do not request this earlier checkpoint. No new reservation means
+no periodic checkpoint write. The worker cannot create credit or exceed the
+existing reservation limit, and a
 crash still consumes the unrecorded persisted window as unbilled exposure.
 
 Usage replies still checkpoint before reporting claims, and verified balance

@@ -147,3 +147,43 @@ pub(super) fn recovery_stages(root: &std::path::Path) -> Vec<serde_json::Value> 
             "seller_settlements": rows("seller_settlements", &["usage", "payment", "report"])})
     }).collect()
 }
+
+// Offline wallet reads require exclusive ownership. Drain the live controller
+// workers first, then resume the same controllers and request streams.
+pub(super) async fn verify_reloaded_wallets(
+    tasks: &mut Vec<ControllerTasks>,
+    controllers: &[Arc<Controller>],
+    wallets: &[std::path::PathBuf],
+    links: &[(usize, usize, Purchase)],
+    mint_url: &str,
+    seed_sat: u64,
+    capacity: u64,
+) {
+    let mut streams = Vec::new();
+    for task in tasks.drain(..) {
+        streams.push(
+            task.stop()
+                .await
+                .expect("controller drained before wallet inspection"),
+        );
+    }
+    for (i, controller) in controllers.iter().enumerate() {
+        let expected: Vec<_> = links
+            .iter()
+            .filter(|(buyer, _, _)| *buyer == i)
+            .map(|(_, _, purchase)| purchase.clone())
+            .collect();
+        assert_eq!(controller.purchases().await.unwrap(), expected);
+        assert_eq!(
+            load_mint_balance(&wallets[i], mint_url)
+                .await
+                .unwrap()
+                .balance_sat,
+            seed_sat - capacity * expected.len() as u64,
+            "controller reload must not fund another channel"
+        );
+    }
+    for (controller, incoming) in controllers.iter().zip(streams) {
+        tasks.push(ControllerTasks::start(controller.clone(), incoming));
+    }
+}

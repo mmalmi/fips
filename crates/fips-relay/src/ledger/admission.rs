@@ -1,9 +1,17 @@
 //! Bound paid admission and complete local forwarding attempts.
 use super::*;
 
+pub(crate) enum Admission {
+    Granted(u64),
+    WindowExhausted { cost_msat: u64 },
+}
+
 impl RelayLedger {
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
-        self.admit_with_windows(request, now_unix, None)
+        match self.admit_with_windows(request, now_unix, None)? {
+            Admission::Granted(token) => Some(token),
+            Admission::WindowExhausted { .. } => None,
+        }
     }
 
     pub(crate) fn admit_with_windows(
@@ -11,7 +19,7 @@ impl RelayLedger {
         request: &ForwardingRequest<'_>,
         now_unix: u64,
         windows: Option<&BTreeMap<String, u64>>,
-    ) -> Option<u64> {
+    ) -> Option<Admission> {
         let units = u64::try_from(request.session_payload.len()).ok()?;
         if units == 0 {
             return None;
@@ -80,10 +88,15 @@ impl RelayLedger {
             channel.usage.paid_msat,
             state.channels.values().map(|c| (&c.terms, c.usage)),
             state.history.as_ref(),
-        )?
-        .min(windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0)));
+        )?;
         if channel_reserved > limit {
             return None;
+        }
+        if channel_reserved > windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0))
+        {
+            return Some(Admission::WindowExhausted {
+                cost_msat: incremental_cost,
+            });
         }
         let a = state.accounts.get_mut(&id)?;
         a.usage.reserved_units = prospective;
@@ -101,7 +114,7 @@ impl RelayLedger {
             state.seen.insert((*request.ingress.node_addr(), digest));
         }
         state.pending.insert(token, (id, digest));
-        Some(token)
+        Some(Admission::Granted(token))
     }
 
     /// Used only by the durable wrapper, which must commit the recovered

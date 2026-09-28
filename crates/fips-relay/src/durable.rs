@@ -7,7 +7,8 @@
 mod channel_history;
 
 use crate::ledger::{
-    ChannelTerms, ChannelUsage, Contract, LedgerError, Limits, RelayLedger, Snapshot, Usage,
+    Admission, ChannelTerms, ChannelUsage, Contract, LedgerError, Limits, RelayLedger, Snapshot,
+    Usage,
 };
 use fips_core::node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,10 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{
+        Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -61,6 +65,7 @@ pub struct DurableRelay {
     directory: PathBuf,
     window_msat: u64,
     windows: RwLock<PublishedWindows>,
+    window_blocked: AtomicBool,
     writer: Mutex<()>,
     _owner: File,
 }
@@ -83,6 +88,7 @@ impl DurableRelay {
             directory: directory.to_path_buf(),
             window_msat,
             windows: RwLock::new(PublishedWindows::default()),
+            window_blocked: AtomicBool::new(false),
             writer: Mutex::new(()),
             _owner: owner,
         };
@@ -110,6 +116,7 @@ impl DurableRelay {
             directory: directory.to_path_buf(),
             window_msat: journal.window_msat,
             windows: RwLock::new(PublishedWindows::default()),
+            window_blocked: AtomicBool::new(false),
             writer: Mutex::new(()),
             _owner: owner,
         };
@@ -131,18 +138,20 @@ impl DurableRelay {
     }
 
     /// A local checkpoint can advance a consumed durable window independently
-    /// of payment cadence. Unchanged/credit-exhausted windows do not cause idle
-    /// writes. This is only a scheduling hint; `checkpoint` revalidates bounds.
+    /// of payment cadence, including a packet blocked before the half-window
+    /// threshold. Unchanged windows do not cause idle writes. This is only a
+    /// scheduling hint; `checkpoint` revalidates bounds.
     pub fn checkpoint_due(&self) -> Result<bool, DurableError> {
         let windows = self.windows.read().map_err(|_| DurableError::Suspended)?;
         if !windows.ready {
             return Err(DurableError::Suspended);
         }
+        let blocked = self.window_blocked.load(Ordering::Relaxed);
         for (id, ceiling) in &windows.ceilings {
             let usage = self.ledger.channel_usage(id).ok_or(DurableError::Format)?;
             let recorded = windows.reserved_at_checkpoint.get(id).copied().unwrap_or(0);
             if usage.reserved_msat > recorded
-                && ceiling.saturating_sub(usage.reserved_msat) <= self.window_msat / 2
+                && (blocked || ceiling.saturating_sub(usage.reserved_msat) <= self.window_msat / 2)
             {
                 return Ok(true);
             }
@@ -341,6 +350,9 @@ impl DurableRelay {
             .map_err(|_| DurableError::Suspended)?
             .ceilings
             .clone();
+        // Clear before sampling reservations so a later admission can request
+        // another checkpoint while this one is being written.
+        self.window_blocked.store(false, Ordering::Relaxed);
         let ledger = self.ledger.snapshot();
         let mut ceilings = BTreeMap::new();
         let mut usage = BTreeMap::new();
@@ -401,8 +413,18 @@ impl ForwardingPolicy for DurableRelay {
             return None;
         }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-        self.ledger
-            .admit_with_windows(request, now, Some(&windows.ceilings))
+        match self
+            .ledger
+            .admit_with_windows(request, now, Some(&windows.ceilings))?
+        {
+            Admission::Granted(token) => Some(token),
+            Admission::WindowExhausted { cost_msat } => {
+                if cost_msat <= self.window_msat {
+                    self.window_blocked.store(true, Ordering::Relaxed);
+                }
+                None
+            }
+        }
     }
 
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {

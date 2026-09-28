@@ -86,6 +86,7 @@ fn session_setup_and_first_data_share_the_same_durable_window() {
             let token = relay.admit(&request(&[0; 128])).unwrap();
             relay.complete(token, ForwardingOutcome::Submitted);
         }
+        assert!(!relay.checkpoint_due().unwrap());
         let data = [0; 1_060];
         let mut token = relay.admit(&request(&data));
         if window == 4_000 {
@@ -94,7 +95,12 @@ fn session_setup_and_first_data_share_the_same_durable_window() {
                 relay.channel_usage("neighbor").unwrap().reserved_msat,
                 1_536
             );
+            assert!(
+                relay.checkpoint_due().unwrap(),
+                "a blocked data packet must wake the local checkpoint worker"
+            );
             relay.checkpoint().unwrap();
+            assert!(!relay.checkpoint_due().unwrap());
             token = relay.admit(&request(&data));
         }
         relay.complete(
@@ -412,11 +418,18 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
     let directory = root.path().join("seller");
     let relay = start(&directory);
     assert!(!relay.checkpoint_due().unwrap());
-    let first = relay.admit(&request(b"abcde")).unwrap();
+    let first = relay.admit(&request(b"abc")).unwrap();
     relay.complete(first, ForwardingOutcome::Submitted);
+    assert!(!relay.checkpoint_due().unwrap());
+    assert!(relay.admit(&request(b"abcdefghijk")).is_none());
+    assert!(
+        !relay.checkpoint_due().unwrap(),
+        "a packet larger than a fresh window cannot benefit from a checkpoint"
+    );
+    assert!(relay.admit(&request(b"abcdefghij")).is_none());
     assert!(relay.checkpoint_due().unwrap());
     let usage = relay.checkpoint().unwrap()["neighbor"];
-    assert_eq!(usage.submitted_msat, 5);
+    assert_eq!(usage.submitted_msat, 3);
     assert_eq!(usage.paid_msat, 0);
     assert!(!relay.checkpoint_due().unwrap());
     // The persisted window advanced locally despite there being no payment.
@@ -428,7 +441,7 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
     drop(relay);
     let restored = DurableRelay::load(&directory).unwrap();
     let usage = restored.channel_usage("neighbor").unwrap();
-    assert_eq!(usage.submitted_msat, 15);
+    assert_eq!(usage.submitted_msat, 13);
     assert_eq!(
         usage.lost_msat, 10,
         "crash still consumes the persisted window"
@@ -438,4 +451,12 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
         "local checkpoints do not invent payment"
     );
     assert!(!restored.checkpoint_due().unwrap());
+    let last = restored.admit(&request(b"x")).unwrap();
+    restored.complete(last, ForwardingOutcome::Submitted);
+    assert!(!restored.checkpoint_due().unwrap());
+    assert!(restored.admit(&request(b"abcdefg")).is_none());
+    assert!(
+        !restored.checkpoint_due().unwrap(),
+        "financial exhaustion cannot request a new window"
+    );
 }

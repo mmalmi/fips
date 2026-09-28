@@ -396,14 +396,9 @@ async fn controller_scenario(
         })
         .await
         .unwrap_or_else(|_| panic!("durable purchase recovery: {:?}", errors(&controllers)));
-        for (i, controller) in controllers.iter().enumerate() {
-            let expected: Vec<_> = links.iter().filter(|(buyer, _, _)| *buyer == i)
-                .map(|(_, _, p)| p.clone()).collect();
-            assert_eq!(controller.purchases().await.unwrap(), expected);
-            assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat,
-                seed_sat - capacity * expected.len() as u64,
-                "controller reload must not fund another channel");
-        }
+        controller_support::verify_reloaded_wallets(
+            &mut tasks, &controllers, &wallets, &links, mint.url(), seed_sat, capacity,
+        ).await;
         // Wallet-only funding recovery is checked before any paid payload.
         if paid_quote_traffic {
             quote_traffic::exercise(&nodes, &peers, &services, &ledgers, &links).await;

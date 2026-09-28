@@ -4,6 +4,7 @@
 //! its exposure window before activation and reconcile it after a process crash.
 
 mod admission;
+pub(crate) use admission::Admission;
 pub(crate) mod channel_history;
 use channel_history::relationship_reservation_limit;
 mod history;

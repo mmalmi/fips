@@ -29,6 +29,9 @@ this does not replace the SDK's direct regression or prove financial reconstruct
 This supersedes r22 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
 
+Later source work repairs [checkpoint scheduling for blocked packets](#packet-demand-before-the-checkpoint-threshold).
+The r23 package predates that change; its acceptance does not cover the fix.
+
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
 update existing credit. The unused manual `Open` and `StopForwarding` operations
@@ -1941,6 +1944,37 @@ failover benchmark. Formatting and the 600-line relay source limit also pass.
 These results establish bounded link behavior. They do not establish radio
 mobility, congestion fairness, throughput, remote TLS proxy deployment or
 support for every core adapter.
+
+### Packet demand before the checkpoint threshold
+
+An existing durable-window test exposed a local scheduling gap. Session setup
+reserved 1,536 msat of a 4,000-msat window; the next data packet cost 3,180 msat
+and could not fit. Because less than half the window had been consumed, the
+checkpoint worker had no reason to advance it. The old test manually checkpointed
+without checking that scheduling decision, masking dependence on other activity.
+
+Admission now reports a window-only refusal to the durable wrapper, which requests
+a local checkpoint when the packet fits a fresh window. The worker still requires
+new reservations, and financial or oversized-packet refusals cannot request the
+earlier write. The hint clears before sampling reservations so demand during disk
+I/O is retained. Forwarding still uses only persisted allowance; credit, crash
+exposure, wire messages and saved journal formats are unchanged.
+
+The existing tests now require the scheduling hint, retry the rejected packet,
+and retain idle, financial-limit and crash-exposure checks. The scheduling
+assertion fails on the previous runtime. This identifies a checkpoint defect;
+it does not establish the cause of the historical delivery/payment timeouts.
+The r23 package predates this change, and current-device acceptance remains open.
+
+The first controller acceptance run also exposed an offline wallet inspection
+racing live controller work. The fixture now drains those workers before checking
+the original balances and resumes the same controllers and request streams.
+Wallet ownership rules and financial assertions are unchanged.
+
+The matching graph passes 302 relay unit tests, 10 ledger tests, all 12 durable
+tests with optional features enabled and disabled, and all seven controller
+scenarios. Strict all-target relay lint passes. These are local software checks
+with test money; they do not replace package or physical-device acceptance.
 
 ### Operator-selected free forwarding
 
