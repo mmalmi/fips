@@ -343,10 +343,11 @@ impl Observation {
                 n.node.check_mmp_reports().await;
             }
             if n.node
-                .pending_tree_announce_deadline_ms()
+                .pending_routing_announce_deadline_ms()
                 .is_some_and(|due| due <= Node::now_ms())
             {
                 n.node.send_pending_tree_announces().await;
+                n.node.send_due_filter_announces().await;
             }
         }
         for destination in 0..nodes.len() {
