@@ -1691,11 +1691,18 @@ all features, and three instrumented seed runs pass without default features.
 Each conserves all 384 test sats. Strict all-target relay lint passes in both
 modes after correcting an unrelated mobile-mesh diagnostic's optional measurement
 access; unavailable buyer payment counters serialize as null. All five changed
-test files pass formatting and the 1000-line limit. The repository-wide size gate
-still flags five unchanged oversized core files. These checks cover finite
+test files pass formatting and the 1000-line limit. These checks cover finite
 loopback interruptions and a partitioned process restart, not sustained loss,
 remote proxy deployment or current-device acceptance; they do not establish the
 cause of the original intermittent timeout.
+
+The five later core size-limit failures are cleared by moving existing identity,
+peer-refresh and gateway tests into focused modules. Gateway runtime code is
+byte-identical, and the extracted test bodies are preserved. The full source-size
+gate passes; 61 configuration and 23 peer-update tests pass on macOS, and 91 gateway
+tests pass in isolated, offline ARM64 Linux with Rust 1.96.0. Two privileged kernel
+checks remain ignored. Strict core lint passes on both platforms. This cleanup
+changes no protocol, payment or routing behavior.
 
 One no-default-feature seed-only service run timed out in paid delivery. Its
 original failure lacked a phase snapshot. Bounded failure-only diagnostics now
