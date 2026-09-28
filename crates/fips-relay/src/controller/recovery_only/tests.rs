@@ -87,6 +87,10 @@ fn late_acceptance_records_knowledge_without_reviving_withdrawn_routing() {
         .unwrap();
     let mut store = reload(store);
     assert!(
+        Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).is_err(),
+        "unconfirmed provider acceptance cannot start automatic cooperative closure"
+    );
+    assert!(
         !store
             .change(|j| Controller::finish_acceptance(j, &old.purchase.contract.id))
             .unwrap()
@@ -98,6 +102,7 @@ fn late_acceptance_records_knowledge_without_reviving_withdrawn_routing() {
     );
     assert!(!Controller::routing_eligible(&store.journal, saved));
     assert!(!saved.retired);
+    Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).unwrap();
     assert!(store.journal.buyer_settlements.is_empty());
     reload(store);
 }

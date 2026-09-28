@@ -242,12 +242,16 @@ impl Controller {
 
     /// Check in the same mutation that reserves whole-channel settlement. A
     /// detached route cannot close another destination's usable shared channel.
+    /// Unconfirmed acceptance cannot establish that the provider knows the channel;
+    /// retain that funding for a fresh authorized purchase or original expiry.
     pub(super) fn check_recovery_settlement(j: &Journal, id: &str) -> Result<(), String> {
         let outgoing = j
             .outgoing
             .values()
-            .find(|o| o.purchase.channel.id == id && j.recovery_only.contains(&o.offer.id))
-            .ok_or("no recovery-only purchase on channel")?;
+            .find(|o| {
+                o.accepted && o.purchase.channel.id == id && j.recovery_only.contains(&o.offer.id)
+            })
+            .ok_or("no accepted recovery-only purchase on channel")?;
         if j.outgoing
             .values()
             .any(|o| o.purchase.channel.id == id && Self::routing_eligible(j, o))

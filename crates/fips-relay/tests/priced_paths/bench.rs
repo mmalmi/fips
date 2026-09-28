@@ -59,7 +59,7 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
-    start_inner(root_index, scenario, seed, false, false, None)
+    start_inner(root_index, scenario, seed, MintMode::Direct, false, None)
         .await
         .0
 }
@@ -69,7 +69,7 @@ pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> B
         root_index,
         Scenario::RecoveryTiming,
         seed,
-        false,
+        MintMode::Direct,
         true,
         None,
     )
@@ -79,8 +79,15 @@ pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> B
 
 #[cfg(unix)]
 pub(super) async fn start_with_mint_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
-    let (bench, proxy) =
-        start_inner(root_index, Scenario::MergeSplit, seed, true, false, None).await;
+    let (bench, proxy) = start_inner(
+        root_index,
+        Scenario::MergeSplit,
+        seed,
+        MintMode::Proxy,
+        false,
+        None,
+    )
+    .await;
     (bench, proxy.unwrap())
 }
 
@@ -93,7 +100,7 @@ pub(super) async fn start_with_neighbor_rotation(
         root_index,
         Scenario::MergeSplit,
         seed,
-        false,
+        MintMode::Direct,
         false,
         Some(rotation),
     ))
@@ -101,11 +108,31 @@ pub(super) async fn start_with_neighbor_rotation(
     .0
 }
 
+enum MintMode {
+    Direct,
+    Proxy,
+    Renewal,
+}
+
+#[cfg(unix)]
+pub(super) async fn start_with_renewal_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
+    let (bench, proxy) = start_inner(
+        root_index,
+        Scenario::MergeSplit,
+        seed,
+        MintMode::Renewal,
+        false,
+        None,
+    )
+    .await;
+    (bench, proxy.unwrap())
+}
+
 async fn start_inner(
     root_index: usize,
     scenario: Scenario,
     seed: u64,
-    intercept_mint: bool,
+    mint_mode: MintMode,
     hold_promotion: bool,
     rotation: Option<NeighborRotationConfig>,
 ) -> (Bench, Option<MintProxy>) {
@@ -141,7 +168,7 @@ async fn start_inner(
     )
     .await
     .unwrap();
-    let mint_proxy = if intercept_mint {
+    let mint_proxy = if !matches!(mint_mode, MintMode::Direct) {
         Some(MintProxy::start(mint.url()).await)
     } else {
         None
@@ -152,6 +179,10 @@ async fn start_inner(
     if recovery_timing || mesh {
         controller_policy.max_wallet_spend_sat = 128;
         controller_policy.renewal = None;
+    }
+    if matches!(mint_mode, MintMode::Renewal) {
+        controller_policy.max_wallet_spend_sat = 256;
+        controller_policy.renewal = policy(mint_url).renewal;
     }
     let network_name = format!("priced-{}", Identity::generate().node_addr());
     let network = SimNetwork::new(seed);

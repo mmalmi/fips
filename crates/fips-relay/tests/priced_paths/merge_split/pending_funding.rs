@@ -10,11 +10,11 @@ async fn pending_encounter_funding_preserves_healthy_payments_and_original_capit
         .expect("pending encounter funding and collection deadline");
 }
 
-fn read(path: &Path) -> Value {
+pub(super) fn read(path: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
-fn journal(bench: &Bench, node: usize) -> Value {
+pub(super) fn journal(bench: &Bench, node: usize) -> Value {
     read(
         &bench
             .root
@@ -157,7 +157,7 @@ async fn assert_watches(bench: &Bench) {
     }
 }
 
-async fn healthy_progress(bench: &mut Bench, channel: &str) -> bool {
+pub(super) async fn healthy_progress(bench: &mut Bench, channel: &str) -> bool {
     let before = hop_usage(bench).await.remove(&(2, 1)).unwrap();
     assert_eq!(before.channel, channel);
     let paid_before = bench.sellers[1].channel_usage(channel).unwrap().paid_msat;
@@ -274,6 +274,11 @@ fn recovery_diagnostic(bench: &Bench, pending: &Pending) -> Value {
         "funding_count": saved["funding"].as_object().map(|v| v.len()),
         "original_funding_restored": saved["funding"][&pending.id]["funded"].is_object(),
         "last_error_kind": error_kind,
+        "last_error": error,
+        "quote_client": bench.quote_inputs[2].0.statistics().snapshot(),
+        "quote_provider": bench.quote_inputs[3].0.statistics().snapshot(),
+        "acceptance_client": bench.services[2].acceptance.statistics().snapshot(),
+        "acceptance_provider": bench.services[3].acceptance.statistics().snapshot(),
     })
 }
 

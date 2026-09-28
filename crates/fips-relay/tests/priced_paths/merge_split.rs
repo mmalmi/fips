@@ -27,6 +27,8 @@ mod pending_funding;
 mod reliable;
 #[path = "merge_split/settlement_cleanup.rs"]
 mod settlement_cleanup;
+#[path = "merge_split/slow_renewal.rs"]
+mod slow_renewal;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn independently_discovered_meshes_merge_split_and_reuse_paid_channels() {

@@ -71,6 +71,59 @@ other controller scenarios retain default pacing. Formatting and source-size
 checks also pass. No SDK/CDK source, dependency, financial record or wire message
 changed. The accepted r22 package predates this setting.
 
+## Slow renewal isolation
+
+The six-node renewal regression holds a successful replacement-funding reply
+from the real isolated mint after the previous channel has been refunded. While
+that reply is held, the same router sends 36 fresh payloads through its other
+paid neighbor. That neighbor's credit advances from 2,000 to 6,000 msat before
+the response is released or times out; the final credit observation takes
+0.461 seconds with all features and 0.410 seconds without optional features,
+after the traffic batches. These are controlled observations, not latency bounds.
+
+The pending 64-sat reservation, 128-sat locked-capital total, 256-sat lifetime
+spending cap, funding sequence and net exposure stay unchanged throughout the
+held interval.
+After release, the replacement retains the original wallet operation and funding
+authority, the healthy channel is reused, and both routes deliver fresh payloads.
+All channels settle and all 1,536 test sats collect, including earlier renewal
+payouts and refunds. The test uses the default wallet request pacing and reuses
+the existing mesh, mint-response gate, healthy-payment probe and wallet collector.
+
+This covers the final funding wait during renewal. It does not establish service
+continuity on the renewing route, arbitrary mint latency, earlier preparation
+waits, mint failure/timeout recovery, interrupted renewal transitions or physical
+router acceptance. The slow-renewal regression itself adds no runtime behavior.
+
+## Withdrawal before provider acceptance
+
+A funded purchase can lose its connection before the provider accepts the
+channel. The held-opening mesh regression reproduced an automatic recovery bug:
+withdrawal began cooperative closure despite unconfirmed acceptance, then kept
+receiving settlement rejection because the provider did not know the channel.
+That durable closure prevented the unpaused Watch from reusing its recovered
+funding after rejoin, even though quotes and controller requests were delivered.
+
+Automatic withdrawal recovery now requires a withdrawn, accepted purchase before
+reserving cooperative closure. Unconfirmed funding remains available to a fresh authorized
+purchase or recovery at its original expiry; it is not treated as refunded or
+released. A genuine late acceptance still enables ordinary closure without
+reviving the withdrawn route. Existing fences, capital and lifetime spending
+limits remain in force, with no new message, journal field or dependency.
+
+The existing late-acceptance regression fails before the guard and passes after
+it. The six-node held-opening reproduction then recovers the original Watch,
+wallet operation and channel after rejoin; healthy payments advance while the
+mint response is held, all final streams deliver, and all 1,536 test sats collect.
+This corrects the reproduced unconfirmed-purchase closure. Other historical
+delivery and payment timeouts remain separate unresolved cases.
+
+The final source graph passes all 302 relay unit tests, all seven controller
+cases, held-opening rejoin and slow-renewal isolation with and without optional
+features, strict all-target relay lint, formatting and source-size checks. SDK
+and native CDK sources are unchanged. The r22 package predates this correction;
+current-device and physical power-loss acceptance remain outstanding.
+
 ## Interrupted funding
 
 Recovery reads the original wallet cost even if its quote has expired or the route
