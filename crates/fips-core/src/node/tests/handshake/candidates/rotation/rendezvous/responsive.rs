@@ -418,7 +418,11 @@ impl Observation {
                         },
                     );
                 }
-                process_dataplane_packet(&mut nodes[destination], packet).await;
+                crate::node::tests::spanning_tree::process_dataplane_packet_once(
+                    &mut nodes[destination].node,
+                    packet,
+                )
+                .await;
                 if let Some(response) = bridge_msg2.as_ref() {
                     let (before_ms, before) = msg2_before.unwrap();
                     let after = response_owner(&nodes[destination].node);
