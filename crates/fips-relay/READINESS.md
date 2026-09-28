@@ -1835,6 +1835,14 @@ original three-test prefix and six bounded repeats. The temporary fault injectio
 was removed. This comparison establishes a diagnostic limitation, not the cause
 of the historical delivery, renewal or payment failures.
 
+Rejection-time inspection must also distinguish the financial allowance from the
+durable checkpoint ceiling. With temporary tracing under the existing ledger
+lock, the original three-test prefix and renewal in both feature profiles pass.
+The renewal runs record 44 full-channel denials and one new-channel denial with
+credit available but its first durable window not yet published. All recover
+within the unchanged retry and delivery limits. Tracing was removed afterward;
+no historical timeout was reproduced or attributed, and no runtime fix is claimed.
+
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed
 round-trip check finished. The small post-restart warm-up could remain covered
