@@ -1093,9 +1093,23 @@ formatting pass; the SDK-wide format check retains pre-existing differences in
 nine unchanged files. PostgreSQL has compile/lint coverage only; runtime
 acceptance uses SQLite and local test money.
 
-Internal storage-reservation reads and legacy bulk enumeration retain their
-existing behavior. Record admission does not reserve physical storage or grant
-spending authority. The r20 package predates this extension.
+Internal completion and output-key storage admission now apply the configured
+limit when loading their saved parent. Exact transactional comparisons also clamp
+their caller-sized budget to that ceiling. All use the existing bounded SQL
+projection; the duplicate default operation reader has been removed. Three
+file-backed regressions reproduce the earlier bypasses, reject oversized valid
+and malformed records before decoding, preserve parent/proof/reservation/counter
+state, and complete after restoring the original.
+
+The matching graph passes all 187 shared SQL/SQLite tests, the full 418-test
+SDK workspace suite (one opt-in soak excluded), fee-bearing paid settlement and
+interrupted-funding recovery after route expiry. Strict native lint, including
+PostgreSQL compilation, and native workspace formatting pass. Runtime acceptance
+uses SQLite and local test money; SDK and relay executable sources are unchanged.
+
+Legacy bulk enumeration retains its existing behavior. Record admission does not
+reserve physical storage or grant spending authority. The r20 package predates
+both configured-read extensions.
 
 These bounds cover individual records crossing the storage interface, not SQL
 engine memory, total wallet/custody capacity, uncapped SDK stores or other native
