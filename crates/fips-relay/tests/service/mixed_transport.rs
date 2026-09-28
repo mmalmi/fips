@@ -149,7 +149,13 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         bench.set_renewals_paused(false).await;
         bench.wait_replacements(&original_channels).await;
         for (source, destination) in [(0, 2), (2, 0)] {
-            bench.deliver(source, destination).await;
+            if second_hop == SecondHop::WebSocketSeed {
+                // Minimum payload across preload and both recovery phases is
+                // 6,656 bytes, above the unchanged 6,000-msat renewal threshold.
+                bench.deliver_cohorts(source, destination, 256, 3).await;
+            } else {
+                bench.deliver(source, destination).await;
+            }
             let state = request(&bench.configs[source], &AdminRequest::Status)
                 .await
                 .unwrap();
@@ -171,6 +177,15 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             if second_hop == SecondHop::WebSocketSeed {
                 bench.set_stage("carrier-silent-loss");
                 bench.recover_seed_carrier(true).await;
+                // The repeated cohorts must exercise replacement, not merely
+                // permit it. The recovery helper verifies its accounting.
+                for source in [0, 2] {
+                    let status = request(&bench.configs[source], &AdminRequest::Status)
+                        .await
+                        .unwrap();
+                    assert_eq!(status["history"].as_array().unwrap().len(), 3);
+                    assert_eq!(status["funding_budget"]["wallet_debited_sat"], 24);
+                }
             }
         }
 
@@ -219,7 +234,14 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                 "crash exposure stays retained and unbilled after replacement"
             );
         }
-        assert_restart_accounts(&bench, &before, &original_funding).await;
+        assert_replacement_accounts(
+            &bench,
+            &before,
+            &bench.states().await,
+            &original_funding,
+            [1, 0, 1],
+        )
+        .await;
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"65".repeat(16)).await;
         }
@@ -257,14 +279,15 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
     .expect("mixed native transport acceptance deadline");
 }
 
-async fn assert_restart_accounts(
+async fn assert_replacement_accounts(
     bench: &MixedBench,
     before: &[Value],
+    after: &[Value],
     original_funding: &[serde_json::Map<String, Value>],
+    replacements: [usize; 3],
 ) {
-    let after = bench.states().await;
     let funding = bench.funding_intents();
-    for (node, (old, recovered)) in before.iter().zip(&after).enumerate() {
+    for (node, (old, recovered)) in before.iter().zip(after).enumerate() {
         // A completed refund or replacement may change aggregate counters.
         // Original wallet operations and purchase identities must remain exact.
         for (id, intent) in &original_funding[node] {
@@ -276,9 +299,7 @@ async fn assert_restart_accounts(
         let previous = old["history"].as_array().unwrap();
         let history = recovered["history"].as_array().unwrap();
         assert!(previous.iter().all(|purchase| history.contains(purchase)));
-        let replacements = usize::from(node != 1);
-        assert!(funding[node].len() <= original_funding[node].len() + replacements);
-        assert!(history.len() <= previous.len() + replacements);
+        let replacements = replacements[node];
 
         let old_budget: FundingBudget =
             serde_json::from_value(old["funding_budget"].clone()).unwrap();
@@ -302,13 +323,14 @@ async fn assert_restart_accounts(
             recovered["remaining_budget_sat"].as_u64().unwrap()
                 <= old["remaining_budget_sat"].as_u64().unwrap()
         );
-        if node != 1 {
-            assert_eq!(history.len(), previous.len() + 1);
-            assert_eq!(funding[node].len(), original_funding[node].len() + 1);
-            assert_eq!(
-                budget.wallet_debited_sat,
-                old_budget.wallet_debited_sat + policy.channel_capacity_sat
-            );
-        }
+        assert_eq!(history.len(), previous.len() + replacements);
+        assert_eq!(
+            funding[node].len(),
+            original_funding[node].len() + replacements
+        );
+        assert_eq!(
+            budget.wallet_debited_sat,
+            old_budget.wallet_debited_sat + replacements as u64 * policy.channel_capacity_sat
+        );
     }
 }

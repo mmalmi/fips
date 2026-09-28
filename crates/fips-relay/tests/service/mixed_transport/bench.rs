@@ -22,6 +22,9 @@ use tokio::process::Child;
 use super::{proxy::StreamProxy, tls::TlsProxy};
 use crate::process_support::{command, config, ready, start};
 
+#[path = "recovery.rs"]
+mod recovery;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecondHop {
     Tcp,
@@ -307,82 +310,6 @@ impl MixedBench {
             .or_else(|| self.tls.as_ref().map(TlsProxy::carrier))
     }
 
-    pub async fn recover_seed_carrier(&mut self, silent: bool) {
-        let before = self.states().await;
-        let proxy = self.seed_carrier().unwrap();
-        let accepted = proxy.connections();
-        assert!(accepted > 0);
-        let dropped = proxy.dropped_bytes();
-        let started = tokio::time::Instant::now();
-        let wait = if silent {
-            // Preserve production timers. Silent loss may last until the
-            // configured idle deadline; a clean close retains its 20-s bound.
-            let idle = self.configs[2]
-                .transports
-                .websocket
-                .iter()
-                .next()
-                .unwrap()
-                .1
-                .idle_timeout_secs();
-            assert!(idle > 0);
-            proxy.blackhole().await;
-            Duration::from_secs(idle + 20)
-        } else {
-            assert!(
-                proxy.set_available(true).await > 0,
-                "interrupt a live physical stream"
-            );
-            Duration::from_secs(20)
-        };
-        tokio::time::timeout(wait, async {
-            while proxy.connections() == accepted {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("seed must establish a fresh physical connection");
-        if silent {
-            assert!(
-                proxy.dropped_bytes() > dropped,
-                "the old connection carried discarded traffic"
-            );
-        }
-        eprintln!(
-            "carrier recovery silent={silent} fresh_connection_ms={}",
-            started.elapsed().as_millis()
-        );
-
-        ready(&self.configs, &self.paths, &self.npubs, &mut self.children).await;
-        self.assert_carriers().await;
-        let authenticated_ms = started.elapsed().as_millis();
-        for (source, destination) in [(0, 2), (2, 0)] {
-            let channel = before[source]["purchases"][0]["channel"]["id"]
-                .as_str()
-                .unwrap();
-            let (_, paid) = self.relay_usage_msat(channel);
-            // More than one sat of usage exceeds any prior whole-sat rounding.
-            self.deliver_sized(source, destination, 512).await;
-            self.wait_paid_beyond(channel, paid).await;
-        }
-        for (old, recovered) in before.iter().zip(self.states().await) {
-            assert_eq!(recovered["history"], old["history"]);
-            assert_eq!(recovered["funding_budget"], old["funding_budget"]);
-            assert_eq!(
-                recovered["purchases"], old["purchases"],
-                "carrier recovery and subsequent paid delivery must reuse existing purchases"
-            );
-            assert!(
-                recovered["remaining_budget_sat"].as_u64().unwrap()
-                    <= old["remaining_budget_sat"].as_u64().unwrap()
-            );
-        }
-        eprintln!(
-            "carrier recovery silent={silent} authenticated_ms={authenticated_ms} paid_progress_ms={}",
-            started.elapsed().as_millis()
-        );
-    }
-
     pub async fn states(&self) -> Vec<Value> {
         let mut states = Vec::new();
         for config in &self.configs {
@@ -532,9 +459,20 @@ impl MixedBench {
     }
 
     pub(super) async fn deliver_sized(&self, source: usize, destination: usize, bytes: usize) {
+        self.deliver_cohorts(source, destination, bytes, 1).await;
+    }
+
+    pub(super) async fn deliver_cohorts(
+        &self,
+        source: usize,
+        destination: usize,
+        bytes: usize,
+        cohorts: usize,
+    ) {
+        assert!((1..=3).contains(&cohorts));
         // Application retries stay separately billable, as in the existing
         // process restart fixture. No transport ACK is a payment receipt.
-        for _ in 0..3 {
+        for attempt in 0..3 {
             self.send_probe(source, destination, 2, bytes, 4).await;
             if tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
@@ -550,6 +488,7 @@ impl MixedBench {
             })
             .await
             .is_ok()
+                && attempt + 1 >= cohorts
             {
                 return;
             }
@@ -585,6 +524,21 @@ impl MixedBench {
                             "probe", "data_carrier", "control_traffic", "payment_progress", "bootstrap", "return_allowance",
                         ]);
                         safe["last_error_present"] = json!(!status["last_error"].is_null());
+                        // Emit only known labels, never an arbitrary error that
+                        // could contain wallet material or a remote response.
+                        let error = status["last_error"].as_str();
+                        let kind = error.map(|error| [
+                            "control request timed out", "control transport stopped",
+                            "control command queue is closed or full", "control stream closed",
+                            "control request expired or canceled", "control stream ended before its record",
+                            "control handler canceled request", "provider rejected usage",
+                            "provider did not accept signed balance", "invalid usage response",
+                            "invalid payment response", "payment signer failed:",
+                            "channel capacity or lifetime spending budget exhausted",
+                            "payment agreement expired", "accounting writer is suspended;",
+                            "accounting journal I/O failed:",
+                        ].into_iter().find(|label| error.starts_with(label)).unwrap_or("other"));
+                        diagnostic(node, "controller-error", &json!({"kind": kind}));
                         safe["history_count"] = json!(status["history"].as_array().map(Vec::len));
                         safe["purchases"] = json!(status["purchases"].as_array().map(|rows| rows.iter().map(|row| json!({
                             "provider": row["provider"],

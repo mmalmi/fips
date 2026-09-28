@@ -1729,15 +1729,39 @@ previously paid amounts. The payment timeout's cause remains unproven; subsequen
 passes do not close it or establish that it shares the earlier delivery timeout's
 cause.
 
-Recovery failure snapshots now also retain bounded buyer authorizations, route
-accounting and attempt outcomes from the last durable journal, including when
-optional measurements are disabled. These records can lag live submission state;
-only selected non-secret fields are emitted. Bounded traffic-timing probes did
-not reproduce the original payment stall, and their timing changes were removed.
-The unchanged recovery scenario passes with optional features enabled and
-disabled, conserving all 384 test sats in each case; strict all-target relay lint
-passes in both modes. This improves failure evidence without changing runtime
-policy, retries or deadlines. Both intermittent timeouts remain unresolved.
+Recovery failure snapshots retain bounded buyer authorizations, route accounting
+and attempt outcomes from the last durable journal, including when optional
+measurements are disabled. These records can lag live submission state. Only
+selected non-secret fields and known controller-error labels are emitted; arbitrary
+error strings are excluded.
+
+A directed repeated-traffic workload exposed a false payment wait after legitimate
+renewal: the old channel had 5,764 msat submitted and 6,000 paid, while its replacement
+had 4,096 submitted and 5,000 paid. The fixture kept waiting for new usage on the
+retired channel. Recovery now follows payment across retained and replacement
+channels, waits for in-progress renewal to finish, and uses the same sampled
+purchases for its final accounting checks. Replacement must be justified by buyer
+evidence reaching the configured threshold; original funding records, destination,
+price, lifetime budget and capital limits remain checked.
+
+The seed case now requires one extra replacement per payer across its two carrier
+recoveries. Its minimum application workload exceeds the unchanged renewal
+threshold, with a spare delivery attempt during silent-loss recovery. The existing
+three-attempt limit and ten-second delivery waits remain; both payment directions
+and renewal must reconcile within one twenty-second window. A smaller preload did
+not reliably reach the threshold, and a separate sample caught replacement still
+committing after payment; both failed experiments are retained. Final acceptance
+passes all five carrier cases with all features and the seed case without optional
+features, conserving 384 test sats per case. Strict all-target relay lint passes in
+both modes. These are test-harness changes; the r21 runtime is unchanged.
+
+Separate failures remain open: an earlier TLS run timed out before carrier fault
+injection with an active channel, 432 msat submitted, zero paid and one sat locally
+authorized. A comparison using the old payment wait instead observed an unfinished
+renewal with 8,000 msat submitted and 6,000 paid. Later passes do not explain either
+failure, or attribute the original intermittent delivery/payment timeouts to the
+retired-channel fixture defect. No production-readiness claim follows from these
+bounded local checks.
 
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed
