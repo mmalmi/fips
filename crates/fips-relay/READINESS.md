@@ -1820,6 +1820,17 @@ with and without optional features. This adds test evidence only: the earlier
 timeouts remain unexplained, and runtime and current-device acceptance are
 unchanged.
 
+A post-timeout credit snapshot cannot establish that credit was available when
+the packet arrived. Two controlled five-second payment holds reproduce an
+ordinary-delivery timeout with a first-hop denial of a 1,138-byte envelope. After
+payments resume, the snapshot has 7,868–7,964 msat of channel headroom for that
+3,414-msat packet, with no native route, send-error or TTL drops. The existing hop
+trace identifies the denied envelope; the older failure logs lack that evidence.
+Twelve unmodified executions across five controller cases pass, including the
+original three-test prefix and six bounded repeats. The temporary fault injection
+was removed. This comparison establishes a diagnostic limitation, not the cause
+of the historical delivery, renewal or payment failures.
+
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed
 round-trip check finished. The small post-restart warm-up could remain covered
