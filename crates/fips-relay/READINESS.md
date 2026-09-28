@@ -551,6 +551,25 @@ provide general orphan detection/reconciliation. The ARM64 package below include
 this change and passes the isolated Linux checks below. Physical power-loss and
 current-device acceptance remain open.
 
+### Wallet seed and database identity
+
+SDK startup now binds fresh databases to their wallet seed before loading the
+wallet repository. File-backed and secure-store reopen checks reject a changed
+seed or missing, mismatched or oversized identity; restoring the original
+evidence permits reopening. Existing databases without this identity are not
+automatically adopted. See the SDK's `docs/wallet-history.md` for the fresh-profile
+boundary and backup requirements. The r21 packaged executable predates this
+source change; new package and current-device acceptance remain pending. This
+does not reconstruct lost financial evidence or establish physical durability.
+
+The changed-seed regression fails before the check. Three focused tests cover
+file-backed and secure seed stores, missing or invalid identity records, and
+reopening after the original evidence is restored. The full SDK workspace passes
+423 tests (one opt-in soak excluded), SDK and relay strict lint pass, and all 301 relay
+unit tests pass against the same updated wallet source. The process-level paid
+settlement/restart scenario and interrupted funding recovery after route expiry
+also pass, preserving original charges, refunds and spending bounds.
+
 ### Receipt completion read bounds
 
 Native CDK `9a8e9792f98f` bounds operation receipt publication and final
