@@ -311,8 +311,7 @@ impl NatManager {
     pub fn cleanup(self) -> Result<(), NatError> {
         let mut batch = Batch::new();
         batch.add(&self.table, MsgType::Del);
-        // Use the same owned socket path as rebuilds. rustables 0.8.7's
-        // Batch::send closes its OwnedFd a second time after a successful ACK.
+        // Use the same bounded socket and acknowledgement handling as rebuilds.
         let mut bytes = batch.finalize();
         keep_last_ack(&mut bytes)?;
         send_batch(&bytes)?;

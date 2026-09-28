@@ -62,7 +62,7 @@ rtnetlink = "0.20.0"
 procfs = { version = "0.18", default-features = false }
 
 [target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
-rustables = "0.8.7"
+rustables = "0.8.8"
 netlink-packet-netfilter = "0.3"
 netlink-packet-core = "0.8"
 netlink-sys = "0.8"
