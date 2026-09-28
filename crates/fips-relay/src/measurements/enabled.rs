@@ -9,14 +9,15 @@ use std::{
     time::Instant,
 };
 
-const OPERATIONS: [&str; 7] = [
+const OPERATIONS: &[&str] = &[
     "other",
     "payment_sign",
     "payment_usage",
     "payment_update",
-    "payment_open",
-    "payment_stop",
     "window_checkpoint",
+    // Isolate exact I/O assertions from concurrently running unit tests.
+    #[cfg(test)]
+    "test",
 ];
 static COUNTERS: [Counters; OPERATIONS.len()] = [const { Counters::new() }; OPERATIONS.len()];
 thread_local! {
@@ -88,7 +89,7 @@ pub struct Snapshot {
 /// straddle an operation; compare quiescent boundaries and do not reset them.
 pub fn snapshot() -> Option<Snapshot> {
     Some(Snapshot {
-        version: 1,
+        version: 2,
         process_id: std::process::id(),
         process_cpu_ns: cpu_clock(false),
         operations: OPERATIONS

@@ -381,11 +381,10 @@ impl RelayService {
         control_statistics.push((44_742, acceptance.statistics()));
         control_statistics.push((PAYMENT_CONTROL_PORT, payments.statistics()));
         let payment_control = Arc::new(
-            PaymentControl::new(receiver, root.join("wallet"), seller.clone(), vec![])?
-                .with_keyset_refresh(
-                    root.join("receiver"),
-                    FileSpilmanPaymentReceiverConfig::new([t.controller.mint_url.clone()]),
-                ),
+            PaymentControl::new(receiver, root.join("wallet"), seller.clone()).with_keyset_refresh(
+                root.join("receiver"),
+                FileSpilmanPaymentReceiverConfig::new([t.controller.mint_url.clone()]),
+            ),
         );
         let payment_server = PaymentServer::start_shared(payment_control.clone(), payment_incoming);
         let services = ControllerServices {

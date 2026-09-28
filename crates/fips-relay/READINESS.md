@@ -14,6 +14,29 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+The peer API uses eight requests across quote, controller and payment services.
+Only the controller admits and seals channels; payment requests report usage or
+update existing credit. The unused manual `Open` and `StopForwarding` operations
+and their static approval map have been removed. The automatic five-node test
+retains bidirectional settlement through three transit routers, including
+wrong-buyer rejection and blocked delivery after closure. Receiver and buyer tests retain
+funding-reservation, forged-payment and unsupported-claim checks. This replaces
+the duplicate manually orchestrated settlement fixture.
+
+Measurement snapshot version 2 removes the two unused lifecycle counters.
+The cadence analyser still validates complete version-1 records for historical
+results and rejects counter-version changes within an interval. Existing cadence
+results and the r19 ARM64 package predate this peer API simplification.
+
+The matching graph passes 301 relay unit tests with all features,
+287 without optional features, 12 buyer tests and all seven controller tests,
+including six five-node scenarios. The focused receiver regression fails before
+removal of the manual handlers and passes afterward. Strict all-target relay lint,
+formatting and source size checks pass. All 121 cadence-analyser tests pass, including complete historical
+and current counter sets and rejection of changed/missing counters. No wallet or
+native CDK source, feature or dependency changes in this step. Refreshed package,
+device, physical power-loss and complete deployment threat acceptance remain open.
+
 Native CDK `1cce477c7166` quote and issuance receipt comparisons bound stored payloads
 before SQL projection. The ceiling comes from the caller's original, with a 4 MiB
 floor; existing larger originals remain usable. Issuance completion and cancellation
@@ -324,15 +347,16 @@ complete wallet-capacity operation; see [history](HISTORY.md).
 Receiver wallet admission now reserves payout proofs and shared bookkeeping
 before retaining funding, including the original mint metadata for a cold wallet.
 The bounded admission journal preserves the original allowance through partial
-writes and rejects lost accepted funding instead of recreating it. FIPS automatic
-acceptance and preapproved opening use this admission with their existing agreement
-checks; recurring payments require original funding without reopening the wallet.
+writes and rejects lost accepted funding instead of recreating it. At that revision,
+FIPS automatic acceptance and preapproved opening used this admission with their
+existing agreement checks; recurring payments require original funding without
+reopening the wallet.
 Settlement imports the original payout, including zero payouts, through its paired
 wallet. No protocol message or payment cadence changes are introduced.
 
 The receiver-admission graph passes all 408 SDK tests, all 18 feature profiles,
 296 relay unit tests, strict SDK/relay lint and source formatting/length checks.
-Preapproved native channels and automatic multi-hop purchases pass their live
+Preapproved native channels and automatic multi-hop purchases passed their live
 scenarios. The three-relay settlement regression fills the seller wallet after
 admission, then preserves paid and zero-payout handoffs through process kills,
 ordinary restart, duplicate settlement and actual expiry/retirement. All 2,722

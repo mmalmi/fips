@@ -96,9 +96,11 @@ async fn controller_with_neighbors(
             quotes,
             acceptance: Arc::new(acceptance),
             payments: Arc::new(payments),
-            payment_control: Arc::new(
-                PaymentControl::new(receiver, root.join("wallet"), seller.clone(), vec![]).unwrap(),
-            ),
+            payment_control: Arc::new(PaymentControl::new(
+                receiver,
+                root.join("wallet"),
+                seller.clone(),
+            )),
             seller,
             buyer,
             wallet_directory: root.join("wallet"),

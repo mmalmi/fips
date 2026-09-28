@@ -133,6 +133,24 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(steady["missing_submitted_packets"], 0)
         self.assertEqual(steady["mean_latency_us"], 80)
 
+    def test_current_counters_require_their_complete_versioned_operation_set(self):
+        rows = complete_report()
+        for node in all_snapshots(rows):
+            node["measurements"]["version"] = 2
+            for name in ("payment_open", "payment_stop"):
+                node["measurements"]["operations"].pop(name)
+        self.assertEqual(len(self.run_report(rows)[1]), 32)
+        for operation in ("other", "window_checkpoint", "payment_update"):
+            incomplete = copy.deepcopy(rows)
+            for node in all_snapshots(incomplete):
+                node["measurements"]["operations"].pop(operation)
+            with self.subTest(operation=operation), self.assertRaises(ValueError):
+                self.run_report(incomplete)
+        # A restart/version transition cannot be combined into one interval.
+        workload(rows)["after"][0]["measurements"]["version"] = 1
+        with self.assertRaises(ValueError):
+            self.run_report(rows)
+
     def test_reordering_is_recorded_without_rejecting_complete_delivery(self):
         rows = complete_report()
         workload(rows)["probes"][0]["receiver"]["out_of_order_packets"] = 7

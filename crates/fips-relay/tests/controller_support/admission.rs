@@ -1,6 +1,46 @@
 //! Real adjacent-node admission without giving discovery spending authority.
 use super::*;
 use fips_relay::control_transport::{ControlAdmission, NeighborAdmission};
+use fips_relay::payment_control::{PaymentRequest, PaymentResponse};
+
+pub(super) async fn payment_usage_requires_buyer(
+    services: &[ControllerServices],
+    peers: &[PeerIdentity],
+    channel_id: &str,
+) {
+    let request = PaymentRequest::Usage {
+        channel_id: channel_id.to_owned(),
+    };
+    let reply = services[2]
+        .payments
+        .request(peers[1], serde_json::to_vec(&request).unwrap())
+        .await
+        .unwrap();
+    assert!(matches!(
+        serde_json::from_slice::<PaymentResponse>(&reply).unwrap(),
+        PaymentResponse::Rejected
+    ));
+}
+
+pub(super) async fn closed_path_rejects_data(
+    nodes: &[Arc<FipsEndpoint>],
+    peers: &[PeerIdentity],
+    data: &mut [fips_core::FipsEndpointServiceReceiver],
+) {
+    let payload = b"closed-channel-probe".to_vec();
+    nodes[0]
+        .send_datagram(peers[4], 44_740, 44_740, payload.clone())
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            data[4].recv_batch_into(&mut received, 8).await.unwrap();
+            assert!(received.iter().all(|m| m.data.as_slice() != payload));
+        }
+    })
+    .await;
+}
 
 pub(super) fn for_router(
     endpoint: Arc<FipsEndpoint>,

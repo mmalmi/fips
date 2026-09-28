@@ -4,7 +4,8 @@ from bisect import bisect_left
 
 PAYMENT_PORT = 44743
 PAYMENT_OPERATIONS = ("payment_sign", "payment_usage", "payment_update")
-OPERATIONS = {"other", *PAYMENT_OPERATIONS, "payment_open", "payment_stop", "window_checkpoint"}
+OPERATIONS = {"other", *PAYMENT_OPERATIONS, "window_checkpoint"}
+LEGACY_OPERATIONS = OPERATIONS | {"payment_open", "payment_stop"}
 COUNTERS = {"spans", "cpu_samples", "thread_cpu_ns", "elapsed_ns",
             "journal_bytes_written", "journal_writes", "journal_syncs", "journal_commits"}
 POLICIES = (250, 500, 1000, 2000, 2000, 1000, 500, 250)
@@ -29,13 +30,15 @@ def unsigned(value):
 
 
 def validate_measurements(before, after):
-    if before["version"] != 1 or after["version"] != 1:
+    version = before["version"]
+    if type(version) is not int or version not in (1, 2) or after["version"] != version:
         raise ValueError("unsupported measurement counter version")
     if before["process_id"] != after["process_id"]:
         raise ValueError("a service restarted during measurement")
     if unsigned(after["process_cpu_ns"]) < unsigned(before["process_cpu_ns"]):
         raise ValueError("process CPU counter reset")
-    if set(before["operations"]) != OPERATIONS or set(after["operations"]) != OPERATIONS:
+    operations = LEGACY_OPERATIONS if version == 1 else OPERATIONS
+    if set(before["operations"]) != operations or set(after["operations"]) != operations:
         raise ValueError("measurement operations changed or are missing")
     for name, prior in before["operations"].items():
         current = after["operations"][name]

@@ -56,16 +56,16 @@ B pays C using a separate persistent neighbor channel. Quotes specify destinatio
 price, expiry and usage limits. Many destination agreements can share one channel;
 neither packets nor each individual onward hop require a new channel from A.
 
-The current peer API has ten request operations across three services:
+The current peer API has eight request operations across three services:
 
 | Service | Requests | Purpose |
 | --- | --- | --- |
 | Quotes | Quote request | Offer or reject bounded destination service |
 | Controller | Accept, StopRoute, Seal, Settle, ReleaseSettlement | Bind an offer, retire one route, freeze usage, settle the balance, release the recovered settlement report |
-| Payment | Open, Usage, Update, StopForwarding | Manually preapproved setup, cumulative usage/payment and channel-wide admission stop |
+| Payment | Usage, Update | Cumulative usage and payment for admitted channels |
 
-Automatic purchases use Accept rather than Payment Open. An active payment cycle
-asks for cumulative usage, signs only the claim supported by local evidence and
+Purchases use Accept. An active payment cycle asks for cumulative usage,
+signs only the claim supported by local evidence and
 spending limits, then sends Update and receives durable status. Updates cover many
 packets. Confirmed idle channels suppress unnecessary polling. Seal and Settle are
 separate so final usage stops changing before the final balance is signed.
@@ -76,12 +76,11 @@ verified recovery and completed seller-report retirement can finish independentl
 of the absent peer. A seller recovering after the buyer refunds records zero
 collection while retaining its signed claim; see [financial history](HISTORY.md).
 
-These are bounded application records over existing authenticated TCP/FIPS, not
-ten new native FIPS packet types. Existing native MMP supplies quality evidence;
-there is no per-packet quote, payment message or new financial delivery receipt.
-The manual setup/stop surface overlaps the automatic lifecycle and should be
-reviewed before a stable v1 protocol is promised. Consolidation must retain
-immutable agreement authority, channel-wide limits and crash-safe finalization.
+These are bounded application records over existing authenticated TCP/FIPS.
+Existing native MMP supplies quality evidence; there is no per-packet quote,
+payment message or new financial delivery receipt.
+Channel lifecycle changes use the controller's immutable agreements,
+channel-wide limits and durable finalization.
 Private operator commands are separate from this peer API.
 
 ### Price cache and request bounds
@@ -169,13 +168,13 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   records between configured or explicitly enabled dynamic neighbors. It supports
   64 KiB records, bounded queues/connections, per-neighbor request admission and cancellation. TCP
   reliability here concerns control records, not paid data delivery.
-* `PaymentControl` opens, updates, reports and stops forwarding for explicitly
-  preapproved agreements. Wire requests cannot choose their payer, price, grace
+* `PaymentControl` updates and reports usage for controller-admitted agreements.
+  Wire requests cannot choose their payer, price, grace
   or route. A blocking worker validates signatures and saves accounting while
   the transport continues processing messages. Startup checks retained bindings.
 * `BuyerAuthorizer` accepts immutable provider/channel/quote bindings and caps
   cumulative signatures at priced local submissions plus an explicitly approved
-  advance (zero in the native test). It persists evidence and the full possible
+  advance (zero in the controller tests). It persists evidence and the full possible
   obligation before invoking the signer. A lifetime spending cap covers every
   retained channel, including replaced channels and interrupted signing. A stale
   claim can reproduce a prior balance but cannot lower it or reset the budget.
@@ -219,15 +218,6 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   Buyer refunds are restored and signed using
   the existing recovery API; every final wallet balance is spent and redeemed
   again, and replayed receiver payouts are rejected by the mint.
-* `native_settlement` joins those components: actual endpoint datagrams cross
-  three native transit routers in both directions. Six one-way neighbor channels
-  exchange signed updates over TCP/FIPS. Closing forwarding blocks delivery;
-  peer checks reject shortcuts. Each relay retains a positive margin after
-  downstream purchases, and all final balances are redeemed and spent again.
-  Paths, prices and contract terms come from recursive native quote exchange.
-  The test still orchestrates channel funding, acceptance and buyer scheduling.
-  Its buyers reject inflated claims even when unused channel capacity exists,
-  and every actual payment is authorized against local submission evidence.
 * `controller` runs the five-node path with independent per-node controllers.
   Sources purchase both directions concurrently; routers fund and accept all six
   neighbor channels themselves and periodically pay beyond the initial grace.
@@ -235,6 +225,12 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   after funding: retained requests recover the exact same channels and balances.
   Seller, buyer and network services remain running during this reload. Each
   router earns a positive margin, and all 640 test sats are redeemed and spent.
+  Payment usage rejects the wrong buyer, sealed channels block new delivery,
+  and the native topology cannot create shortcuts around the paid chain.
+  Buyer tests reject unsupported claims even with spare funded capacity;
+  receiver tests reject forged updates and reserve the complete payout before
+  retaining funding. These cover the former manual `native_settlement` fixture
+  through the automatic controller and shared payment boundary.
 * `settle_channel`/`settle_all` automate sealing, final authorized payment, mint
   closure, payout import and refund recovery. Durable pending steps resume after
   interruption. No bearer proofs are sent in settlement responses. Capital is
@@ -340,7 +336,7 @@ loopback listeners; remote TLS proxy deployment remains unverified. See
 
 Only the local mint's Lightning backend is simulated. These test tokens have no
 external backing. `settlement` supplies submission outcomes to test exact
-multi-destination prices; `native_settlement` and `controller` use real local
+multi-destination prices; `controller` uses real local
 FIPS transport. These are loopback tests, not wireless hardware demonstrations.
 
 ## Run local checks

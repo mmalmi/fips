@@ -5,20 +5,20 @@ use std::time::Duration;
 #[test]
 fn thread_cpu_excludes_sleep_and_other_threads_and_journal_counts_real_io() {
     let root = tempfile::tempdir().unwrap();
-    let before = COUNTERS[Operation::PaymentStop as usize].snapshot();
+    let before = COUNTERS[Operation::Test as usize].snapshot();
     let other = std::thread::spawn(|| {
         let until = Instant::now() + Duration::from_millis(100);
         while Instant::now() < until {
             std::hint::black_box(7u64.wrapping_mul(17));
         }
     });
-    measure(Operation::PaymentStop, || {
+    measure(Operation::Test, || {
         std::thread::sleep(Duration::from_millis(150));
         write_private_journal(root.path(), "measurement.json", b"{\"ok\":true}").unwrap();
         assert!(write_private_journal(&root.path().join("missing"), "fail.json", b"bad").is_err());
     });
     other.join().unwrap();
-    let after = COUNTERS[Operation::PaymentStop as usize].snapshot();
+    let after = COUNTERS[Operation::Test as usize].snapshot();
     assert_eq!(after.spans - before.spans, 1);
     assert_eq!(
         after.journal_bytes_written - before.journal_bytes_written,
@@ -45,11 +45,11 @@ fn thread_cpu_excludes_sleep_and_other_threads_and_journal_counts_real_io() {
 #[test]
 fn attribution_is_restored_after_nested_spans_and_unwinding() {
     let _ = std::panic::catch_unwind(|| {
-        measure(Operation::PaymentOpen, || {
+        measure(Operation::PaymentUsage, || {
             measure(Operation::PaymentSign, || {
                 assert!(matches!(CURRENT.get(), Operation::PaymentSign))
             });
-            assert!(matches!(CURRENT.get(), Operation::PaymentOpen));
+            assert!(matches!(CURRENT.get(), Operation::PaymentUsage));
             panic!("cancel synchronous work");
         });
     });

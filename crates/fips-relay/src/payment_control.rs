@@ -1,4 +1,4 @@
-//! Payment control for locally approved neighbor agreements.
+//! Cumulative payments for neighbor agreements admitted by the controller.
 //!
 //! Approval/price discovery is deliberately separate. A wire request cannot
 //! choose its price, payer, free allowance, destination, or next provider.
@@ -6,40 +6,27 @@
 use crate::{
     control_transport::IncomingRequest,
     durable::DurableRelay,
-    ledger::{ChannelTerms, ChannelUsage, Contract},
+    ledger::{ChannelTerms, ChannelUsage},
     measurements::{Operation, measure},
     payment::process_payment,
 };
 use cashu_service::{CashuSpilmanPayment, FileSpilmanPaymentReceiver};
 use fips_core::PeerIdentity;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
 mod keysets;
 mod retirement;
 mod wallet;
 
-#[derive(Debug, Clone)]
-pub struct ApprovedAgreement {
-    pub channel: ChannelTerms,
-    pub quotes: Vec<Contract>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PaymentRequest {
-    Open {
-        channel_id: String,
-        payment: CashuSpilmanPayment,
-    },
     Update {
         channel_id: String,
         payment: CashuSpilmanPayment,
     },
     Usage {
-        channel_id: String,
-    },
-    StopForwarding {
         channel_id: String,
     },
 }
@@ -59,7 +46,6 @@ pub struct PaymentControl {
     wallet_directory: PathBuf,
     wallet: Arc<tokio::sync::Mutex<()>>,
     ledger: Arc<DurableRelay>,
-    approved: BTreeMap<String, ApprovedAgreement>,
     keysets: Option<keysets::KeysetRefresh>,
 }
 
@@ -86,67 +72,21 @@ impl PaymentControl {
         self.receiver.close_cashu_spilman_channel(channel_id).await
     }
 
-    /// Static approvals support the Open request. The automatic controller can
-    /// instead install verified bindings in the durable ledger; subsequent
-    /// usage, payment and stop requests use those same immutable terms.
+    /// The controller installs verified bindings in the durable ledger;
+    /// usage and payment requests use those same immutable terms.
     /// Keep the paired wallet directory for the receiver's complete lifetime.
     pub fn new(
         receiver: FileSpilmanPaymentReceiver,
         wallet_directory: PathBuf,
         ledger: Arc<DurableRelay>,
-        agreements: Vec<ApprovedAgreement>,
-    ) -> Result<Self, String> {
-        if agreements.len() > 16 {
-            return Err("too many neighbor agreements".into());
-        }
-        let mut approved = BTreeMap::new();
-        let mut quote_count = 0usize;
-        for agreement in agreements {
-            if agreement.quotes.is_empty()
-                || agreement.quotes.len() > 32
-                || agreement
-                    .quotes
-                    .iter()
-                    .any(|q| q.channel_id != agreement.channel.id)
-                || approved.contains_key(&agreement.channel.id)
-            {
-                return Err("invalid or duplicate approved agreement".into());
-            }
-            quote_count += agreement.quotes.len();
-            if quote_count > 32
-                || ledger
-                    .channel_terms(&agreement.channel.id)
-                    .is_some_and(|old| old != agreement.channel)
-                || agreement
-                    .quotes
-                    .iter()
-                    .any(|q| ledger.contract(&q.id).is_some_and(|old| &old != q))
-            {
-                return Err(
-                    "agreement conflicts with retained accounting or exceeds capacity".into(),
-                );
-            }
-            // Reuse accounting validation before accepting any funding. This
-            // private scratch ledger is never attached to a native endpoint.
-            let check = crate::ledger::RelayLedger::new(crate::ledger::Limits::default());
-            check
-                .open_channel_verified(agreement.channel.clone(), 0)
-                .map_err(|e| e.to_string())?;
-            for quote in &agreement.quotes {
-                check
-                    .add_contract(quote.clone())
-                    .map_err(|e| e.to_string())?;
-            }
-            approved.insert(agreement.channel.id.clone(), agreement);
-        }
-        Ok(Self {
+    ) -> Self {
+        Self {
             receiver,
             wallet_directory,
             wallet: Arc::new(tokio::sync::Mutex::new(())),
             ledger,
-            approved,
             keysets: None,
-        })
+        }
     }
 
     /// Performs validation and durable I/O; call from a Tokio blocking worker.
@@ -158,10 +98,8 @@ impl PaymentControl {
             return PaymentResponse::Rejected;
         };
         let operation = match request {
-            PaymentRequest::Open { .. } => Operation::PaymentOpen,
             PaymentRequest::Update { .. } => Operation::PaymentUpdate,
             PaymentRequest::Usage { .. } => Operation::PaymentUsage,
-            PaymentRequest::StopForwarding { .. } => Operation::PaymentStop,
         };
         measure(operation, || {
             self.handle_inner(peer, request)
@@ -175,42 +113,15 @@ impl PaymentControl {
         request: PaymentRequest,
     ) -> Result<PaymentResponse, String> {
         let id = match &request {
-            PaymentRequest::Open { channel_id, .. }
-            | PaymentRequest::Update { channel_id, .. }
-            | PaymentRequest::Usage { channel_id }
-            | PaymentRequest::StopForwarding { channel_id } => channel_id,
+            PaymentRequest::Update { channel_id, .. } | PaymentRequest::Usage { channel_id } => {
+                channel_id
+            }
         };
-        let terms = self
-            .ledger
-            .channel_terms(id)
-            .or_else(|| self.approved.get(id).map(|a| a.channel.clone()))
-            .ok_or("agreement missing")?;
+        let terms = self.ledger.channel_terms(id).ok_or("agreement missing")?;
         if peer.node_addr() != &terms.buyer {
             return Err("wrong buyer".into());
         }
         match &request {
-            PaymentRequest::Open { payment, .. } => {
-                let approved = self
-                    .approved
-                    .get(id)
-                    .ok_or("opening requires a preapproved agreement")?;
-                let _wallet = self.wallet.blocking_lock();
-                let credit = self.verify_funding(&approved.channel, peer, payment)?;
-                if self.ledger.channel_usage(id).is_none() {
-                    self.ledger
-                        .open_channel_verified(approved.channel.clone(), credit.paid_msat)
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    self.ledger
-                        .apply_verified_balance(id, credit.paid_msat)
-                        .map_err(|e| e.to_string())?;
-                }
-                for quote in &approved.quotes {
-                    self.ledger
-                        .add_contract(quote.clone())
-                        .map_err(|e| e.to_string())?;
-                }
-            }
             PaymentRequest::Update { payment, .. } => {
                 if self.ledger.channel_usage(id).is_none() {
                     return Err("channel not opened".into());
@@ -221,9 +132,6 @@ impl PaymentControl {
                     .map_err(|e| e.to_string())?;
             }
             PaymentRequest::Usage { .. } => {}
-            PaymentRequest::StopForwarding { .. } => {
-                self.ledger.close_channel(id).map_err(|e| e.to_string())?;
-            }
         }
         let usage = self
             .ledger
@@ -250,10 +158,6 @@ impl PaymentServer {
     pub async fn stop(mut self) {
         let _ = self.stopping.send(true);
         let _ = (&mut self.task).await;
-    }
-
-    pub fn start(control: PaymentControl, incoming: mpsc::Receiver<IncomingRequest>) -> Self {
-        Self::start_shared(Arc::new(control), incoming)
     }
 
     pub fn start_shared(

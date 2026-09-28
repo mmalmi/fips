@@ -244,7 +244,7 @@ async fn controller_scenario(
             let (payment_incoming, gate) = payment_mobility::gate(payment_incoming, peers[2], slow_neighbor);
             payment_gates.push(gate);
             let payment_control =
-                Arc::new(PaymentControl::new(receiver, wallets[i].clone(), ledgers[i].clone(), vec![]).unwrap());
+                Arc::new(PaymentControl::new(receiver, wallets[i].clone(), ledgers[i].clone()));
             payment_servers.push(PaymentServer::start_shared(
                 payment_control.clone(),
                 payment_incoming,
@@ -330,6 +330,7 @@ async fn controller_scenario(
             }
         }
         assert_eq!(links.len(), 6);
+        admission::payment_usage_requires_buyer(&services, &peers, &a.channel.id).await;
         let unauthorized = serde_json::to_vec(&ControllerRequest::Seal { channel_id: a.channel.id.clone() }).unwrap();
         assert!(matches!(controllers[1].handle(peers[2], &unauthorized).await, ControllerResponse::Rejected));
         let mut incoming = Vec::new();
@@ -894,6 +895,7 @@ async fn controller_scenario(
             assert!(controller.watched_routes().await.unwrap().iter().all(|w| w.paused));
         }
         assert_eq!(settlement_count, links.len());
+        admission::closed_path_rejects_data(&nodes, &peers, &mut data).await;
         for (i, buyer) in buyers.iter().enumerate() {
             let authorized: u64 = links.iter().filter(|(b, _, _)| *b == i)
                 .map(|(_, _, p)| buyer.authorized_sat(&p.channel.id).unwrap()).sum();

@@ -185,8 +185,8 @@ completed handoffs write neither buyer nor controller journals.
 ## Completed seller channels and report release
 
 The payment controller pairs its receiver with the original wallet directory.
-Automatic acceptance and preapproved `Open` requests reuse the same agreement
-checks and SDK wallet admission. When native capacity accounting is enabled, the
+Automatic acceptance verifies the agreement and uses SDK wallet admission.
+When native capacity accounting is enabled, the
 SDK reserves the complete payout and shared bookkeeping before retaining funding.
 Updates and final settlement require the original complete funding record; they
 cannot reconstruct it from a later signed payment. Ordinary updates do not open

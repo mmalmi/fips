@@ -14,9 +14,9 @@ pub(crate) enum Operation {
     PaymentSign,
     PaymentUsage,
     PaymentUpdate,
-    PaymentOpen,
-    PaymentStop,
     WindowCheckpoint,
+    #[cfg(all(test, feature = "measurements"))]
+    Test,
 }
 
 pub(crate) enum JournalEvent {
