@@ -105,6 +105,7 @@ async fn controller_scenario(
         let mut ledgers = Vec::new();
         let mut buyers = Vec::new();
         let mut data = Vec::new();
+        let mut forwarding = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
         let paid_quote_traffic = !automatic_renewal && !evidence_gap && !route_change && !slow_neighbor;
         // Keep route-change and slow-neighbor scenarios below exhaustion, which the
@@ -147,10 +148,12 @@ async fn controller_scenario(
                 advertise_on_nostr: Some(false),
                 ..UdpConfig::default()
             });
+            let forwarder = Arc::new(controller_support::DeliveryTrace::new(PaidForwarder::new(seller.clone(), buyer.clone())));
+            forwarding.push(forwarder.clone());
             let node = Arc::new(
                 FipsEndpoint::builder()
                     .config(config)
-                    .forwarding_policy(Arc::new(PaidForwarder::new(seller.clone(), buyer.clone())))
+                    .forwarding_policy(forwarder)
                     .originated_session_observer(buyer.clone())
                     .without_system_tun()
                     .bind()
@@ -436,8 +439,9 @@ async fn controller_scenario(
                             result.unwrap();
                             if received.iter().any(|m| m.data.as_slice() == payload) { break; }
                         }
-                        #[cfg(unix)]
                         if !automatic_renewal {
+                            for (node, trace) in forwarding.iter().enumerate() { trace.dump(node); }
+                            #[cfg(unix)]
                             controller_support::delivery_snapshot(root.path(), &peers).await;
                         }
                         assert!(automatic_renewal,
@@ -447,8 +451,11 @@ async fn controller_scenario(
                     }
                 })
                 .await;
-                #[cfg(unix)]
-                if delivery.is_err() { controller_support::delivery_snapshot(root.path(), &peers).await; }
+                if delivery.is_err() {
+                    for (node, trace) in forwarding.iter().enumerate() { trace.dump(node); }
+                    #[cfg(unix)]
+                    controller_support::delivery_snapshot(root.path(), &peers).await;
+                }
                 delivery.unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
             }
             for controller in &controllers {

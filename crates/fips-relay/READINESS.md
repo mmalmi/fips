@@ -1788,6 +1788,19 @@ a nonmatching batch. Delivery deadlines and retry limits remain unchanged; no
 wallet secrets are included in the diagnostics. These failures prevent broad
 controller-readiness acceptance despite the focused payment checks above.
 
+A controlled comparison changes only management-socket placement: five runs with
+all five sockets and five with the original three middle-node sockets pass with
+unchanged delivery limits. Neither configuration reproduces the failure. The
+controller fixture now retains the latest 128 forwarding records of at least
+1,000 bytes per node, including encrypted-envelope hashes, admission decisions
+and local send outcomes. Failure output can correlate envelopes between hops;
+timestamps are relative to each node's trace creation, and older records may be
+evicted. No payload contents are retained, and local submission does not prove
+delivery. Both complete seven-test controller suites pass with these diagnostics,
+with and without optional features. This adds test evidence only: the earlier
+timeouts remain unexplained, and runtime and current-device acceptance are
+unchanged.
+
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed
 round-trip check finished. The small post-restart warm-up could remain covered

@@ -1,5 +1,7 @@
 use super::*;
 use fips_relay::controller::{Purchase, RouteAccess};
+mod delivery_trace;
+pub(super) use delivery_trace::DeliveryTrace;
 
 pub(super) fn require_paid(access: RouteAccess) -> Purchase {
     let RouteAccess::Paid(purchase) = access else {
