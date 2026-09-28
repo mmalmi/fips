@@ -104,8 +104,9 @@ receiving settlement rejection because the provider did not know the channel.
 That durable closure prevented the unpaused Watch from reusing its recovered
 funding after rejoin, even though quotes and controller requests were delivered.
 
-Automatic withdrawal recovery now requires a withdrawn, accepted purchase before
-reserving cooperative closure. Unconfirmed funding remains available to a fresh authorized
+Automatic withdrawal recovery requires a withdrawn purchase and retained acceptance
+of that exact channel before reserving cooperative closure. If no purchase on the
+channel has confirmed acceptance, its funding remains available to a fresh authorized
 purchase or recovery at its original expiry; it is not treated as refunded or
 released. A genuine late acceptance still enables ordinary closure without
 reviving the withdrawn route. Existing fences, capital and lifetime spending
@@ -123,6 +124,39 @@ cases, held-opening rejoin and slow-renewal isolation with and without optional
 features, strict all-target relay lint, formatting and source-size checks. SDK
 and native CDK sources are unchanged. The r22 package predates this correction;
 current-device and physical power-loss acceptance remain outstanding.
+
+## Shared-channel withdrawal after an interrupted upgrade
+
+A channel can already be known to the provider through an earlier accepted
+purchase, even when a replacement purchase's acceptance reply is lost. Recovery
+now recognizes that earlier acceptance on the same channel. The original
+withdrawal fence and checks for other eligible routes, new reservations, pending
+route changes and renewal still apply in the mutation that reserves closure.
+No accepted purchase on another channel can authorize this closure. This changes
+no message, financial record, dependency or spending allowance.
+
+The existing interrupted-promotion test reproduces the gap after reloading the
+controller and selector: the original trial is retired, the full purchase remains
+unconfirmed, and the watched route stalls after rejoin. The live-controller
+variant passes before the fix and permits a delayed acceptance to arrive.
+With the fix, the reload variant recovers automatically, advances payment and
+settles both original and replacement channels, collecting all 259 test sats.
+The original funding evidence, consumed trial allowance and spending limits remain
+checked throughout. This reload keeps native sessions, transport and wallet
+accounting alive; it does not establish physical power-loss recovery.
+
+The existing shared-channel journal regression now covers both direct withdrawal
+and withdrawal of an unconfirmed replacement after earlier acceptance. It fails
+before the fix and passes afterward, including validation after journal reload
+and rejection while another route or reservation still needs the channel.
+The independent rejection of wholly unconfirmed channel closure remains covered.
+
+The final source graph passes all 302 relay unit tests, all seven controller
+scenarios, interrupted promotion with and without controller reload under both
+feature profiles, held-opening rejoin under both profiles, and strict all-target
+relay lint. Formatting and source-size checks also pass. SDK and native CDK
+sources are unchanged. The accepted r22 package predates this correction;
+unrelated historical timeouts and current-device acceptance remain open.
 
 ## Interrupted funding
 

@@ -1,6 +1,6 @@
 //! Deterministic interleavings around an interrupted source purchase.
 use super::*;
-use crate::controller::transition_tests::{fixture, reload};
+use crate::controller::transition_tests::{change, fixture, prepare_replacement, reload};
 
 fn watch(j: &mut Journal, offer: &RouteOffer) -> WatchedRoute {
     let watch = WatchedRoute {
@@ -136,33 +136,56 @@ fn changed_or_paused_watch_cannot_be_withdrawn_by_a_stale_observer() {
 
 #[test]
 fn recovery_closure_rechecks_shared_channel_and_new_reservations() {
-    let root = tempfile::tempdir().unwrap();
-    let (mut store, old) = fixture(&root.path().join("controller"));
-    let captured = watch(&mut store.journal, &old.offer);
-    store
-        .change(|j| Controller::withdraw_watched_purchase(j, &captured))
-        .unwrap();
-    Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).unwrap();
-    let mut other = old.clone();
-    other.offer.id = "still-serving".into();
-    other.offer.destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-    other.offer.next_hop = *other.offer.destination.node_addr();
-    other.offer.path[1] = other.offer.next_hop;
-    other.purchase.contract = contract_from_offer(&other.offer, &other.purchase.channel).unwrap();
-    store
-        .change(|j| Controller::reserve_purchase(j, other.offer.clone()))
-        .unwrap();
-    assert!(
-        Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).is_err()
-    );
-    store
-        .change(|j| Controller::record_purchase(j, other))
-        .unwrap();
-    assert!(
-        Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).is_err()
-    );
-    assert!(store.journal.buyer_settlements.is_empty());
-    reload(store);
+    for replaced in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, old) = fixture(&root.path().join("controller"));
+        let withdrawn = if replaced {
+            let intent = change(&old);
+            let offer = intent.offer.clone();
+            store
+                .change(|j| {
+                    Controller::reserve_route_change(j, intent)?;
+                    prepare_replacement(j, &old, false);
+                    Ok(())
+                })
+                .unwrap();
+            offer
+        } else {
+            old.offer.clone()
+        };
+        let captured = watch(&mut store.journal, &withdrawn);
+        store
+            .change(|j| Controller::withdraw_watched_purchase(j, &captured))
+            .unwrap();
+        let mut store = reload(store);
+        Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).expect(
+            "earlier acceptance of this channel permits recovery after replacement withdrawal",
+        );
+        let mut other = old.clone();
+        other.offer.id = "still-serving".into();
+        other.offer.destination =
+            PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+        other.offer.next_hop = *other.offer.destination.node_addr();
+        other.offer.path[1] = other.offer.next_hop;
+        other.purchase.contract =
+            contract_from_offer(&other.offer, &other.purchase.channel).unwrap();
+        store
+            .change(|j| Controller::reserve_purchase(j, other.offer.clone()))
+            .unwrap();
+        assert!(
+            Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id)
+                .is_err()
+        );
+        store
+            .change(|j| Controller::record_purchase(j, other))
+            .unwrap();
+        assert!(
+            Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id)
+                .is_err()
+        );
+        assert!(store.journal.buyer_settlements.is_empty());
+        reload(store);
+    }
 }
 
 #[test]
