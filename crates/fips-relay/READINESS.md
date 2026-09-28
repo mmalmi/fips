@@ -1509,6 +1509,28 @@ acceptance remains outstanding.
 The stalled-write failures have not been linked to the earlier intermittent
 paid-delivery timeout.
 
+WebSocket reads and writes now progress concurrently under the same connection
+lifetime. Previously, simultaneous writes could leave two healthy peers waiting
+for each other to read. The reader now continues receiving while a write is
+blocked. An eight-message control-reply reserve stays separate from the bounded
+data queue; overflowing it closes the stream. Incoming activity can extend the
+idle deadline, while hint expiry, explicit close and network rebind still drop
+both halves and any partial write. This adds no detached workers, wire messages,
+configuration fields or dependencies.
+
+The bidirectional regression uses the real encoder over a one-byte duplex
+underlay, with and without an initial hint request. It fails before the fix and
+passes afterward, preserving record order and balanced frame/connection counters.
+Expanded lifetime checks cover incoming activity during a blocked write, later
+idle expiry and bounded control-flood closure with idle expiry disabled.
+The matching source graph passes all 27 transport, six authenticated-node and
+seven public-transit checks, plus six service/startup checks in each relay feature
+mode. All eight paid process scenarios conserve 384 test sats each. Strict
+core/relay lint, formatting and source-size checks pass. The r19 ARM64 package
+predates this change; current-target acceptance still requires a package refresh.
+These results do not identify the cause of the historical intermittent delivery
+timeout or establish current-device acceptance.
+
 A deterministic regression also reproduces a deferred node-lifecycle close
 removing a replacement WebSocket registered at the same seed URL. The close now
 removes the current pool entry synchronously, using a short lock that never spans

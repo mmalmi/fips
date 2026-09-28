@@ -6,25 +6,43 @@ pub(super) async fn run<S>(
     runtime: &Runtime,
     addr: &TransportAddr,
     websocket: WebSocketStream<S>,
-    mut rx: mpsc::Receiver<Vec<u8>>,
+    rx: mpsc::Receiver<Vec<u8>>,
     request_key_hint: bool,
     generation: u64,
 ) -> Result<(), TransportError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut sink, mut stream) = websocket.split();
-    let mut pending_nonce = request_key_hint.then(|| rand::rng().random::<u64>());
-    let mut deadlines = Deadlines::new(&runtime.config, request_key_hint);
-    if let Some(nonce) = pending_nonce {
-        deadlines
-            .send(
-                &mut sink,
-                Message::Binary(LocalKeyHint::Request { nonce }.encode().into()),
-            )
-            .await?;
+    let (sink, stream) = websocket.split();
+    let nonce = request_key_hint.then(|| rand::rng().random::<u64>());
+    let deadlines = Deadlines::new(&runtime.config, request_key_hint);
+    // Control replies must not wait for space in the bulk queue. Flooding this
+    // small reserve closes the connection rather than blocking its reader.
+    let (replies, reply_rx) = mpsc::channel(8);
+    tokio::select! {
+        result = read(runtime, addr, stream, replies, nonce, generation, &deadlines) => result,
+        result = write(runtime, sink, rx, reply_rx, nonce) => result,
+        _ = deadlines.expired() => Err(TransportError::Timeout),
     }
+}
 
+async fn write<S>(
+    runtime: &Runtime,
+    mut sink: S,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    mut replies: mpsc::Receiver<Message>,
+    nonce: Option<u64>,
+) -> Result<(), TransportError>
+where
+    S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    if let Some(nonce) = nonce {
+        sink.send(Message::Binary(
+            LocalKeyHint::Request { nonce }.encode().into(),
+        ))
+        .await
+        .map_err(|error| TransportError::SendFailed(error.to_string()))?;
+    }
     let ping_secs = runtime.config.ping_interval_secs();
     let mut ping = tokio::time::interval(if ping_secs == 0 {
         Duration::from_secs(24 * 60 * 60)
@@ -32,52 +50,63 @@ where
         Duration::from_secs(ping_secs)
     });
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    enum Event {
-        Outbound(Option<Vec<u8>>),
-        Inbound(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
-        Ping,
-        Expired,
-    }
-
     loop {
-        let event = tokio::select! {
-            outbound = rx.recv() => Event::Outbound(outbound),
-            inbound = stream.next() => Event::Inbound(inbound),
-            _ = ping.tick(), if ping_secs > 0 => Event::Ping,
-            _ = deadlines.expired() => Event::Expired,
-        };
-        match event {
-            Event::Outbound(Some(data)) => {
-                let len = data.len();
-                deadlines
-                    .send(&mut sink, Message::Binary(data.into()))
-                    .await?;
-                runtime.stats.frames_sent.fetch_add(1, Ordering::Relaxed);
-                runtime
-                    .stats
-                    .bytes_sent
-                    .fetch_add(len as u64, Ordering::Relaxed);
+        let (message, data_len) = tokio::select! {
+            reply = replies.recv() => {
+                let Some(reply) = reply else { return Ok(()); };
+                (reply, None)
             }
-            Event::Outbound(None) => break Ok(()),
-            Event::Inbound(Some(Ok(Message::Binary(data)))) => {
-                deadlines.received = Instant::now();
+            outbound = rx.recv() => {
+                let Some(data) = outbound else { return Ok(()); };
+                let len = data.len();
+                (Message::Binary(data.into()), Some(len))
+            }
+            _ = ping.tick(), if ping_secs > 0 => (Message::Ping(Bytes::new()), None),
+        };
+        sink.send(message)
+            .await
+            .map_err(|error| TransportError::SendFailed(error.to_string()))?;
+        if let Some(len) = data_len {
+            runtime.stats.frames_sent.fetch_add(1, Ordering::Relaxed);
+            runtime
+                .stats
+                .bytes_sent
+                .fetch_add(len as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+async fn read<S>(
+    runtime: &Runtime,
+    addr: &TransportAddr,
+    mut stream: S,
+    replies: mpsc::Sender<Message>,
+    mut pending_nonce: Option<u64>,
+    generation: u64,
+    deadlines: &Deadlines,
+) -> Result<(), TransportError>
+where
+    S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        let reply = match stream.next().await {
+            Some(Ok(Message::Binary(data))) => {
+                deadlines.received();
                 if let Some(hint) = LocalKeyHint::decode(&data) {
                     match hint {
-                        LocalKeyHint::Request { nonce } => {
-                            let reply = LocalKeyHint::Response {
+                        LocalKeyHint::Request { nonce } => Some(Message::Binary(
+                            LocalKeyHint::Response {
                                 nonce,
                                 pubkey: runtime.local_pubkey,
-                            };
-                            deadlines
-                                .send(&mut sink, Message::Binary(reply.encode().into()))
-                                .await?;
-                        }
+                            }
+                            .encode()
+                            .into(),
+                        )),
                         LocalKeyHint::Response { nonce, pubkey }
                             if pending_nonce == Some(nonce) =>
                         {
                             pending_nonce = None;
-                            deadlines.hint = None;
+                            deadlines.complete_hint();
                             if pubkey != runtime.local_pubkey
                                 && let Ok(pubkey) = XOnlyPublicKey::from_slice(&pubkey)
                                 && let Some(connection) = runtime
@@ -87,73 +116,75 @@ where
                             {
                                 connection.pending_hint = Some(pubkey);
                             }
+                            None
                         }
-                        LocalKeyHint::Response { .. } => {}
+                        LocalKeyHint::Response { .. } => None,
                     }
-                    continue;
+                } else {
+                    if data.len() > runtime.config.max_frame_bytes()
+                        || validate_websocket_record(&data).is_err()
+                    {
+                        runtime.stats.invalid_frames.fetch_add(1, Ordering::Relaxed);
+                        return Err(TransportError::RecvFailed(
+                            "invalid WebSocket FIPS physical record".into(),
+                        ));
+                    }
+                    let len = data.len();
+                    let packet = ReceivedPacket::with_timestamp(
+                        runtime.transport_id,
+                        addr.clone(),
+                        PacketBuffer::new(data.to_vec()),
+                        now_ms(),
+                    );
+                    runtime.packet_tx.send(packet).map_err(|_| {
+                        TransportError::RecvFailed("node packet channel closed".into())
+                    })?;
+                    runtime
+                        .stats
+                        .frames_received
+                        .fetch_add(1, Ordering::Relaxed);
+                    runtime
+                        .stats
+                        .bytes_received
+                        .fetch_add(len as u64, Ordering::Relaxed);
+                    None
                 }
-                if data.len() > runtime.config.max_frame_bytes()
-                    || validate_websocket_record(&data).is_err()
-                {
-                    runtime.stats.invalid_frames.fetch_add(1, Ordering::Relaxed);
-                    break Err(TransportError::RecvFailed(
-                        "invalid WebSocket FIPS physical record".into(),
-                    ));
-                }
-                let len = data.len();
-                let packet = ReceivedPacket::with_timestamp(
-                    runtime.transport_id,
-                    addr.clone(),
-                    PacketBuffer::new(data.to_vec()),
-                    now_ms(),
-                );
-                if runtime.packet_tx.send(packet).is_err() {
-                    break Err(TransportError::RecvFailed(
-                        "node packet channel closed".into(),
-                    ));
-                }
-                runtime
-                    .stats
-                    .frames_received
-                    .fetch_add(1, Ordering::Relaxed);
-                runtime
-                    .stats
-                    .bytes_received
-                    .fetch_add(len as u64, Ordering::Relaxed);
             }
-            Event::Inbound(Some(Ok(Message::Ping(payload)))) => {
-                deadlines.received = Instant::now();
-                deadlines.send(&mut sink, Message::Pong(payload)).await?;
+            Some(Ok(Message::Ping(payload))) => {
+                deadlines.received();
+                Some(Message::Pong(payload))
             }
-            Event::Inbound(Some(Ok(Message::Pong(_)))) => {
-                deadlines.received = Instant::now();
+            Some(Ok(Message::Pong(_))) => {
+                deadlines.received();
+                None
             }
-            Event::Inbound(Some(Ok(Message::Close(_))) | None) => break Ok(()),
-            Event::Inbound(Some(Ok(Message::Text(_) | Message::Frame(_)))) => {
+            Some(Ok(Message::Close(_))) | None => return Ok(()),
+            Some(Ok(Message::Text(_) | Message::Frame(_))) => {
                 runtime.stats.invalid_frames.fetch_add(1, Ordering::Relaxed);
-                break Err(TransportError::RecvFailed(
+                return Err(TransportError::RecvFailed(
                     "WebSocket transport accepts binary messages only".into(),
                 ));
             }
-            Event::Inbound(Some(Err(error))) => {
-                break Err(TransportError::RecvFailed(error.to_string()));
-            }
-            Event::Ping => {
-                deadlines
-                    .send(&mut sink, Message::Ping(Bytes::new()))
-                    .await?;
-            }
-            Event::Expired => break Err(TransportError::Timeout),
+            Some(Err(error)) => return Err(TransportError::RecvFailed(error.to_string())),
+        };
+        if let Some(reply) = reply {
+            replies.try_send(reply).map_err(|_| {
+                TransportError::SendFailed("WebSocket control reply queue unavailable".into())
+            })?;
         }
     }
 }
 
-// The same deadlines cover waiting for input and writing any frame, including
-// the initial hint. A partial timed-out write closes the whole stream; it is
-// never resumed on a replacement connection.
+// Read progress can extend an idle deadline while a write is pending. Deadlines
+// only move later or disappear, so the timer rechecks after its earlier wakeup.
+// Expiry or local cancellation drops both halves, including any partial write.
 struct Deadlines {
-    hint: Option<Instant>,
     idle_after: Option<Duration>,
+    activity: StdMutex<Activity>,
+}
+
+struct Activity {
+    hint: Option<Instant>,
     received: Instant,
 }
 
@@ -161,38 +192,49 @@ impl Deadlines {
     fn new(config: &WebSocketConfig, request_key_hint: bool) -> Self {
         let now = Instant::now();
         Self {
-            hint: request_key_hint
-                .then(|| now.checked_add(Duration::from_millis(config.key_hint_timeout_ms())))
-                .flatten(),
             idle_after: (config.idle_timeout_secs() > 0)
                 .then(|| Duration::from_secs(config.idle_timeout_secs())),
-            received: now,
+            activity: StdMutex::new(Activity {
+                hint: request_key_hint
+                    .then(|| now.checked_add(Duration::from_millis(config.key_hint_timeout_ms())))
+                    .flatten(),
+                received: now,
+            }),
         }
+    }
+
+    fn activity(&self) -> MutexGuard<'_, Activity> {
+        self.activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn received(&self) {
+        self.activity().received = Instant::now();
+    }
+
+    fn complete_hint(&self) {
+        self.activity().hint = None;
     }
 
     async fn expired(&self) {
-        let deadline = self
-            .hint
-            .into_iter()
-            .chain(
-                self.idle_after
-                    .and_then(|idle| self.received.checked_add(idle)),
-            )
-            .min();
-        match deadline {
-            Some(deadline) => tokio::time::sleep_until(deadline).await,
-            None => std::future::pending().await,
-        }
-    }
-
-    async fn send<S>(&self, sink: &mut S, message: Message) -> Result<(), TransportError>
-    where
-        S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
-    {
-        tokio::select! {
-            biased;
-            _ = self.expired() => Err(TransportError::Timeout),
-            result = sink.send(message) => result.map_err(|error| TransportError::SendFailed(error.to_string())),
+        loop {
+            let deadline = {
+                let activity = self.activity();
+                activity
+                    .hint
+                    .into_iter()
+                    .chain(
+                        self.idle_after
+                            .and_then(|idle| activity.received.checked_add(idle)),
+                    )
+                    .min()
+            };
+            match deadline {
+                Some(deadline) if deadline <= Instant::now() => return,
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
         }
     }
 }

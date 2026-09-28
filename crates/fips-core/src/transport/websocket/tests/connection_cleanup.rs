@@ -65,14 +65,14 @@ where
 }
 
 #[tokio::test]
-async fn failed_initial_hint_write_releases_address_for_a_fresh_dial() {
+async fn closed_underlay_during_initial_hint_releases_address_for_a_fresh_dial() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = TransportAddr::from_string(&format!("ws://{}/fips", listener.local_addr().unwrap()));
     let mut transport = test_transport(8);
     transport.start_async().await.unwrap();
 
-    // Use the real WebSocket encoder with an underlay whose first write must
-    // fail. A dropped duplex reader deterministically returns BrokenPipe.
+    // A closed underlay can fail either half of the concurrent framing loop.
+    // Whichever detects it first must release the same address for a fresh dial.
     let (websocket, peer) = raw_pair().await;
     drop(peer);
     let error = run_framing_connection(
@@ -86,7 +86,10 @@ async fn failed_initial_hint_write_releases_address_for_a_fresh_dial() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(error, TransportError::SendFailed(_)));
+    assert!(matches!(
+        error,
+        TransportError::SendFailed(_) | TransportError::RecvFailed(_)
+    ));
     assert_eq!(transport.stats().connections_opened, 1);
     assert_eq!(transport.stats().connections_closed, 1);
     assert!(transport.discover().unwrap().is_empty());
