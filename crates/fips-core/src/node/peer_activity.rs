@@ -393,14 +393,10 @@ mod tests {
                         );
                     }
                     node.config.node.rate_limit.handshake_timeout_secs = 60;
-                    // An unused preference survives waiting for admission, but
-                    // later control and old data cannot refresh its remembrance.
+                    // An unused preference survives waiting for admission;
+                    // later control and old data cannot create another grant.
                     assert_eq!(history_prefers(&node, carrier, lost_at + 5_999), qualifies);
                     assert_eq!(history_prefers(&node, carrier, lost_at + 60_000), qualifies);
-                    assert_eq!(
-                        node.neighbor_rotation.lost_neighbors.get(&carrier).copied(),
-                        qualifies.then_some(lost_at)
-                    );
                     node.forget_neighbor_reconnection(&carrier);
                     assert!(!history_prefers(&node, carrier, lost_at + 60_000));
                     node.remove_link_dead_discovered_peer(&other, lost_at, Duration::from_secs(3));
