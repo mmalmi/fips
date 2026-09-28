@@ -100,10 +100,11 @@ transports:
       auto_connect: true
       accept_connections: true
 
-# Outbound LAN gateway. dnsmasq forwards .fips queries to listen=[::1]:5353
-# (configured by the fips init script). Requires IPv6 forwarding enabled.
+# Outbound LAN gateway. dnsmasq forwards .fips queries to listen=[::1]:5365
+# after explicitly enabling the fips-gateway service and gateway.enabled.
+# Requires a glibc Linux build and IPv6 forwarding; leave disabled on musl.
 gateway:
-  enabled: true
+  enabled: false
   pool: "fd01::/112"
   lan_interface: "br-lan"
   dns:

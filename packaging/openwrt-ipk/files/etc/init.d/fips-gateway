@@ -2,6 +2,7 @@
 # FIPS outbound LAN gateway — procd init script for OpenWrt
 #
 # Not enabled by default. Enable with:
+#   set gateway.enabled: true in /etc/fips/fips.yaml (glibc builds only)
 #   service fips-gateway enable
 #   service fips-gateway start
 #
@@ -16,7 +17,7 @@ PROG=/usr/bin/fips-gateway
 CONFIG=/etc/fips/fips.yaml
 
 # Port the gateway DNS listens on (must match dns.listen in fips.yaml).
-GW_DNS_PORT=5353
+GW_DNS_PORT=5365
 # Port the FIPS daemon DNS listens on.
 DAEMON_DNS_PORT=5354
 
@@ -32,7 +33,7 @@ start_service() {
 	# Load conntrack module for /proc/net/nf_conntrack.
 	modprobe nf_conntrack 2>/dev/null || true
 
-	# Redirect dnsmasq .fips forwarding from daemon (5354) to gateway (5353)
+	# Redirect dnsmasq .fips forwarding from daemon (5354) to gateway (5365)
 	# so LAN clients get virtual IPs instead of raw mesh addresses.
 	# Done early and synchronously so dnsmasq is ready before the gateway
 	# starts accepting DNS queries.
@@ -164,6 +165,9 @@ gateway_remove_global_prefix() {
 dnsmasq_swap_fips_upstream() {
 	local port="$1"
 
+	# Remove the old gateway default during upgrades as well.
+	uci -q del_list dhcp.@dnsmasq[0].server="/fips/127.0.0.1#5353" 2>/dev/null
+	uci -q del_list dhcp.@dnsmasq[0].server="/fips/::1#5353" 2>/dev/null
 	# Remove both possible entries, then add the correct one.
 	uci -q del_list dhcp.@dnsmasq[0].server="/fips/127.0.0.1#${DAEMON_DNS_PORT}" 2>/dev/null
 	uci -q del_list dhcp.@dnsmasq[0].server="/fips/127.0.0.1#${GW_DNS_PORT}" 2>/dev/null

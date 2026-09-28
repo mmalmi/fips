@@ -9,12 +9,11 @@ use serde::{Deserialize, Serialize};
 
 /// Default gateway DNS listen address.
 ///
-/// The canonical gateway deployment already has a LAN resolver on port 53
-/// forwarding `.fips` queries to the gateway over loopback. Use an
-/// unprivileged loopback port by default to avoid colliding with dnsmasq,
-/// systemd-resolved, or BIND. Hosts without another resolver can set
-/// `gateway.dns.listen: "[::]:53"` explicitly.
-const DEFAULT_DNS_LISTEN: &str = "[::1]:5353";
+/// Loopback-only on unprivileged port 5365, avoiding ordinary DNS (53) and
+/// mDNS (5353). A LAN resolver can forward `.fips` queries here; configure
+/// `gateway.dns.listen: "[::]:53"` to answer LAN clients directly.
+/// IPv4 loopback forwarders need an explicit IPv4 listen address.
+const DEFAULT_DNS_LISTEN: &str = "[::1]:5365";
 
 /// Default upstream DNS resolver (FIPS daemon).
 ///
@@ -69,7 +68,7 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub conntrack: ConntrackConfig,
 
-    /// Inbound mesh port forwarding rules. See TASK-2026-0061.
+    /// Inbound mesh port forwarding rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub port_forwards: Vec<PortForward>,
 }
@@ -124,7 +123,7 @@ pub struct PortForward {
 /// Gateway DNS resolver configuration (`gateway.dns.*`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayDnsConfig {
-    /// Listen address and port (default: `[::1]:5353`).
+    /// Listen address and port (default: `[::1]:5365`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
 
@@ -139,7 +138,7 @@ pub struct GatewayDnsConfig {
 }
 
 impl GatewayDnsConfig {
-    /// Get the listen address (default: `[::1]:5353`).
+    /// Get the listen address (default: `[::1]:5365`).
     pub fn listen(&self) -> &str {
         self.listen.as_deref().unwrap_or(DEFAULT_DNS_LISTEN)
     }
@@ -152,6 +151,18 @@ impl GatewayDnsConfig {
     /// Get the TTL in seconds (default: 60).
     pub fn ttl(&self) -> u32 {
         self.ttl.unwrap_or(DEFAULT_DNS_TTL)
+    }
+
+    /// The port of a listen address: the digits after its last `:`, or
+    /// `None` when they do not form a port. Works on a hostname form too.
+    pub(crate) fn port_of(listen: &str) -> Option<u16> {
+        listen.rsplit_once(':')?.1.parse().ok()
+    }
+
+    /// Whether the listen address is on the mDNS port, which an mDNS
+    /// responder can take from the gateway at any time.
+    pub fn is_mdns(&self) -> bool {
+        Self::port_of(self.listen()) == Some(5353)
     }
 }
 
@@ -211,12 +222,49 @@ lan_interface: "eth0"
         assert!(!config.enabled);
         assert_eq!(config.pool, "fd01::/112");
         assert_eq!(config.lan_interface, "eth0");
-        assert_eq!(config.dns.listen(), "[::1]:5353");
+        assert_eq!(config.dns.listen(), "[::1]:5365");
         assert_eq!(config.dns.upstream(), "[::1]:5354");
         assert_eq!(config.dns.ttl(), 60);
         assert_eq!(config.grace_period(), 60);
         assert_eq!(config.conntrack.tcp_established(), 432_000);
         assert_eq!(config.conntrack.udp_timeout(), 30);
+    }
+
+    #[test]
+    fn a_listen_on_5353_is_flagged_as_mdns() {
+        for listen in [
+            "[::1]:5353",
+            "[::]:5353",
+            "127.0.0.1:5353",
+            "localhost:5353",
+        ] {
+            let dns = GatewayDnsConfig {
+                listen: Some(listen.to_string()),
+                ..Default::default()
+            };
+            assert!(dns.is_mdns(), "{listen} must be flagged as the mDNS port");
+        }
+    }
+
+    #[test]
+    fn the_default_and_other_ports_are_not_flagged_as_mdns() {
+        assert!(!GatewayDnsConfig::default().is_mdns());
+        for listen in [
+            "[::1]:5365",
+            "[::]:53",
+            "192.168.1.1:53",
+            "[::]:5355",
+            "localhost",
+        ] {
+            let dns = GatewayDnsConfig {
+                listen: Some(listen.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                !dns.is_mdns(),
+                "{listen} must not be flagged as the mDNS port"
+            );
+        }
     }
 
     #[test]

@@ -131,6 +131,36 @@ async fn main() {
         "Gateway config loaded"
     );
 
+    // Reserve DNS before making any changes to routing or nftables.
+    let dns_socket = match dns::bind_listener(gw_config.dns.listen()).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            error!(%error, "Gateway DNS listener unavailable");
+            std::process::exit(1);
+        }
+    };
+    if gw_config.dns.is_mdns() {
+        warn!(
+            "gateway.dns.listen uses mDNS port 5353; use port 5365 to avoid LAN discovery conflicts"
+        );
+    }
+    use std::net::ToSocketAddrs;
+    let upstream_addr = match gw_config
+        .dns
+        .upstream()
+        .to_socket_addrs()
+        .and_then(|mut addrs| {
+            addrs
+                .next()
+                .ok_or_else(|| std::io::Error::other("upstream address resolved to nothing"))
+        }) {
+        Ok(addr) => addr,
+        Err(error) => {
+            error!(%error, "Invalid gateway DNS upstream");
+            std::process::exit(1);
+        }
+    };
+
     // --- Prerequisites ---
 
     // Check IPv6 forwarding
@@ -156,21 +186,6 @@ async fn main() {
     {
         let upstream = gw_config.dns.upstream();
         info!(upstream = %upstream, "Checking DNS upstream reachability");
-
-        use std::net::ToSocketAddrs;
-        let upstream_addr = match upstream.to_socket_addrs() {
-            Ok(mut addrs) => match addrs.next() {
-                Some(addr) => addr,
-                None => {
-                    error!(upstream = %upstream, "DNS upstream address resolved to nothing");
-                    std::process::exit(1);
-                }
-            },
-            Err(e) => {
-                error!(upstream = %upstream, error = %e, "Invalid DNS upstream address");
-                std::process::exit(1);
-            }
-        };
 
         // Build a minimal DNS query for "test.fips" AAAA
         // Header: ID=0x1234, flags=0x0100 (standard query, RD=1),
@@ -321,24 +336,17 @@ async fn main() {
     let dns_pool = Arc::clone(&ip_pool);
     let dns_event_tx = event_tx.clone();
     let dns_shutdown = shutdown_rx.clone();
-    let dns_listen = gw_config.dns.listen().to_string();
-    let dns_upstream = gw_config.dns.upstream().to_string();
     let dns_ttl = gw_config.dns.ttl();
-
-    let dns_task = tokio::spawn(async move {
-        if let Err(e) = dns::run_dns_resolver(
-            &dns_listen,
-            &dns_upstream,
-            dns_ttl,
-            dns_pool,
-            dns_event_tx,
-            dns_shutdown,
-        )
-        .await
-        {
-            error!(error = %e, "DNS resolver error");
-        }
-    });
+    let mut dns_task = tokio::spawn(dns::serve(
+        dns_socket,
+        upstream_addr,
+        dns_ttl,
+        dns_pool,
+        dns_event_tx,
+        dns_shutdown,
+    ));
+    let mut dns_finished = false;
+    let mut failed = false;
 
     // --- Snapshot channel for control socket ---
 
@@ -370,7 +378,6 @@ async fn main() {
     let tick_event_tx = event_tx;
     let tick_nat_count = Arc::clone(&nat_count);
     let mut tick_shutdown = shutdown_rx.clone();
-    let conntrack = pool::ProcConntrack;
     let snap_config = control::SnapshotConfig {
         pool_cidr: gw_config.pool.clone(),
         lan_interface: gw_config.lan_interface.clone(),
@@ -382,12 +389,16 @@ async fn main() {
 
     let tick_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut read_log = pool::ConntrackReadLog::default();
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    // Read once, off the async runtime and before taking the pool lock.
+                    let conntrack = read_conntrack(&mut read_log).await;
                     let now = Instant::now();
                     let mut pool_guard = tick_pool.lock().await;
-                    let events = pool_guard.tick(now, &conntrack);
+                    let events = pool_guard.tick(now, conntrack.as_ref());
 
                     // Build snapshot for control socket
                     let pool_status = pool_guard.status();
@@ -426,6 +437,8 @@ async fn main() {
                         // Add NAT rules
                         if let Err(e) = nat_mgr.add_mapping(virtual_ip, mesh_addr) {
                             error!(error = %e, virtual_ip = %virtual_ip, "Failed to add NAT rules");
+                            failed = true;
+                            break;
                         }
                         nat_count.store(nat_mgr.mapping_count(), Ordering::Relaxed);
                         // Add proxy NDP entry
@@ -436,7 +449,9 @@ async fn main() {
                     pool::PoolEvent::MappingRemoved { virtual_ip, mesh_addr: _ } => {
                         // Remove NAT rules
                         if let Err(e) = nat_mgr.remove_mapping(virtual_ip) {
-                            warn!(error = %e, virtual_ip = %virtual_ip, "Failed to remove NAT rules");
+                            error!(error = %e, virtual_ip = %virtual_ip, "Failed to remove NAT rules");
+                            failed = true;
+                            break;
                         }
                         nat_count.store(nat_mgr.mapping_count(), Ordering::Relaxed);
                         // Remove proxy NDP entry
@@ -445,6 +460,12 @@ async fn main() {
                         }
                     }
                 }
+            }
+            result = &mut dns_task => {
+                dns_finished = true;
+                failed = true;
+                error!(?result, "Gateway DNS task stopped unexpectedly");
+                break;
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Received SIGINT, shutting down");
@@ -469,7 +490,13 @@ async fn main() {
         task.abort();
         let _ = task.await;
     }
-    let _ = dns_task.await;
+    // Stop producers even if one is waiting to send into a full event queue.
+    // All installed state is removed below; outstanding DNS requests can retry.
+    if !dns_finished {
+        dns_task.abort();
+        let _ = dns_task.await;
+    }
+    tick_task.abort();
     let _ = tick_task.await;
 
     // Log final pool status
@@ -493,4 +520,37 @@ async fn main() {
     }
 
     info!("fips-gateway shutdown complete");
+    if failed {
+        std::process::exit(1);
+    }
+}
+
+/// A failed scan suspends reclamation until the kernel can provide a complete table.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+async fn read_conntrack(log: &mut pool::ConntrackReadLog) -> Option<pool::ConntrackSnapshot> {
+    match tokio::task::spawn_blocking(|| pool::SystemConntrack::default().read()).await {
+        Ok(Ok((source, snapshot))) => {
+            if log.observe(None) == pool::ReadReport::Changed {
+                info!(
+                    source = source.name(),
+                    "Gateway conntrack readable; mapping reclamation enabled"
+                );
+            }
+            Some(snapshot)
+        }
+        Ok(Err(error)) => {
+            let kind = error.netlink.as_ref().unwrap_or(&error.proc).kind();
+            if log.observe(Some(kind)) == pool::ReadReport::Changed {
+                warn!(proc_error = %error.proc, netlink_error = ?error.netlink,
+                    "Gateway conntrack unreadable; keeping mappings until recovery");
+            }
+            None
+        }
+        Err(error) => {
+            if log.observe(Some(std::io::ErrorKind::Other)) == pool::ReadReport::Changed {
+                warn!(%error, "Gateway conntrack task failed; keeping mappings until recovery");
+            }
+            None
+        }
+    }
 }

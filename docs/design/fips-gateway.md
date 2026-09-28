@@ -23,7 +23,7 @@ LAN client.
                         |
                         v
              +---------------------+
-             |   DNS Proxy         |  Listens on [::1]:5353
+             |   DNS Proxy         |  Listens on [::1]:5365
              |   (dns.rs)          |
              +---------------------+
                    |          |
@@ -125,13 +125,16 @@ not from the raw fd00::/8 mesh address.
 ### Atomic Table Rebuild
 
 The entire nftables table is rebuilt atomically on every mapping change. The
-rebuild sequence is: delete the existing table (ignore ENOENT on first call),
-then create a new table with all chains, the masquerade rule, and all
-per-mapping DNAT/SNAT rules in a single netlink batch.
+rebuild sequence is an idempotent table add, delete, and recreate, all in
+one netlink transaction. A rejected transaction preserves the old table.
+The send buffer scales with the batch, and only the last operation requests
+an acknowledgement, avoiding receive-buffer overflow on large rule sets.
+Cleanup uses the same bounded, owned-socket path.
 
 This approach avoids relying on kernel rule handle tracking, which the rustables
-crate does not expose. The table is small — one masquerade rule plus two rules
-per active mapping — so rebuilding is cheap.
+crate does not expose. Each mapping adds two rules; the pool's admission limits bound the size and
+frequency of these rebuilds. A NAT update failure stops the gateway and
+cleans up its state so the service supervisor can restart it.
 
 ## Virtual IP Pool Lifecycle
 
@@ -144,24 +147,27 @@ remaining addresses are available for allocation.
 
 ```text
 ALLOCATED ──→ ACTIVE ──→ DRAINING ──→ FREE
-    │                                   ↑
-    └───────────────────────────────────┘
-         (TTL expired, no sessions)
+    └─────────────────────↑
+          (idle TTL expires)
+
+DNS renewal: DRAINING → ALLOCATED
+Traffic resumes: DRAINING → ACTIVE
 ```
 
 | State | Description |
 | ----- | ----------- |
 | Allocated | DNS query created the mapping. No NAT sessions yet. |
 | Active | Conntrack reports at least one active session. |
-| Draining | TTL expired but sessions remain, or sessions ended and grace period is running. |
+| Draining | Idle TTL expired; the grace period is running. |
 | Free | Reclaimed. Virtual IP returned to the available pool. |
 
 ### Transitions
 
 - **Allocated to Active**: Conntrack reports sessions > 0.
-- **Allocated to Free**: TTL expired with no sessions ever created.
-- **Active to Draining**: TTL expired (sessions may or may not remain).
-- **Draining to Free**: Sessions drop to zero and the grace period elapses.
+- **Allocated or Active to Draining**: TTL expired without active sessions.
+- **Draining to Active**: Traffic resumes; a future drain gets a fresh grace period.
+- **Draining to Allocated**: DNS renews the mapping and its advertised TTL.
+- **Draining to Free**: No sessions remain and the grace period elapses.
 
 ### Timing
 
@@ -173,20 +179,31 @@ ALLOCATED ──→ ACTIVE ──→ DRAINING ──→ FREE
 
 ### Conntrack Integration
 
-The pool queries `/proc/net/nf_conntrack` to count active sessions per virtual
-IP. A session is counted if any conntrack entry's original destination matches
-the virtual IP address.
+The gateway reads the connection table once per tick on a blocking worker,
+before locking the pool. It uses `/proc/net/nf_conntrack` when available and
+falls back to `NETLINK_NETFILTER` on kernels without that file. IPv6 addresses
+are parsed numerically, including the kernel's expanded address form. Each
+entry counts once per distinct destination in its original and reply tuples.
+Active sessions refresh the mapping's TTL.
+
+An unreadable or interrupted scan suspends reclamation; it is never treated
+as an empty table. Startup and changes in readability are logged. Netlink
+reads have a two-second budget.
 
 ### Pool Exhaustion
 
 If no addresses are available, new DNS queries return SERVFAIL. Existing
 mappings are never evicted prematurely — correctness of active sessions takes
 priority over new allocations. The pool is capped at 2^16 addresses regardless
-of CIDR prefix length to prevent excessive memory allocation.
+of CIDR prefix length to prevent excessive memory allocation. At most 1,000
+live mappings are admitted, with a burst of 50 new mappings and replenishment
+of 10 per second. Repeated queries for an existing mapping bypass these limits.
+Queries that return no address (such as A or HTTPS) refresh an existing mapping
+but never allocate a new one.
 
 ## DNS Resolution Flow
 
-1. Gateway listens on configured address (default `[::1]:5353`). The default
+1. Gateway listens on configured address (default `[::1]:5365`). The default
    assumes a LAN resolver already owns port 53 and forwards `.fips` queries to
    the gateway over loopback; set `listen: "[::]:53"` explicitly on hosts where
    the gateway should answer LAN clients directly.
@@ -196,8 +213,9 @@ of CIDR prefix length to prevent excessive memory allocation.
 5. If the daemon is unreachable or times out (5 seconds), return `SERVFAIL`.
 6. If the daemon returns NXDOMAIN or an error, forward the response as-is.
 7. Extract the AAAA record (fd00::/8 mesh address) from the daemon's response.
-8. Allocate a virtual IP from the pool for this destination (idempotent — if a
-   mapping already exists, reuse it and refresh the TTL).
+8. For AAAA or ANY, allocate a virtual IP for this destination, or reuse and
+   refresh an existing mapping. Other query types return NODATA and only
+   refresh a mapping if one already exists.
 9. If a new mapping was created, emit a `MappingCreated` event to install NAT
    rules and proxy NDP entry.
 10. Build and return an AAAA response containing the virtual IP with the
@@ -245,7 +263,7 @@ gateway:
   pool: "fd01::/112"
   lan_interface: "enp3s0"
   dns:
-    listen: "[::1]:5353"
+    listen: "[::1]:5365"
     upstream: "[::1]:5354"
     ttl: 60
   pool_grace_period: 60
@@ -261,7 +279,7 @@ gateway:
 | `enabled` | bool | `false` | Enable the gateway. Must be `true` for `fips-gateway` to start. |
 | `pool` | string (CIDR) | required | Virtual IP pool range (e.g., `fd01::/112`). |
 | `lan_interface` | string | required | LAN-facing interface for proxy NDP entries. |
-| `dns.listen` | string | `[::1]:5353` | Address and port for the gateway DNS listener. The default avoids port 53 conflicts with an existing LAN resolver; set `[::]:53` explicitly when the gateway should answer clients directly. |
+| `dns.listen` | string | `[::1]:5365` | Address and port for the gateway DNS listener. The default avoids port 53 conflicts with an existing LAN resolver; set `[::]:53` explicitly when the gateway should answer clients directly. |
 | `dns.upstream` | string | `[::1]:5354` | FIPS daemon DNS resolver address. |
 | `dns.ttl` | u32 | `60` | DNS response TTL in seconds. Also governs mapping TTL. |
 | `pool_grace_period` | u64 | `60` | Seconds after last session before a mapping is reclaimed. |
@@ -343,7 +361,13 @@ address.
 
 ### Port 53 Conflict
 
-The default `[::1]:5353` should not collide with a normal resolver. If you
+The default is `[::1]:5365`, avoiding both ordinary DNS on 53 and mDNS on 5353.
+When upgrading from the old default, update the LAN resolver's `.fips`
+forwarding destination to 5365, or configure an explicit listen address.
+The gateway binds this listener before changing routes or firewall rules.
+A failed bind exits immediately with the address and a diagnostic hint;
+an unexpectedly stopped DNS task triggers cleanup and a failing exit status.
+If you
 override the gateway onto port 53 and another DNS server is already there,
 identify the owner:
 
@@ -353,7 +377,7 @@ ss -tulnp | grep :53
 
 # Return to the loopback default or choose another explicit listen address
 dns:
-  listen: "[::1]:5353"
+  listen: "[::1]:5365"
 ```
 
 Then configure the existing resolver to forward `.fips` queries to the gateway.

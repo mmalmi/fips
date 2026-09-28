@@ -205,8 +205,7 @@ fi
 
 /etc/init.d/fips enable
 /etc/init.d/fips start
-/etc/init.d/fips-gateway enable
-/etc/init.d/fips-gateway start
+# Enable fips-gateway explicitly after configuring gateway.enabled and LAN routing.
 exit 0
 EOF
 chmod 0755 "$CONTROL_DIR/postinst"

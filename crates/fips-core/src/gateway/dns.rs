@@ -17,6 +17,7 @@ use tracing::{debug, info, trace, warn};
 
 use super::pool::{PoolEvent, VirtualIpPool};
 use crate::NodeAddr;
+use crate::config::GatewayDnsConfig;
 
 /// Timeout for upstream DNS queries.
 const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -70,8 +71,10 @@ fn node_addr_from_mesh(mesh_addr: Ipv6Addr) -> Option<NodeAddr> {
 
 /// Check that an upstream datagram answers the query we actually sent.
 ///
-/// DNS names are case-insensitive, so compare their normalized textual forms
-/// rather than `simple_dns`'s case-sensitive label representation.
+/// Guards against off-path forgery: the transaction ID and question must
+/// match, and the packet must be a response. Names are compared
+/// case-insensitively because DNS names are case-insensitive on the wire
+/// while `simple_dns` compares label bytes exactly.
 fn upstream_response_matches(
     response: &Packet,
     upstream_id: u16,
@@ -154,25 +157,108 @@ fn build_aaaa_response(query: &Packet, virtual_ip: Ipv6Addr, ttl: u32) -> Option
     response.build_bytes_vec_compressed().ok()
 }
 
+/// The gateway DNS listener could not be bound.
+///
+/// The message names the listen address and, when the port is already in
+/// use, the service most likely to hold it and how to find the holder.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot bind the gateway DNS listener on {listen}: {source}{}", in_use_hint(.listen, .source))]
+pub struct ListenError {
+    listen: String,
+    source: std::io::Error,
+}
+
+impl ListenError {
+    /// The kind of the underlying bind error.
+    pub fn kind(&self) -> std::io::ErrorKind {
+        self.source.kind()
+    }
+}
+
+/// The suffix `ListenError`'s message carries for an address-in-use error:
+/// the likely holder of the port, and how to find the actual one.
+fn in_use_hint(listen: &str, source: &std::io::Error) -> String {
+    if source.kind() != std::io::ErrorKind::AddrInUse {
+        return String::new();
+    }
+    let (holder, port) = match GatewayDnsConfig::port_of(listen) {
+        Some(port) => (holder_hint(port), port.to_string()),
+        None => (holder_hint(0), "<port>".to_string()),
+    };
+    format!(
+        "; {holder}; find the holder with `ss -ulpn 'sport = :{port}'` or `netstat -ulnp`, \
+         or set gateway.dns.listen to a free port and point the resolver that forwards .fips at it"
+    )
+}
+
+/// The service most likely to hold a DNS listen port that is already in use.
+pub(crate) fn holder_hint(port: u16) -> &'static str {
+    match port {
+        53 => {
+            "another DNS server holds port 53: dnsmasq, systemd-resolved's stub listener, unbound or BIND"
+        }
+        5353 => {
+            "port 5353 is mDNS: the fips daemon's LAN discovery (node.discovery.lan), \
+             avahi-daemon or systemd-resolved's MulticastDNS may hold it"
+        }
+        5354 => {
+            "the fips daemon's own DNS responder listens on 5354 by default; \
+             gateway.dns.listen must not be the daemon's DNS port"
+        }
+        5355 => "port 5355 is LLMNR, held by systemd-resolved unless LLMNR=no",
+        5365 => "another fips-gateway may already be running",
+        _ => "another process holds it",
+    }
+}
+
+/// Bind the gateway DNS listener.
+///
+/// Called before the gateway creates anything it would have to tear down, so
+/// a port that is already taken stops the gateway before it starts.
+pub async fn bind_listener(listen: &str) -> Result<UdpSocket, ListenError> {
+    UdpSocket::bind(listen).await.map_err(|source| ListenError {
+        listen: listen.to_string(),
+        source,
+    })
+}
+
 /// Run the gateway DNS resolver.
 ///
-/// Listens for DNS queries, forwards `.fips` queries to the upstream
-/// daemon resolver, allocates virtual IPs, and returns them to clients.
+/// Binds `listen_addr`, then serves as [`serve`] does. The gateway binary
+/// binds and serves separately so that a bind failure stops it at startup.
 pub async fn run_dns_resolver(
     listen_addr: &str,
     upstream_addr: &str,
     ttl: u32,
     pool: std::sync::Arc<tokio::sync::Mutex<VirtualIpPool>>,
     event_tx: tokio::sync::mpsc::Sender<PoolEvent>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) -> Result<(), std::io::Error> {
-    let socket = UdpSocket::bind(listen_addr).await?;
+    let socket = bind_listener(listen_addr)
+        .await
+        .map_err(|e| std::io::Error::new(e.kind(), e))?;
     info!(addr = %listen_addr, "Gateway DNS resolver listening");
 
     let upstream: SocketAddr = upstream_addr
         .parse()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
+    serve(socket, upstream, ttl, pool, event_tx, shutdown).await
+}
+
+/// Serve DNS queries on a bound listener until shutdown.
+///
+/// Forwards `.fips` queries to the upstream daemon resolver, allocates
+/// virtual IPs, and returns them to clients. Returns `Ok` on shutdown and
+/// `Err` when receiving from the listener fails.
+pub async fn serve(
+    socket: UdpSocket,
+    upstream: SocketAddr,
+    ttl: u32,
+    pool: std::sync::Arc<tokio::sync::Mutex<VirtualIpPool>>,
+    event_tx: tokio::sync::mpsc::Sender<PoolEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), std::io::Error> {
     let mut buf = vec![0u8; MAX_DNS_SIZE];
 
     loop {
@@ -230,9 +316,9 @@ async fn handle_query(
     // Build an AAAA query for the daemon regardless of what the client asked
     // (A, AAAA, ANY, etc.).  Mesh addresses are always IPv6, so the daemon
     // only returns useful answers for AAAA queries.
-    // Use a fresh transaction ID so an off-path sender cannot learn it from
-    // the client-facing query. Responses sent back to the client retain the
-    // client's original ID.
+    // The upstream transaction ID is drawn fresh so that an off-path forger
+    // cannot guess it from the client's query. Client-facing responses keep
+    // the client's own ID.
     let upstream_id: u16 = rand::random();
     let question = query.questions.first()?;
     let upstream_qname = question.qname.to_string().to_ascii_lowercase();
@@ -269,8 +355,8 @@ async fn handle_query(
         }
     };
 
-    // A connected UDP socket lets the kernel discard datagrams from any
-    // source other than the configured resolver.
+    // Connect the socket so the kernel drops datagrams from any source other
+    // than the configured upstream.
     if let Err(e) = upstream_socket.connect(upstream).await {
         warn!(error = %e, upstream = %upstream, "Failed to connect upstream socket");
         return build_servfail(&query);
@@ -281,8 +367,8 @@ async fn handle_query(
         return build_servfail(&query);
     }
 
-    // Discard malformed and unsolicited datagrams until the original
-    // deadline expires instead of treating the first packet as authoritative.
+    // Keep reading until a datagram matches the query we sent, or the deadline
+    // passes. Datagrams that do not match are discarded rather than accepted.
     let deadline = tokio::time::Instant::now() + UPSTREAM_TIMEOUT;
     let mut resp_buf = vec![0u8; MAX_DNS_SIZE];
     let upstream_response_bytes = loop {
@@ -300,17 +386,10 @@ async fn handle_query(
             };
 
         match Packet::parse(&resp_buf[..resp_len]) {
-            Ok(packet)
-                if upstream_response_matches(
-                    &packet,
-                    upstream_id,
-                    &upstream_qname,
-                    upstream_qclass,
-                ) =>
-            {
-                break resp_buf[..resp_len].to_vec();
-            }
-            Ok(_) => {
+            Ok(p) => {
+                if upstream_response_matches(&p, upstream_id, &upstream_qname, upstream_qclass) {
+                    break resp_buf[..resp_len].to_vec();
+                }
                 debug!(name = %fips_name, "Discarding unsolicited upstream datagram");
             }
             Err(_) => {
@@ -348,8 +427,8 @@ async fn handle_query(
         }
     };
 
-    // Reject non-mesh answers before they can allocate a virtual address or
-    // create a NAT mapping.
+    // Derive NodeAddr from mesh address. An answer outside fd00::/8 is not a
+    // mesh address and must never reach the NAT mapping path.
     let node_addr = match node_addr_from_mesh(mesh_addr) {
         Some(addr) => addr,
         None => {
@@ -361,6 +440,32 @@ async fn handle_query(
             return build_servfail(&query);
         }
     };
+
+    // What the client actually asked for. Only AAAA and ANY are answered with
+    // an address, and only those may mint a mapping: allocating for a query
+    // type the gateway answers with NODATA let any LAN host take a pool
+    // address per name without ever being given one.
+    let client_qtype = query
+        .questions
+        .first()
+        .map(|q| q.qtype)
+        .unwrap_or(QTYPE::TYPE(TYPE::AAAA));
+
+    if !matches!(client_qtype, QTYPE::TYPE(TYPE::AAAA) | QTYPE::ANY) {
+        // The client is still using the name, so an existing mapping's TTL
+        // clock is refreshed. A client that re-queries a mapped name with both
+        // A and AAAA should not lose half of its refresh, and with no
+        // conntrack sessions a DNS reference is all that keeps a mapping
+        // alive. Nothing is created.
+        let refreshed = pool.lock().await.refresh_if_present(node_addr);
+        debug!(
+            name = %fips_name,
+            mesh_addr = %mesh_addr,
+            refreshed,
+            "Non-AAAA .fips query, returning NODATA"
+        );
+        return build_nodata(&query, ttl);
+    }
 
     // Allocate virtual IP from pool
     let mut pool_guard = pool.lock().await;
@@ -392,22 +497,7 @@ async fn handle_query(
         "Resolved .fips query"
     );
 
-    // Check what the client originally asked for.
-    // Only return an AAAA record if the client asked for AAAA (or ANY).
-    // For A queries, return an empty NOERROR — the client's resolver will
-    // use the AAAA answer from its parallel AAAA query instead.
-    let client_qtype = query
-        .questions
-        .first()
-        .map(|q| q.qtype)
-        .unwrap_or(QTYPE::TYPE(TYPE::AAAA));
-
-    match client_qtype {
-        QTYPE::TYPE(TYPE::AAAA) | QTYPE::ANY => build_aaaa_response(&query, virtual_ip, ttl),
-        // All other types (A, HTTPS, etc.): return NODATA — the name exists
-        // but has no records of the requested type.
-        _ => build_nodata(&query, ttl),
-    }
+    build_aaaa_response(&query, virtual_ip, ttl)
 }
 
 #[cfg(test)]
@@ -419,17 +509,31 @@ mod tests {
 
     const TEST_TTL: u32 = 60;
 
+    /// Build a client-facing AAAA query.
     fn build_query(id: u16, qname: &str) -> Vec<u8> {
+        build_query_of_type(id, qname, QTYPE::TYPE(TYPE::AAAA))
+    }
+
+    /// Build a client-facing query of any type.
+    fn build_query_of_type(id: u16, qname: &str, qtype: QTYPE) -> Vec<u8> {
         let mut packet = Packet::new_query(id);
-        packet.questions.push(Question::new(
-            Name::new_unchecked(qname),
-            QTYPE::TYPE(TYPE::AAAA),
-            CLASS::IN.into(),
-            false,
-        ));
+        let question = Question::new(Name::new_unchecked(qname), qtype, CLASS::IN.into(), false);
+        packet.questions.push(question);
         packet.build_bytes_vec_compressed().unwrap()
     }
 
+    /// Assert the response is NODATA: NOERROR with no answer records.
+    fn assert_nodata(response: &[u8]) {
+        let packet = Packet::parse(response).unwrap();
+        assert_eq!(packet.rcode(), RCODE::NoError);
+        assert!(
+            packet.answers.is_empty(),
+            "expected NODATA, got {} answer(s)",
+            packet.answers.len()
+        );
+    }
+
+    /// Build an upstream NOERROR AAAA answer.
     fn build_answer(id: u16, qname: &str, addr: &str) -> Vec<u8> {
         let mut packet = Packet::new_reply(id);
         packet.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
@@ -452,6 +556,8 @@ mod tests {
         packet.build_bytes_vec_compressed().unwrap()
     }
 
+    /// A fake upstream that answers one query with a scripted list of
+    /// datagrams, in order, from its own socket.
     fn spawn_upstream<F>(socket: UdpSocket, replies: F) -> tokio::task::JoinHandle<()>
     where
         F: FnOnce(u16) -> Vec<Vec<u8>> + Send + 'static,
@@ -472,12 +578,13 @@ mod tests {
         ))
     }
 
+    /// Assert the response is an AAAA answer whose address came from the pool.
     fn assert_pool_answer(response: &[u8]) -> Ipv6Addr {
         let packet = Packet::parse(response).unwrap();
         assert_eq!(packet.rcode(), RCODE::NoError);
         let addr = extract_aaaa(&packet).expect("expected an AAAA answer");
         assert!(
-            addr.octets()[..2] == [0xfd, 0x01],
+            addr.octets()[0] == 0xfd && addr.octets()[1] == 0x01,
             "expected a pool virtual IP, got {addr}"
         );
         addr
@@ -507,6 +614,9 @@ mod tests {
         let upstream = upstream_socket.local_addr().unwrap();
         let foreign = UdpSocket::bind("[::1]:0").await.unwrap();
 
+        // The fake upstream learns the gateway's ephemeral port from the query
+        // it receives, has a third socket forge an answer to that port, then
+        // sends the genuine answer itself.
         let handle = tokio::spawn(async move {
             let mut buf = vec![0u8; MAX_DNS_SIZE];
             let (len, src) = upstream_socket.recv_from(&mut buf).await.unwrap();
@@ -639,6 +749,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_a_query_returns_nodata_and_mints_no_mapping() {
+        let upstream_socket = UdpSocket::bind("[::1]:0").await.unwrap();
+        let upstream = upstream_socket.local_addr().unwrap();
+        let handle = spawn_upstream(upstream_socket, |id| {
+            vec![build_answer(id, "test.fips", "fd00::1")]
+        });
+
+        let pool = test_pool();
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        let response = handle_query(
+            &build_query_of_type(0x1234, "test.fips", QTYPE::TYPE(TYPE::A)),
+            upstream,
+            TEST_TTL,
+            &pool,
+            &event_tx,
+        )
+        .await
+        .unwrap();
+        handle.await.unwrap();
+
+        assert_nodata(&response);
+        assert!(
+            matches!(event_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "an A query minted a mapping, so any LAN host can take a pool \
+             address per name with a query type it is never given one for"
+        );
+        assert!(
+            pool.lock()
+                .await
+                .mapping_info(std::time::Instant::now())
+                .is_empty(),
+            "an A query left a mapping in the pool"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_a_query_refreshes_an_existing_mapping_without_creating_one() {
+        let pool = test_pool();
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+
+        // An AAAA query mints the mapping.
+        let upstream_socket = UdpSocket::bind("[::1]:0").await.unwrap();
+        let upstream = upstream_socket.local_addr().unwrap();
+        let handle = spawn_upstream(upstream_socket, |id| {
+            vec![build_answer(id, "test.fips", "fd00::1")]
+        });
+        let response = handle_query(
+            &build_query(0x1234, "test.fips"),
+            upstream,
+            TEST_TTL,
+            &pool,
+            &event_tx,
+        )
+        .await
+        .unwrap();
+        handle.await.unwrap();
+        let virtual_ip = assert_pool_answer(&response);
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            PoolEvent::MappingCreated { .. }
+        ));
+
+        let before = {
+            let guard = pool.lock().await;
+            guard
+                .lookup_virtual_ip(&virtual_ip)
+                .unwrap()
+                .last_referenced
+        };
+
+        // An A query for the same name refreshes it and creates nothing. A
+        // client that re-queries a mapped name with both types must not lose
+        // half of its refresh: with no conntrack sessions, the DNS reference
+        // is the only thing keeping the mapping alive.
+        let upstream_socket = UdpSocket::bind("[::1]:0").await.unwrap();
+        let upstream = upstream_socket.local_addr().unwrap();
+        let handle = spawn_upstream(upstream_socket, |id| {
+            vec![build_answer(id, "test.fips", "fd00::1")]
+        });
+        let response = handle_query(
+            &build_query_of_type(0x1235, "test.fips", QTYPE::TYPE(TYPE::A)),
+            upstream,
+            TEST_TTL,
+            &pool,
+            &event_tx,
+        )
+        .await
+        .unwrap();
+        handle.await.unwrap();
+
+        assert_nodata(&response);
+
+        let guard = pool.lock().await;
+        let mapping = guard
+            .lookup_virtual_ip(&virtual_ip)
+            .expect("the A query removed or replaced the mapping");
+        assert!(
+            mapping.last_referenced > before,
+            "the A query did not refresh the mapping's TTL clock"
+        );
+        drop(guard);
+
+        assert!(
+            matches!(event_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "the A query sent a second MappingCreated"
+        );
+    }
+
+    #[tokio::test]
     async fn test_healthy_path_resolves() {
         let upstream_socket = UdpSocket::bind("[::1]:0").await.unwrap();
         let upstream = upstream_socket.local_addr().unwrap();
@@ -673,9 +892,73 @@ mod tests {
     }
 
     #[test]
+    fn an_in_use_hint_names_the_mdns_responders_for_5353() {
+        let hint = holder_hint(5353);
+        assert!(hint.contains("mDNS"), "{hint}");
+        assert!(hint.contains("node.discovery.lan"), "{hint}");
+        assert!(hint.contains("avahi-daemon"), "{hint}");
+    }
+
+    #[test]
+    fn an_in_use_hint_names_llmnr_for_5355() {
+        let hint = holder_hint(5355);
+        assert!(hint.contains("LLMNR"), "{hint}");
+        assert!(!hint.contains("mDNS"), "{hint}");
+    }
+
+    #[test]
+    fn an_in_use_hint_names_the_daemon_for_5354() {
+        let hint = holder_hint(5354);
+        assert!(hint.contains("fips daemon's own DNS responder"), "{hint}");
+    }
+
+    #[test]
+    fn an_in_use_hint_names_a_dns_server_for_53() {
+        let hint = holder_hint(53);
+        assert!(hint.contains("another DNS server"), "{hint}");
+        assert!(hint.contains("dnsmasq"), "{hint}");
+    }
+
+    #[test]
+    fn an_in_use_hint_names_another_gateway_for_the_default_port() {
+        let hint = holder_hint(5365);
+        assert!(hint.contains("another fips-gateway"), "{hint}");
+    }
+
+    #[test]
+    fn an_in_use_hint_names_another_process_for_an_unknown_port() {
+        assert_eq!(holder_hint(40000), "another process holds it");
+    }
+
+    #[tokio::test]
+    async fn binding_a_held_port_fails_with_addr_in_use_and_names_the_port_ss_and_netstat() {
+        let holder = UdpSocket::bind("[::1]:0").await.unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let listen = format!("[::1]:{port}");
+
+        let err = bind_listener(&listen)
+            .await
+            .expect_err("binding a held port must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        let message = err.to_string();
+        assert!(message.contains(&listen), "{message}");
+        assert!(message.contains(&format!("sport = :{port}")), "{message}");
+        assert!(message.contains("ss -ulpn"), "{message}");
+        assert!(message.contains("netstat -ulnp"), "{message}");
+        assert!(message.contains(holder_hint(port)), "{message}");
+    }
+
+    #[tokio::test]
+    async fn binding_a_free_port_returns_a_bound_socket() {
+        let socket = bind_listener("[::1]:0").await.expect("bind a free port");
+        assert_ne!(socket.local_addr().unwrap().port(), 0);
+    }
+
+    #[test]
     fn test_extract_fips_name() {
         // Build a simple AAAA query for test.fips
         let mut packet = Packet::new_query(1);
+        use simple_dns::{Name, Question};
         let name = Name::new_unchecked("test.fips");
         let question = Question::new(name, QTYPE::TYPE(TYPE::AAAA), CLASS::IN.into(), false);
         packet.questions.push(question);
@@ -687,6 +970,7 @@ mod tests {
     #[test]
     fn test_extract_non_fips_name() {
         let mut packet = Packet::new_query(1);
+        use simple_dns::{Name, Question};
         let name = Name::new_unchecked("example.com");
         let question = Question::new(name, QTYPE::TYPE(TYPE::AAAA), CLASS::IN.into(), false);
         packet.questions.push(question);
@@ -697,6 +981,7 @@ mod tests {
     #[test]
     fn test_build_aaaa_response() {
         let mut query = Packet::new_query(42);
+        use simple_dns::{Name, Question};
         let name = Name::new_unchecked("test.fips");
         let question = Question::new(name, QTYPE::TYPE(TYPE::AAAA), CLASS::IN.into(), false);
         query.questions.push(question);

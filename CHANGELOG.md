@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Harden the LAN gateway with supervised DNS on default port 5365, bounded
+  mapping admission, atomic firewall replacements, and conntrack netlink
+  fallback. Preserve mappings when scans fail and honor DNS renewals during
+  draining. Keep the OpenWrt gateway disabled until explicitly configured.
+  Adapted from gateway fixes in jmcorgan/fips.
+
 - Keep ephemeral private keys in memory and preserve any saved identity key.
   Refuse persistent startup when the key path cannot be inspected, and prefer
   the published public identity in `fipsctl address`.
