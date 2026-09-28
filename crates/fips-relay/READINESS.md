@@ -94,7 +94,7 @@ recovery. Current-device and physical power-loss acceptance remain pending.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent WebSocket delivery timeout described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and exact SDK send-operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and SDK send-operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
@@ -1014,22 +1014,31 @@ process-crash cases. All 2,660 recorded relay source/dependency inputs match.
 Strict native, SDK and relay lint, formatting, the source-size gate and PostgreSQL
 compilation pass. PostgreSQL runtime and custom backend support are not accepted.
 
-Exact SDK send-operation reads used by request recovery, cancellation, reclaim
-and sender-proof capture now reuse SQLite's existing 4 MiB bounded reader.
-The service passes its concrete store to the recovery helpers; no database trait,
-dependency or protocol message is added. The file-backed public cancellation
-regression rejects oversized, malformed and missing originals without changing
-the request journal, reserved coins or remaining native evidence. Restoring the
-original allows cancellation and a safe repeated call.
+SDK send-operation reads used by request recovery, cancellation, reclaim
+and sender-proof capture reuse SQLite's existing 4 MiB bounded reader. Discovery
+after a lost preparation preview now shares that bound through native
+`IncompleteSagaReader::next_with`. Pagination, identity validation and retry
+position stay in the shared iterator; no database trait method, schema, dependency
+or protocol message is added. Native recovery's default reader remains unchanged.
 
-This follow-up passes 28 focused send tests, the full
-418-test SDK workspace suite (one opt-in soak excluded),
-strict all-target SDK lint, 301 relay unit tests, fee-bearing paid
-settlement and interrupted funding recovery after route expiry. All use the
-matched local source graph and test money. The r19 ARM64 package includes this
-SDK change and passes twelve isolated Linux process cases. Current-device
-acceptance remains pending. Discovery scans and CDK's subsequent internal recovery
-reads retain their existing behavior and are not covered by the new exact-read bound.
+The file-backed public cancellation regression covers oversized, malformed and
+missing originals with and without a saved preview. The request journal, reserved
+coins and remaining native evidence stay unchanged on rejection. Restoring the
+original allows cancellation and a safe repeated call. Before the discovery fix,
+the oversized original was loaded and the request journal changed before the
+later exact-read bound rejected it. Shared iterator tests also retain the cursor
+after a loader error or an identity mismatch, then resume the same original.
+
+The matching graph passes 412 native shared/storage tests,
+28 focused send tests, the full 418-test SDK workspace suite (one opt-in soak
+excluded), strict native/SDK lint, 301 relay unit tests, fee-bearing paid
+settlement and interrupted funding recovery after route expiry. Formatting and
+source-size checks pass. All use the matched local source graph and test money.
+The accepted r19 ARM64 package includes the earlier exact-read bounds and passes
+twelve isolated Linux process cases; it predates the discovery extension.
+Refreshed package and current-device acceptance remain pending. CDK's subsequent
+internal recovery reads retain their existing behavior and are not covered by
+this SDK bound.
 
 These bounds cover individual records crossing the storage interface, not SQL
 engine memory, total wallet/custody capacity, uncapped SDK stores or other native
