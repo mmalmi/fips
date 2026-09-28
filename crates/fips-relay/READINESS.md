@@ -14,9 +14,10 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r23 ARM64 package at `3066fad1e4` includes the wallet main-file
-preservation guard, configurable funding request pacing, and the withdrawal
-recovery fixes for unconfirmed channels and interrupted upgrades of shared channels.
+The current r24 ARM64 package at `02298cb796` includes
+[demand-driven local checkpoints](#packet-demand-before-the-checkpoint-threshold),
+wallet main-file preservation, configurable funding request pacing, and withdrawal
+recovery for unconfirmed channels and interrupted upgrades of shared channels.
 See [funding and recovery](FUNDING-COSTS.md) for their focused regressions and limits.
 All twelve isolated Linux process cases pass against the exact packaged executable.
 
@@ -26,11 +27,8 @@ each SQLite recovery-file kind with and without the seed. Stored bytes remain
 unchanged and restoring the original files restores wallet access. Missing files
 are rejected by the existing service profile preflight, before the SDK guard;
 this does not replace the SDK's direct regression or prove financial reconstruction.
-This supersedes r22 package acceptance; the intermittent recovery timeouts,
+This supersedes r23 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
-
-Later source work repairs [checkpoint scheduling for blocked packets](#packet-demand-before-the-checkpoint-threshold).
-The r23 package predates that change; its acceptance does not cover the fix.
 
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
@@ -793,7 +791,7 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `3066fad1e4` includes SDK `2c9788782422` and CDK
+The source bundle at `02298cb796` includes SDK `2c9788782422` and CDK
 `dd45a9c0861b`, contains 36,070 inventoried files and resolves 697 packages,
 including 676 vendored registry packages. All 2,776
 recorded source/dependency inputs match the accepted native graph, with the
@@ -805,8 +803,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,130,360
-bytes, static and stripped. The unsigned APK is 11,515,378 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,162,376
+bytes, static and stripped. The unsigned APK is 11,525,822 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -1964,7 +1962,8 @@ The existing tests now require the scheduling hint, retry the rejected packet,
 and retain idle, financial-limit and crash-exposure checks. The scheduling
 assertion fails on the previous runtime. This identifies a checkpoint defect;
 it does not establish the cause of the historical delivery/payment timeouts.
-The r23 package predates this change, and current-device acceptance remains open.
+The r24 package includes this change and passes the isolated Linux process cases;
+current-device acceptance remains open.
 
 The first controller acceptance run also exposed an offline wallet inspection
 racing live controller work. The fixture now drains those workers before checking
@@ -1973,8 +1972,8 @@ Wallet ownership rules and financial assertions are unchanged.
 
 The matching graph passes 302 relay unit tests, 10 ledger tests, all 12 durable
 tests with optional features enabled and disabled, and all seven controller
-scenarios. Strict all-target relay lint passes. These are local software checks
-with test money; they do not replace package or physical-device acceptance.
+scenarios. Strict all-target relay lint passes. These native checks are separate
+from the package checks above and physical-device acceptance.
 
 ### Operator-selected free forwarding
 
