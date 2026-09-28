@@ -23,7 +23,7 @@ pub const DEFAULT_HOSTS_PATH: &str = "/etc/fips/hosts";
 pub const DEFAULT_HOSTS_PATH: &str = r"C:\ProgramData\fips\hosts";
 
 /// Bidirectional hostname ↔ npub mapping table.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostMap {
     /// hostname (lowercase) → npub string
     by_name: HashMap<String, String>,
@@ -223,8 +223,12 @@ pub fn file_mtime(path: &Path) -> Option<SystemTime> {
 /// effective map (base + hosts file). On each `check_reload()`, stats the
 /// hosts file and rebuilds the effective map if the mtime has changed.
 pub struct HostMapReloader {
-    /// Base map from peer config aliases (never changes).
+    /// Base map from the current peer config aliases.
     base: HostMap,
+    /// Last successfully read operator overrides, independent of the base.
+    hosts_file: HostMap,
+    /// Runtime alias updates for a reloader owned by the DNS task.
+    base_updates: Option<tokio::sync::watch::Receiver<HostMap>>,
     /// Current effective map (base merged with hosts file).
     effective: HostMap,
     /// Whether to watch and reload an operator-managed hosts file.
@@ -248,10 +252,12 @@ impl HostMapReloader {
             }
         };
         let mut effective = base.clone();
-        effective.merge(hosts_file);
+        effective.merge(hosts_file.clone());
 
         Self {
             base,
+            hosts_file,
+            base_updates: None,
             effective,
             file_backed: true,
             path,
@@ -267,6 +273,8 @@ impl HostMapReloader {
         Self {
             effective: base.clone(),
             base,
+            hosts_file: HostMap::new(),
+            base_updates: None,
             file_backed: false,
             path: std::path::PathBuf::new(),
             last_mtime: None,
@@ -283,7 +291,27 @@ impl HostMapReloader {
         &self.path
     }
 
-    /// Check if the hosts file has been modified and reload if so.
+    /// Replace peer aliases, preserving the last successfully read hosts file
+    /// and its precedence over aliases with the same name.
+    pub(crate) fn set_base(&mut self, base: HostMap) -> bool {
+        if self.base == base {
+            return false;
+        }
+        self.base = base;
+        self.effective = self.base.clone();
+        self.effective.merge(self.hosts_file.clone());
+        true
+    }
+
+    pub(crate) fn with_base_updates(
+        mut self,
+        updates: tokio::sync::watch::Receiver<HostMap>,
+    ) -> Self {
+        self.base_updates = Some(updates);
+        self
+    }
+
+    /// Apply pending peer aliases and reload a modified hosts file.
     ///
     /// Returns `true` if the map was reloaded.
     pub fn check_reload(&mut self) -> bool {
@@ -296,17 +324,24 @@ impl HostMapReloader {
         }
     }
 
-    /// Reload the hosts file, reporting read failures without changing the
-    /// last-good map or its recorded modification time.
+    /// Apply pending peer aliases and reload the hosts file. Read failures
+    /// retain the last-good file entries and their recorded modification time.
     pub fn try_check_reload(&mut self) -> Result<bool, std::io::Error> {
+        let base = self.base_updates.as_mut().and_then(|updates| {
+            updates
+                .has_changed()
+                .unwrap_or(false)
+                .then(|| updates.borrow_and_update().clone())
+        });
+        let base_changed = base.is_some_and(|base| self.set_base(base));
         if !self.file_backed {
-            return Ok(false);
+            return Ok(base_changed);
         }
 
         let current_mtime = file_mtime(&self.path);
 
         if current_mtime == self.last_mtime {
-            return Ok(false);
+            return Ok(base_changed);
         }
 
         // File appeared, disappeared, or was modified
@@ -317,8 +352,9 @@ impl HostMapReloader {
     }
 
     fn apply(&mut self, hosts_file: HostMap) {
+        self.hosts_file = hosts_file;
         let mut new_effective = self.base.clone();
-        new_effective.merge(hosts_file);
+        new_effective.merge(self.hosts_file.clone());
 
         let count = new_effective.len();
         self.effective = new_effective;

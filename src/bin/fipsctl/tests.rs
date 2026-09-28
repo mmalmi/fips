@@ -44,6 +44,23 @@ mod tests {
     }
 
     #[test]
+    fn address_uses_ephemeral_public_identity_and_preserves_saved_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = Identity::generate();
+        let saved_nsec = encode_nsec(&saved.keypair().secret_key());
+        let key_path = dir.path().join("fips.key");
+        write_key_file(&key_path, &saved_nsec).unwrap();
+
+        let resolved = fips::config::resolve_identity(
+            &fips::Config::new(),
+            &[dir.path().join("fips.yaml")],
+        ).unwrap();
+        let running = Identity::from_secret_str(&resolved.nsec).unwrap();
+        assert_eq!(address_from_key_dir(dir.path()).unwrap(), running.address().to_ipv6());
+        assert_eq!(address_from_file(&key_path).unwrap(), saved.address().to_ipv6());
+    }
+
+    #[test]
     fn missing_local_identity_reports_both_paths() {
         let dir = tempfile::tempdir().unwrap();
         let error = address_from_key_dir(dir.path()).unwrap_err();

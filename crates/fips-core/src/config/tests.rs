@@ -461,11 +461,75 @@ fn test_resolve_identity_ephemeral_by_default() {
     let resolved = resolve_identity(&config, std::slice::from_ref(&config_path)).unwrap();
     assert!(matches!(resolved.source, IdentitySource::Ephemeral));
 
-    // Key files should still be written for operator visibility
+    // Only the public identity belongs on disk in ephemeral mode.
     let key_path = temp_dir.path().join("fips.key");
     let pub_path = temp_dir.path().join("fips.pub");
-    assert!(key_path.exists());
+    assert!(!key_path.exists());
     assert!(pub_path.exists());
+    let identity = crate::Identity::from_secret_str(&resolved.nsec).unwrap();
+    assert_eq!(read_key_file(&pub_path).unwrap(), identity.npub());
+}
+
+#[test]
+fn test_resolve_identity_ephemeral_preserves_saved_key() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("fips.yaml");
+    let key_path = dir.path().join("fips.key");
+    let saved = crate::Identity::generate();
+    let saved_nsec = crate::encode_nsec(&saved.keypair().secret_key());
+    write_key_file(&key_path, &saved_nsec).unwrap();
+    let original = fs::read(&key_path).unwrap();
+
+    let mut config = Config::new();
+    let ephemeral = resolve_identity(&config, std::slice::from_ref(&config_path)).unwrap();
+    assert!(matches!(ephemeral.source, IdentitySource::Ephemeral));
+    assert_ne!(ephemeral.nsec, saved_nsec);
+    assert_eq!(fs::read(&key_path).unwrap(), original);
+
+    config.node.identity.persistent = true;
+    let restored = resolve_identity(&config, &[config_path]).unwrap();
+    assert!(matches!(restored.source, IdentitySource::KeyFile(_)));
+    assert_eq!(restored.nsec, saved_nsec);
+    assert_eq!(
+        read_key_file(&dir.path().join("fips.pub")).unwrap(),
+        saved.npub()
+    );
+}
+
+#[test]
+fn test_resolve_identity_persistent_rejects_uninspectable_path() {
+    let dir = TempDir::new().unwrap();
+    let blocked_parent = dir.path().join("not-a-directory");
+    fs::write(&blocked_parent, "keep this file").unwrap();
+    let mut config = Config::new();
+    config.node.identity.persistent = true;
+
+    assert!(resolve_identity(&config, &[blocked_parent.join("fips.yaml")]).is_err());
+    assert_eq!(
+        fs::read_to_string(blocked_parent).unwrap(),
+        "keep this file"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_resolve_identity_preserves_dangling_key_symlink() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("fips.yaml");
+    let key_path = dir.path().join("fips.key");
+    let target = dir.path().join("missing-key");
+    std::os::unix::fs::symlink(&target, &key_path).unwrap();
+    let mut config = Config::new();
+
+    let resolved = resolve_identity(&config, std::slice::from_ref(&config_path)).unwrap();
+    assert!(matches!(resolved.source, IdentitySource::Ephemeral));
+    assert_eq!(fs::read_link(&key_path).unwrap(), target);
+    assert!(!target.exists());
+
+    config.node.identity.persistent = true;
+    assert!(resolve_identity(&config, &[config_path]).is_err());
+    assert_eq!(fs::read_link(&key_path).unwrap(), target);
+    assert!(!target.exists());
 }
 
 #[test]

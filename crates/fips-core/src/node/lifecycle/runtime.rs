@@ -246,6 +246,8 @@ impl Node {
                             let base_hosts = crate::upper::hosts::HostMap::from_peer_configs(
                                 self.config.peers(),
                             );
+                            let (alias_tx, alias_rx) =
+                                tokio::sync::watch::channel(base_hosts.clone());
                             let reloader = if self.config.node.system_files_enabled {
                                 let hosts_path = std::path::PathBuf::from(
                                     crate::upper::hosts::DEFAULT_HOSTS_PATH,
@@ -253,7 +255,8 @@ impl Node {
                                 crate::upper::hosts::HostMapReloader::new(base_hosts, hosts_path)
                             } else {
                                 crate::upper::hosts::HostMapReloader::memory_only(base_hosts)
-                            };
+                            }
+                            .with_base_updates(alias_rx);
                             // Resolve the TUN ifindex so the responder can
                             // drop queries arriving on the mesh interface.
                             // Use the name of the device actually created:
@@ -282,6 +285,7 @@ impl Node {
                             ));
                             self.dns_identity_rx = Some(identity_rx);
                             self.dns_task = Some(handle);
+                            self.dns_alias_tx = Some(alias_tx);
                         }
                         Err(e) => {
                             warn!(bind = %bind, error = %e, "Failed to start DNS responder");
@@ -420,6 +424,7 @@ impl Node {
         }
 
         // Stop DNS responder
+        self.dns_alias_tx = None;
         if let Some(handle) = self.dns_task.take() {
             handle.abort();
             debug!("DNS responder stopped");

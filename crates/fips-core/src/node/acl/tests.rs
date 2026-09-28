@@ -561,6 +561,46 @@ fn test_acl_alias_resolves_from_host_map() {
 }
 
 #[test]
+fn test_acl_rebase_retries_unreadable_policy_without_losing_last_good_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = dir.path().join("peers.allow");
+    let deny = dir.path().join("peers.deny");
+    let hosts = dir.path().join("hosts");
+    let old = test_npub();
+    let new = test_npub();
+    write_file(&deny, "blocked\n");
+    let mut base = HostMap::new();
+    base.insert("blocked", &old).unwrap();
+    let mut reloader = PeerAclReloader::with_alias_sources(allow, deny.clone(), base, hosts);
+
+    let saved = dir.path().join("saved-deny");
+    std::fs::rename(&deny, &saved).unwrap();
+    std::fs::create_dir(&deny).unwrap();
+    let mut changed = HostMap::new();
+    changed.insert("blocked", &new).unwrap();
+    reloader.rebase(changed);
+    assert!(reloader.status().stale);
+    assert_eq!(
+        reloader.acl().check(&test_peer(&old)),
+        PeerAclDecision::DenyList
+    );
+
+    std::fs::remove_dir(&deny).unwrap();
+    std::fs::rename(saved, deny).unwrap();
+    assert!(reloader.check_reload());
+    assert!(!reloader.status().stale);
+    assert_eq!(
+        reloader.acl().check(&test_peer(&new)),
+        PeerAclDecision::DenyList
+    );
+    assert_eq!(
+        reloader.acl().check(&test_peer(&old)),
+        PeerAclDecision::DefaultAllow
+    );
+    assert!(!reloader.check_reload());
+}
+
+#[test]
 fn test_acl_reloader_detects_hosts_change_for_alias_entry() {
     let dir = tempfile::tempdir().unwrap();
     let allow = dir.path().join("peers.allow");

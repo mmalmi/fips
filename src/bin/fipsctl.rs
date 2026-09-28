@@ -654,10 +654,12 @@ fn address_from_file(path: &Path) -> Result<Ipv6Addr, String> {
 }
 
 fn address_from_key_dir(dir: &Path) -> Result<Ipv6Addr, String> {
-    match address_from_file(&dir.join("fips.key")) {
+    // The public file may describe an ephemeral run alongside a saved private
+    // key. Prefer the published identity; --key still selects a file explicitly.
+    match address_from_file(&dir.join("fips.pub")) {
         Ok(address) => Ok(address),
-        Err(key_error) => address_from_file(&dir.join("fips.pub"))
-            .map_err(|pub_error| format!("{key_error}\n{pub_error}")),
+        Err(pub_error) => address_from_file(&dir.join("fips.key"))
+            .map_err(|key_error| format!("{pub_error}\n{key_error}")),
     }
 }
 
@@ -704,7 +706,7 @@ fn main() {
         eprintln!("Key files written to: {}/", dir.display());
         eprintln!();
         eprintln!("NOTE: Set 'node.identity.persistent: true' in fips.yaml");
-        eprintln!("      or these keys will be overwritten on next daemon start.");
+        eprintln!("      to use this saved identity on the next daemon start.");
         return;
     }
 

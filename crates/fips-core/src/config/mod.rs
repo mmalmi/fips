@@ -296,8 +296,8 @@ pub fn write_pub_file(path: &Path, npub: &str) -> Result<(), ConfigError> {
 /// Behavior depends on `node.identity.persistent`:
 ///
 /// - **`persistent: false`** (default): generate a fresh ephemeral keypair
-///   every start. Key files are written for operator visibility but overwritten
-///   on each restart.
+///   every start. Only `fips.pub` is written for operator visibility. Any saved
+///   private key is left untouched and is not used.
 ///
 /// - **`persistent: true`**: use three-tier resolution:
 ///   1. Explicit nsec in config — highest priority
@@ -335,7 +335,17 @@ pub fn resolve_identity(
 
     if config.node.identity.persistent {
         // Persistent mode: load existing key file or generate-and-persist
-        if key_path.symlink_metadata().is_ok() {
+        let key_present = match key_path.symlink_metadata() {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(ConfigError::KeyPathUnreadable {
+                    path: key_path,
+                    source,
+                });
+            }
+        };
+        if key_present {
             let nsec = Zeroizing::new(read_key_file(&key_path)?);
             let identity = Identity::from_secret_str(&nsec)?;
             warn_unmanaged_key_file(&key_path);
@@ -384,8 +394,7 @@ pub fn resolve_identity(
             }
         }
     } else {
-        // Ephemeral mode (default): fresh keypair every start, write key files
-        // for operator visibility
+        // Ephemeral mode keeps the private key in memory. Publish only the npub.
         let identity = Identity::generate();
         let mut our_keypair = identity.keypair();
         let mut secret_key = our_keypair.secret_key();
@@ -402,11 +411,8 @@ pub fn resolve_identity(
             tracing::warn!(
                 path = %key_path.display(),
                 config_key = "node.identity.persistent",
-                "Existing identity key path is being replaced by an ephemeral identity"
+                "Saved identity key is not used in ephemeral mode; set node.identity.persistent: true to use it"
             );
-        }
-        if let Err(error) = write_key_file(&key_path, &nsec) {
-            tracing::warn!(path = %key_path.display(), %error, "Failed to write ephemeral identity key file");
         }
         if let Err(error) = write_pub_file(&pub_path, &npub) {
             tracing::warn!(path = %pub_path.display(), %error, "Failed to write public identity file");
@@ -439,7 +445,7 @@ pub enum IdentitySource {
     KeyFile(PathBuf),
     /// Generated and saved to a new key file.
     Generated(PathBuf),
-    /// Generated but could not be persisted.
+    /// Generated for this run, either by policy or because persistence failed.
     Ephemeral,
 }
 
@@ -469,6 +475,12 @@ pub enum ConfigError {
 
     #[error("refusing to write key file through a symlink: {path}")]
     KeyPathIsSymlink { path: PathBuf },
+
+    #[error("cannot inspect identity key file {path}: {source}")]
+    KeyPathUnreadable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
     #[error("identity error: {0}")]
     Identity(#[from] IdentityError),

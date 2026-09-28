@@ -359,6 +359,8 @@ pub struct Node {
     dns_identity_rx: Option<crate::upper::dns::DnsIdentityRx>,
     /// DNS responder task handle.
     dns_task: Option<tokio::task::JoinHandle<()>>,
+    /// Current configured aliases for the independently running DNS responder.
+    dns_alias_tx: Option<tokio::sync::watch::Sender<HostMap>>,
 
     // === Index-Based Session Dispatch ===
     /// Allocator for session indices.
@@ -477,7 +479,7 @@ pub struct Node {
 
     // === Display Names ===
     /// Human-readable names for configured peers (alias or short npub).
-    /// Populated at startup from peer config.
+    /// Updated when the configured peer roster changes.
     peer_aliases: HashMap<NodeAddr, String>,
     /// Configured-peer lookup cache, rebuilt when the peer roster changes.
     configured_peers: ConfiguredPeerLookup,
@@ -486,8 +488,7 @@ pub struct Node {
     peer_acl: acl::PeerAclReloader,
 
     // === Host Map ===
-    /// Static hostname → npub mapping for DNS resolution.
-    /// Built at construction from peer aliases and /etc/fips/hosts.
+    /// Current hostname → npub mapping from peer aliases and the hosts file.
     host_map: Arc<HostMap>,
 }
 

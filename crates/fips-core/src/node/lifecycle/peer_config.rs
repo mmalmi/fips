@@ -93,9 +93,15 @@ impl Node {
                     state.reconnect = new_pc.auto_reconnect;
                     state.retry_after_ms = Self::now_ms();
                 }
-                if let Some(alias) = new_pc.alias.clone() {
-                    self.peer_aliases.insert(*node_addr, alias);
-                }
+                let identity = PeerIdentity::from_npub(&new_pc.npub)
+                    .expect("new peer identities were validated before updating state");
+                self.peer_aliases.insert(
+                    *node_addr,
+                    new_pc
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| identity.short_npub()),
+                );
                 if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
                     auto_connect_refresh_configs.push(new_pc.clone());
                 }
@@ -130,6 +136,19 @@ impl Node {
             .collect();
         self.configured_peers = ConfiguredPeerLookup::from_config(&self.config);
         self.mark_dataplane_direct_fsp_sources_dirty();
+
+        let aliases = crate::upper::hosts::HostMap::from_peer_configs(self.config.peers());
+        self.peer_acl.rebase(aliases.clone());
+        self.host_map = std::sync::Arc::new(self.peer_acl.hosts().clone());
+        if let Some(sender) = &self.dns_alias_tx {
+            sender.send_if_modified(|current| {
+                if *current == aliases {
+                    return false;
+                }
+                *current = aliases;
+                true
+            });
+        }
 
         for peer_config in added_configs {
             outcome.added += 1;

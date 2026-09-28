@@ -97,8 +97,17 @@ Identity resolution follows a three-tier priority:
 3. **Ephemeral** — when `persistent: false` (default) and no `nsec`, generates a fresh
    keypair on each start
 
-Key files (`fips.key` with mode 0600, `fips.pub` with mode 0644) are written adjacent
-to the highest-priority config file for operator visibility, even in ephemeral mode.
+Persistent mode writes `fips.key` (mode 0600) and `fips.pub` (mode 0644)
+adjacent to the highest-priority config file. If the key path cannot be
+inspected or an existing key cannot be read, startup fails instead of silently
+changing identity.
+
+Ephemeral mode keeps its private key in memory and writes only `fips.pub`.
+An existing `fips.key` is preserved in place and ignored, with a warning;
+set `node.identity.persistent: true` to use that saved key on the next start.
+`fipsctl address` prefers `fips.pub` so it reports the most recently published
+identity even when a saved private key is present. Use `--key fips.key` to
+inspect the saved identity explicitly.
 
 ### General
 
@@ -639,6 +648,12 @@ The host map is populated from two sources:
 
 The hosts file is auto-reloaded on modification (mtime change) without
 restarting the daemon. Hostnames are case-insensitive.
+
+Replacing the peer list through the embedded API also refreshes alias-based
+display names, DNS answers, and peer ACL entries before new peers are dialed.
+Removed aliases stop resolving, and aliases moved to another identity follow
+that identity. Hosts-file entries take precedence over configured aliases;
+the last successfully read file is retained if a reload fails.
 
 ## Transports (`transports.*`)
 

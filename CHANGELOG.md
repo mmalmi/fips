@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep ephemeral private keys in memory and preserve any saved identity key.
+  Refuse persistent startup when the key path cannot be inspected, and prefer
+  the published public identity in `fipsctl address`.
+- Refresh runtime peer aliases in DNS, display names, and alias-based peer
+  access rules, retaining hosts-file overrides and retrying failed ACL reads.
+  Adapted from the identity and alias fixes in jmcorgan/fips.
 - Recover an unresponsive end-to-end session after a single unanswered request,
   even when the sender stops transmitting and link heartbeats remain healthy.
   Outstanding receiver-report feedback now survives the recent-send window;

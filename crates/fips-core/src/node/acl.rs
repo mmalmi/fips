@@ -329,6 +329,7 @@ pub struct PeerAclReloader {
     last_allow_mtime: Option<SystemTime>,
     last_deny_mtime: Option<SystemTime>,
     retry_pending: bool,
+    aliases_changed: bool,
     empty_holds: u32,
 }
 
@@ -376,6 +377,7 @@ impl PeerAclReloader {
             last_allow_mtime,
             last_deny_mtime,
             retry_pending,
+            aliases_changed: false,
             empty_holds: 0,
         }
     }
@@ -394,6 +396,7 @@ impl PeerAclReloader {
             last_allow_mtime: None,
             last_deny_mtime: None,
             retry_pending: false,
+            aliases_changed: false,
             empty_holds: 0,
         }
     }
@@ -401,6 +404,19 @@ impl PeerAclReloader {
     /// Get the current ACL.
     pub fn acl(&self) -> &PeerAcl {
         &self.acl
+    }
+
+    pub(crate) fn hosts(&self) -> &HostMap {
+        self.hosts.hosts()
+    }
+
+    /// Re-resolve ACL aliases before connections use a changed peer roster.
+    /// Failed reads retain the current policy and retry through the normal tick.
+    pub(crate) fn rebase(&mut self, base: HostMap) {
+        if self.hosts.set_base(base) && self.file_backed {
+            self.aliases_changed = true;
+            self.check_reload();
+        }
     }
 
     /// Return a human-readable snapshot of the loaded ACL state.
@@ -448,6 +464,7 @@ impl PeerAclReloader {
             && deny_mtime == self.last_deny_mtime
             && !hosts_changed
             && !self.retry_pending
+            && !self.aliases_changed
         {
             return false;
         }
@@ -490,6 +507,7 @@ impl PeerAclReloader {
         }
 
         self.retry_pending = false;
+        self.aliases_changed = false;
         self.empty_holds = 0;
         self.last_allow_mtime = allow_mtime;
         self.last_deny_mtime = deny_mtime;
@@ -588,7 +606,11 @@ impl Node {
 
     /// Reload the peer ACL if the ACL or hosts files changed.
     pub(crate) fn reload_peer_acl(&mut self) -> bool {
-        self.peer_acl.check_reload()
+        let changed = self.peer_acl.check_reload();
+        if changed {
+            self.host_map = std::sync::Arc::new(self.peer_acl.hosts().clone());
+        }
+        changed
     }
 
     /// Return a control-plane snapshot of the current peer ACL.
