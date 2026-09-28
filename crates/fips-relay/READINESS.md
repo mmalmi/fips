@@ -574,6 +574,23 @@ unit tests pass against the same updated wallet source. The process-level paid
 settlement/restart scenario and interrupted funding recovery after route expiry
 also pass, preserving original charges, refunds and spending bounds.
 
+Startup also refuses a missing main SQLite database when a WAL, shared-memory or
+rollback-journal file remains. The check runs under the existing wallet writer
+lock, before seed handling or SQLite access, so opening cannot recreate the main
+file or alter the surviving recovery files. It adds no dependency, storage field
+or protocol message.
+
+The regression reproduces main-file creation before the fix. Its six cases cover
+all three recovery-file types with both file-backed and secure-store seeds,
+checking unchanged file bytes, an absent main database and unchanged seed stores.
+All four focused seed-identity tests and the full 424-test SDK workspace pass
+(one opt-in soak excluded). Strict SDK/relay lint, all 301 relay unit tests,
+fee-bearing paid settlement/restart and interrupted funding recovery after route
+expiry also pass against the same source graph. These tests preserve recovery
+files; they do not demonstrate reconstruction of a valid financial WAL after
+loss of its main database. The r22 package predates this additional check;
+updated package, current-device and physical power-loss acceptance remain pending.
+
 ### Receipt completion read bounds
 
 Native CDK `9a8e9792f98f` bounds operation receipt publication and final
