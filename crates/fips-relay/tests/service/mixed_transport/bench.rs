@@ -613,6 +613,26 @@ impl MixedBench {
                 } else {
                     diagnostic(node, "controller-phases", &json!({"unavailable": true}));
                 }
+                // This is the last durable snapshot, not live submission state.
+                if let Some(journal) = read_journal(&config.state_directory.join("buyer/buyer.json")) {
+                    let channels = json!(journal["channels"].as_object().map(|rows| rows.iter().take(16)
+                        .map(|(id, row)| json!({
+                            "id": id,
+                            "state": selected(row, &["authorized_sat", "active", "retired"]),
+                        })).collect::<Vec<_>>()));
+                    diagnostic(node, "buyer-durable-channels", &channels);
+                    let quotes = json!(journal["quotes"].as_object().map(|rows| rows.iter().take(16)
+                        .map(|(id, row)| json!({
+                            "id": id,
+                            "contract": selected(&row["contract"], &["channel_id", "price", "billing"]),
+                            "state": selected(row, &["active", "observed_units", "submitted_units", "completed"]),
+                            "attempts": row["attempts"].as_array().map(|attempts| attempts.iter().take(16)
+                                .map(|attempt| selected(attempt, &["units", "outcome"])).collect::<Vec<_>>()),
+                        })).collect::<Vec<_>>()));
+                    diagnostic(node, "buyer-durable-routes", &quotes);
+                } else {
+                    diagnostic(node, "buyer-durable-channels", &json!({"unavailable": true}));
+                }
                 if let Some(journal) = read_journal(&config.state_directory.join("seller/ledger.json")) {
                     let ledger = &journal["ledger"];
                     let mut safe = selected(&journal, &["window_msat", "ceilings"]);

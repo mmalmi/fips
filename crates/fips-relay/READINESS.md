@@ -1729,6 +1729,16 @@ previously paid amounts. The payment timeout's cause remains unproven; subsequen
 passes do not close it or establish that it shares the earlier delivery timeout's
 cause.
 
+Recovery failure snapshots now also retain bounded buyer authorizations, route
+accounting and attempt outcomes from the last durable journal, including when
+optional measurements are disabled. These records can lag live submission state;
+only selected non-secret fields are emitted. Bounded traffic-timing probes did
+not reproduce the original payment stall, and their timing changes were removed.
+The unchanged recovery scenario passes with optional features enabled and
+disabled, conserving all 384 test sats in each case; strict all-target relay lint
+passes in both modes. This improves failure evidence without changing runtime
+policy, retries or deadlines. Both intermittent timeouts remain unresolved.
+
 A later configured-WebSocket run exposed a separate fixture race: delivery and
 payment passed, but automatic renewal changed channel history before the fixed
 round-trip check finished. The small post-restart warm-up could remain covered
