@@ -39,8 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release the reusable core and endpoint libraries as 0.4.83. The identity
   library remains 0.3.3; existing protocol message bytes and wire layouts are
   unchanged.
-- Add opt-in FIPS-authenticated WebSocket TLS. The standalone daemon does not
-  enable the experimental paid-relay application.
+- Add opt-in FIPS-authenticated WebSocket TLS.
+- Keep the experimental paid-relay applications outside the stable release
+  workspace; they depend on unreleased payment and TCP integration work.
 
 ## [0.4.82] - 2026-09-15
 

@@ -15,10 +15,11 @@ members = [
     "crates/fips-core",
     "crates/fips-endpoint",
     "crates/fips-identity",
-    "crates/fips-relay",
-    "crates/fips-relay-app",
     "crates/fips-sim",
 ]
+# These experimental applications depend on unreleased payment/TCP work.
+# Keep the stable libraries and daemon independently buildable and testable.
+exclude = ["crates/fips-relay", "crates/fips-relay-app"]
 resolver = "2"
 
 # Flash-constrained routers need room for durable payment journals and updates.
@@ -29,11 +30,6 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
-
-# The optional TCP/FIPS control adapter must use this workspace's core,
-# including its forwarding policy, instead of a second registry copy.
-[patch.crates-io]
-nvpn-fips-core = { path = "crates/fips-core" }
 
 [dependencies]
 fips-core = { package = "nvpn-fips-core", version = "=0.4.83", path = "crates/fips-core", features = ["webrtc-transport"] }
