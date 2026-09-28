@@ -36,7 +36,7 @@ strip = "symbols"
 nvpn-fips-core = { path = "crates/fips-core" }
 
 [dependencies]
-fips-core = { package = "nvpn-fips-core", version = "=0.4.82", path = "crates/fips-core", features = ["webrtc-transport"] }
+fips-core = { package = "nvpn-fips-core", version = "=0.4.83", path = "crates/fips-core", features = ["webrtc-transport"] }
 
 ratatui = "0.30"
 serde_json = "1.0"

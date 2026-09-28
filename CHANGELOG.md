@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.83] - 2026-09-28
+
 ### Fixed
 
 - Harden the LAN gateway with supervised DNS on default port 5365, bounded
@@ -23,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh runtime peer aliases in DNS, display names, and alias-based peer
   access rules, retaining hosts-file overrides and retrying failed ACL reads.
   Adapted from the identity and alias fixes in jmcorgan/fips.
+
+- Cancel retired WebSocket, TCP and Tor connection attempts and stream writers;
+  keep WebSocket reads progressing while writes are blocked.
+- Preserve queued payloads and routing announcements across interrupted sends,
+  parent changes and connection replacement.
+- Retry discovery and refresh reachability after delayed requests, packet loss
+  and changing neighbors, retaining bounded admission and forwarding work.
+- Retain the published 0.4.82 recovery-handshake and sparse-session fixes.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.83. The identity
+  library remains 0.3.3; existing protocol message bytes and wire layouts are
+  unchanged.
+- Add opt-in FIPS-authenticated WebSocket TLS. The standalone daemon does not
+  enable the experimental paid-relay application.
 
 ## [0.4.82] - 2026-09-15
 

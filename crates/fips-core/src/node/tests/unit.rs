@@ -24,6 +24,7 @@ mod rekey;
 mod retry_basics;
 mod retry_paths;
 mod session_registry;
+mod update_peers_aliases;
 mod update_peers_config;
 mod update_peers_core;
 mod update_peers_fallback;
