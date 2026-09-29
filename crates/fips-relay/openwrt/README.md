@@ -210,25 +210,37 @@ afterward. Loopback TLS does not establish remote proxy or radio acceptance.
 
 ### CPU-pressure check
 
-The r18 packaged executable passes two ordered configured-WebSocket/seed pairs
-with a half-CPU limit shared by the test harness and its three relay processes.
-Using the function and binaries above, run both cases in each fresh container:
+The r32 packaged executable passes repeated UDP/TLS renewal and seeded WebSocket
+recovery with a half-CPU limit shared by the harness, local mint and three relays.
+Using the function and binaries above, run each case in a fresh container:
 
 ```sh
 relay_test_cpus=0.5
-for relay_trial in 1 2; do
-  run_relay_case "$service_test_binary" \
-    mixed_transport::mixed_udp_websocket_daemons_preserve_paid_limits_through_exhaustion_and_restart \
-    mixed_transport::mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster || exit
-done
+run_relay_case "$service_test_binary" \
+  mixed_transport::renewal_load::concurrent_bidirectional_renewals_preserve_payment_progress \
+  --ignored || exit
+run_relay_case "$service_test_binary" \
+  mixed_transport::mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster || exit
 unset relay_test_cpus
 ```
 
 This retains the ordinary deadlines, retries and payment rules, and stops after
-the first failed pair. All four accepted cases conserve 384 test sats each;
-source and executable hashes remain unchanged. The bounded CPU-pressure check
-does not reproduce or explain the earlier delivery timeout and is not a radio
-performance measurement.
+the first failure. Both cases conserve 384 test sats each; source and executable
+hashes remain unchanged. The accepted run captures `cpu.max`, `cpu.stat`,
+`memory.peak` and `memory.events` inside each container before and after its test.
+The CPU quota remains 50,000 microseconds per 100,000-microsecond period.
+
+| Case | Test duration | CPU time | Throttled periods | Memory peak |
+| --- | ---: | ---: | ---: | ---: |
+| Eight channel replacements | 43.41 s | 7.62 s | 29 | 93.2 MiB |
+| Carrier loss and partitioned restart | 108.08 s | 13.84 s | 26 | 108.5 MiB |
+
+Neither container records a memory-limit or out-of-memory event. CPU time and
+memory are aggregate container measurements, including the test harness, mint,
+relays and filesystem cache. The saved wrapper and records are in
+`work/paid-relay-verification/2026-09-29-arm64-pressure`. This finite check does not
+explain the earlier intermittent stalls or establish sustained router capacity
+or per-byte payment overhead.
 
 ### Customer entry restart
 

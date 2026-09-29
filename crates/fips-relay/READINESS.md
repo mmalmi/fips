@@ -2333,15 +2333,21 @@ bundle as the ARM64 package. All eight process cases reach automatic replacement
 and settlement, conserving 384 test sats per case; source and executable hashes
 match before and after every pair.
 
-The r18 packaged executable additionally passes two ordered configured-WebSocket/
-seed pairs in isolated ARM64 Linux with a shared half-CPU limit for the harness
-and all three relays. Deadlines, retries, payment rules and binaries are unchanged.
-The pairs complete in 146.1 and 164.8 seconds; each of the four cases conserves
-384 test sats, and source and executable hashes match afterward. See the
-[CPU-pressure reproduction](openwrt/README.md#cpu-pressure-check).
-Neither bounded check reproduces the original delivery timeout or identifies its
-cause. Sustained and current-device acceptance remain open; failure-only
-diagnostics remain in place.
+The r32 packaged executable additionally passes repeated bidirectional UDP/TLS
+renewal and seeded WebSocket recovery in isolated ARM64 Linux with a shared
+half-CPU limit. The renewal case completes eight replacements while another
+neighbor keeps paying during a held settlement reply. The seed case covers broken
+and silently dropping connections plus a middle-relay restart during partition.
+Both retain ordinary deadlines and reconcile all 384 test sats per case. Linux
+confirms the unchanged 50,000/100,000-microsecond CPU quota and records 29 and 26
+throttled periods respectively. The complete test containers consume 7.62 and
+13.84 CPU seconds, with memory peaks of 93.2 and 108.5 MiB and no memory-limit or
+out-of-memory events. These measurements include the harness, local mint, three
+relays and filesystem cache. Source and executable hashes match before and after
+each case. See the [CPU-pressure reproduction](openwrt/README.md#cpu-pressure-check)
+and `work/paid-relay-verification/2026-09-29-arm64-pressure` for the records.
+These finite checks do not reproduce the original delivery timeout or establish
+sustained capacity, per-byte payment overhead or current-device acceptance.
 
 The seed fixture also tests silent loss: the proxy retains existing sockets and
 discards their traffic while new connections remain usable. Production keepalive
