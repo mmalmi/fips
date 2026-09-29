@@ -2083,6 +2083,20 @@ These native checks postdate r32; packaged default builds omit measurements.
 Historical timeout causes and current-device acceptance remain open.
 See the [observation semantics](../../testing/relay-cadence/README.md).
 
+With these diagnostics enabled, one bounded run each of seeded WebSocket
+recovery, ordinary TLS and repeated bidirectional UDP/TLS renewal passes against
+unchanged native executables. None reproduces the historical stalls. The renewal
+fixture now also captures the existing bounded failure snapshot when its mint
+commit or overlapping-settlement wait fails. Its shared controller projection
+includes at most sixteen seller settlements, exposing only identifiers and
+payment/report presence flags. The existing held-close round verifies those
+flags against its real journal while retaining all accounting checks. The
+30-second, 10-second and overall 240-second deadlines are unchanged. Focused
+renewal acceptance, strict service-test lint in both feature profiles, formatting
+and source-size checks pass. This changes only test diagnostics; r32 runtime and
+hardware acceptance are unchanged. Evidence, including the passing three-case
+sequence, is retained in `work/paid-relay-verification/2026-09-29-stall-diagnostics`.
+
 Provider rejections now emit fixed debug labels for record parsing, agreement,
 buyer identity, verification, credit application and checkpoint failures. Enable
 them with `RUST_LOG=warn,fips_relay::payment_control=debug`; raw errors, requests,

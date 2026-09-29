@@ -520,7 +520,7 @@ impl MixedBench {
         self.failure_snapshot().await;
     }
 
-    async fn failure_snapshot(&self) {
+    pub(super) async fn failure_snapshot(&self) {
         let captured = tokio::time::timeout(Duration::from_secs(4), async {
             for (node, config) in self.configs.iter().enumerate() {
                 daemon_tail(node, &self.paths[node].with_extension("log"));
@@ -559,21 +559,9 @@ impl MixedBench {
                     }
                     _ => diagnostic(node, "service-status", &json!({"unavailable": true})),
                 }
-                // Never serialize the journal: it contains wallet material.
-                // Project only the saved route phases and renewal switches.
                 let journal = read_journal(&config.state_directory.join("controller/controller.json"));
                 if let Some(journal) = journal {
-                    let mut safe = selected(&journal, &["renewals_paused", "selling_stopped"]);
-                    for (field, keys) in [
-                        ("outgoing", &["accepted", "retired"][..]),
-                        ("incoming", &["phase", "verified_paid_msat", "replacement_retired"][..]),
-                        ("renewals", &["completed"][..]),
-                        ("watched_routes", &["paused", "billing", "max_rate_msat_per_kib"][..]),
-                    ] {
-                        safe[field] = json!(journal[field].as_object().map(|rows| rows.iter().take(16)
-                            .map(|(id, row)| json!({"id": id, "state": selected(row, keys)})).collect::<Vec<_>>()));
-                    }
-                    diagnostic(node, "controller-phases", &safe);
+                    diagnostic(node, "controller-phases", &controller_phases(&journal));
                 } else {
                     diagnostic(node, "controller-phases", &json!({"unavailable": true}));
                 }
@@ -713,6 +701,44 @@ impl MixedBench {
             panic!("automatic renewals replace both channels");
         }
     }
+}
+
+pub(super) fn controller_phases(journal: &Value) -> Value {
+    // Never serialize the journal: it contains wallet material. Settlement
+    // observations expose only presence, not signed payments, reports or errors.
+    let mut safe = selected(journal, &["renewals_paused", "selling_stopped"]);
+    for (field, keys) in [
+        ("outgoing", &["accepted", "retired"][..]),
+        (
+            "incoming",
+            &["phase", "verified_paid_msat", "replacement_retired"][..],
+        ),
+        ("renewals", &["completed"][..]),
+        (
+            "watched_routes",
+            &["paused", "billing", "max_rate_msat_per_kib"][..],
+        ),
+    ] {
+        safe[field] = json!(journal[field].as_object().map(|rows| {
+            rows.iter()
+                .take(16)
+                .map(|(id, row)| json!({"id": id, "state": selected(row, keys)}))
+                .collect::<Vec<_>>()
+        }));
+    }
+    safe["seller_settlements"] = json!(journal["seller_settlements"].as_object().map(|rows| {
+        rows.iter()
+            .take(16)
+            .map(|(id, row)| {
+                json!({
+                    "id": id,
+                    "has_payment": row["payment"].is_object(),
+                    "has_report": row["report"].is_object(),
+                })
+            })
+            .collect::<Vec<_>>()
+    }));
+    safe
 }
 
 fn selected(value: &Value, fields: &[&str]) -> Value {

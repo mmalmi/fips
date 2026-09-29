@@ -1,4 +1,5 @@
 //! Opt-in turnover acceptance using real UDP/TLS processes and the existing gates.
+use super::bench::controller_phases;
 use super::*;
 use cashu_service::simulation::MintProxy;
 use fips_relay::controller::FundingRequestBudget;
@@ -153,10 +154,13 @@ async fn held_close_with_other_payment(
     request(&bench.configs[0], &AdminRequest::ResumeRenewals)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(30), committed)
-        .await
-        .unwrap()
-        .unwrap();
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(30), committed).await,
+        Ok(Ok(_))
+    ) {
+        bench.failure_snapshot().await;
+        panic!("provider close must commit before the held reply");
+    }
     let (_, paid_before) = bench.relay_usage_msat(&channels[1]);
     bench.deliver_sized(2, 0, 512).await;
     bench.wait_paid_beyond(&channels[1], paid_before).await;
@@ -171,20 +175,38 @@ async fn held_close_with_other_payment(
     let journal = bench.configs[1]
         .state_directory
         .join("controller/controller.json");
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let overlapping = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let state: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
             if channels.iter().all(|id| {
                 state["seller_settlements"][id]["payment"].is_object()
                     && state["seller_settlements"][id]["report"].is_null()
             }) {
+                let safe = controller_phases(&state);
+                let settlements = safe["seller_settlements"].as_array().unwrap();
+                assert!(settlements.len() <= 16);
+                for id in channels {
+                    let row = settlements.iter().find(|row| row["id"] == *id).unwrap();
+                    assert_eq!(
+                        row,
+                        &serde_json::json!({
+                            "id": id,
+                            "has_payment": true,
+                            "has_report": false,
+                        }),
+                        "held settlements expose only their identifiers and presence flags"
+                    );
+                }
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .expect("both provider settlements overlap before the held close returns");
+    .await;
+    if overlapping.is_err() {
+        bench.failure_snapshot().await;
+        panic!("both provider settlements overlap before the held close returns");
+    }
     release
         .send(())
         .expect("the mint reply remained held through both observations");
