@@ -2144,6 +2144,14 @@ These native checks postdate r32; packaged default builds omit measurements.
 Historical timeout causes and current-device acceptance remain open.
 See the [observation semantics](../../testing/relay-cadence/README.md).
 
+The existing TCP/FIPS carrier regression additionally drops a completed control
+reply on the encrypted simulated link. The closing stream retransmits it and
+finishes with exactly one application request in both relay feature profiles.
+Strict target lint, formatting and source-size checks pass. Production behavior
+and the fixture's 20-second deadline are unchanged; the historical stalls remain
+unattributed. Evidence is retained in
+`work/paid-relay-verification/2026-09-30-control-reply-loss`.
+
 With these diagnostics enabled, one bounded run each of seeded WebSocket
 recovery, ordinary TLS and repeated bidirectional UDP/TLS renewal passes against
 unchanged native executables. None reproduces the historical stalls. The renewal

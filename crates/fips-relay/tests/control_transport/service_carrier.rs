@@ -196,12 +196,36 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
             ControlTransport::start(b.clone(), PORT + 1, vec![alice], 4)
                 .await
                 .unwrap();
-        let response = tokio::spawn(async move {
+        let response = async {
             let request = requests.recv().await.unwrap();
+            let before = network.stats();
+            network.set_directed_link(
+                "receiver",
+                "sender",
+                Some(SimLink {
+                    loss_probability: 1.0,
+                    ..Default::default()
+                }),
+            );
             request.respond.send(request.body).unwrap();
-        });
-        assert_eq!(unrelated.request(bob, body.clone()).await.unwrap(), body);
-        response.await.unwrap();
+            // The application has finished and the control server has handed
+            // its reply to TCP. Losing it must not strand the closing stream.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while responder.statistics().snapshot().stream_bytes_sent != record.len() as u64
+                    || network.stats().delta_since(&before).packets_dropped_loss == 0
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the first control reply must be sent across the failed link");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(unrelated.statistics().snapshot().stream_bytes_received, 0);
+            network.set_directed_link("receiver", "sender", None);
+        };
+        let (reply, ()) = tokio::join!(unrelated.request(bob, body.clone()), response);
+        assert_eq!(reply.unwrap(), body);
+        assert_eq!(responder.statistics().snapshot().requests_received, 1);
         let application = unrelated.statistics().snapshot();
         assert_eq!(application.requests_started, 1);
         assert_eq!(application.stream_bytes_sent, record.len() as u64);
