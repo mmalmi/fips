@@ -1,7 +1,14 @@
 //! Delayed replacement funding preserves other neighbors' paid service.
 use super::*;
 use cashu_service::{simulation::MintProxy, spilman_client_store_path};
+use cdk_common::database::WalletDatabase;
 use pending_funding::{healthy_progress, journal, read};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FundingStage {
+    WalletSend,
+    ChannelFunding,
+}
 
 async fn start() -> (Bench, MintProxy, String, String) {
     let (mut bench, proxy) = bench::start_with_renewal_proxy(0, 122).await;
@@ -23,25 +30,101 @@ async fn start() -> (Bench, MintProxy, String, String) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_renewal_funding_preserves_healthy_credit_and_original_authority() {
-    tokio::time::timeout(Duration::from_secs(480), exercise())
-        .await
-        .expect("slow renewal and settlement deadline");
+    tokio::time::timeout(
+        Duration::from_secs(480),
+        exercise(FundingStage::ChannelFunding),
+    )
+    .await
+    .expect("slow renewal and settlement deadline");
 }
 
-async fn exercise() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_renewal_wallet_send_preserves_healthy_credit_and_original_authority() {
+    tokio::time::timeout(Duration::from_secs(480), exercise(FundingStage::WalletSend))
+        .await
+        .expect("slow wallet preparation and settlement deadline");
+}
+
+async fn exercise(stage: FundingStage) {
     let (mut bench, proxy, healthy, previous) = start().await;
+    if stage == FundingStage::WalletSend {
+        // Existing bearer coins can fund a channel without a wallet swap.
+        // A fresh issuing keyset requires the real send to exchange them first.
+        bench
+            .mint
+            .mint()
+            .rotate_keyset(
+                cashu::nuts::CurrencyUnit::Sat,
+                (0..=20).map(|bit| 1u64 << bit).collect(),
+                0,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        for node in 0..bench.nodes.len() {
+            FileSpilmanPaymentReceiver::load_with_keyset_refresh(
+                &bench.root.path().join(format!("receiver-{node}")),
+                FileSpilmanPaymentReceiverConfig::new([proxy.url.clone()]),
+            )
+            .await
+            .unwrap();
+        }
+    }
     let original = journal(&bench, 2);
     let store = spilman_client_store_path(&bench.wallets[2]);
     let saved = read(&store);
     let pending_store = store.clone();
+    let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+        &bench.wallets[2],
+    ))
+    .await
+    .unwrap();
+    let wallet_inputs: std::collections::BTreeSet<_> = db
+        .get_proofs(None, None, Some(vec![cashu::nuts::State::Unspent]), None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|proof| proof.y)
+        .collect();
+    assert!(!wallet_inputs.is_empty());
+    drop(db);
     let initial: Vec<_> = saved["openings"]
         .as_object()
         .unwrap()
         .keys()
         .cloned()
         .collect();
+    let refunded_channel = previous.clone();
     let (mut committed, release) = proxy.state.pause_matching_swap_reply(move |request| {
         let saved = read(&store);
+        if stage == FundingStage::WalletSend {
+            let refunded: Vec<cashu::nuts::Proof> =
+                saved["settled_refunds"][&refunded_channel]["proofs_json"]
+                    .as_str()
+                    .map(|wire| serde_json::from_str(wire).unwrap())
+                    .unwrap_or_default();
+            let inputs: std::collections::BTreeSet<_> = wallet_inputs
+                .iter()
+                .copied()
+                .chain(refunded.iter().map(|proof| proof.y().unwrap()))
+                .collect();
+            // The previous channel's close precedes this admission. Match only
+            // the replacement's wallet send, before channel funding is prepared.
+            return request
+                .inputs()
+                .iter()
+                .any(|proof| inputs.contains(&proof.y().unwrap()))
+                && saved["admissions"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .any(|(id, entry)| {
+                        entry["funding_started"] == true
+                            && !initial.contains(&format!("r:{id}"))
+                            && saved["openings"].get(format!("r:{id}")).is_none()
+                    });
+        }
         saved["openings"]
             .as_object()
             .unwrap()
@@ -96,8 +179,22 @@ async fn exercise() {
     assert_eq!(budget.pending_reserved_sat, 64);
     assert_eq!(budget.locked_sat, 128);
     assert!(budget.exposure_sat <= bench.controller_policy.max_wallet_spend_sat);
-    let opening = read(&pending_store)["openings"][format!("r:{id}")].clone();
-    let operation = opening["wallet_send"]["operation_id"].as_str().unwrap();
+    let saved = read(&pending_store);
+    let opening = saved["openings"].get(format!("r:{id}"));
+    let operation = if stage == FundingStage::WalletSend {
+        assert!(
+            opening.is_none(),
+            "wallet preparation precedes channel funding"
+        );
+        let admission = &saved["admissions"][id];
+        assert_eq!(admission["funding_started"], true);
+        pending_wallet_operation(&bench.wallets[2], &admission["request"]).await
+    } else {
+        opening.unwrap()["wallet_send"]["operation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
     assert!(!operation.is_empty());
     assert!(!release.is_closed());
     let progressed = healthy_progress(&mut bench, &healthy).await;
@@ -106,6 +203,15 @@ async fn exercise() {
     assert!(after["next_funding"] == held["next_funding"]);
     assert!(after["policy"] == original["policy"]);
     assert_eq!(bench.controllers[2].funding_budget().await.unwrap(), budget);
+    let after_store = read(&pending_store);
+    assert!(after_store["admissions"] == saved["admissions"]);
+    assert!(after_store["openings"] == saved["openings"]);
+    if stage == FundingStage::WalletSend {
+        assert_eq!(
+            pending_wallet_operation(&bench.wallets[2], &saved["admissions"][id]["request"]).await,
+            operation,
+        );
+    }
     assert!(
         !release.is_closed(),
         "credit observation must precede the mint timeout"
@@ -147,6 +253,46 @@ async fn exercise() {
     }
     payments(&bench).await;
     collect(bench).await;
+}
+
+async fn pending_wallet_operation(wallet: &std::path::Path, request: &Value) -> String {
+    let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(wallet))
+        .await
+        .unwrap();
+    let journal: Value = serde_json::from_slice(
+        &db.kv_read("cashu_service", "send_requests", "journal")
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let entries: Vec<_> = journal["entries"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|entry| {
+            entry["request"]["metadata"]["spilman_request"]
+                .as_str()
+                .is_some_and(|wire| {
+                    serde_json::from_str::<Value>(wire).is_ok_and(|saved| saved == *request)
+                })
+        })
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "exact admitted funding has one wallet operation"
+    );
+    let entry = entries[0];
+    assert!(
+        entry["outcome"].is_null(),
+        "held send must remain incomplete"
+    );
+    let preparation = entry["preparation"].as_object().unwrap();
+    assert_eq!(preparation.len(), 1);
+    let (kind, original) = preparation.iter().next().unwrap();
+    assert!(matches!(kind.as_str(), "planned" | "unplanned"));
+    original["operation_id"].as_str().unwrap().to_owned()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

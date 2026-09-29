@@ -2213,6 +2213,25 @@ No historical stall reproduces in this finite comparison, so their causes remain
 unattributed. This does not replace current-device, physical power-loss or sustained
 performance acceptance, and introduces no production code or policy change.
 
+The shared slow-renewal mesh fixture now also holds the renewing buyer's wallet-send
+reply before channel funding exists. The fixture rotates zero-fee mint keys and
+refreshes receiver key metadata to require a real wallet swap; existing bearer
+coins could otherwise bypass that network wait. The fault matches the buyer's
+existing or refunded inputs and its admitted replacement, excluding other nodes'
+concurrent settlement requests. Healthy-neighbor credit advances from 2,000 to
+6,000 msat while the reply remains held. Funding terms, capital reservation and
+the original wallet operation stay unchanged; releasing the reply completes that
+replacement, and all 1,536 test sats reconcile through final collection.
+
+All three slow-renewal scenarios pass with all features, and the new wallet-send
+case also passes without optional features. Strict priced-path test lint,
+formatting and the source-size gate pass. The additional case shares the existing
+traffic and settlement helpers and their deadlines. Exact sources and results are
+retained in `work/paid-relay-verification/2026-09-30-renewal-preparation`.
+This changes only tests. A full-mesh held keyset-lookup check, physical-device
+acceptance and attribution of historical stalls remain open; the diagnostic mint
+rotation is not acceptance of automatic key-cache refresh during deployment.
+
 A separate SDK regression reproduced cross-channel signing contention during
 refund recovery: a held mint-state request prevented the real nonblocking signer
 from loading another funded channel in the same wallet. The original 30-second
@@ -6231,8 +6250,9 @@ original Watch recovers using the same restored wallet operation and channel.
 All three final 12-payload streams complete; the four original authorized
 channels settle, and all 1,536 test sats are collected. This is one controlled
 simulation, not a hardware handover or latency guarantee. This run covers the
-final funding wait; earlier wallet-send/keyset waits and interrupted selector
-trials require separate regressions.
+final funding wait. The later renewal-preparation regression above covers the
+wallet-send wait after a forced keyset change; held keyset lookups and interrupted
+selector trials still require separate regressions.
 
 That checkpoint passed all 234 relay library tests and all 18 priced-path
 scenarios, including a repeat of this held-funding encounter. The payment SDK
