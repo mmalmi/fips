@@ -28,14 +28,15 @@ process settlement and repeated bidirectional UDP/TLS renewal. Native, SDK and
 relay strict lint pass. Changed SDK files pass formatting; its workspace-wide
 formatter still reports four unchanged integration-test files. Limits cover
 retained metadata, not database projections, total mint counts or process memory;
-SQLite capacity remains a separate coarse storage bound. The r31 package below
-predates this runtime change. Current-package/device acceptance and attribution
-of the historical stalls remain outstanding.
+SQLite capacity remains a separate coarse storage bound. The r32 package below
+includes these runtime changes. Current-device acceptance and attribution of the
+historical stalls remain outstanding.
 
-The fresh r31 ARM64 package accepts runtime source `1a152f90a524` with the
-reconstructed dependency graph below. Its fourteen isolated Linux process cases
-pass against the executable extracted from the APK: two storage/restart cases,
-four expiry/funding/retirement cases, six mixed-transport/renewal cases and two
+The r32 ARM64 package accepts FIPS source `52bb2c5d9c74`, native CDK
+`4f8d2d7e0d4a` and SDK `2d8bd483516b` from the verified offline source bundle.
+Its fourteen isolated Linux process cases pass against the executable extracted
+from the APK: two storage/restart cases, four expiry/funding/retirement cases,
+six mixed-transport/renewal cases and two
 customer-restart cases. These include rejection of an increased saved buyer
 budget before accounting recovery, full-filesystem recovery, both ordinary and
 explicitly enabled self-signed TLS, and eight automatic channel replacements
@@ -43,26 +44,32 @@ across a shared provider. The separate initialization guard also passes; its
 empty-account buyer-identity check calls the embedded service loader, while its
 command-line checks use the packaged executable.
 
-The offline production build took 378.867 seconds with Rust 1.96.0,
+The offline production build took 379.132 seconds with Rust 1.96.0,
 cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,176,304 bytes, SHA-256
-`33d2a47f638cfcf6e4ed6fb63a1698f7311a47afeedd2be77ebb8b0f2870c04b`.
-The unsigned `0.1.0-r31` APK is 11,527,380 bytes, SHA-256
-`8eb81a747e9e147211f653829e69f7238d5967b8a07918d30de1002d21e143f6`.
+25,254,320 bytes, SHA-256
+`d1e206b6859b5273a360457445e3607a1177b8075ebd4149da62f7b91a2e978d`.
+The unsigned `0.1.0-r32` APK is 11,553,458 bytes, SHA-256
+`75870637a667c8ced40c8b5fb1807b6b7946fc31e8f8ebf753a42b2ef1690afe`.
 Inspection verifies all eleven payload files, root ownership, lifecycle scripts
-and the declared dependency set; no saved accounts are included. The accepted
-inspection uses apk-tools 3.0.1-r1 with standard system parent directories
-precreated in disposable storage. The 3.0.8-r0 build/extract attempt rejected
+and the exact dependency set; no saved accounts are included and the service is
+disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
+dynamic-linking segment. The accepted inspection uses apk-tools 3.0.1-r1 with
+standard system parent directories
+precreated in disposable storage. The earlier 3.0.8-r0 build/extract attempt rejected
 omitted parent-directory records; neither inspection establishes OpenWrt
 installation acceptance.
 
 The new source bundle resolves offline with the tested lock, and its complete
 inventory remains unchanged throughout these gates. The harnesses and extracted
-daemon retain their original hashes. Fresh logs, source, package and executable
-artifacts are preserved; they do not restore the unavailable historical artifacts.
+daemon retain their original hashes. Final verification binds each result to its
+exact test, harness and read-only packaged-executable mount. The r31 package and
+its saved executables also retain their accepted hashes. The new package,
+harnesses, runners and 69 evidence files are preserved in
+`work/paid-relay-verification/2026-09-29-arm64-r32`; its source reference identifies
+the unchanged metadata-bounds bundle, including the full dependency inventory.
 Every runtime case has a fresh, unprivileged, network-isolated ARM64 Linux
 container and local test money. No package is installed or published, and no
-physical device is accessed. This supersedes r30's package-process acceptance;
+physical device is accessed. This supersedes r31's package-process acceptance;
 current-device checks, physical power loss, sustained performance and attribution
 of the historical intermittent stalls remain outstanding.
 
