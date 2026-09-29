@@ -1955,6 +1955,28 @@ fixture without changing runtime behavior; r28 remains the accepted executable.
 The checks cover forced writes and component reload, not automatic daemon retry,
 a process kill, physical power loss or attribution of the historical stalls.
 
+Automatic signer recovery also has native macOS ARM64 process acceptance. The
+existing three-node UDP/TCP lifecycle temporarily removes write permission from
+one disposable wallet directory. Existing signer files remain readable and
+lockable, but atomic replacement fails after the buyer durably authorizes new
+usage. The original signer file and seller credit remain unchanged. While that
+fault persists, the other buyer advances its payment through the shared provider.
+Restoring the directory permissions lets the scheduler pay the original channel
+without restarting a process, flushing manually or making another purchase.
+Original purchases, funding identities and lifetime budgets survive. The same
+fixture then exercises exhaustion, renewal, relay restart and settlement,
+conserving all 384 test sats.
+
+Both relay feature profiles, strict all-target lint, formatting and source-size
+checks pass. This is an opt-in extension of
+`mixed_transport::mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart`
+in the `service` integration target: set `FIPS_TEST_SIGNER_WRITE_FAILURE=1` and
+run as an unprivileged user with the matching dependency graph. The test checks
+that file creation is actually denied and restores permissions on scope exit.
+No runtime, wire or dependency changes are needed; the accepted r28 executable
+is unchanged. This covers one transient signer-write failure, not physical power
+loss, current-device acceptance or attribution of the historical stalls.
+
 A separate six-node regression reproduces interference between neighbor renewals.
 It holds the real mint's successful close response for one provider, then drives
 the source's other channel to its renewal threshold. The previous serial recovery

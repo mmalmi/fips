@@ -35,6 +35,8 @@ mod restart;
 mod round_trip;
 #[path = "mixed_transport/service_carrier.rs"]
 mod service_carrier;
+#[path = "mixed_transport/signer_storage.rs"]
+mod signer_storage;
 #[path = "mixed_transport/tls.rs"]
 mod tls;
 
@@ -127,6 +129,11 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"64".repeat(16)).await;
         }
+        if second_hop == SecondHop::Tcp
+            && std::env::var("FIPS_TEST_SIGNER_WRITE_FAILURE").as_deref() == Ok("1")
+        {
+            signer_storage::assert_automatic_recovery(&mut bench, &original_channels).await;
+        }
         #[cfg(feature = "measurements")]
         payment_progress::assert_reconciled(&bench, &original_channels).await;
         service_carrier::assert_status(&bench, true).await;
@@ -194,7 +201,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
-        let original_funding = bench.funding_intents();
+        let original_funding = bench.funding_intents(false);
         let before = bench.states().await;
         restart::middle(&mut bench, &before, &original_funding).await;
         bench.set_stage("post-restart-paid");
@@ -288,7 +295,7 @@ async fn assert_replacement_accounts(
     original_funding: &[serde_json::Map<String, Value>],
     replacements: [usize; 3],
 ) {
-    let funding = bench.funding_intents();
+    let funding = bench.funding_intents(false);
     for (node, (old, recovered)) in before.iter().zip(after).enumerate() {
         // A completed refund or replacement may change aggregate counters.
         // Original wallet operations and purchase identities must remain exact.

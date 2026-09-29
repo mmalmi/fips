@@ -328,7 +328,7 @@ impl MixedBench {
         states
     }
 
-    pub fn funding_intents(&self) -> Vec<serde_json::Map<String, Value>> {
+    pub fn funding_intents(&self, renewals_paused: bool) -> Vec<serde_json::Map<String, Value>> {
         self.configs
             .iter()
             .map(|config| {
@@ -337,7 +337,7 @@ impl MixedBench {
                         .unwrap(),
                 )
                 .unwrap();
-                assert_eq!(saved["renewals_paused"], false);
+                assert_eq!(saved["renewals_paused"], renewals_paused);
                 saved["funding"].as_object().unwrap().clone()
             })
             .collect()

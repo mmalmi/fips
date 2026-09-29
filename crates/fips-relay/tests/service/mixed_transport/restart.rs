@@ -42,7 +42,7 @@ pub(super) async fn middle(
         .expect("restarted relay and seed must remain disconnected across reconnect attempts");
 
         assert!(
-            bench.funding_intents() == funding,
+            bench.funding_intents(false) == funding,
             "partition changed funding identities"
         );
         for (old, offline) in before.iter().zip(bench.states().await) {

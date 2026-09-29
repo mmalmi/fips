@@ -49,12 +49,12 @@ async fn scenario() {
         .unwrap();
     }
     let original = bench.states().await;
-    let funding = bench.funding_intents();
+    let funding = bench.funding_intents(false);
     let budget = bench.configs[0].terms.buyer_budget_sat;
     let capacity = bench.configs[0].terms.controller.channel_capacity_sat;
     for round in 0..=4 {
         eprintln!("mixed-carrier turnover round={round}");
-        let prior = bench.funding_intents();
+        let prior = bench.funding_intents(false);
         // Pause only to observe a fixed channel generation. Fresh delivery and
         // automatic credit must succeed before any settlement can collect it.
         bench.set_renewals_paused(true).await;

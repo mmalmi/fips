@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 impl MixedBench {
     pub async fn recover_seed_carrier(&mut self, silent: bool) {
         let before = self.states().await;
-        let funding = self.funding_intents();
+        let funding = self.funding_intents(false);
         let proxy = self.seed_carrier().unwrap();
         let accepted = proxy.connections();
         assert!(accepted > 0);
