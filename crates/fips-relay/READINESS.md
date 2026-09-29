@@ -34,8 +34,14 @@ this does not replace the SDK's direct regression or prove financial reconstruct
 This supersedes r29 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
 Later WebRTC admission, handshake-recovery budget and carrier-handoff changes
-through `a052606fc` are outside this package revision and need matching relay
-acceptance.
+through `a052606fc` are outside this package revision. Native ARM64 macOS checks
+at `45e2f5a2688` pass the seeded-WebSocket loss/restart, TLS interruption/restart
+and five-node automatic-renewal cases with optional features enabled and disabled
+(six focused checks). They retain the existing workloads, deadlines, spending
+limits and settlement checks; both renewal runs observe key rotation in all eight
+adjacent session directions. This supplies focused relay regression evidence for
+the newer core graph. It does not attribute the historical stalls, accept a new
+carrier adapter or extend the r30 package and current-device acceptance.
 The sender-identity binding uses fresh version-2 service profiles. The packaged
 TCP case also verifies automatic recovery from a native signer-write failure.
 
