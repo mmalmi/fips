@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.84] - 2026-09-29
+
+### Fixed
+
+- Admit an existing authenticated peer's WebRTC upgrade through the maintenance
+  handshake budget, while requiring the Noise identity to match the signaling
+  identity. Preserve stranger-admission and pending-connection limits.
+- Keep maintenance handshake refill capacity independent of long rekey
+  intervals so healthy peers can recover under public handshake load.
+- Preserve end-to-end session keys when a closed old carrier is removed during
+  a fresh, authenticated same-process carrier handoff. Expired or unauthenticated
+  attempts and explicit disconnects still clear stale session state.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.84. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.83] - 2026-09-28
 
 ### Fixed
