@@ -14,25 +14,41 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-Native CDK `4f8d2d7e0d4a` and SDK `2d8bd483516b` now bound each service wallet
-cache to 256 retained keysets and 4 MiB of serialized metadata. Inactive and
-omitted identities still count. Oversized refreshes preserve old recovery keys
-and cannot authorize funding through stale-cache fallback. Database loading and
-HTTP refresh share publication locking; a database read cannot satisfy a waiting
-explicit HTTP refresh. Controlled reversions fail the count and concurrency regressions;
-the final implementation passes.
+Native CDK `418380651373` and SDK `66f5cf67dbc6` now bound each service
+repository to 32 distinct mint/unit wallets. Admission holds the repository write
+lock; startup checks every saved unit before constructing wallets. Existing
+entries remain usable at capacity. Failed persistence releases only the newly
+created in-memory entry, preserving prior wallets and stored evidence.
 
-The matching local checks pass 25 focused native tests, the full 428-test SDK
-suite (one existing opt-in soak excluded), 304 relay unit tests, fee-bearing
-process settlement and repeated bidirectional UDP/TLS renewal. Native, SDK and
-relay strict lint pass. Changed SDK files pass formatting; its workspace-wide
-formatter still reports four unchanged integration-test files. Limits cover
-retained metadata, not database projections, total mint counts or process memory;
-SQLite capacity remains a separate coarse storage bound. The r32 package below
-includes these runtime changes. Current-device acceptance and attribution of the
-historical stalls remain outstanding.
-The optional live payment-stage diagnostics below were tested after r32 and are
-outside that package acceptance.
+SQLite metadata reads admit at most 32 mint records, 256 keyset records per mint,
+and 4 MiB of stored payload per getter before values cross the database driver.
+The catalog budget covers the whole selected result; single mint, keyset and key
+reads share the byte limit. Excess counts stop at the configured limit plus one.
+A typed refusal cannot fall back to HTTP refresh and overwrite refused records.
+These policies apply on every service open without a schema or wire change.
+
+Each wallet cache still retains at most 256 keysets and 4 MiB of serialized
+metadata, including inactive and omitted identities. Stored-byte read limits and
+canonical cache limits are separate; neither is a process-memory ceiling or a
+bound on SQL engine memory. SQLite capacity remains a separate storage policy.
+Other wallet workflows and aggregate pressure remain outstanding.
+
+The matching local checks pass 271 SQLite tests, 30 native cache/repository tests,
+and the full 429-test SDK suite (one existing opt-in soak excluded). FIPS
+fee-bearing process settlement and concurrent bidirectional UDP/TLS renewal also
+pass. Native and SDK strict lint pass, as do native workspace formatting and
+formatting of changed SDK files. Four unchanged SDK integration-test files still
+differ from workspace formatter output. Controlled reversions of admission,
+refresh-error propagation and failed-registration cleanup fail their regressions;
+restoring the guards restores the passing source. Exact sources, tested locks,
+negative-test recipes and 15 gate records are preserved in
+`work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
+
+The r32 package below predates these database-read and repository-entry changes.
+Updated-package and current-device acceptance, physical power-loss and sustained
+performance checks remain outstanding. The historical intermittent stalls remain
+unattributed. Optional live payment-stage diagnostics were tested after r32 and
+are also outside that package acceptance.
 
 The r32 ARM64 package accepts FIPS source `52bb2c5d9c74`, native CDK
 `4f8d2d7e0d4a` and SDK `2d8bd483516b` from the verified offline source bundle.
@@ -232,7 +248,7 @@ recovery. Current-device and physical power-loss acceptance remain pending.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, total mint counts, metadata bounds before database projection and physical recovery capacity. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
