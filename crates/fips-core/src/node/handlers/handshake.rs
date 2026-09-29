@@ -179,13 +179,6 @@ impl Node {
         let established = self.is_established_link_msg1(packet.transport_id, &packet.remote_addr);
         let class = if established {
             Msg1Class::EstablishedLink
-        } else if matches!(
-            self.transports.get(&packet.transport_id),
-            Some(crate::transport::TransportHandle::Udp(_))
-        ) && self.transports.values().any(|transport| {
-            transport.accept_connections() && transport.transport_type().connection_oriented
-        }) {
-            Msg1Class::DatagramStranger
         } else {
             Msg1Class::Stranger
         };
