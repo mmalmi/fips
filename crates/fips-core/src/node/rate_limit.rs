@@ -217,8 +217,10 @@ impl Drop for PendingHandshake {
 ///
 /// The burst admits one simultaneous maintenance msg1 per configured
 /// established link or end-to-end session. The rate covers steady rekey
-/// traffic plus its retransmission budget, with a floor for restarts when
-/// periodic rekey is very infrequent. An unlimited population reuses the
+/// traffic plus its retransmission budget. Restarts and path upgrades are not
+/// paced by the rekey interval, so retain at least the operator's existing
+/// stranger-admission rate (and a minimal restart floor when that is zero).
+/// An unlimited population reuses the
 /// stranger bucket because no configured bound exists.
 pub(in crate::node) fn derive_established_bucket(
     max_established: usize,
@@ -234,7 +236,7 @@ pub(in crate::node) fn derive_established_bucket(
     let burst = u32::try_from(max_established).unwrap_or(u32::MAX);
     let period = rekey_after_secs.max(1) as f64;
     let rate = (max_established as f64 / period) * (1.0 + f64::from(max_resends));
-    (burst, rate.max(ESTABLISHED_RATE_FLOOR))
+    (burst, rate.max(stranger_rate).max(ESTABLISHED_RATE_FLOOR))
 }
 
 /// Rate limiter for handshake message 1 processing.
@@ -575,10 +577,24 @@ mod tests {
     }
 
     #[test]
+    fn long_rekey_interval_keeps_capacity_for_path_recovery() {
+        // A public endpoint's one-hour rekey interval does not mean its
+        // hundreds of peers reconnect or upgrade their paths only hourly.
+        let (burst, rate) = derive_established_bucket(640, 3600, 5, 100, 10.0);
+        assert_eq!(burst, 640, "do not enlarge the maintenance burst");
+        assert_eq!(rate, 10.0, "recovery retains the configured admission rate");
+        assert_eq!(
+            derive_established_bucket(1, 3600, 5, 100, 0.0).1,
+            ESTABLISHED_RATE_FLOOR,
+            "disabling strangers must not disable maintenance"
+        );
+    }
+
+    #[test]
     fn derive_established_bucket_from_defaults_and_unlimited_peers() {
         let (burst, rate) = derive_established_bucket(128, 120, 5, 100, 10.0);
         assert_eq!(burst, 128);
-        assert!((rate - 6.4).abs() < 1e-9);
+        assert_eq!(rate, 10.0);
 
         let (burst, rate) = derive_established_bucket(512, 120, 5, 100, 10.0);
         assert_eq!(burst, 512);
@@ -597,7 +613,7 @@ mod tests {
         assert!(zero_period_rate.is_finite());
 
         let (_, long_period_rate) = derive_established_bucket(1, 100_000, 5, 100, 10.0);
-        assert_eq!(long_period_rate, ESTABLISHED_RATE_FLOOR);
+        assert_eq!(long_period_rate, 10.0);
     }
 
     #[test]

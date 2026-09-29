@@ -226,6 +226,7 @@ impl Node {
                 debug!(
                     transport_id = %packet.transport_id,
                     remote_addr = %packet.remote_addr,
+                    class = ?class,
                     refused_by = %reason,
                     "Msg1 rate limited"
                 );
