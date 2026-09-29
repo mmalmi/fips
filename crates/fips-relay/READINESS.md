@@ -2149,20 +2149,34 @@ The original failed comparison and exact repair evidence are preserved in
 is unchanged. This fixes the reproduced fixture race without attributing the
 historical delivery, payment or renewal stalls.
 
-A separate SDK regression now reproduces cross-channel signing contention during
-refund recovery. Two channels are funded to different receivers in one wallet.
-While the first channel's real mint-state request is held, the production
-nonblocking signer loader cannot acquire the shared client store for the second
-channel. The original 30-second request deadline, unchanged-store check and retry
-of the original unspent funding all pass; the added isolation assertion then
-fails. Refund recovery retains the exclusive client-store lock across mint awaits,
-and automatic relay signing loads that same store. This is a confirmed unresolved
-contention path, not an attribution of the historical FIPS failures.
-The existing test extension and exact failure evidence are retained in
-`work/paid-relay-verification/2026-09-29-refund-signing`; runtime sources and
-accepted packages are unchanged. A fix must preserve same-channel financial
-serialization, original proof custody, retirement fencing and crash recovery while
-letting unrelated channels sign during refund networking.
+A separate SDK regression reproduced cross-channel signing contention during
+refund recovery: a held mint-state request prevented the real nonblocking signer
+from loading another funded channel in the same wallet. The original 30-second
+request deadline and retry of the original unspent funding still passed.
+SDK `1d520f1a1d60` now retains the existing exclusive wallet owner throughout
+settled and expired refund recovery, but releases the shared signing store before
+network and database awaits. Short store operations reload concurrent payments
+and revalidate the original funding. Competing wallet recovery and retirement
+remain serialized, and an expiry intent still fences its own channel's signing.
+No journal format, message type or dependency changes are introduced.
+
+The three existing HTTP refund cases now check unrelated signing during held
+query, restore, import and committed-swap replies, preservation of concurrent
+signed balances, duplicate-recovery rejection and final refund accounting. The
+full SDK suite passes 429 tests with one existing opt-in soak excluded. After a
+test-helper-only lint cleanup, the affected three-test target and strict
+all-target lint pass again; the recorded whole-tree comparison verifies that no
+production source changed after the full suite. Changed-file formatting and
+whitespace checks also pass.
+
+Native FIPS fee-bearing settlement/restart recovery passes in 125.87 seconds, and
+bidirectional UDP/TLS renewal passes in 49.60 seconds with four replacements per
+direction and all 384 test sats reconciled. Original deadlines and workloads are
+unchanged. Exact sources, tested locks, the failing regression and final gates are
+retained in `work/paid-relay-verification/2026-09-29-refund-signing`.
+This fixes the reproduced contention without attributing the historical stalls.
+The r33 package still contains the previous SDK; a new package and current-device
+acceptance remain outstanding, as do other long-held signing-store workflows.
 
 Provider rejections now emit fixed debug labels for record parsing, agreement,
 buyer identity, verification, credit application and checkpoint failures. Enable
