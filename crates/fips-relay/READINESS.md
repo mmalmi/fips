@@ -1890,6 +1890,13 @@ conservation and unchanged source hashes. Those simulated-link cases exercise
 linked controllers; the twelve process cases exercise the packaged daemon. Physical
 device and sustained-performance acceptance remain outstanding.
 
+A native macOS replay at this scheduler revision also passes all five mixed-carrier
+cases in the order of the earlier failed sequence, with optional features enabled
+and unchanged deadlines. Each case conserves 384 test sats; source, dependency and
+executable hashes remain unchanged. An initial run was interrupted by the disk
+reserve guard; the completed replay uses its exact binaries after reclaiming
+superseded build outputs. This does not reproduce or explain the historical stalls.
+
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during
 automatic renewal, and an all-feature route-change run failed ordinary delivery
