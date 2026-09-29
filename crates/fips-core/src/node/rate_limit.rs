@@ -174,6 +174,8 @@ pub(in crate::node) const ESTABLISHED_RATE_FLOOR: f64 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) enum Msg1Class {
     Stranger,
+    /// UDP stranger on a node that also accepts connection-oriented clients.
+    DatagramStranger,
     EstablishedLink,
 }
 
@@ -261,8 +263,14 @@ impl HandshakeRateLimiter {
 
     #[cfg(test)]
     pub fn can_start_handshake(&mut self, class: Msg1Class) -> bool {
-        self.bucket_for(class).available()
-            && self.pending.load(Ordering::Relaxed) < self.max_pending
+        let bucket = self.bucket_for(class);
+        bucket.refill();
+        let needed = if class == Msg1Class::DatagramStranger && bucket.capacity > 1 {
+            2.0
+        } else {
+            1.0
+        };
+        bucket.tokens >= needed && self.pending.load(Ordering::Relaxed) < self.max_pending
     }
 
     /// Consume a class token and acquire the shared pending slot.
@@ -273,7 +281,19 @@ impl HandshakeRateLimiter {
         if self.pending.load(Ordering::Relaxed) >= self.max_pending {
             return Err(Msg1Refusal::PendingLimit);
         }
-        if !self.bucket_for(class).try_acquire() {
+        let bucket = self.bucket_for(class);
+        // UDP can otherwise consume every refill before a newly accepted
+        // WebSocket or WebRTC carrier gets its first authenticated Msg1.
+        // Preserve one token, not a second bucket: all strangers still share
+        // the exact same rate/burst and pending limits. A one-token operator
+        // budget has no room to reserve without blocking UDP completely.
+        if class == Msg1Class::DatagramStranger && bucket.capacity > 1 {
+            bucket.refill();
+            if bucket.tokens < 2.0 {
+                return Err(Msg1Refusal::RateLimit);
+            }
+        }
+        if !bucket.try_acquire() {
             return Err(Msg1Refusal::RateLimit);
         }
 
@@ -285,7 +305,7 @@ impl HandshakeRateLimiter {
 
     fn bucket_for(&mut self, class: Msg1Class) -> &mut TokenBucket {
         match class {
-            Msg1Class::Stranger => &mut self.bucket,
+            Msg1Class::Stranger | Msg1Class::DatagramStranger => &mut self.bucket,
             Msg1Class::EstablishedLink => &mut self.established,
         }
     }
@@ -350,7 +370,7 @@ impl SessionSetupRateLimiter {
             });
         buckets.seen = now;
         let admitted = match class {
-            Msg1Class::Stranger => buckets.stranger.try_acquire(),
+            Msg1Class::Stranger | Msg1Class::DatagramStranger => buckets.stranger.try_acquire(),
             Msg1Class::EstablishedLink => buckets.established.try_acquire(),
         };
         if admitted {
@@ -570,6 +590,54 @@ mod tests {
             limiter
                 .start_handshake(Msg1Class::EstablishedLink)
                 .unwrap_err(),
+            Msg1Refusal::RateLimit
+        );
+    }
+
+    #[test]
+    fn datagram_reservation_preserves_shared_limits_and_maintenance() {
+        let mut limiter = HandshakeRateLimiter::with_params(
+            TokenBucket::with_params(4, 0.0),
+            TokenBucket::with_params(1, 0.0),
+            1,
+        );
+        for _ in 0..3 {
+            drop(
+                limiter
+                    .start_handshake(Msg1Class::DatagramStranger)
+                    .unwrap(),
+            );
+        }
+        assert!(!limiter.can_start_handshake(Msg1Class::DatagramStranger));
+        assert_eq!(
+            limiter
+                .start_handshake(Msg1Class::DatagramStranger)
+                .unwrap_err(),
+            Msg1Refusal::RateLimit
+        );
+        let held = limiter.start_handshake(Msg1Class::Stranger).unwrap();
+        assert_eq!(
+            limiter
+                .start_handshake(Msg1Class::EstablishedLink)
+                .unwrap_err(),
+            Msg1Refusal::PendingLimit
+        );
+        drop(held);
+        assert_eq!(
+            limiter.start_handshake(Msg1Class::Stranger).unwrap_err(),
+            Msg1Refusal::RateLimit
+        );
+        drop(limiter.start_handshake(Msg1Class::EstablishedLink).unwrap());
+        assert_eq!(limiter.pending_count(), 0);
+
+        let mut minimal = test_limiter(TokenBucket::with_params(1, 0.0), 1);
+        drop(
+            minimal
+                .start_handshake(Msg1Class::DatagramStranger)
+                .unwrap(),
+        );
+        assert_eq!(
+            minimal.start_handshake(Msg1Class::Stranger).unwrap_err(),
             Msg1Refusal::RateLimit
         );
     }
