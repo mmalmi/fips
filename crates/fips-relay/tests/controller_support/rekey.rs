@@ -1,10 +1,14 @@
-//! Observe real adjacent FSP key changes during the existing renewal workload.
+//! Observe payment and routed data FSP key changes during the renewal workload.
 use super::*;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 pub(crate) struct RekeyObservation {
+    expected: BTreeSet<(usize, usize)>,
     epochs: BTreeMap<(usize, usize), (u64, bool)>,
-    rotated: std::collections::BTreeSet<(usize, usize)>,
+    rotated: BTreeSet<(usize, usize)>,
 }
 
 impl RekeyObservation {
@@ -18,12 +22,25 @@ impl RekeyObservation {
         if !enabled {
             return None;
         }
+        let last = peers.len() - 1;
         let mut observation = Self {
+            expected: (0..last)
+                .flat_map(|node| [(node, node + 1), (node + 1, node)])
+                .chain([(0, last), (last, 0)])
+                .collect(),
             epochs: BTreeMap::new(),
             rotated: Default::default(),
         };
         observation.observe(root, peers).await;
-        assert_eq!(observation.epochs.len(), (peers.len() - 1) * 2);
+        // Payment sessions already exist; the first payload may establish the
+        // routed data session. Both endpoints must then rotate it during traffic.
+        assert!(
+            observation
+                .expected
+                .iter()
+                .filter(|(node, remote)| node.abs_diff(*remote) == 1)
+                .all(|pair| observation.epochs.contains_key(pair))
+        );
         Some(observation)
     }
 
@@ -42,7 +59,7 @@ impl RekeyObservation {
                 else {
                     continue;
                 };
-                if node.abs_diff(remote) != 1 || session["state"] != "established" {
+                if !self.expected.contains(&(node, remote)) || session["state"] != "established" {
                     continue;
                 }
                 let epoch = (
@@ -61,13 +78,21 @@ impl RekeyObservation {
 
     pub(crate) fn assert_rotated(self) {
         assert_eq!(
-            self.rotated.len(),
-            self.epochs.len(),
-            "every adjacent payment session must change its authenticated key epoch"
+            self.rotated, self.expected,
+            "every payment and routed data session must change its authenticated key epoch"
         );
+        let adjacent = self
+            .rotated
+            .iter()
+            .filter(|(node, remote)| node.abs_diff(*remote) == 1)
+            .count();
         eprintln!(
             "paid renewal observed rotated payment sessions={}",
-            self.rotated.len()
+            adjacent
+        );
+        eprintln!(
+            "paid renewal observed rotated routed data sessions={}",
+            self.rotated.len() - adjacent
         );
     }
 }

@@ -2132,11 +2132,14 @@ unchanged.
 The existing automatic-renewal case now lowers the native key-rotation threshold
 to 16 messages. Native session snapshots taken before and during its 18 traffic
 rounds must observe both a later epoch and a changed key bit in all eight adjacent
-payment-session directions. Both relay feature profiles pass paid delivery,
-automatic renewal, capital and lifetime limits, and final collection of all
-1,280 test sats with those observed key changes. This adds software coverage of
-payment recovery during key rotation; the historical intermittent failures remain
-unattributed. Run the `controller` integration target with the exact test filter
+payment-session directions and both directions of the routed data session between
+the traffic endpoints. The expected pairs are fixed before traffic, so a missing
+routed session cannot reduce the required set. Both relay feature profiles pass
+paid delivery, automatic renewal, capital and lifetime limits, and final collection
+of all 1,280 test sats with those observed key changes. This adds software coverage
+of payment and routed-data recovery during key rotation; the historical
+intermittent failures remain unattributed. Run the `controller` integration target
+with the exact test filter
 `exhausted_channels_renew_automatically_without_resetting_capital_or_spending`,
 using the matching dependency overrides and either relay feature profile.
 
