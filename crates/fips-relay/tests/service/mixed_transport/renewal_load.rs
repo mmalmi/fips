@@ -71,7 +71,7 @@ async fn scenario() {
                     .to_owned()
             })
             .collect();
-        tokio::join!(bench.deliver(0, 2), bench.deliver(2, 0));
+        bench.deliver_bidirectional([0, 2]).await;
         tokio::join!(bench.wait_paid(&channels[0]), bench.wait_paid(&channels[1]));
         if round == 4 {
             bench.set_renewals_paused(false).await;
@@ -84,10 +84,9 @@ async fn scenario() {
             held_close_with_other_payment(&bench, &proxy, &channels, remaining).await;
         } else {
             bench.set_stage("turnover-fill");
-            tokio::join!(
-                bench.send_probe(0, 2, 40, 256, 8),
-                bench.send_probe(2, 0, 40, 256, 8)
-            );
+            bench
+                .send_bidirectional_probes([0, 2], 40, 256, 8, [true; 2])
+                .await;
             tokio::join!(
                 bench.wait_exhausted(0, remaining),
                 bench.wait_exhausted(2, remaining)

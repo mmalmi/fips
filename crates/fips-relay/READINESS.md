@@ -2126,6 +2126,29 @@ and source-size checks pass. This changes only test diagnostics; r32 runtime and
 hardware acceptance are unchanged. Evidence, including the passing three-case
 sequence, is retained in `work/paid-relay-verification/2026-09-29-stall-diagnostics`.
 
+An optimized ARM64 diagnostic comparison exposed a receiver-setup race in the
+repeated-renewal fixture. One direction could start sending before the opposite
+direction armed its receiver, which the service correctly rejects while a probe
+sender is active. The failure occurred with no CPU throttling or memory-limit
+event. Paired probes now prepare both receivers before sending concurrently.
+Shared submission and delivery checks retain the original packet counts, rates,
+three attempts per direction, ten-second delivery waits and financial limits;
+directions that have already delivered are not retried. No runtime behavior,
+protocol or dependency changes, and no additional test case, are introduced.
+
+The repaired fixture passes renewal at two CPUs and half a CPU, plus TLS and
+seeded recovery, against the byte-identical daemon from the failed run. Each case
+retains its 384-test-sat conservation checks. Half-CPU renewal takes 44.045 seconds
+and records 19 throttled periods, 1.205 seconds throttled and a 66.43 MiB peak;
+these cover the entire container, including the harness, mint, relays and cache,
+not per-byte or physical-router performance. Strict all-feature service-test
+lint, changed-file formatting and workspace source-size checks also pass.
+The original failed comparison and exact repair evidence are preserved in
+`work/paid-relay-verification/2026-09-29-arm64-payment-pressure` and
+`work/paid-relay-verification/2026-09-29-probe-pair`. The previous package evidence
+is unchanged. This fixes the reproduced fixture race without attributing the
+historical delivery, payment or renewal stalls.
+
 Provider rejections now emit fixed debug labels for record parsing, agreement,
 buyer identity, verification, credit application and checkpoint failures. Enable
 them with `RUST_LOG=warn,fips_relay::payment_control=debug`; raw errors, requests,

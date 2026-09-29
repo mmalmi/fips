@@ -399,6 +399,20 @@ impl MixedBench {
         bytes: usize,
         rate: u32,
     ) -> Value {
+        let probe = self
+            .prepare_probe(source, destination, count, bytes, rate)
+            .await;
+        self.submit_probe(source, probe).await
+    }
+
+    async fn prepare_probe(
+        &self,
+        source: usize,
+        destination: usize,
+        count: u32,
+        bytes: usize,
+        rate: u32,
+    ) -> SendProbe {
         let stream_id = format!("{:032x}", self.next_probe.fetch_add(1, Ordering::Relaxed));
         request(
             &self.configs[destination],
@@ -415,21 +429,22 @@ impl MixedBench {
         )
         .await
         .unwrap();
-        let submitted = request(
-            &self.configs[source],
-            &AdminRequest::SendProbe {
-                probe: SendProbe {
-                    destination: self.npubs[destination].clone(),
-                    stream_id,
-                    packet_count: count,
-                    payload_bytes: bytes,
-                    packets_per_second: rate,
-                    measure_round_trip: false,
-                },
-            },
-        )
-        .await
-        .unwrap();
+        SendProbe {
+            destination: self.npubs[destination].clone(),
+            stream_id,
+            packet_count: count,
+            payload_bytes: bytes,
+            packets_per_second: rate,
+            measure_round_trip: false,
+        }
+    }
+
+    async fn submit_probe(&self, source: usize, probe: SendProbe) -> Value {
+        let count = probe.packet_count;
+        let bytes = probe.payload_bytes;
+        let submitted = request(&self.configs[source], &AdminRequest::SendProbe { probe })
+            .await
+            .unwrap();
         // Enqueue success is not a delivery receipt. A stopped sender cannot
         // stand in for the separate admission and receiver assertions below.
         let report = &submitted["probe"];
@@ -441,6 +456,80 @@ impl MixedBench {
         assert_eq!(report["submitted_packets"], count);
         assert_eq!(report["submitted_bytes"], u64::from(count) * bytes as u64);
         submitted
+    }
+
+    pub(super) async fn send_bidirectional_probes(
+        &self,
+        endpoints: [usize; 2],
+        count: u32,
+        bytes: usize,
+        rate: u32,
+        pending: [bool; 2],
+    ) {
+        let mut probes = [None, None];
+        // ReceiveProbe cannot replace receiver state while that endpoint sends.
+        // Arm both directions before starting either concurrent sender.
+        for direction in 0..2 {
+            if pending[direction] {
+                probes[direction] = Some(
+                    self.prepare_probe(
+                        endpoints[direction],
+                        endpoints[1 - direction],
+                        count,
+                        bytes,
+                        rate,
+                    )
+                    .await,
+                );
+            }
+        }
+        let send = |direction: usize, probe: Option<SendProbe>| async move {
+            if let Some(probe) = probe {
+                self.submit_probe(endpoints[direction], probe).await;
+            }
+        };
+        let [first, second] = probes;
+        tokio::join!(send(0, first), send(1, second));
+    }
+
+    pub(super) async fn deliver_bidirectional(&self, endpoints: [usize; 2]) {
+        let mut pending = [true; 2];
+        for _ in 0..3 {
+            self.send_bidirectional_probes(endpoints, 2, 128, 4, pending)
+                .await;
+            let (first, second) = tokio::join!(
+                async { !pending[0] || self.probe_delivered(endpoints[1]).await },
+                async { !pending[1] || self.probe_delivered(endpoints[0]).await },
+            );
+            pending = [!first, !second];
+            if pending == [false; 2] {
+                return;
+            }
+        }
+        let direction = if pending[0] { 0 } else { 1 };
+        self.delivery_failure(endpoints[direction], endpoints[1 - direction])
+            .await;
+        panic!(
+            "paid bidirectional delivery timed out at stage={}",
+            self.stage
+        );
+    }
+
+    async fn probe_delivered(&self, destination: usize) -> bool {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = request(&self.configs[destination], &AdminRequest::Status)
+                    .await
+                    .unwrap();
+                if status["probe"]["unique_packets"] == 2 {
+                    assert_eq!(status["probe"]["invalid_packets"], 0);
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok()
     }
 
     pub async fn expect_denied(&self, source: usize, destination: usize) {
@@ -484,22 +573,7 @@ impl MixedBench {
         // process restart fixture. No transport ACK is a payment receipt.
         for attempt in 0..3 {
             self.send_probe(source, destination, 2, bytes, 4).await;
-            if tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    let status = request(&self.configs[destination], &AdminRequest::Status)
-                        .await
-                        .unwrap();
-                    if status["probe"]["unique_packets"] == 2 {
-                        assert_eq!(status["probe"]["invalid_packets"], 0);
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            })
-            .await
-            .is_ok()
-                && attempt + 1 >= cohorts
-            {
+            if self.probe_delivered(destination).await && attempt + 1 >= cohorts {
                 return;
             }
         }
