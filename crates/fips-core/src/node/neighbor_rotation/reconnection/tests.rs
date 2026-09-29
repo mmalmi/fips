@@ -171,3 +171,91 @@ fn reducing_the_live_cap_retires_oldest_history_and_zero_clears_it() {
     node.set_max_peers(0);
     assert!(node.neighbor_rotation.lost_neighbors.is_empty());
 }
+
+#[test]
+fn only_a_fresh_authenticated_same_epoch_replacement_preserves_sessions() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+    use crate::peer::PeerConnection;
+
+    for case in [
+        "replacement",
+        "incomplete",
+        "expired",
+        "different identity",
+        "different epoch",
+        "unknown epoch",
+        "same carrier",
+        "explicit removal",
+    ] {
+        let mut node = node(2);
+        let remote = Identity::from_secret_bytes(&[1; 32]).unwrap();
+        let other = Identity::from_secret_bytes(&[2; 32]).unwrap();
+        let peer = add(&mut node, 1, None);
+        let old_addr = TransportAddr::from_string("127.0.0.1:9000");
+        let active = node.peers.get_mut(&peer).unwrap();
+        active.set_remote_epoch((case != "unknown epoch").then_some([1; 8]));
+        active.set_current_addr(TransportId::new(1), &old_addr);
+
+        let mut initiator =
+            HandshakeState::new_initiator(node.identity().keypair(), remote.pubkey_full());
+        let mut responder = HandshakeState::new_responder(remote.keypair());
+        initiator.set_local_epoch([2; 8]);
+        responder.set_local_epoch([1; 8]);
+        responder
+            .read_message_1(&initiator.write_message_1().unwrap())
+            .unwrap();
+        initiator
+            .read_message_2(&responder.write_message_2().unwrap())
+            .unwrap();
+        node.sessions.insert(
+            peer,
+            SessionEntry::new(
+                peer,
+                remote.pubkey_full(),
+                EndToEndState::Established(initiator.into_session().unwrap()),
+                100,
+                true,
+            ),
+        );
+
+        let link = LinkId::new(10);
+        let transport = TransportId::new(if case == "same carrier" { 1 } else { 2 });
+        let mut candidate = PeerConnection::inbound_with_transport(link, transport, old_addr, 100);
+        if case != "incomplete" {
+            let signer = if case == "different identity" {
+                &other
+            } else {
+                &remote
+            };
+            let mut handshake =
+                HandshakeState::new_initiator(signer.keypair(), node.identity().pubkey_full());
+            handshake.set_local_epoch(if case == "different epoch" {
+                [3; 8]
+            } else {
+                [1; 8]
+            });
+            candidate
+                .receive_handshake_init(
+                    node.identity().keypair(),
+                    [2; 8],
+                    &handshake.write_message_1().unwrap(),
+                    100,
+                )
+                .unwrap();
+        }
+        node.peers.insert_connection(link, candidate);
+        if case == "explicit removal" {
+            node.remove_active_peer(&peer);
+        } else {
+            lose(&mut node, peer, if case == "expired" { 6_101 } else { 101 });
+        }
+        assert!(!node.peers.contains_key(&peer), "{case}");
+        assert_eq!(
+            node.session_count(),
+            usize::from(case == "replacement"),
+            "{case}"
+        );
+        assert!(!node.source_routes.contains_key(&peer), "{case}");
+    }
+}

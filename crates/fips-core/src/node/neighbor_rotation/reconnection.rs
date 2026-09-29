@@ -10,7 +10,35 @@ impl Node {
         dead_timeout: Duration,
     ) {
         let qualified = self.neighbor_reconnection_qualifies(peer, now_ms, dead_timeout);
-        self.remove_active_peer(peer);
+        // An upgraded carrier can authenticate before its first data packet
+        // arrives. The initiator already closes its old WSS connection then;
+        // evict that dead adjacency without deleting the FSP keys it still
+        // uses on the authenticated replacement. A requested dial alone, an
+        // expired handshake, or a different process epoch is not continuity.
+        let preserve_end_to_end = self.peers.get(peer).is_some_and(|active| {
+            self.peers.connection_values().any(|candidate| {
+                candidate.is_complete()
+                    && candidate.has_session()
+                    && candidate
+                        .expected_identity()
+                        .is_some_and(|identity| identity.node_addr() == peer)
+                    && matches!(
+                        (active.remote_epoch(), candidate.remote_epoch()),
+                        (Some(old), Some(new)) if old == new
+                    )
+                    && (candidate.transport_id() != active.transport_id()
+                        || candidate.source_addr() != active.current_addr())
+                    && !candidate.is_timed_out(
+                        now_ms,
+                        self.config
+                            .node
+                            .rate_limit
+                            .handshake_timeout_secs
+                            .saturating_mul(1000),
+                    )
+            })
+        });
+        self.remove_active_peer_inner(peer, preserve_end_to_end);
         if qualified {
             self.remember_neighbor_reconnection(*peer, now_ms);
         }
