@@ -79,6 +79,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
             authorized_sat: 1,
             acknowledged_msat: Some(0),
             in_flight: false,
+            pending: None,
             last_failure_stage: None,
         }
     );

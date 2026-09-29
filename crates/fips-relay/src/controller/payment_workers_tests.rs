@@ -86,13 +86,23 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
     ));
     let (finish, ready) = oneshot::channel();
     progress.lock().unwrap().started();
+    assert_eq!(
+        progress.lock().unwrap().pending().unwrap().stage,
+        Stage::Scheduled
+    );
+    let observation = PaymentObservation {
+        progress: Some(progress.clone()),
+    };
     let mut payment = ChannelPayment {
-        job: Some(tokio::spawn(async move { ready.await.unwrap() })),
+        job: Some(tokio::spawn(async move {
+            let _observation = observation;
+            ready.await.unwrap()
+        })),
         progress: Some(progress.clone()),
         schedule: ChannelSchedule::default(),
         started_evidence_msat: 0,
     };
-    assert!(progress.lock().unwrap().in_flight);
+    assert!(progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
     finish
         .send(Ok(Some(ChannelUsage {
@@ -110,11 +120,16 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
     .await
     .unwrap();
     assert!(
-        progress.lock().unwrap().in_flight,
+        progress.lock().unwrap().in_flight(),
         "unharvested completion is pending"
     );
+    assert_eq!(
+        progress.lock().unwrap().pending().unwrap().stage,
+        Stage::AwaitingHarvest
+    );
     payment.finish().await.unwrap();
-    assert!(!progress.lock().unwrap().in_flight);
+    assert!(!progress.lock().unwrap().in_flight());
+    assert_eq!(progress.lock().unwrap().pending(), None);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, Some(1_000));
 
     progress.lock().unwrap().started();
@@ -122,7 +137,7 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
         Err(Stage::UpdateRequest.error("lost acknowledgment"))
     }));
     assert_eq!(payment.finish().await.unwrap_err(), "lost acknowledgment");
-    assert!(!progress.lock().unwrap().in_flight);
+    assert!(!progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
     assert_eq!(
         progress.lock().unwrap().last_failure_stage,
@@ -145,6 +160,13 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
         Some(Stage::Worker)
     );
     progress.lock().unwrap().finished(Some(3_000), None);
+    progress.lock().unwrap().started();
+    let late_observation = PaymentObservation {
+        progress: Some(progress.clone()),
+    };
     drop(payment);
+    late_observation.stage(Stage::UpdateRequest);
+    drop(late_observation);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
+    assert_eq!(progress.lock().unwrap().pending(), None);
 }

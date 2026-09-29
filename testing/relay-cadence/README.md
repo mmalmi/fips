@@ -457,8 +457,16 @@ authority. Unknown state stays unknown after scheduler teardown or restart.
 including after a successful retry. It contains a fixed label, never error text
 or payment material. Request and response labels distinguish transport/request
 work from validation of the peer's reply; they do not establish the root cause.
-Use acknowledged credit and `in_flight` for current progress. A null failure stage
-means no failure was observed by this scheduler, or its state is unavailable.
+Use acknowledged credit and `in_flight` for current progress. While an automatic
+payment is in flight, `pending` contains a fixed `stage` and monotonic `elapsed_ms`
+since that phase began. `scheduled` means the worker has been queued,
+`channel_lock` means it is waiting for another operation on that channel, and
+`awaiting_harvest` means the exchange finished but the scheduler has not collected
+its result. Exchange stages distinguish preparation, requests, response validation,
+signing and reconciliation. The age resets at each transition; it is not an
+end-to-end deadline or a delivery receipt. Harvesting or dropping the worker clears
+`pending`, including when canceled work finishes dropping later. A null failure
+stage means no failure was observed by this scheduler, or its state is unavailable.
 Snapshots bracket a quiescent workload; they do not freeze packet processing.
 Normalized payment CPU, journal bytes and record bytes use delivered application
 bytes. CPU per update includes usage polls and signing in the same window, not

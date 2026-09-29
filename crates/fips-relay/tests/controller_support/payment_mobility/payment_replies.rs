@@ -188,6 +188,11 @@ async fn acknowledged(controller: &Controller, channel: &str, minimum: u64) {
             let progress = controller.payment_progress().await.unwrap();
             let state = &progress[channel];
             if state.acknowledged_msat.is_some_and(|paid| paid >= minimum) && !state.in_flight {
+                assert_eq!(
+                    serde_json::to_value(state).unwrap().get("pending"),
+                    Some(&serde_json::Value::Null),
+                    "harvested acknowledgment clears the pending observation"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -347,7 +352,10 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
         journal(root, "buyer-2/buyer.json")["channels"][channel]["authorized_sat"],
         held.balance
     );
-    assert!(controller.payment_progress().await.unwrap()[channel].in_flight);
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert!(progress[channel]["in_flight"].as_bool().unwrap());
+    assert_eq!(progress[channel]["pending"]["stage"], "update_request");
+    let held_elapsed_ms = progress[channel]["pending"]["elapsed_ms"].as_u64().unwrap();
     assert_eq!(
         sellers[slow].channel_usage(channel).unwrap().paid_msat,
         previous_credit
@@ -359,6 +367,13 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     traffic
         .paid_bursts(healthy, &purchases[1], sellers, buyer, 173)
         .await;
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert_eq!(progress[channel]["pending"]["stage"], "update_request");
+    let elapsed_ms = progress[channel]["pending"]["elapsed_ms"].as_u64().unwrap();
+    assert!(
+        elapsed_ms > held_elapsed_ms,
+        "held update age increases while another neighbor makes payments"
+    );
     assert_eq!(buyer.authorized_sat(channel), Some(held.balance));
     assert_eq!(
         sellers[slow].channel_usage(channel).unwrap().paid_msat,

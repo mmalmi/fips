@@ -31,6 +31,8 @@ retained metadata, not database projections, total mint counts or process memory
 SQLite capacity remains a separate coarse storage bound. The r32 package below
 includes these runtime changes. Current-device acceptance and attribution of the
 historical stalls remain outstanding.
+The optional live payment-stage diagnostics below were tested after r32 and are
+outside that package acceptance.
 
 The r32 ARM64 package accepts FIPS source `52bb2c5d9c74`, native CDK
 `4f8d2d7e0d4a` and SDK `2d8bd483516b` from the verified offline source bundle.
@@ -2054,18 +2056,31 @@ with temporary failure-stage tracing also passes; tracing was removed. Runtime,
 wire messages and production deadlines are unchanged. These checks cover silent request
 expiry, without identifying the historical intermittent failure causes.
 
-Optional payment progress now retains a fixed failure-stage label per channel.
-The shared controller error can be overwritten by unrelated recovery or route
-work; this observation survives successful payment retries within the existing
-bounded scheduler registry. It separates request, response, signing, preparation,
-reconciliation and worker failures without retaining raw errors or payment
-material. It is volatile diagnostic state, not financial evidence or peer traffic.
-The existing lost-update fixture fails its new diagnostic assertion before the
-change and passes afterward for both prompt cancellation and silent timeout.
-All 302 relay unit tests, 288 without optional features, strict all-target lint
-in both modes, and the TLS process/status case pass. The r26 source bundle includes
-this optional status-field addition; the packaged default-feature executable omits
-measurements. Historical timeout causes and current-device acceptance remain open.
+Optional payment progress reports the current automatic-payment stage and its
+monotonic age, alongside the latest failed exchange's retained stage. The existing
+bounded registry distinguishes queued work, channel-lock wait, preparation,
+requests, response validation, signing, reconciliation and completed exchanges
+awaiting scheduler harvest. The pending stage also determines `in_flight`; no
+duplicate internal flag, timer, task or persistent record is added. One observation
+owner covers completion and cancellation. Late teardown cannot restore a pending
+stage after the scheduler clears it. Labels and elapsed time contain no raw error,
+payment material, financial authority or peer traffic.
+
+The existing held-update fixture observes an aging `update_request` while a healthy
+neighbor keeps paying, then verifies recovery after the unchanged 30-second request
+deadline. Pending state clears in the acknowledged snapshot and the failed stage
+survives recovery. The assertion fails before the addition; disabling only the
+update-request observation also fails at the held request. Lifecycle unit coverage
+distinguishes unharvested completion and verifies cleanup despite late observations.
+All 304 relay unit tests, 290 without optional features, the held-update case,
+TLS process/status and repeated bidirectional UDP/TLS renewal pass. Strict all-target
+lint passes in both modes, along with workspace formatting and source-size checks.
+Sources remain unchanged during each gate, and the exact verified implementation
+is restored after the controlled reversion. Evidence is retained in
+`work/paid-relay-verification/2026-09-29-payment-progress` with its tested dependency
+lock and the immutable metadata-bounds dependency bundle reference.
+These native checks postdate r32; packaged default builds omit measurements.
+Historical timeout causes and current-device acceptance remain open.
 See the [observation semantics](../../testing/relay-cadence/README.md).
 
 Provider rejections now emit fixed debug labels for record parsing, agreement,

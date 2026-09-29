@@ -52,9 +52,9 @@ use retirement::History;
 mod payment_progress;
 mod payments;
 #[cfg(feature = "measurements")]
-pub use payment_progress::PaymentProgress;
+pub use payment_progress::{PaymentProgress, PendingPayment};
 #[cfg(feature = "measurements")]
-pub use payments::PaymentFailureStage;
+pub use payments::PaymentStage;
 mod purchase_state;
 mod purchases;
 pub use purchases::FundingRequestBudget;
