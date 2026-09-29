@@ -32,6 +32,28 @@ enum Msg1Waiver {
 }
 
 impl Node {
+    /// WebRTC addresses are bound to authenticated FSP signaling identities,
+    /// not caller-selected socket source tuples. A peer upgrading its existing
+    /// adjacency must not compete with new strangers for handshake capacity.
+    #[cfg(feature = "webrtc-transport")]
+    fn established_webrtc_identity(
+        &self,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+    ) -> Option<NodeAddr> {
+        if !matches!(
+            self.transports.get(&transport_id),
+            Some(crate::transport::TransportHandle::WebRtc(_))
+        ) {
+            return None;
+        }
+        let pubkey = remote_addr.as_str()?.parse::<secp256k1::PublicKey>().ok()?;
+        let identity = PeerIdentity::from_pubkey_full(pubkey);
+        self.peers
+            .get(identity.node_addr())
+            .map(|peer| *peer.node_addr())
+    }
+
     /// Whether a newly authenticated candidate is the opposite half of an
     /// existing bidirectional carrier rather than a distinct alternate path.
     ///
@@ -75,11 +97,21 @@ impl Node {
     ///    `udp.accept_connections: false` or `udp.outbound_only: true` (the
     ///    production trigger for the 2026-04-30 bug).
     ///
+    /// 3. WebRTC's authenticated signaling identity already has an adjacency
+    ///    on another carrier. Noise must confirm that same identity below.
+    ///
     pub(in crate::node) fn is_established_link_msg1(
         &self,
         transport_id: crate::transport::TransportId,
         remote_addr: &crate::transport::TransportAddr,
     ) -> bool {
+        #[cfg(feature = "webrtc-transport")]
+        if self
+            .established_webrtc_identity(transport_id, remote_addr)
+            .is_some()
+        {
+            return true;
+        }
         if self
             .links
             .contains_addr(&(transport_id, remote_addr.clone()))
@@ -120,6 +152,12 @@ impl Node {
         transport_id: crate::transport::TransportId,
         remote_addr: &crate::transport::TransportAddr,
     ) -> Msg1Waiver {
+        // This attribution applies even on accepting transports: a known
+        // carrier identity may not spend maintenance capacity for a stranger.
+        #[cfg(feature = "webrtc-transport")]
+        if let Some(identity) = self.established_webrtc_identity(transport_id, remote_addr) {
+            return Msg1Waiver::Expect(identity);
+        }
         if self
             .transports
             .get(&transport_id)
@@ -352,10 +390,9 @@ impl Node {
             })
             .map(PeerConnection::last_activity);
 
-        // A refusing transport admitted this msg1 only because its source
-        // matched an existing address entry. Now that Noise authenticated the
-        // initiator static, require it to be the identity that owned that
-        // waiver; bare or stale unattributed entries fail closed.
+        // A refusing transport's address waiver or an authenticated WebRTC
+        // upgrade belongs to one identity. Noise must confirm that owner;
+        // bare or stale unattributed entries fail closed.
         match waiver {
             Msg1Waiver::NotNeeded => {}
             Msg1Waiver::Expect(expected) if expected == peer_node_addr => {}
