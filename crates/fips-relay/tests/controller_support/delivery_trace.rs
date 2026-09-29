@@ -1,6 +1,7 @@
 use fips_core::node::{
     ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest,
 };
+use fips_core::{NodeAddr, protocol::SessionHandshake};
 use fips_relay::buyer::PaidForwarder;
 use sha2::{Digest, Sha256};
 use std::{collections::VecDeque, sync::Mutex, time::Instant};
@@ -20,14 +21,46 @@ struct Record {
     outcome: Option<ForwardingOutcome>,
 }
 
-/// Failure-only evidence for the test's 1,000-byte payloads and larger records.
+#[derive(Debug)]
+struct HandshakeLoss {
+    peers: [NodeAddr; 2],
+    dropped: [bool; 3],
+    admitted_after_loss: [bool; 3],
+}
+
+impl HandshakeLoss {
+    fn phase(&self, request: &ForwardingRequest<'_>) -> Option<usize> {
+        if ![
+            (self.peers[0], self.peers[1]),
+            (self.peers[1], self.peers[0]),
+        ]
+        .contains(&(request.source, request.destination))
+        {
+            return None;
+        }
+        Some(
+            match SessionHandshake::classify(
+                request.session_payload,
+                request.source,
+                request.destination,
+            )? {
+                SessionHandshake::Setup => 0,
+                SessionHandshake::Ack => 1,
+                SessionHandshake::Finish => 2,
+            },
+        )
+    }
+}
+
+/// Failure-only evidence for large payloads and native session handshakes.
 /// Hash the unchanged encrypted envelope so successive hops can be matched;
-/// never retain its contents or change the real admission/scheduling decision.
+/// only an explicitly armed handshake-loss window changes admission.
 #[derive(Debug)]
 pub(crate) struct DeliveryTrace {
     inner: PaidForwarder,
     started: Instant,
     records: Mutex<VecDeque<Record>>,
+    handshake_loss: Mutex<Option<HandshakeLoss>>,
 }
 
 impl DeliveryTrace {
@@ -36,7 +69,26 @@ impl DeliveryTrace {
             inner,
             started: Instant::now(),
             records: Mutex::new(VecDeque::with_capacity(CAPACITY)),
+            handshake_loss: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn lose_rekey_handshakes(&self, peers: [NodeAddr; 2]) {
+        let mut loss = self.handshake_loss.lock().unwrap();
+        assert!(loss.is_none(), "each finite loss window is armed once");
+        *loss = Some(HandshakeLoss {
+            peers,
+            dropped: [false; 3],
+            admitted_after_loss: [false; 3],
+        });
+    }
+
+    pub(crate) fn assert_handshakes_recovered(&self) {
+        let loss = self.handshake_loss.lock().unwrap();
+        let loss = loss.as_ref().expect("handshake loss must be armed");
+        assert_eq!(loss.dropped, [true; 3], "drop every native handshake phase");
+        assert_eq!(loss.admitted_after_loss, [true; 3]);
+        eprintln!("routed rekey lost and subsequently admitted setup, ack and finish");
     }
 
     pub(crate) fn dump(&self, node: usize) {
@@ -64,8 +116,33 @@ impl ForwardingPolicy for DeliveryTrace {
     }
 
     fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        let mut loss = self.handshake_loss.lock().unwrap();
+        let phase = loss.as_ref().and_then(|loss| loss.phase(request));
+        if let (Some(loss), Some(phase)) = (loss.as_mut(), phase)
+            && !loss.dropped[phase]
+        {
+            loss.dropped[phase] = true;
+            eprintln!(
+                "routed rekey dropping native handshake phase={phase} elapsed_ms={}",
+                self.started.elapsed().as_millis()
+            );
+            return None;
+        }
         let admission = self.inner.admit_classified(request);
-        if request.session_payload.len() >= 1_000 {
+        if admission.is_some()
+            && let (Some(loss), Some(phase)) = (loss.as_mut(), phase)
+        {
+            loss.admitted_after_loss[phase] = true;
+        }
+        drop(loss);
+        if request.session_payload.len() >= 1_000
+            || SessionHandshake::classify(
+                request.session_payload,
+                request.source,
+                request.destination,
+            )
+            .is_some()
+        {
             let row = Record {
                 elapsed_ms: self.started.elapsed().as_millis(),
                 source: request.source.to_string(),

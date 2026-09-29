@@ -101,8 +101,11 @@ new offer or reconnecting a radio cannot silently change it.
 
 Omitting `billing` means `unique_session_envelope`, the original prototype
 tariff. Its ciphertext fingerprints and 4,096-record limit remain enforced.
-Earlier accounts keep that meaning when loaded. The service manifest includes
-the billing basis in its immutable terms; editing an existing configuration to
+It also rejects a native handshake retry reusing an already-forwarded envelope,
+even if the earlier attempt was lost farther along the route. Fresh per-attempt
+accounts can admit and charge for that retry within their existing limits.
+Earlier accounts keep their original meaning when loaded. The service manifest
+includes the billing basis in its immutable terms; editing an existing configuration to
 select a different tariff is rejected. Initialize an explicitly funded new test
 account when comparing tariffs. Do not reset an existing account or its spending
 history to bypass a limit.

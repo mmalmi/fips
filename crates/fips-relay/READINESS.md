@@ -2175,31 +2175,51 @@ controller-readiness acceptance despite the focused payment checks above.
 A controlled comparison changes only management-socket placement: five runs with
 all five sockets and five with the original three middle-node sockets pass with
 unchanged delivery limits. Neither configuration reproduces the failure. The
-controller fixture now retains the latest 128 forwarding records of at least
-1,000 bytes per node, including encrypted-envelope hashes, admission decisions
-and local send outcomes. Failure output can correlate envelopes between hops;
+controller fixture now retains the latest 128 forwarding records per node for
+payloads of at least 1,000 bytes and structurally valid native session handshakes,
+including encrypted-envelope hashes, admission decisions and local send outcomes.
+Failure output can correlate envelopes between hops;
 timestamps are relative to each node's trace creation, and older records may be
 evicted. No payload contents are retained, and local submission does not prove
-delivery. Both complete seven-test controller suites pass with these diagnostics,
-with and without optional features. This adds test evidence only: the earlier
+delivery. At the revision with large-envelope diagnostics alone, both complete
+seven-test controller suites passed, with and without optional features.
+This adds test evidence only: the earlier
 timeouts remain unexplained, and runtime and current-device acceptance are
 unchanged.
 
-The existing automatic-renewal case now lowers the native key-rotation threshold
-to 16 messages. Native session snapshots taken before and during its 18 traffic
-rounds must observe both a later epoch and a changed key bit in all eight adjacent
-payment-session directions and both directions of the routed data session between
-the traffic endpoints. The expected pairs are fixed before traffic, so a missing
-routed session cannot reduce the required set. Both relay feature profiles pass
-paid delivery, automatic renewal, capital and lifetime limits, and final collection
-of all 1,280 test sats with those observed key changes. This adds software coverage
-of payment and routed-data recovery during key rotation; the historical
-intermittent failures remain unattributed. Run the `controller` integration target
-with the exact test filter
+The automatic-renewal case explicitly selects `forwarding_attempt`, the fresh
+service tariff, and lowers the native key-rotation threshold to eight messages.
+After the routed session is established, the middle relay drops the first native
+Setup, Ack and Finish envelope once each. Later packets for all three phases must
+pass the ordinary paid forwarding gate. Native session snapshots during the same
+18 bidirectional traffic rounds must observe a later epoch and a changed key bit
+in all eight adjacent payment-session directions and both routed data directions.
+Arming the fault discards earlier routed rotations, and a subsequent traffic round
+must complete after both endpoints rotate. The expected pairs are fixed before
+traffic, so a missing routed session cannot reduce the required set.
+
+Both relay feature profiles pass with the same source: all three loss phases,
+paid delivery, automatic renewal, capital and lifetime limits, and collection of
+all 1,280 test sats. The final runs take 83.745 and 82.604 seconds including their
+compilation and final source checks. Strict all-target relay lint, formatting and source-size
+checks pass. The workload, 16-sat channel capacity, per-payload 30-second delivery
+limit and overall 240-second deadline remain unchanged. This is real loopback UDP
+with production controllers and a local test mint, not hardware acceptance.
+Run the `controller` integration target with the exact test filter
 `exhausted_channels_renew_automatically_without_resetting_capital_or_spending`,
 using the matching dependency overrides and either relay feature profile.
 
-The existing slow-neighbor scenario also uses the 16-message threshold. With
+The initial loss fixture inherited the original `unique_session_envelope` tariff.
+A failed diagnostic run records 25 duplicate-handshake buyer decisions under the
+accounting lock and three seller credit-exhaustion decisions. Native retries reuse
+the encrypted envelope, so the legacy duplicate rule rejects them after an earlier
+onward submission even when the next relay dropped that submission. Switching the
+fresh fixture to its intended per-attempt tariff recovers without changing runtime
+accounting, native retry timers or payment limits. Temporary runtime tracing was
+removed. This attributes the loss fixture's duplicate rejections; it does not
+attribute the older intermittent delivery, renewal or payment stalls.
+
+The existing slow-neighbor scenario retains the 16-message threshold. With
 measurements enabled, it loses an applied payment reply and holds another update
 without applying it until the production 30-second request deadline. Both
 directions of that payment session must change their authenticated key epoch and
@@ -2211,9 +2231,9 @@ spending limits and traffic. The measured loss case and the companion delayed-re
 case without optional features pass, each collecting all 640 test sats. The
 original all-feature renewal case still observes eight payment and two routed-data
 directions and collects 1,280 test sats. Strict all-target relay lint, formatting
-and source-size checks pass. This changes shared test coverage only; application
-request/reply loss does not test dropped native rekey handshakes or identify the
-historical stalls.
+and source-size checks pass. This changes shared test coverage only. That payment
+request/reply-loss case alone does not cover dropped native rekey handshakes or
+identify the historical stalls.
 
 A post-timeout credit snapshot cannot establish that credit was available when
 the packet arrived. Two controlled five-second payment holds reproduce an

@@ -9,16 +9,27 @@ pub(crate) struct RekeyObservation {
     expected: BTreeSet<(usize, usize)>,
     epochs: BTreeMap<(usize, usize), (u64, bool)>,
     rotated: BTreeSet<(usize, usize)>,
+    handshake_loss: Option<(Arc<DeliveryTrace>, bool)>,
+    traffic_after_rotation: bool,
 }
 
 impl RekeyObservation {
-    pub(crate) fn configure(config: &mut Config, enabled: bool) {
-        if enabled {
+    pub(crate) fn configure(config: &mut Config, renewal: bool, payment_loss: bool) {
+        if renewal {
+            // Leave traffic after all three native handshake retransmissions;
+            // the original 16-message threshold can trigger near the last round.
+            config.node.rekey.after_messages = 8;
+        } else if payment_loss {
             config.node.rekey.after_messages = 16;
         }
     }
 
-    pub(crate) async fn start(root: &Path, peers: &[PeerIdentity], enabled: bool) -> Option<Self> {
+    pub(crate) async fn start(
+        root: &Path,
+        peers: &[PeerIdentity],
+        enabled: bool,
+        transit: &Arc<DeliveryTrace>,
+    ) -> Option<Self> {
         if !enabled {
             return None;
         }
@@ -27,7 +38,9 @@ impl RekeyObservation {
             .flat_map(|node| [(node, node + 1), (node + 1, node)])
             .chain([(0, last), (last, 0)])
             .collect();
-        Some(Self::start_with_pairs(root, peers, expected).await)
+        let mut observation = Self::start_with_pairs(root, peers, expected).await;
+        observation.handshake_loss = Some((transit.clone(), false));
+        Some(observation)
     }
 
     #[cfg(feature = "measurements")]
@@ -66,6 +79,8 @@ impl RekeyObservation {
             expected,
             epochs: BTreeMap::new(),
             rotated: Default::default(),
+            handshake_loss: None,
+            traffic_after_rotation: false,
         };
         observation.observe(root, peers).await;
         // Payment sessions already exist; the first payload may establish the
@@ -81,6 +96,11 @@ impl RekeyObservation {
     }
 
     pub(crate) async fn observe(&mut self, root: &Path, peers: &[PeerIdentity]) -> bool {
+        let last = peers.len() - 1;
+        // This observer runs after each completed bidirectional traffic round.
+        // A rotation seen in an earlier round therefore has fresh delivery after it.
+        self.traffic_after_rotation |=
+            self.rotated.contains(&(0, last)) && self.rotated.contains(&(last, 0));
         let mut ready = BTreeSet::new();
         for node in 0..peers.len() {
             let reply = tokio::time::timeout(
@@ -114,10 +134,32 @@ impl RekeyObservation {
                 }
             }
         }
+        if let Some((transit, armed)) = &mut self.handshake_loss
+            && !*armed
+            && ready.contains(&(0, last))
+            && ready.contains(&(last, 0))
+        {
+            // Initial establishment already delivered application traffic. Drop
+            // each handshake phase once when this established session next rekeys.
+            transit.lose_rekey_handshakes([*peers[0].node_addr(), *peers[last].node_addr()]);
+            // A setup rotation cannot satisfy recovery from the newly armed loss.
+            self.rotated.remove(&(0, last));
+            self.rotated.remove(&(last, 0));
+            self.traffic_after_rotation = false;
+            *armed = true;
+        }
         ready == self.expected
     }
 
     pub(crate) fn assert_rotated(self, workload: &str) {
+        if let Some((transit, armed)) = self.handshake_loss {
+            assert!(armed);
+            transit.assert_handshakes_recovered();
+            assert!(
+                self.traffic_after_rotation,
+                "fresh traffic must follow the observed rekey"
+            );
+        }
         assert_eq!(
             self.rotated, self.expected,
             "every payment and routed data session must change its authenticated key epoch"

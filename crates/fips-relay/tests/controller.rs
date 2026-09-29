@@ -30,7 +30,7 @@ use fips_relay::{
         ControllerTasks, RenewalPolicy,
     },
     durable::DurableRelay,
-    ledger::Limits,
+    ledger::{BillingBasis, Limits},
     payment_control::{PaymentControl, PaymentServer},
     route_quotes::{QuotePolicy, QuoteServer, RouteQuotes},
 };
@@ -107,6 +107,7 @@ async fn controller_scenario(
         let mut data = Vec::new();
         let mut forwarding = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
+        let billing = if automatic_renewal { BillingBasis::ForwardingAttempt } else { BillingBasis::default() };
         let paid_quote_traffic = !automatic_renewal && !evidence_gap && !route_change && !slow_neighbor;
         // Keep route-change and slow-neighbor scenarios below exhaustion, which the
         // separate renewal scenario deliberately exercises with small channels.
@@ -144,13 +145,13 @@ async fn controller_scenario(
             config.node.discovery.lan.enabled = false;
             config.node.discovery.local.enabled = false;
             #[cfg(unix)]
-            controller_support::RekeyObservation::configure(&mut config, automatic_renewal || slow_neighbor);
+            controller_support::RekeyObservation::configure(&mut config, automatic_renewal, slow_neighbor);
             config.transports.udp = TransportInstances::Single(UdpConfig {
                 bind_addr: Some("127.0.0.1:0".into()),
                 advertise_on_nostr: Some(false),
                 ..UdpConfig::default()
             });
-            let forwarder = Arc::new(controller_support::DeliveryTrace::new(PaidForwarder::new(seller.clone(), buyer.clone())));
+            let forwarder = Arc::new(controller_support::DeliveryTrace::new(PaidForwarder::for_billing(seller.clone(), buyer.clone(), billing)));
             forwarding.push(forwarder.clone());
             let node = Arc::new(
                 FipsEndpoint::builder()
@@ -218,7 +219,7 @@ async fn controller_scenario(
                     Arc::new(quote_transport),
                     QuotePolicy {
                         destination_fees: Default::default(),
-                        billing: Default::default(),
+                        billing,
                         mint_url: mint.url().to_string(),
                         receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
                         fee_msat_per_kib: 1_024,
@@ -422,7 +423,7 @@ async fn controller_scenario(
                 "provider-only evidence cannot create a payment obligation");
         }
         #[cfg(unix)]
-        let mut rekey = controller_support::RekeyObservation::start(root.path(), &peers, automatic_renewal).await;
+        let mut rekey = controller_support::RekeyObservation::start(root.path(), &peers, automatic_renewal, &forwarding[2]).await;
         for round in 0..if automatic_renewal { 18 } else { 8 } {
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![round; 1_000];
