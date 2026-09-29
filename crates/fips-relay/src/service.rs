@@ -224,7 +224,6 @@ impl RelayService {
                 .await
                 .map_err(|e| e.to_string())?;
             drop(wallet);
-            drop(FileSpilmanPaymentSigner::load(&directory)?);
         } else {
             Self::check_wallet_capacity(&config).await?;
         }
@@ -241,6 +240,7 @@ impl RelayService {
         if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
             return Err("stored payment receiver identity changed".into());
         }
+        drop(FileSpilmanPaymentSigner::load(&root.join("wallet"))?);
         let seller = Arc::new(
             if create {
                 DurableRelay::create(

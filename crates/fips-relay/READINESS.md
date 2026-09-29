@@ -640,6 +640,27 @@ configuration terms and dependencies are unchanged. The r29 packaged executable
 passes this extended check in both isolated Linux storage scenarios. This does not
 reconcile conflicting channel evidence or attribute the historical stalls.
 
+Startup also validates saved sender-channel data through the SDK's existing
+reader before seller or buyer accounting recovery. Empty or whitespace-only
+client files cannot become a fresh SDK store; malformed JSON and unsupported
+store contents use the same reader's rejection path. An absent file remains
+valid for fresh SDK setup, while the service's funded-profile preflight continues
+to require the original file. Restoring original evidence permits reopening.
+
+The existing funded restart fixture now replaces the client data with whitespace
+and malformed JSON, checks rejection preserves all three accounting journals,
+then restores the original and completes paid forwarding and settlement. The
+SDK regression first reproduced empty-file acceptance; the process regression
+first reproduced startup failing to reject whitespace within its deadline.
+The full SDK workspace passes 424 tests (one opt-in storage soak excluded).
+Both relay feature profiles pass the funded fixture, preserving all 512 test
+sats, and initialization guards, strict SDK/relay lint, formatting and source-size
+checks pass.
+
+The r29 package predates this guard. This adds no wire message or storage format
+and does not reconcile internally consistent conflicting evidence, establish
+physical durability or attribute the historical stalls.
+
 ### Receipt completion read bounds
 
 Native CDK `9a8e9792f98f` bounds operation receipt publication and final

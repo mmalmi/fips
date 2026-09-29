@@ -3,10 +3,7 @@ use fips_relay::service::ServiceConfig;
 use std::path::{Path, PathBuf};
 use tokio::process::Child;
 
-pub(super) async fn reject_swapped_financial_identities(
-    configs: &[ServiceConfig],
-    paths: &[PathBuf],
-) {
+pub(super) async fn reject_invalid_financial_state(configs: &[ServiceConfig], paths: &[PathBuf]) {
     let root = &configs[1].state_directory;
     let journals = [
         "seller/ledger.json",
@@ -14,7 +11,7 @@ pub(super) async fn reject_swapped_financial_identities(
         "controller/controller.json",
     ]
     .map(|name| (name, std::fs::read(root.join(name)).unwrap()));
-    for (name, error) in [
+    for (name, error, replacement) in [
         ("wallet/cashu/seed.json", "seed does not match"),
         (
             "receiver/spilman-receiver-key.json",
@@ -24,15 +21,29 @@ pub(super) async fn reject_swapped_financial_identities(
             "wallet/spilman-sender-key.json",
             "stored payment sender identity changed",
         ),
-    ] {
+    ]
+    .map(|(name, error)| {
+        (
+            name,
+            error,
+            std::fs::read(configs[0].state_directory.join(name)).unwrap(),
+        )
+    })
+    .into_iter()
+    .chain([b" \n".as_slice(), b"{".as_slice()].map(|content| {
+        (
+            "wallet/spilman-client.json",
+            "failed to decode Spilman client store:",
+            content.to_vec(),
+        )
+    })) {
         let path = root.join(name);
         let original = std::fs::read(&path).unwrap();
-        let other = std::fs::read(configs[0].state_directory.join(name)).unwrap();
         assert!(
-            original != other,
-            "fixture financial identities must differ"
+            original != replacement,
+            "fixture must change the original financial state"
         );
-        std::fs::write(&path, other).unwrap();
+        std::fs::write(&path, replacement).unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(10),
             tokio::process::Command::new(env!("CARGO_BIN_EXE_fips-relay"))
@@ -44,12 +55,12 @@ pub(super) async fn reject_swapped_financial_identities(
         .await;
         std::fs::write(path, original).unwrap();
         let result = result
-            .expect("conflicting identity startup must terminate")
+            .expect("invalid financial state startup must terminate")
             .unwrap();
         assert!(!result.status.success());
         assert!(
             String::from_utf8_lossy(&result.stderr).contains(error),
-            "startup must reject the swapped financial identity: {name}"
+            "startup must reject invalid financial state: {name}"
         );
         for (name, original) in &journals {
             assert!(

@@ -139,7 +139,7 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
             }
         }
         children.clear();
-        setup::reject_swapped_financial_identities(&configs, &paths).await;
+        setup::reject_invalid_financial_state(&configs, &paths).await;
         for path in &paths {
             children.push(start(path).await);
         }
