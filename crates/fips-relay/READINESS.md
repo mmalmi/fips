@@ -2190,6 +2190,29 @@ The original failed comparison and exact repair evidence are preserved in
 is unchanged. This fixes the reproduced fixture race without attributing the
 historical delivery, payment or renewal stalls.
 
+A diagnostic build from the r35 source bundle also passes all three existing
+cases at two CPUs and a quarter CPU, with payment-stage measurements enabled.
+The same static ARM64 executable and harness run in six fresh, unprivileged,
+network-isolated Linux containers with local test money. Workloads, deadlines,
+funding and settlement assertions are unchanged. Container elapsed times are:
+
+| Case | Two CPUs | Quarter CPU |
+| --- | --- | --- |
+| TLS interruption and recovery | 64.958 s | 69.646 s |
+| Seeded connection break, silent loss and restart | 110.701 s | 120.877 s |
+| Repeated bidirectional channel renewal | 42.462 s | 49.025 s |
+
+The quarter-CPU cases record 150, 212 and 189 throttled periods respectively;
+none records a memory-limit event. These limits and counters cover the entire
+test network, mint and harness, not an individual router or payment cost per byte.
+All 36,083 source files, both diagnostic executables, the r35 package and its 88
+indexed evidence files remain unchanged. No watchdog expires and all owned
+containers are removed. Exact inputs, results and cgroup observations are retained
+in `work/paid-relay-verification/2026-09-30-payment-pressure-r35`.
+No historical stall reproduces in this finite comparison, so their causes remain
+unattributed. This does not replace current-device, physical power-loss or sustained
+performance acceptance, and introduces no production code or policy change.
+
 A separate SDK regression reproduced cross-channel signing contention during
 refund recovery: a held mint-state request prevented the real nonblocking signer
 from loading another funded channel in the same wallet. The original 30-second
