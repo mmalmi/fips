@@ -1935,18 +1935,25 @@ reconciling all 384 test sats. This does not attribute the historical stalls.
 The r26 package includes this logging change; the dependency graph adds only a
 direct reference to the already resolved logging library, with no version change.
 
-The receiver-wallet regression also forces forwarding-journal replacement to fail
-after the receiver accepts a signed 3-sat payment. The response fails at credit
-publication: the in-memory balance has advanced, but the original journal retains
-zero credit and the accounting writer stays suspended. Repairing the filesystem
-and replaying the payment cannot acknowledge that uncommitted balance. Reloading
-the receiver and ledger, then replaying the same payment, restores exactly 3 sats
-of credit; settlement conserves all 64 test sats within the original wallet limit.
-Both payment-control cases pass with optional features enabled and disabled, and
-strict all-target lint passes. This extends the existing test without changing
-runtime behavior or the accepted r27 package. It covers a forced write failure and
-component reload, not a process kill, physical power loss or attribution of the
-historical stalls.
+The funded buyer/receiver regression first blocks the real signer's client-file
+replacement after the buyer durably authorizes 3 sats of observed forwarding.
+Signing reports the write failure while the original client file remains intact,
+the seller has zero credit, and the buyer's lifetime budget stays fully reserved.
+Repairing the file and reloading the authorizer and signer preserves that budget;
+a retry with a zero new claim signs the original 3-sat obligation.
+
+The same fixture then forces forwarding-journal replacement to fail after the
+receiver accepts that signed payment. The response fails at credit publication:
+the in-memory balance has advanced, but the original journal retains zero credit
+and the accounting writer stays suspended. Repairing the filesystem and replaying
+the payment cannot acknowledge that uncommitted balance. Reloading the receiver
+and ledger, then replaying the same payment, restores exactly 3 sats of credit;
+settlement conserves all 64 test sats within the original wallet limit.
+Both payment-control cases pass with optional features enabled and disabled,
+strict all-target lint, formatting and source-size checks. This extends the existing
+fixture without changing runtime behavior; r28 remains the accepted executable.
+The checks cover forced writes and component reload, not automatic daemon retry,
+a process kill, physical power loss or attribution of the historical stalls.
 
 A separate six-node regression reproduces interference between neighbor renewals.
 It holds the real mint's successful close response for one provider, then drives
