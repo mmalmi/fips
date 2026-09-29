@@ -14,6 +14,40 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+The fresh r31 ARM64 package accepts runtime source `1a152f90a524` with the
+reconstructed dependency graph below. Its fourteen isolated Linux process cases
+pass against the executable extracted from the APK: two storage/restart cases,
+four expiry/funding/retirement cases, six mixed-transport/renewal cases and two
+customer-restart cases. These include rejection of an increased saved buyer
+budget before accounting recovery, full-filesystem recovery, both ordinary and
+explicitly enabled self-signed TLS, and eight automatic channel replacements
+across a shared provider. The separate initialization guard also passes; its
+empty-account buyer-identity check calls the embedded service loader, while its
+command-line checks use the packaged executable.
+
+The offline production build took 378.867 seconds with Rust 1.96.0,
+cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
+25,176,304 bytes, SHA-256
+`33d2a47f638cfcf6e4ed6fb63a1698f7311a47afeedd2be77ebb8b0f2870c04b`.
+The unsigned `0.1.0-r31` APK is 11,527,380 bytes, SHA-256
+`8eb81a747e9e147211f653829e69f7238d5967b8a07918d30de1002d21e143f6`.
+Inspection verifies all eleven payload files, root ownership, lifecycle scripts
+and the declared dependency set; no saved accounts are included. The accepted
+inspection uses apk-tools 3.0.1-r1 with standard system parent directories
+precreated in disposable storage. The 3.0.8-r0 build/extract attempt rejected
+omitted parent-directory records; neither inspection establishes OpenWrt
+installation acceptance.
+
+The new source bundle resolves offline with the tested lock, and its complete
+inventory remains unchanged throughout these gates. The harnesses and extracted
+daemon retain their original hashes. Fresh logs, source, package and executable
+artifacts are preserved; they do not restore the unavailable historical artifacts.
+Every runtime case has a fresh, unprivileged, network-isolated ARM64 Linux
+container and local test money. No package is installed or published, and no
+physical device is accessed. This supersedes r30's package-process acceptance;
+current-device checks, physical power loss, sustained performance and attribution
+of the historical intermittent stalls remain outstanding.
+
 Startup now binds the buyer journal's identity and lifetime spending budget to
 the saved service terms before recovering either buyer or seller accounting.
 It rejects mismatches without rewriting the buyer, seller or controller journals.
@@ -36,7 +70,7 @@ including rejection of oversized headers before reading a body byte. Its byte
 identity with the missing earlier backport is not established. The startup checks
 above use this reconstructed graph; the ARM64 results below remain historical.
 
-The last accepted r30 ARM64 sources at `3ad12adf7bd` include saved sender-identity
+The earlier r30 ARM64 sources at `3ad12adf7bd` include saved sender-identity
 binding, sender-channel validation before accounting recovery, the sender-file
 requirement after retirement, bounded asynchronous control admission,
 payment rejection diagnostics, independent neighbor renewal workers,
