@@ -1,4 +1,4 @@
-//! Observe payment and routed data FSP key changes during the renewal workload.
+//! Observe authenticated session key changes during paid workloads.
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,11 +23,47 @@ impl RekeyObservation {
             return None;
         }
         let last = peers.len() - 1;
+        let expected = (0..last)
+            .flat_map(|node| [(node, node + 1), (node + 1, node)])
+            .chain([(0, last), (last, 0)])
+            .collect();
+        Some(Self::start_with_pairs(root, peers, expected).await)
+    }
+
+    #[cfg(feature = "measurements")]
+    pub(crate) async fn start_pair(
+        root: &Path,
+        peers: &[PeerIdentity],
+        buyer: usize,
+        seller: usize,
+    ) -> Self {
+        let mut observation =
+            Self::start_with_pairs(root, peers, [(buyer, seller), (seller, buyer)].into()).await;
+        // Setup traffic can already have rotated this session. Let the previous
+        // epoch drain before arming a fault that lasts less than that drain window.
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !observation.observe(root, peers).await {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("payment session must finish its previous-key drain before the fault");
+        observation.rotated.clear();
+        eprintln!(
+            "payment loss rekey preparation waited_ms={}",
+            started.elapsed().as_millis()
+        );
+        observation
+    }
+
+    async fn start_with_pairs(
+        root: &Path,
+        peers: &[PeerIdentity],
+        expected: BTreeSet<(usize, usize)>,
+    ) -> Self {
         let mut observation = Self {
-            expected: (0..last)
-                .flat_map(|node| [(node, node + 1), (node + 1, node)])
-                .chain([(0, last), (last, 0)])
-                .collect(),
+            expected,
             epochs: BTreeMap::new(),
             rotated: Default::default(),
         };
@@ -41,10 +77,11 @@ impl RekeyObservation {
                 .filter(|(node, remote)| node.abs_diff(*remote) == 1)
                 .all(|pair| observation.epochs.contains_key(pair))
         );
-        Some(observation)
+        observation
     }
 
-    pub(crate) async fn observe(&mut self, root: &Path, peers: &[PeerIdentity]) {
+    pub(crate) async fn observe(&mut self, root: &Path, peers: &[PeerIdentity]) -> bool {
+        let mut ready = BTreeSet::new();
         for node in 0..peers.len() {
             let reply = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -66,6 +103,9 @@ impl RekeyObservation {
                     session["session_start_ms"].as_u64().unwrap(),
                     session["current_k_bit"].as_bool().unwrap(),
                 );
+                if session["is_draining"] == false {
+                    ready.insert((node, remote));
+                }
                 if let Some(previous) = self.epochs.insert((node, remote), epoch)
                     && epoch.0 > previous.0
                     && epoch.1 != previous.1
@@ -74,9 +114,10 @@ impl RekeyObservation {
                 }
             }
         }
+        ready == self.expected
     }
 
-    pub(crate) fn assert_rotated(self) {
+    pub(crate) fn assert_rotated(self, workload: &str) {
         assert_eq!(
             self.rotated, self.expected,
             "every payment and routed data session must change its authenticated key epoch"
@@ -86,12 +127,9 @@ impl RekeyObservation {
             .iter()
             .filter(|(node, remote)| node.abs_diff(*remote) == 1)
             .count();
+        eprintln!("{workload} observed rotated payment sessions={}", adjacent);
         eprintln!(
-            "paid renewal observed rotated payment sessions={}",
-            adjacent
-        );
-        eprintln!(
-            "paid renewal observed rotated routed data sessions={}",
+            "{workload} observed rotated routed data sessions={}",
             self.rotated.len() - adjacent
         );
     }

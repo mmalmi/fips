@@ -144,7 +144,7 @@ async fn controller_scenario(
             config.node.discovery.lan.enabled = false;
             config.node.discovery.local.enabled = false;
             #[cfg(unix)]
-            controller_support::RekeyObservation::configure(&mut config, automatic_renewal);
+            controller_support::RekeyObservation::configure(&mut config, automatic_renewal || slow_neighbor);
             config.transports.udp = TransportInstances::Single(UdpConfig {
                 bind_addr: Some("127.0.0.1:0".into()),
                 advertise_on_nostr: Some(false),
@@ -466,7 +466,7 @@ async fn controller_scenario(
             if let Some(rekey) = &mut rekey { rekey.observe(root.path(), &peers).await; }
         }
         #[cfg(unix)]
-        if let Some(rekey) = rekey { rekey.assert_rotated(); }
+        if let Some(rekey) = rekey { rekey.assert_rotated("paid renewal"); }
         // Delivery and the periodic payment worker are independent. Observe
         // the verified balance transition instead of assuming the final 600ms
         // sleep has also completed every neighbor's signature and response.

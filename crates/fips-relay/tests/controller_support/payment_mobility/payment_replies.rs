@@ -223,6 +223,9 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     let budget = controller.funding_budget().await.unwrap();
     let prior = buyer.authorized_sat(channel).unwrap();
     acknowledged(&controller, channel, prior * 1_000).await;
+    #[cfg(unix)]
+    let mut rekey =
+        controller_support::RekeyObservation::start_pair(root, traffic.peers, 2, slow).await;
     let applied = gate.arm(channel, LossPoint::AfterApply);
     traffic.send(if slow == 1 { 4 } else { 0 }, 170).await;
     let applied = tokio::time::timeout(Duration::from_secs(10), applied)
@@ -274,6 +277,8 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
         progress[channel]["last_failure_stage"], "update_request",
         "a successful retry must retain the failed exchange stage for diagnosis"
     );
+    #[cfg(unix)]
+    rekey.observe(root, traffic.peers).await;
     let requests = gate.observed();
     assert_eq!(
         requests.get(requests_before),
@@ -349,6 +354,8 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     );
     let captured_evidence = buyer.evidence_msat(channel).unwrap();
     let requests_before = gate.observed().len();
+    #[cfg(unix)]
+    rekey.observe(root, traffic.peers).await;
     traffic
         .paid_bursts(healthy, &purchases[1], sellers, buyer, 173)
         .await;
@@ -404,4 +411,9 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
         journal(root, "controller-2/controller.json")["funding"],
         funding
     );
+    #[cfg(unix)]
+    {
+        rekey.observe(root, traffic.peers).await;
+        rekey.assert_rotated("lost payment recovery");
+    }
 }

@@ -2165,6 +2165,22 @@ with the exact test filter
 `exhausted_channels_renew_automatically_without_resetting_capital_or_spending`,
 using the matching dependency overrides and either relay feature profile.
 
+The existing slow-neighbor scenario also uses the 16-message threshold. With
+measurements enabled, it loses an applied payment reply and holds another update
+without applying it until the production 30-second request deadline. Both
+directions of that payment session must change their authenticated key epoch and
+key bit during loss and automatic recovery. Setup first waits for any previous-key
+drain to finish and discards setup rotations; the first attempted observation
+recovered payments but saw no key change within the shorter fault window.
+Healthy-channel payment and settlement checks retain their original deadlines,
+spending limits and traffic. The measured loss case and the companion delayed-request
+case without optional features pass, each collecting all 640 test sats. The
+original all-feature renewal case still observes eight payment and two routed-data
+directions and collects 1,280 test sats. Strict all-target relay lint, formatting
+and source-size checks pass. This changes shared test coverage only; application
+request/reply loss does not test dropped native rekey handshakes or identify the
+historical stalls.
+
 A post-timeout credit snapshot cannot establish that credit was available when
 the packet arrived. Two controlled five-second payment holds reproduce an
 ordinary-delivery timeout with a first-hop denial of a 1,138-byte envelope. After
