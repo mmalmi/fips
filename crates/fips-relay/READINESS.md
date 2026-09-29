@@ -14,12 +14,14 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r25 ARM64 package at `3a272d8974` includes independent neighbor renewal workers,
+The current r26 ARM64 package at `38c47e71e6` includes payment rejection
+diagnostics, independent neighbor renewal workers,
 [demand-driven local checkpoints](#packet-demand-before-the-checkpoint-threshold),
 wallet main-file preservation, configurable funding request pacing, and withdrawal
 recovery for unconfirmed channels and interrupted upgrades of shared channels.
 See [funding and recovery](FUNDING-COSTS.md) for their focused regressions and limits.
-All twelve isolated Linux process cases pass against the exact packaged executable.
+All thirteen isolated Linux process cases pass against the exact packaged
+executable, including eight automatic replacements across a shared provider.
 
 A separate unfunded-profile check verifies wrong-seed rejection by both wallet
 commands and service startup. It also preserves six incomplete database families:
@@ -27,7 +29,7 @@ each SQLite recovery-file kind with and without the seed. Stored bytes remain
 unchanged and restoring the original files restores wallet access. Missing files
 are rejected by the existing service profile preflight, before the SDK guard;
 this does not replace the SDK's direct regression or prove financial reconstruction.
-This supersedes r24 package acceptance; the intermittent recovery timeouts,
+This supersedes r25 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
 
 The peer API uses eight requests across quote, controller and payment services.
@@ -791,9 +793,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `3a272d8974` includes SDK `2c9788782422` and CDK
-`dd45a9c0861b`, contains 36,071 inventoried files and resolves 697 packages,
-including 676 vendored registry packages. All 2,777
+The source bundle at `38c47e71e6` includes SDK `2c9788782422` and CDK
+`dd45a9c0861b`, contains 36,073 inventoried files and resolves 697 packages,
+including 676 vendored registry packages. All 2,779
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -803,8 +805,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,200,712
-bytes, static and stripped. The unsigned APK is 11,535,829 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,206,072
+bytes, static and stripped. The unsigned APK is 11,538,298 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -847,6 +849,12 @@ according to the selected policy before admission or spending. The source
 manifest, harness and executable hashes remain unchanged.
 All five containers use a read-only root, no external network or capabilities,
 and only the two executables mounted from the host; all are removed afterward.
+A sixth mixed-transport case runs the opt-in repeated-renewal fixture against
+this exact packaged daemon. Eight automatic replacements preserve funding
+identities and spending limits. With one shared-provider close reply held, the
+other buyer advances paid credit before both signed settlements become pending;
+final collection conserves 384 test sats. This adds finite ARM64 Linux acceptance,
+not sustained hardware performance or attribution of the older stalls.
 See the [TCP/WebSocket reproduction steps](openwrt/README.md#tcp-websocket-and-tls-with-the-packaged-executable).
 The initial r13 attempt exposed an invalid snapshot assumption: automatic
 recovery renewal can refund or replace a channel while aggregate counters are
@@ -1868,7 +1876,7 @@ material. It is volatile diagnostic state, not financial evidence or peer traffi
 The existing lost-update fixture fails its new diagnostic assertion before the
 change and passes afterward for both prompt cancellation and silent timeout.
 All 302 relay unit tests, 288 without optional features, strict all-target lint
-in both modes, and the TLS process/status case pass. The r25 source bundle includes
+in both modes, and the TLS process/status case pass. The r26 source bundle includes
 this optional status-field addition; the packaged default-feature executable omits
 measurements. Historical timeout causes and current-device acceptance remain open.
 See the [observation semantics](../../testing/relay-cadence/README.md).
@@ -1880,7 +1888,7 @@ signatures and identities are not logged. Wire replies and financial operations
 are unchanged. The existing payment-control regressions pass with and without
 measurements, and the TLS process scenario passes with these diagnostics enabled,
 reconciling all 384 test sats. This does not attribute the historical stalls.
-The r25 package predates this logging change; the dependency graph adds only a
+The r26 package includes this logging change; the dependency graph adds only a
 direct reference to the already resolved logging library, with no version change.
 
 A separate six-node regression reproduces interference between neighbor renewals.
@@ -2082,7 +2090,7 @@ The existing tests now require the scheduling hint, retry the rejected packet,
 and retain idle, financial-limit and crash-exposure checks. The scheduling
 assertion fails on the previous runtime. This identifies a checkpoint defect;
 it does not establish the cause of the historical delivery/payment timeouts.
-The r25 package includes this change and passes the isolated Linux process cases;
+The r26 package includes this change and passes the isolated Linux process cases;
 current-device acceptance remains open.
 
 The first controller acceptance run also exposed an offline wallet inspection
