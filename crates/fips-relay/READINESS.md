@@ -133,7 +133,7 @@ recovery. Current-device and physical power-loss acceptance remain pending.
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; combined interrupted transitions; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, arbitrary mint/keyset growth and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
@@ -931,6 +931,26 @@ remain exact; neither payout nor refund is credited twice. A shared private
 are edited and no wire, admin operation or dependency is added. Reproduce with the corrected
 dependencies using `cargo test -p fips-relay --all-features --test funding_costs
 paid_fees:: -- --test-threads=1`.
+
+Automatic renewal now has a three-daemon regression using that same refund
+barrier. It kills the buyer after its wallet commits the refund, stops the
+provider, then restarts the buyer alone. Ordinary upkeep records the refund
+without duplicate credit or replacement funding while release remains pending.
+After a second buyer kill and both peers restarting, the retained renewal
+finishes with exactly one replacement channel. The original funding operation,
+report, signed payment and policy survive; fresh payload delivery and automatic
+payment on the replacement precede final settlement. Both spending limits remain
+enforced, the remaining signature budget matches the settled payments exactly,
+no capital remains pending or locked, and wallets plus mint fees total 384 test
+sats. The native process case passes with all features and with measurements
+disabled. It adds no runtime behavior and does not explain historical stalls or
+establish physical power-loss recovery. Using the matching
+[dependency overrides](FUNDING-COSTS.md), reproduce with:
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs renewal_refund_restart:: -- --test-threads=1
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --no-default-features --features testbench --test funding_costs renewal_refund_restart:: -- --test-threads=1
+```
 
 An unsubmitted preparation now cancels locally using its exact native authority.
 The three-daemon regression kills the source after its plan is saved, changes the

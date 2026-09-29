@@ -16,6 +16,9 @@ mod preopening;
 mod preopening_support;
 #[allow(dead_code)]
 mod process_support;
+#[cfg(feature = "testbench")]
+#[path = "funding_costs/renewal_refund_restart.rs"]
+mod renewal_refund_restart;
 #[path = "funding_costs/restore.rs"]
 mod restore;
 #[path = "funding_costs/retirement.rs"]
