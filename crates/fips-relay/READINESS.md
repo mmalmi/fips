@@ -46,6 +46,8 @@ negative-test recipes and 15 gate records are preserved in
 
 The r34 ARM64 package includes these database-read and repository-entry changes
 and the refund/signing isolation fix in SDK `1d520f1a1d60` described below.
+The newer [interrupted-send debit check](#interrupted-send-debit-evidence) is
+accepted locally with SDK `d0dae6f2a794`; r34 does not contain it.
 Current-device acceptance, physical power-loss and sustained performance checks
 remain outstanding. The historical intermittent stalls remain unattributed.
 Default package builds omit optional payment-stage measurements, which retain
@@ -659,6 +661,35 @@ along with remaining stores, sustained aggregate storage pressure, physical
 disk/power loss and current device acceptance.
 That checkpoint did not configure service-level capacity.
 
+
+### Interrupted-send debit evidence
+
+SDK `d0dae6f2a794` validates the original native debit before publishing an
+unfinished numbered-send result. It reuses the existing 4-MiB bounded receipt
+reader and checks the operation, amount, mint, sat unit, outgoing primary role,
+nonfailed status and original token proofs. Proof order does not affect identity.
+
+The existing fee/recovery fixture reproduced two faults: a conflicting incoming
+transaction could complete the request, and an oversized receipt could advance
+the SDK journal before a later read rejected it. The expanded fixture now rejects
+missing receipts, changed direction, unit, mint or proofs, failed status and
+oversized metadata. With the native send already complete, each rejection retains
+the native operation and receipt and the pending SDK journal without another mint
+swap. Restoring the original receipt recovers the original payment and cost.
+
+The final source passes all 429 SDK workspace tests (one existing opt-in soak
+excluded), strict all-target lint, changed-source formatting and whitespace checks.
+Native FIPS fee-bearing settlement/restart and interrupted funding recovery after
+route expiry also pass against the same source. The offline dependency graph
+selects the candidate SDK explicitly; source and configuration fingerprints remain
+unchanged throughout each gate. Baselines, patches, tested locks and results are
+preserved in `work/paid-relay-verification/2026-09-30-native-debit-evidence`.
+
+No schema, dependency or protocol message changes. Completed SDK results may still
+outlive acknowledged native receipt retirement. This preserves uncertain evidence;
+it does not reconstruct missing originals, reconcile arbitrary conflicting records
+or attribute the historical payment stalls. The r34 package predates this fix;
+package, current-device and physical power-loss acceptance remain outstanding.
 
 ### Missing withdrawal journals
 
