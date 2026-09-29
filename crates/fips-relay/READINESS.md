@@ -14,9 +14,9 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r27 ARM64 package at `4252e39fd7` includes bounded asynchronous
-control admission, payment rejection diagnostics, independent neighbor renewal
-workers,
+The current r28 ARM64 package at `533f601c23` includes funded startup identity
+validation, bounded asynchronous control admission, payment rejection diagnostics,
+independent neighbor renewal workers,
 [demand-driven local checkpoints](#packet-demand-before-the-checkpoint-threshold),
 wallet main-file preservation, configurable funding request pacing, and withdrawal
 recovery for unconfirmed channels and interrupted upgrades of shared channels.
@@ -30,12 +30,8 @@ each SQLite recovery-file kind with and without the seed. Stored bytes remain
 unchanged and restoring the original files restores wallet access. Missing files
 are rejected by the existing service profile preflight, before the SDK guard;
 this does not replace the SDK's direct regression or prove financial reconstruction.
-This supersedes r26 package acceptance; the intermittent recovery timeouts,
+This supersedes r27 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
-
-The latest source also validates stored payment identities before recovering
-funded accounting journals; see [startup identity rejection](#wallet-seed-and-database-identity).
-The r27 executable predates that ordering fix and needs replacement acceptance.
 
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
@@ -625,8 +621,8 @@ initialization guards, strict all-target lint, formatting and source-size checks
 also pass. The fix only reorders existing validation and recovery: no protocol,
 configuration, dependency or journal format changes. It does not make every later
 startup failure transactional, reconstruct missing evidence, establish physical
-power-loss safety or attribute the historical payment stalls. The r27 packaged
-executable predates this fix.
+power-loss safety or attribute the historical payment stalls. The r28 packaged
+executable passes both the capacity and full-filesystem variants in isolated Linux.
 
 ### Receipt completion read bounds
 
@@ -816,7 +812,7 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `4252e39fd7` includes SDK `2c9788782422` and CDK
+The source bundle at `533f601c23` includes SDK `2c9788782422` and CDK
 `dd45a9c0861b`, contains 36,075 inventoried files and resolves 697 packages,
 including 676 vendored registry packages. All 2,781
 recorded source/dependency inputs match the accepted native graph, with the
@@ -828,8 +824,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,207,712
-bytes, static and stripped. The unsigned APK is 11,545,048 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,208,992
+bytes, static and stripped. The unsigned APK is 11,541,262 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
