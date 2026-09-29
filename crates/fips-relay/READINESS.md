@@ -44,14 +44,15 @@ restoring the guards restores the passing source. Exact sources, tested locks,
 negative-test recipes and 15 gate records are preserved in
 `work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
 
-The r33 ARM64 package includes these database-read and repository-entry changes.
+The r34 ARM64 package includes these database-read and repository-entry changes
+and the refund/signing isolation fix in SDK `1d520f1a1d60` described below.
 Current-device acceptance, physical power-loss and sustained performance checks
 remain outstanding. The historical intermittent stalls remain unattributed.
 Default package builds omit optional payment-stage measurements, which retain
 their separate native acceptance below.
 
-The r33 package accepts FIPS source `f292e1027f83`, native CDK
-`418380651373` and SDK `66f5cf67dbc6` from the verified offline source bundle.
+The r34 package accepts FIPS source `6e1ede3d2d51`, native CDK
+`418380651373` and SDK `1d520f1a1d60` from the verified offline source bundle.
 Its fourteen isolated Linux process cases pass against the executable extracted
 from the APK: two storage/restart cases, four expiry/funding/retirement cases,
 six mixed-transport/renewal cases and two
@@ -62,12 +63,12 @@ across a shared provider. The separate initialization guard also passes; its
 empty-account buyer-identity check calls the embedded service loader, while its
 command-line checks use the packaged executable.
 
-The offline production build took 356.180 seconds with Rust 1.96.0,
+The offline production build took 516.130 seconds with Rust 1.96.0,
 cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,269,984 bytes, SHA-256
-`55957865a92402a44214bec7e9b54a98b2a4a9c8bab20c9015ced472cf4b8be7`.
-The unsigned `0.1.0-r33` APK is 11,559,040 bytes, SHA-256
-`32fbd6f1de5495133a5178abd38f181de9ff039aa79c18503ca56359efe9535e`.
+25,271,168 bytes, SHA-256
+`eb607e00756ea326cd77dee76a855801547f07325f564245694e6bc06dad9abf`.
+The unsigned `0.1.0-r34` APK is 11,560,851 bytes, SHA-256
+`351f4414b5c268007841fe4a3369c943ca7bd328c967f14129370c632e526d41`.
 Inspection verifies all eleven payload files, root ownership, lifecycle scripts
 and the exact dependency set; no saved accounts are included and the service is
 disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
@@ -77,16 +78,16 @@ precreated in disposable storage. The earlier 3.0.8-r0 build/extract attempt rej
 omitted parent-directory records; neither inspection establishes OpenWrt
 installation acceptance.
 
-The new bundle exports the three exact clean commits while retaining the accepted
-Spilman, TCP, bitreq and registry sources. Offline resolution preserves the tested
-lock and exact dependency graph, including enabled features and dependency edges.
+The new bundle exports the exact clean FIPS and SDK commits while retaining the
+accepted CDK, Spilman, TCP, bitreq and registry sources. Offline resolution preserves
+the tested lock and exact dependency graph, including enabled features and edges.
 All 36,083 source files remain unchanged throughout the gates. The harnesses and
 extracted daemon retain their original hashes. Final verification binds each
 result to its exact test, harness and read-only packaged-executable mount.
-All 89 files in the previous r32 evidence and artifact inventory remain unchanged.
+All 110 files in the previous r33 evidence and artifact inventory remain unchanged.
 The new package, harnesses, runners and 89 evidence files are preserved in
-`work/paid-relay-verification/2026-09-29-arm64-r33`; its source reference identifies
-the wallet-read-bounds bundle and full dependency inventory. The three clean,
+`work/paid-relay-verification/2026-09-29-arm64-r34`; its source reference identifies
+the refund-signing bundle and full dependency inventory. The two clean,
 integrated temporary checkouts were removed after the verified source export.
 
 Every runtime case uses a fresh, unprivileged, network-isolated ARM64 Linux
@@ -2175,8 +2176,8 @@ direction and all 384 test sats reconciled. Original deadlines and workloads are
 unchanged. Exact sources, tested locks, the failing regression and final gates are
 retained in `work/paid-relay-verification/2026-09-29-refund-signing`.
 This fixes the reproduced contention without attributing the historical stalls.
-The r33 package still contains the previous SDK; a new package and current-device
-acceptance remain outstanding, as do other long-held signing-store workflows.
+The r34 package includes this fix and passes the isolated Linux acceptance above.
+Current-device acceptance and other long-held signing-store workflows remain open.
 
 Provider rejections now emit fixed debug labels for record parsing, agreement,
 buyer identity, verification, credit application and checkpoint failures. Enable
