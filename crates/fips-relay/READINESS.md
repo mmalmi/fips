@@ -2115,6 +2115,17 @@ with and without optional features. This adds test evidence only: the earlier
 timeouts remain unexplained, and runtime and current-device acceptance are
 unchanged.
 
+The existing automatic-renewal case now lowers the native key-rotation threshold
+to 16 messages. Native session snapshots taken before and during its 18 traffic
+rounds must observe both a later epoch and a changed key bit in all eight adjacent
+payment-session directions. Both relay feature profiles pass paid delivery,
+automatic renewal, capital and lifetime limits, and final collection of all
+1,280 test sats with those observed key changes. This adds software coverage of
+payment recovery during key rotation; the historical intermittent failures remain
+unattributed. Run the `controller` integration target with the exact test filter
+`exhausted_channels_renew_automatically_without_resetting_capital_or_spending`,
+using the matching dependency overrides and either relay feature profile.
+
 A post-timeout credit snapshot cannot establish that credit was available when
 the packet arrived. Two controlled five-second payment holds reproduce an
 ordinary-delivery timeout with a first-hop denial of a 1,138-byte envelope. After

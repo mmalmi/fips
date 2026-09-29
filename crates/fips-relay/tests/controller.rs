@@ -143,6 +143,8 @@ async fn controller_scenario(
             config.node.discovery.nostr.enabled = false;
             config.node.discovery.lan.enabled = false;
             config.node.discovery.local.enabled = false;
+            #[cfg(unix)]
+            controller_support::RekeyObservation::configure(&mut config, automatic_renewal);
             config.transports.udp = TransportInstances::Single(UdpConfig {
                 bind_addr: Some("127.0.0.1:0".into()),
                 advertise_on_nostr: Some(false),
@@ -419,6 +421,8 @@ async fn controller_scenario(
             assert_eq!(buyers[2].authorized_sat(&p.channel.id), Some(0),
                 "provider-only evidence cannot create a payment obligation");
         }
+        #[cfg(unix)]
+        let mut rekey = controller_support::RekeyObservation::start(root.path(), &peers, automatic_renewal).await;
         for round in 0..if automatic_renewal { 18 } else { 8 } {
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![round; 1_000];
@@ -458,7 +462,11 @@ async fn controller_scenario(
             }
             // Payments are driven only by each controller's periodic task.
             tokio::time::sleep(Duration::from_millis(600)).await;
+            #[cfg(unix)]
+            if let Some(rekey) = &mut rekey { rekey.observe(root.path(), &peers).await; }
         }
+        #[cfg(unix)]
+        if let Some(rekey) = rekey { rekey.assert_rotated(); }
         // Delivery and the periodic payment worker are independent. Observe
         // the verified balance transition instead of assuming the final 600ms
         // sleep has also completed every neighbor's signature and response.

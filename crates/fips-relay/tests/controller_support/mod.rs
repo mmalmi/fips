@@ -2,6 +2,10 @@ use super::*;
 use fips_relay::controller::{Purchase, RouteAccess};
 mod delivery_trace;
 pub(super) use delivery_trace::DeliveryTrace;
+#[cfg(unix)]
+mod rekey;
+#[cfg(unix)]
+pub(super) use rekey::RekeyObservation;
 
 pub(super) fn controller(result: Result<Controller, String>, renewal: bool) -> Arc<Controller> {
     // The small-channel renewal workload owns its disposable mint. Its request
