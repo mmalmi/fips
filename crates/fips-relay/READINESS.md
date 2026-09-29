@@ -1364,6 +1364,30 @@ source purchases and verified onward funding keep their existing authority.
 UDP customers in the configured customer network remain inbound-only unless
 explicitly listed as neighbors.
 
+Admission and revalidation now use futures owned by the bounded pending request
+or TCP exchange. The shared transport loop polls each check without waiting for
+its native adjacency lookup; dropping its owner immediately cancels the check.
+The original permit remains held during revalidation. Waiting for connection
+capacity requires another check before connecting, and completed records are
+rechecked before dispatch. Existing queue,
+connection, identity and rate limits are unchanged; no worker, protocol operation,
+configuration field or dependency is added.
+
+A real loopback TCP/FIPS regression pauses the native node's status loop while
+configured control still works. Before this change, starting an unrelated
+adjacency lookup prevents that configured exchange from completing until the
+lookup is released. With the change, it completes while the lookup remains held;
+releasing the lookup still rejects the unknown identity. All 16 admission tests
+and 12 control-transport cases pass in both feature profiles, as do both existing
+paid-route saturation cases under incomplete requests and half-open handshakes.
+The mixed UDP/TLS process case conserves all 384 test sats; strict all-target
+lint, formatting and source-size checks pass. This identifies an independent
+control-loop blocking defect, not the cause of the older intermittent stalls.
+The r26 package predates this change; current-package and hardware acceptance
+remain open. Reproduce the focused case with the library filter
+`control_transport::admission_delay_tests::` and the matching dependency overrides
+in [FUNDING-COSTS.md](FUNDING-COSTS.md).
+
 The aggregate rate accommodates the request count of 16 neighbors paying in
 both directions at 250-ms intervals, with bounded additional control traffic.
 This is a capacity calculation, not a latency or hardware throughput guarantee.

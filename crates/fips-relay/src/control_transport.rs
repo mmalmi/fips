@@ -5,9 +5,13 @@
 //! TCP acknowledgments say nothing about paid data delivery.
 
 mod admission;
+#[cfg(test)]
+#[path = "control_transport/admission_delay_tests.rs"]
+mod admission_delay_tests;
+mod check;
 pub(crate) use admission::AdmissionBudget;
-use admission::AdmissionPermit;
 pub use admission::{ControlAdmission, NeighborAdmission};
+use check::AdmissionCheck;
 
 use fips_core::{FipsEndpoint, PeerIdentity};
 use fips_tcp::{Config, ConnectionId, StackError, State};
@@ -206,23 +210,25 @@ impl Drop for ControlTransport {
 
 struct PendingCommand {
     command: Command,
-    admission: AdmissionPermit,
+    admission: AdmissionCheck,
+    rechecking: bool,
 }
 
 struct Exchange {
     peer: PeerIdentity,
-    admission: AdmissionPermit,
+    admission: AdmissionCheck,
     started: Instant,
     outgoing: Vec<u8>,
     sent: usize,
     incoming: Vec<u8>,
     dispatched: bool,
+    checking_record: bool,
     client: Option<oneshot::Sender<Result<Vec<u8>, String>>>,
     server_reply: Option<oneshot::Receiver<Vec<u8>>>,
 }
 
 impl Exchange {
-    fn server(peer: PeerIdentity, admission: AdmissionPermit) -> Self {
+    fn server(peer: PeerIdentity, admission: AdmissionCheck) -> Self {
         Self {
             peer,
             admission,
@@ -231,6 +237,7 @@ impl Exchange {
             sent: 0,
             incoming: Vec::new(),
             dispatched: false,
+            checking_record: false,
             client: None,
             server_reply: None,
         }
@@ -282,10 +289,8 @@ async fn run(
             command = commands.recv(), if pending.len() < QUEUE_SIZE => {
                 let Some(command) = command else { break; };
                 if command.response.is_closed() { continue; }
-                match admission.admit(command.peer, true).await {
-                    Ok(permit) => pending.push_back(PendingCommand { command, admission: permit }),
-                    Err(error) => { let _ = command.response.send(Err(error)); }
-                }
+                let check = AdmissionCheck::start(admission.clone(), command.peer, true);
+                pending.push_back(PendingCommand { command, admission: check, rechecking: false });
             }
             result = tcp.receive_report(now) => {
                 if result.is_err() { break; }
@@ -301,26 +306,46 @@ async fn run(
         for _ in 0..pending.len() {
             let PendingCommand {
                 mut command,
-                admission: permit,
+                admission: mut check,
+                mut rechecking,
             } = pending.pop_front().expect("bounded pending queue");
             if command.response.is_closed() {
                 continue;
             }
-            if command.retry_at > Instant::now() || exchanges.len() >= MAX_CONNECTIONS {
+            let ready = match check.ready().await {
+                Ok(ready) => ready,
+                Err(error) => {
+                    let _ = command.response.send(Err(error));
+                    continue;
+                }
+            };
+            if !ready || command.retry_at > Instant::now() || exchanges.len() >= MAX_CONNECTIONS {
+                // A completed check cannot remain authorization across a later
+                // capacity wait. Revalidate once a connection can be attempted.
+                if ready {
+                    rechecking = false;
+                }
                 pending.push_back(PendingCommand {
                     command,
-                    admission: permit,
+                    admission: check,
+                    rechecking,
                 });
                 continue;
             }
-            if let Err(error) = permit.recheck().await {
-                let _ = command.response.send(Err(error));
+            if !rechecking {
+                check.recheck();
+                rechecking = true;
+                pending.push_back(PendingCommand {
+                    command,
+                    admission: check,
+                    rechecking,
+                });
                 continue;
             }
             match tcp.connect(command.peer, now).await {
                 Ok(id) => {
                     statistics.requests_started.fetch_add(1, Ordering::Relaxed);
-                    let mut exchange = Exchange::server(command.peer, permit);
+                    let mut exchange = Exchange::server(command.peer, check);
                     exchange.outgoing = frame(command.body).expect("bounded at command entry");
                     exchange.client = Some(command.response);
                     exchanges.insert(id, exchange);
@@ -331,7 +356,8 @@ async fn run(
                     command.retry_at = Instant::now() + CONNECT_RETRY_INTERVAL;
                     pending.push_back(PendingCommand {
                         command,
-                        admission: permit,
+                        admission: check,
+                        rechecking: false,
                     });
                 }
                 Err(error) => {
@@ -342,9 +368,9 @@ async fn run(
         while let Some(id) = tcp.accept() {
             if let Some(peer) = tcp.peer(id)
                 && exchanges.len() < MAX_CONNECTIONS
-                && let Ok(permit) = admission.admit(peer, false).await
             {
-                exchanges.insert(id, Exchange::server(peer, permit));
+                let check = AdmissionCheck::start(admission.clone(), peer, false);
+                exchanges.insert(id, Exchange::server(peer, check));
                 continue;
             }
             let _ = tcp.abort(id).await;
@@ -385,6 +411,9 @@ async fn drive(
     let Some(state) = tcp.state(id) else {
         return Err("control stream closed".into());
     };
+    if !exchange.admission.ready().await? {
+        return Ok(true);
+    }
     if !matches!(state, State::Established | State::CloseWait) {
         return Ok(true);
     }
@@ -428,12 +457,17 @@ async fn drive(
         .fetch_add(bytes.len() as u64, Ordering::Relaxed);
     exchange.incoming.extend_from_slice(&bytes);
     if complete_frame(&exchange.incoming)? {
-        let body = exchange.incoming.split_off(4);
         if let Some(response) = exchange.client.take() {
+            let body = exchange.incoming.split_off(4);
             let _ = response.send(Ok(body));
             return Ok(false);
         }
-        exchange.admission.recheck().await?;
+        if !exchange.checking_record {
+            exchange.admission.recheck();
+            exchange.checking_record = true;
+            return Ok(true);
+        }
+        let body = exchange.incoming.split_off(4);
         let (respond, receiver) = oneshot::channel();
         statistics.requests_received.fetch_add(1, Ordering::Relaxed);
         incoming
