@@ -32,6 +32,19 @@ pub(super) async fn reject_invalid_financial_state(configs: &[ServiceConfig], pa
     })) {
         reject_damaged_state(&configs[1], &paths[1], name, Some(&replacement), error).await;
     }
+    let name = "buyer/buyer.json";
+    let mut buyer: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(configs[1].state_directory.join(name)).unwrap())
+            .unwrap();
+    buyer["total_budget_sat"] = (configs[1].terms.buyer_budget_sat + 1).into();
+    reject_damaged_state(
+        &configs[1],
+        &paths[1],
+        name,
+        Some(&serde_json::to_vec(&buyer).unwrap()),
+        "buyer identity or budget differs from saved service terms",
+    )
+    .await;
 }
 
 pub(super) async fn reject_damaged_state(
@@ -71,6 +84,8 @@ pub(super) async fn reject_damaged_state(
     )
     .await;
     let recreated = replacement.is_none() && path.exists();
+    let unchanged =
+        replacement.is_none_or(|bytes| std::fs::read(&path).is_ok_and(|saved| saved == bytes));
     if replacement.is_some() {
         std::fs::write(path, original).unwrap();
     } else {
@@ -84,6 +99,10 @@ pub(super) async fn reject_damaged_state(
     assert!(
         String::from_utf8_lossy(&result.stderr).contains(error),
         "startup must reject invalid financial state: {name}"
+    );
+    assert!(
+        unchanged,
+        "rejected startup rewrote invalid financial state"
     );
     for (name, original) in &journals {
         assert!(

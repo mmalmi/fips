@@ -14,7 +14,29 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r30 ARM64 package at `3ad12adf7bd` includes saved sender-identity
+Startup now binds the buyer journal's identity and lifetime spending budget to
+the saved service terms before recovering either buyer or seller accounting.
+It rejects mismatches without rewriting the buyer, seller or controller journals.
+The existing funded restart case rejects an increased journal budget, restores
+the original files, resumes paid delivery and completes settlement without resetting
+lifetime limits. The initialization case rejects another identity even when the
+buyer has no channels. Both regressions fail before the fix and pass afterward
+with optional features enabled and disabled. All 304 relay unit tests, 12 buyer
+tests, strict all-target relay lint, formatting and source-size checks pass.
+This adds no journal field or protocol message and does not make every startup
+failure transactional. Hardware acceptance and the historical stalls remain open.
+
+The previous local verification directory is unavailable, including the r30
+package and raw historical logs. Source commits survive. The native dependency
+lock has been reconstructed with its original SHA-256
+`8cc0797020e5259315c228bb8bbf3bf53ecf5045c94f5c7f534c79c6139662cc`.
+Reconstructed bitreq source `b62b51a7aa88`, based on 0.3.7 source `2a3a3b852743`,
+passes the cancellation regression and all three native CDK response-limit checks,
+including rejection of oversized headers before reading a body byte. Its byte
+identity with the missing earlier backport is not established. The startup checks
+above use this reconstructed graph; the ARM64 results below remain historical.
+
+The last accepted r30 ARM64 sources at `3ad12adf7bd` include saved sender-identity
 binding, sender-channel validation before accounting recovery, the sender-file
 requirement after retirement, bounded asynchronous control admission,
 payment rejection diagnostics, independent neighbor renewal workers,

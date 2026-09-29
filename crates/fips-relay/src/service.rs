@@ -241,18 +241,7 @@ impl RelayService {
             return Err("stored payment receiver identity changed".into());
         }
         drop(FileSpilmanPaymentSigner::load(&root.join("wallet"))?);
-        let seller = Arc::new(
-            if create {
-                DurableRelay::create(
-                    &root.join("seller"),
-                    Limits::default(),
-                    config.terms.window_msat,
-                )
-            } else {
-                DurableRelay::load(&root.join("seller"))
-            }
-            .map_err(|e| e.to_string())?,
-        );
+        // Reject changed buyer terms before either accounting journal is recovered.
         let buyer = Arc::new(
             if create {
                 BuyerAuthorizer::create(
@@ -262,7 +251,23 @@ impl RelayService {
                     Limits::default(),
                 )
             } else {
-                BuyerAuthorizer::load(&root.join("buyer"))
+                BuyerAuthorizer::load_bound(
+                    &root.join("buyer"),
+                    *identity.node_addr(),
+                    config.terms.buyer_budget_sat,
+                )
+            }
+            .map_err(|e| e.to_string())?,
+        );
+        let seller = Arc::new(
+            if create {
+                DurableRelay::create(
+                    &root.join("seller"),
+                    Limits::default(),
+                    config.terms.window_msat,
+                )
+            } else {
+                DurableRelay::load(&root.join("seller"))
             }
             .map_err(|e| e.to_string())?,
         );

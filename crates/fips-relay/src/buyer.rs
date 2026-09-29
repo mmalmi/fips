@@ -57,6 +57,8 @@ pub enum BuyerError {
     Capacity,
     #[error("invalid buyer journal")]
     Format,
+    #[error("buyer identity or budget differs from saved service terms")]
+    SavedTerms,
     #[error("payment signer failed: {0}")]
     Signer(String),
 }
@@ -307,6 +309,21 @@ impl BuyerAuthorizer {
     }
 
     pub fn load(directory: &Path) -> Result<Self, BuyerError> {
+        Self::load_checked(directory, None)
+    }
+
+    pub(crate) fn load_bound(
+        directory: &Path,
+        local: NodeAddr,
+        total_budget_sat: u64,
+    ) -> Result<Self, BuyerError> {
+        Self::load_checked(directory, Some((local, total_budget_sat)))
+    }
+
+    fn load_checked(
+        directory: &Path,
+        expected: Option<(NodeAddr, u64)>,
+    ) -> Result<Self, BuyerError> {
         let owner = acquire_owner(directory)?;
         let file = File::open(directory.join("buyer.json")).map_err(DurableError::Io)?;
         if file.metadata().map_err(DurableError::Io)?.len() > MAX_JOURNAL_BYTES {
@@ -320,6 +337,9 @@ impl BuyerAuthorizer {
             return Err(BuyerError::Format);
         }
         let mut state: State = serde_json::from_slice(&bytes).map_err(|_| BuyerError::Format)?;
+        if expected.is_some_and(|terms| terms != (state.local, state.total_budget_sat)) {
+            return Err(BuyerError::SavedTerms);
+        }
         state.validate_and_recover()?;
         let buyer = Self {
             directory: directory.into(),

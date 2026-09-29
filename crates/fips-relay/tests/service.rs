@@ -547,6 +547,26 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
     let native_reply: serde_json::Value = serde_json::from_slice(&native_reply.stdout).unwrap();
     assert_eq!(native_reply["status"], "ok");
     stop(&mut running).await;
+    let buyer_path = cfg.state_directory.join("buyer/buyer.json");
+    let original_buyer = std::fs::read(&buyer_path).unwrap();
+    let mut buyer: serde_json::Value = serde_json::from_slice(&original_buyer).unwrap();
+    assert!(buyer["channels"].as_object().unwrap().is_empty());
+    buyer["local"][0] = (buyer["local"][0].as_u64().unwrap() ^ 1).into();
+    let changed_buyer = serde_json::to_vec(&buyer).unwrap();
+    std::fs::write(&buyer_path, &changed_buyer).unwrap();
+    let rejected = fips_relay::service::RelayService::load(cfg.clone()).await;
+    if let Ok(service) = rejected {
+        service.shutdown().await.unwrap();
+        panic!("service must reject a buyer journal belonging to another identity");
+    }
+    assert!(
+        rejected
+            .err()
+            .unwrap()
+            .contains("buyer identity or budget differs from saved service terms")
+    );
+    assert!(std::fs::read(&buyer_path).unwrap() == changed_buyer);
+    std::fs::write(&buyer_path, original_buyer).unwrap();
     for changed_limit in [None, Some(MAXIMUM * 2)] {
         cfg.terms.wallet_capacity_bytes = changed_limit;
         std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
