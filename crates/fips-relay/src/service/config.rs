@@ -170,7 +170,8 @@ impl ServiceConfig {
 pub(super) fn check_state(root: &Path) -> Result<(), String> {
     let mut required = REQUIRED.to_vec();
     // Cashu creates its sender channel store only at first funding. Once a
-    // funding intent exists, losing that store must never look like a new buyer.
+    // funding intent exists, losing that store must never look like a new buyer,
+    // including after completed funding entries retire into lifetime totals.
     let file = File::open(root.join("controller/controller.json")).map_err(|e| e.to_string())?;
     if file.metadata().map_err(|e| e.to_string())?.len() > crate::durable::MAX_JOURNAL_BYTES {
         return Err("controller journal too large".into());
@@ -179,7 +180,11 @@ pub(super) fn check_state(root: &Path) -> Result<(), String> {
     let funding = journal["funding"]
         .as_object()
         .ok_or("missing funding history")?;
-    if !funding.is_empty() || root.join("wallet/spilman-client.json").exists() {
+    let next_funding = journal["next_funding"]
+        .as_u64()
+        .filter(|next| *next > 0)
+        .ok_or("invalid funding sequence")?;
+    if next_funding > 1 || !funding.is_empty() || root.join("wallet/spilman-client.json").exists() {
         required.push("wallet/spilman-client.json");
     }
     for relative in required {

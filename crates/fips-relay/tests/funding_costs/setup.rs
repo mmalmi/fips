@@ -4,13 +4,6 @@ use std::path::{Path, PathBuf};
 use tokio::process::Child;
 
 pub(super) async fn reject_invalid_financial_state(configs: &[ServiceConfig], paths: &[PathBuf]) {
-    let root = &configs[1].state_directory;
-    let journals = [
-        "seller/ledger.json",
-        "buyer/buyer.json",
-        "controller/controller.json",
-    ]
-    .map(|name| (name, std::fs::read(root.join(name)).unwrap()));
     for (name, error, replacement) in [
         ("wallet/cashu/seed.json", "seed does not match"),
         (
@@ -37,37 +30,66 @@ pub(super) async fn reject_invalid_financial_state(configs: &[ServiceConfig], pa
             content.to_vec(),
         )
     })) {
-        let path = root.join(name);
-        let original = std::fs::read(&path).unwrap();
+        reject_damaged_state(&configs[1], &paths[1], name, Some(&replacement), error).await;
+    }
+}
+
+pub(super) async fn reject_damaged_state(
+    config: &ServiceConfig,
+    config_path: &Path,
+    name: &str,
+    replacement: Option<&[u8]>,
+    error: &str,
+) {
+    let root = &config.state_directory;
+    let journals = [
+        "seller/ledger.json",
+        "buyer/buyer.json",
+        "controller/controller.json",
+    ]
+    .map(|name| (name, std::fs::read(root.join(name)).unwrap()));
+    let path = root.join(name);
+    let retained = path.with_extension("retained-test");
+    assert!(!retained.exists());
+    let original = std::fs::read(&path).unwrap();
+    if let Some(replacement) = replacement {
         assert!(
             original != replacement,
             "fixture must change the original financial state"
         );
         std::fs::write(&path, replacement).unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            tokio::process::Command::new(env!("CARGO_BIN_EXE_fips-relay"))
-                .arg("run")
-                .arg(&paths[1])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await;
+    } else {
+        std::fs::rename(&path, &retained).unwrap();
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+            .arg("run")
+            .arg(config_path)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let recreated = replacement.is_none() && path.exists();
+    if replacement.is_some() {
         std::fs::write(path, original).unwrap();
-        let result = result
-            .expect("invalid financial state startup must terminate")
-            .unwrap();
-        assert!(!result.status.success());
+    } else {
+        std::fs::rename(retained, path).unwrap();
+    }
+    assert!(!recreated, "startup recreated missing financial state");
+    let result = result
+        .expect("invalid financial state startup must terminate")
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains(error),
+        "startup must reject invalid financial state: {name}"
+    );
+    for (name, original) in &journals {
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains(error),
-            "startup must reject invalid financial state: {name}"
+            std::fs::read(root.join(name)).unwrap() == *original,
+            "rejected startup mutated {name}"
         );
-        for (name, original) in &journals {
-            assert!(
-                std::fs::read(root.join(name)).unwrap() == *original,
-                "rejected startup mutated {name}"
-            );
-        }
     }
 }
 

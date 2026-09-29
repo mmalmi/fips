@@ -194,6 +194,16 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
             stop(child).await;
         }
         children.clear();
+        assert!(read(&controller_path)["funding"].as_object().unwrap().is_empty());
+        assert!(read(&controller_path)["next_funding"].as_u64().unwrap() > 1);
+        setup::reject_damaged_state(
+            cfg,
+            &paths[0],
+            "wallet/spilman-client.json",
+            None,
+            "required state missing: wallet/spilman-client.json",
+        )
+        .await;
         for path in &paths {
             children.push(start(path).await);
         }

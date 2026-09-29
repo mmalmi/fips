@@ -657,7 +657,18 @@ Both relay feature profiles pass the funded fixture, preserving all 512 test
 sats, and initialization guards, strict SDK/relay lint, formatting and source-size
 checks pass.
 
-The r29 package predates this guard. This adds no wire message or storage format
+The service also retains the sender-file requirement after every completed
+funding entry has retired. It uses the existing monotonic funding sequence;
+retirement must not make a previously funded profile appear fresh. The extended
+real-expiry regression first reproduced startup failing to reject the missing
+file within ten seconds. Both relay feature profiles now reject it without
+recreating the file or changing any of the three accounting journals. Restoring
+the original permits restart, preserves lifetime spending and wallet balance,
+and retains the original refund proofs in wallet custody. The ordinary funded
+restart, fresh-initialization and strict all-target relay lint checks also pass.
+The SDK is unchanged from its 424-test acceptance above.
+
+The r29 package predates these guards. This adds no wire message or storage format
 and does not reconcile internally consistent conflicting evidence, establish
 physical durability or attribute the historical stalls.
 
