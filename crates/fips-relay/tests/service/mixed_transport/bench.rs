@@ -88,6 +88,15 @@ impl MixedBench {
         network: &PaymentNetwork,
         second_hop: SecondHop,
     ) -> Self {
+        Self::start_configured(mint, network, second_hop, |_, _| {}).await
+    }
+
+    pub(super) async fn start_configured(
+        mint: &str,
+        network: &PaymentNetwork,
+        second_hop: SecondHop,
+        configure: impl Fn(usize, &mut ServiceConfig),
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let udp: Vec<_> = (0..2)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
@@ -180,6 +189,7 @@ impl MixedBench {
                 at_capacity_percent: 75,
                 before_expiry_secs: 30,
             });
+            configure(node, &mut config);
             let path = directory.join("config.json");
             std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
             let initialized = command(&path, "init").await;
@@ -620,7 +630,7 @@ impl MixedBench {
         self.wait_paid_beyond(channel, 0).await;
     }
 
-    fn relay_usage_msat(&self, channel: &str) -> (u64, u64) {
+    pub(super) fn relay_usage_msat(&self, channel: &str) -> (u64, u64) {
         let ledger: Value = serde_json::from_slice(
             &std::fs::read(self.configs[1].state_directory.join("seller/ledger.json")).unwrap(),
         )
@@ -637,7 +647,7 @@ impl MixedBench {
         )
     }
 
-    async fn wait_paid_beyond(&self, channel: &str, already_paid_msat: u64) {
+    pub(super) async fn wait_paid_beyond(&self, channel: &str, already_paid_msat: u64) {
         let result = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let (submitted, paid) = self.relay_usage_msat(channel);
@@ -659,29 +669,32 @@ impl MixedBench {
         }
     }
 
-    pub async fn wait_exhausted(&self, source: usize) {
-        tokio::time::timeout(Duration::from_secs(20), async {
+    pub async fn wait_exhausted(&self, source: usize, expected_remaining: u64) {
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let status = request(&self.configs[source], &AdminRequest::Status)
                     .await
                     .unwrap();
                 let remaining = status["remaining_budget_sat"].as_u64().unwrap();
                 assert!(
-                    remaining >= 56,
-                    "first channel exceeded its eight-sat capacity"
+                    remaining >= expected_remaining,
+                    "channel exceeded its authorized capacity"
                 );
-                if remaining == 56 {
+                if remaining == expected_remaining {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await
-        .expect("first channel authorizes its full eight-sat capacity with renewals paused");
+        .await;
+        if result.is_err() {
+            self.failure_snapshot().await;
+            panic!("channel authorizes its full capacity with renewals paused");
+        }
     }
 
     pub async fn wait_replacements(&self, old_channels: &[String]) {
-        tokio::time::timeout(Duration::from_secs(40), async {
+        let result = tokio::time::timeout(Duration::from_secs(40), async {
             loop {
                 let statuses = self.states().await;
                 if [0, 2].into_iter().zip(old_channels).all(|(source, old)| {
@@ -694,8 +707,11 @@ impl MixedBench {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await
-        .expect("automatic renewals replace both channels");
+        .await;
+        if result.is_err() {
+            self.failure_snapshot().await;
+            panic!("automatic renewals replace both channels");
+        }
     }
 }
 

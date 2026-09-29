@@ -27,6 +27,8 @@ mod accept_barrier;
 mod payment_progress;
 #[path = "mixed_transport/proxy.rs"]
 mod proxy;
+#[path = "mixed_transport/renewal_load.rs"]
+mod renewal_load;
 #[path = "mixed_transport/restart.rs"]
 mod restart;
 #[path = "mixed_transport/round_trip.rs"]
@@ -134,7 +136,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         bench.set_stage("exhaustion");
         for (index, (source, destination)) in [(0, 2), (2, 0)].into_iter().enumerate() {
             bench.send_probe(source, destination, 40, 256, 8).await;
-            bench.wait_exhausted(source).await;
+            bench.wait_exhausted(source, 56).await;
             bench.wait_paid(&original_channels[index]).await;
             bench.expect_denied(source, destination).await;
             let state = request(&bench.configs[source], &AdminRequest::Status)

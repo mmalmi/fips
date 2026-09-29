@@ -1927,6 +1927,26 @@ executable hashes remain unchanged. An initial run was interrupted by the disk
 reserve guard; the completed replay uses its exact binaries after reclaiming
 superseded build outputs. This does not reproduce or explain the historical stalls.
 
+An opt-in three-daemon UDP/TLS regression now checks four renewal cycles in both
+directions, with fresh delivery and automatic payment on every channel generation.
+One cycle holds a committed mint close reply while the same provider accepts new
+credit from its other buyer. Both original signed settlements must then be
+durably pending before the reply is released. The shared wallet serializes closes
+without blocking that other payment. All eight replacements preserve original
+funding operations and spending limits; final collection reconciles 384 test sats.
+The case passes with and without measurements. It uses the existing bounded
+delivery retries and 20/40-second payment/renewal waits, plus an explicit request
+budget for its isolated mint. It is ignored during routine tests; run it with
+the [matching dependency overrides](FUNDING-COSTS.md):
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test service mixed_transport::renewal_load:: -- --ignored --test-threads=1 --nocapture
+```
+
+Use `--no-default-features` instead of `--all-features` for the second profile.
+This finite turnover check neither identifies the historical stall causes nor
+establishes sustained physical-router performance. It changes only test code.
+
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during
 automatic renewal, and an all-feature route-change run failed ordinary delivery
