@@ -280,6 +280,9 @@ impl Node {
                     );
                     info!(
                         peer = %self.peer_display_name(&peer_node_addr),
+                        identity = %verified_identity.npub(),
+                        transport = self.transports.get(&transport_id)
+                            .map(|t| t.transport_type().name).unwrap_or("unknown"),
                         winner_link = %link_id,
                         loser_link = %loser_link_id,
                         "Peer restart detected during promotion, replacing stale active peer"
@@ -503,6 +506,9 @@ impl Node {
 
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),
+                identity = %verified_identity.npub(),
+                transport = self.transports.get(&transport_id)
+                    .map(|t| t.transport_type().name).unwrap_or("unknown"),
                 link_id = %link_id,
                 our_index = %our_index,
                 their_index = %their_index,

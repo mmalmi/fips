@@ -10,6 +10,150 @@ const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
 #[test]
+fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
+    run_large_stack_async_test("fips-webrtc-admission", || async {
+        use crate::node::rate_limit::{HandshakeRateLimiter, Msg1Class, TokenBucket};
+
+        let mut nodes = vec![
+            make_dual_transport_node(fixed_identity(6, 0x03)).await,
+            make_dual_transport_node(fixed_identity(1, 0x02)).await,
+        ];
+        configure_fallback_and_direct_paths(&mut nodes).await;
+        establish_websocket_adjacency(&mut nodes).await;
+        let identity_a = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        let identity_b = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+        let webrtc_addr_a = identity_transport_addr(nodes[0].node.identity());
+        let webrtc_addr_b = identity_transport_addr(nodes[1].node.identity());
+
+        // Only A dials: B has no pending outbound WebRTC address-index entry.
+        // The production failure is B treating this already-authenticated
+        // peer's new carrier as a stranger while public UDP consumes that bucket.
+        nodes[1].node.msg1_rate_limiter = HandshakeRateLimiter::with_params(
+            TokenBucket::with_params(0, 0.0),
+            TokenBucket::with_params(2, 0.0),
+            2,
+        );
+        nodes[0]
+            .node
+            .initiate_connection(
+                TransportId::new(WEBRTC_TRANSPORT_NUMBER),
+                webrtc_addr_b.clone(),
+                identity_b,
+            )
+            .await
+            .expect("start one-sided WebRTC upgrade");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                drive_webrtc_negotiation(&mut nodes).await;
+                // As in the simultaneous-upgrade fixture, let asynchronous
+                // ICE dialing run before polling logical FMP establishment.
+                if physical_path_is_connected(&nodes[0].node, &webrtc_addr_b)
+                    && physical_path_is_connected(&nodes[1].node, &webrtc_addr_a)
+                {
+                    for node in &mut nodes {
+                        node.node.poll_pending_connects().await;
+                    }
+                }
+                process_available_packets(&mut nodes).await;
+                if active_path_is_webrtc(&nodes[0].node, identity_b.node_addr(), &webrtc_addr_b)
+                    && active_path_is_webrtc(&nodes[1].node, identity_a.node_addr(), &webrtc_addr_a)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "authenticated WebRTC upgrade must not need stranger tokens: A={}; B={}",
+                upgrade_diagnostic(&nodes[0].node, identity_b.node_addr(), &webrtc_addr_b),
+                upgrade_diagnostic(&nodes[1].node, identity_a.node_addr(), &webrtc_addr_a),
+            )
+        });
+
+        let mut endpoint = nodes[1].node.attach_endpoint_data_io(8).unwrap();
+        send_endpoint_data_via_dataplane(
+            &mut nodes[0].node,
+            identity_b,
+            b"authenticated-upgrade-under-load".to_vec(),
+        )
+        .await
+        .unwrap();
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint.event_rx,
+            Duration::from_secs(10),
+            "endpoint data after admission under load",
+        )
+        .await;
+        assert_eq!(
+            expect_single_endpoint_data_event(event).payload.as_slice(),
+            b"authenticated-upgrade-under-load"
+        );
+        assert!(
+            !nodes[1]
+                .node
+                .msg1_rate_limiter
+                .can_start_handshake(Msg1Class::Stranger)
+        );
+        assert_eq!(nodes[1].node.msg1_rate_limiter.pending_count(), 0);
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
+fn authenticated_webrtc_carrier_rejects_a_different_noise_identity() {
+    run_large_stack_async_test("fips-webrtc-admission-identity", || async {
+        use crate::node::wire::build_msg1;
+        use crate::transport::{PacketBuffer, ReceivedPacket};
+
+        let mut nodes = vec![
+            make_dual_transport_node(fixed_identity(6, 0x03)).await,
+            make_dual_transport_node(fixed_identity(1, 0x02)).await,
+        ];
+        configure_fallback_and_direct_paths(&mut nodes).await;
+        establish_websocket_adjacency(&mut nodes).await;
+        let carrier_peer = *nodes[0].node.node_addr();
+        let carrier_addr = identity_transport_addr(nodes[0].node.identity());
+        let other_identity = Identity::generate();
+        let other_addr = *other_identity.node_addr();
+        let mut handshake = crate::noise::HandshakeState::new_initiator(
+            other_identity.keypair(),
+            nodes[1].node.identity().pubkey_full(),
+        );
+        handshake.set_local_epoch([123; 8]);
+        let msg1 = PacketBuffer::new(build_msg1(
+            SessionIndex::new(71),
+            &handshake.write_message_1().unwrap(),
+        ));
+        let previous_links = nodes[1].node.link_count();
+        nodes[1]
+            .node
+            .handle_msg1(ReceivedPacket::with_timestamp(
+                TransportId::new(WEBRTC_TRANSPORT_NUMBER),
+                carrier_addr,
+                msg1,
+                crate::time::now_ms(),
+            ))
+            .await;
+        assert!(nodes[1].node.get_peer(&other_addr).is_none());
+        assert_eq!(nodes[1].node.peer_count(), 1);
+        assert_eq!(nodes[1].node.link_count(), previous_links);
+        assert_eq!(nodes[1].node.connection_count(), 0);
+        assert_eq!(
+            nodes[1]
+                .node
+                .get_peer(&carrier_peer)
+                .unwrap()
+                .transport_id(),
+            Some(TransportId::new(WEBSOCKET_TRANSPORT_NUMBER))
+        );
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
 fn websocket_carried_simultaneous_webrtc_upgrade_preserves_shared_physical_carrier() {
     run_large_stack_async_test("fips-native-webrtc-shared-carrier", || async {
         let mut nodes = vec![
