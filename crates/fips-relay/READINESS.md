@@ -44,14 +44,14 @@ restoring the guards restores the passing source. Exact sources, tested locks,
 negative-test recipes and 15 gate records are preserved in
 `work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
 
-The r32 package below predates these database-read and repository-entry changes.
-Updated-package and current-device acceptance, physical power-loss and sustained
-performance checks remain outstanding. The historical intermittent stalls remain
-unattributed. Optional live payment-stage diagnostics were tested after r32 and
-are also outside that package acceptance.
+The r33 ARM64 package includes these database-read and repository-entry changes.
+Current-device acceptance, physical power-loss and sustained performance checks
+remain outstanding. The historical intermittent stalls remain unattributed.
+Default package builds omit optional payment-stage measurements, which retain
+their separate native acceptance below.
 
-The r32 ARM64 package accepts FIPS source `52bb2c5d9c74`, native CDK
-`4f8d2d7e0d4a` and SDK `2d8bd483516b` from the verified offline source bundle.
+The r33 package accepts FIPS source `f292e1027f83`, native CDK
+`418380651373` and SDK `66f5cf67dbc6` from the verified offline source bundle.
 Its fourteen isolated Linux process cases pass against the executable extracted
 from the APK: two storage/restart cases, four expiry/funding/retirement cases,
 six mixed-transport/renewal cases and two
@@ -62,12 +62,12 @@ across a shared provider. The separate initialization guard also passes; its
 empty-account buyer-identity check calls the embedded service loader, while its
 command-line checks use the packaged executable.
 
-The offline production build took 379.132 seconds with Rust 1.96.0,
+The offline production build took 356.180 seconds with Rust 1.96.0,
 cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,254,320 bytes, SHA-256
-`d1e206b6859b5273a360457445e3607a1177b8075ebd4149da62f7b91a2e978d`.
-The unsigned `0.1.0-r32` APK is 11,553,458 bytes, SHA-256
-`75870637a667c8ced40c8b5fb1807b6b7946fc31e8f8ebf753a42b2ef1690afe`.
+25,269,984 bytes, SHA-256
+`55957865a92402a44214bec7e9b54a98b2a4a9c8bab20c9015ced472cf4b8be7`.
+The unsigned `0.1.0-r33` APK is 11,559,040 bytes, SHA-256
+`32fbd6f1de5495133a5178abd38f181de9ff039aa79c18503ca56359efe9535e`.
 Inspection verifies all eleven payload files, root ownership, lifecycle scripts
 and the exact dependency set; no saved accounts are included and the service is
 disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
@@ -77,17 +77,25 @@ precreated in disposable storage. The earlier 3.0.8-r0 build/extract attempt rej
 omitted parent-directory records; neither inspection establishes OpenWrt
 installation acceptance.
 
-The new source bundle resolves offline with the tested lock, and its complete
-inventory remains unchanged throughout these gates. The harnesses and extracted
-daemon retain their original hashes. Final verification binds each result to its
-exact test, harness and read-only packaged-executable mount. The r31 package and
-its saved executables also retain their accepted hashes. The new package,
-harnesses, runners and 69 evidence files are preserved in
-`work/paid-relay-verification/2026-09-29-arm64-r32`; its source reference identifies
-the unchanged metadata-bounds bundle, including the full dependency inventory.
-Every runtime case has a fresh, unprivileged, network-isolated ARM64 Linux
-container and local test money. No package is installed or published, and no
-physical device is accessed. This supersedes r31's package-process acceptance;
+The new bundle exports the three exact clean commits while retaining the accepted
+Spilman, TCP, bitreq and registry sources. Offline resolution preserves the tested
+lock and exact dependency graph, including enabled features and dependency edges.
+All 36,083 source files remain unchanged throughout the gates. The harnesses and
+extracted daemon retain their original hashes. Final verification binds each
+result to its exact test, harness and read-only packaged-executable mount.
+All 89 files in the previous r32 evidence and artifact inventory remain unchanged.
+The new package, harnesses, runners and 89 evidence files are preserved in
+`work/paid-relay-verification/2026-09-29-arm64-r33`; its source reference identifies
+the wallet-read-bounds bundle and full dependency inventory. The three clean,
+integrated temporary checkouts were removed after the verified source export.
+
+Every runtime case uses a fresh, unprivileged, network-isolated ARM64 Linux
+container and local test money through a verified local Docker endpoint. A
+600-second outer watchdog preserves the existing test deadlines; cleanup checks
+the uniquely named container's ownership before removing it. All cases finish
+without watchdog expiry or cleanup errors, and no owned containers remain.
+No package is installed or published, and no physical device is accessed.
+This supersedes r32's package-process acceptance;
 current-device checks, physical power loss, sustained performance and attribution
 of the historical intermittent stalls remain outstanding.
 
