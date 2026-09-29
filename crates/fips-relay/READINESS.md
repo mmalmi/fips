@@ -1873,6 +1873,16 @@ this optional status-field addition; the packaged default-feature executable omi
 measurements. Historical timeout causes and current-device acceptance remain open.
 See the [observation semantics](../../testing/relay-cadence/README.md).
 
+Provider rejections now emit fixed debug labels for record parsing, agreement,
+buyer identity, verification, credit application and checkpoint failures. Enable
+them with `RUST_LOG=warn,fips_relay::payment_control=debug`; raw errors, requests,
+signatures and identities are not logged. Wire replies and financial operations
+are unchanged. The existing payment-control regressions pass with and without
+measurements, and the TLS process scenario passes with these diagnostics enabled,
+reconciling all 384 test sats. This does not attribute the historical stalls.
+The r25 package predates this logging change; the dependency graph adds only a
+direct reference to the already resolved logging library, with no version change.
+
 A separate six-node regression reproduces interference between neighbor renewals.
 It holds the real mint's successful close response for one provider, then drives
 the source's other channel to its renewal threshold. The previous serial recovery
