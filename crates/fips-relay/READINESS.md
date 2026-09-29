@@ -2278,6 +2278,20 @@ a nonmatching batch. Delivery deadlines and retry limits remain unchanged; no
 wallet secrets are included in the diagnostics. These failures prevent broad
 controller-readiness acceptance despite the focused payment checks above.
 
+The current runtime and controller fixtures also pass four isolated ARM64 Linux
+checks: automatic renewal with all features and without optional features,
+route replacement/repricing, and delayed-neighbor payment/settlement isolation.
+The five-node renewal cases retain all 18 bidirectional rounds, native rekey-loss
+checks, interrupted-renewal recovery and capital/lifetime assertions. The delayed
+neighbor includes an unapplied update past its request deadline and a lost applied
+reply while healthy neighbors continue paying. Existing workloads and deadlines
+are unchanged. Source verification matches all 816 current core, relay and
+controller-fixture Rust files against the frozen dependency bundle; executable
+and log hashes are retained in
+`work/paid-relay-verification/2026-09-29-controller-recovery`.
+These are four finite linked-controller runs with a test mint, not packaged-daemon
+or hardware acceptance. They do not reproduce or attribute the older failures.
+
 A controlled comparison changes only management-socket placement: five runs with
 all five sockets and five with the original three middle-node sockets pass with
 unchanged delivery limits. Neither configuration reproduces the failure. The
