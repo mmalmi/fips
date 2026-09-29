@@ -1648,8 +1648,10 @@ also pass. Strict all-target linting, formatting and the source-size check pass
 with the corrected local dependencies. These are software checks, not router
 performance measurements.
 
-An isolated three-router ARM64 Linux fixture passes all 16 phases using only
-native Ethernet beacons and empty neighbor rosters. Discovery leaves wallets and
+The exact r32 packaged executable passes all 16 phases of the existing isolated
+three-router ARM64 Linux fixture using only native Ethernet beacons and empty
+neighbor rosters. Its matching test-mint executable is built offline from the
+same immutable source bundle. Discovery leaves wallets and
 spending authority unchanged; four unpaid packets deliver none. Funded probes
 deliver eight of eight packets in both directions before and after a link
 outage, actual dead-peer eviction and beacon rejoin. Funding operation and
@@ -1667,9 +1669,12 @@ recorded credit is bounded by later durable buyer authorization.
 
 The original two channels settle, all 384 test sats are redeemed into the test
 collector, and all three node wallets have zero spendable balance. Exact owned
-containers, links and network are cleaned up. The corrected fixture takes about
-140 seconds; 59 Python checks cover ownership, fault evidence, active credit and
-settlement validation. No payment wire messages or relay implementation changed.
+containers, links and network are cleaned up. The r32 run takes 105.2 seconds;
+all six directional fault effects, settlements and resource removal are also
+checked against its saved evidence. Source and executable hashes remain unchanged.
+The existing fixture's assertions and runtime code are unchanged. Evidence is
+retained in `work/paid-relay-verification/2026-09-29-ethernet-r32`, bound to the same
+FIPS/SDK/CDK source graph as the package acceptance above.
 This checks bounded Ethernet faults and one partition/rejoin, not radio mobility,
 physical power loss or an intentionally interrupted payment reply. The additional
 payment checks below cover two distinct interruption boundaries.

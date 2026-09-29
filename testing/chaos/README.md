@@ -27,9 +27,11 @@ The focused three-node line uses the production relay and a local test mint,
 with native Ethernet beacon discovery and no configured peer identities or
 addresses. It requires an existing Linux ARM64 `fips-test` image containing
 `ip`, `nsenter`, `tc` with kernel netem support, and Python 3.9+ with SQLite
-and Linux pidfd support, plus freshly built Linux ARM64
-`fips-relay` and `fips-relay-test-mint` executables. The harness never builds or
-pulls images. Its Python 3.9+ entry point needs only the standard library.
+and Linux pidfd support, plus Linux ARM64 `fips-relay` and matching
+`fips-relay-test-mint` executables. Use the relay extracted from the package being
+accepted and build the test mint from that package's exact source bundle. The
+harness never builds or pulls images. Its Python 3.9+ entry point needs only the
+standard library.
 
 From the repository root, set `BINARIES` to the directory containing those two
 executables, then run:
@@ -93,7 +95,12 @@ one forwarding hop; it does not establish Wi-Fi behavior, throughput, or scaling
 Faults have fixed parameters and must be observed, but packet scheduling is not
 claimed deterministic. Payment reconciliation after data faults alone does not
 prove recovery from an interrupted payment reply.
-The corrected Linux ARM64 fixture passed all 16 phases in about 140 seconds.
+The exact r32 package passes all 16 phases in 105.2 seconds with its matching
+test mint, using the existing assertions and timeouts. Both original channels
+settle, all 384 test sats are collected, and every node wallet is empty before
+ownership-checked cleanup. Source and executable hashes remain unchanged. The
+source reference, build record, binaries and result are retained in
+`work/paid-relay-verification/2026-09-29-ethernet-r32`.
 
 To also interrupt payment control, build both executables with
 `--features testbench,measurements` and add `--payment-faults` to the command
