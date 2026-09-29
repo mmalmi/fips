@@ -2149,6 +2149,21 @@ The original failed comparison and exact repair evidence are preserved in
 is unchanged. This fixes the reproduced fixture race without attributing the
 historical delivery, payment or renewal stalls.
 
+A separate SDK regression now reproduces cross-channel signing contention during
+refund recovery. Two channels are funded to different receivers in one wallet.
+While the first channel's real mint-state request is held, the production
+nonblocking signer loader cannot acquire the shared client store for the second
+channel. The original 30-second request deadline, unchanged-store check and retry
+of the original unspent funding all pass; the added isolation assertion then
+fails. Refund recovery retains the exclusive client-store lock across mint awaits,
+and automatic relay signing loads that same store. This is a confirmed unresolved
+contention path, not an attribution of the historical FIPS failures.
+The existing test extension and exact failure evidence are retained in
+`work/paid-relay-verification/2026-09-29-refund-signing`; runtime sources and
+accepted packages are unchanged. A fix must preserve same-channel financial
+serialization, original proof custody, retirement fencing and crash recovery while
+letting unrelated channels sign during refund networking.
+
 Provider rejections now emit fixed debug labels for record parsing, agreement,
 buyer identity, verification, credit application and checkpoint failures. Enable
 them with `RUST_LOG=warn,fips_relay::payment_control=debug`; raw errors, requests,
