@@ -14,9 +14,9 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r28 ARM64 package at `533f601c23` includes funded startup identity
-validation, bounded asynchronous control admission, payment rejection diagnostics,
-independent neighbor renewal workers,
+The current r29 ARM64 package at `1b8e68e0b2` includes saved sender-identity
+binding and funded startup validation, bounded asynchronous control admission,
+payment rejection diagnostics, independent neighbor renewal workers,
 [demand-driven local checkpoints](#packet-demand-before-the-checkpoint-threshold),
 wallet main-file preservation, configurable funding request pacing, and withdrawal
 recovery for unconfirmed channels and interrupted upgrades of shared channels.
@@ -30,10 +30,10 @@ each SQLite recovery-file kind with and without the seed. Stored bytes remain
 unchanged and restoring the original files restores wallet access. Missing files
 are rejected by the existing service profile preflight, before the SDK guard;
 this does not replace the SDK's direct regression or prove financial reconstruction.
-This supersedes r27 package acceptance; the intermittent recovery timeouts,
+This supersedes r28 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
-The later sender-identity binding below uses fresh version-2 service profiles and
-still needs a new ARM64 package acceptance; r28 does not include that guard.
+The sender-identity binding uses fresh version-2 service profiles. The packaged
+TCP case also verifies automatic recovery from a native signer-write failure.
 
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
@@ -623,7 +623,7 @@ initialization guards, strict all-target lint, formatting and source-size checks
 also pass. The fix only reorders existing validation and recovery: no protocol,
 configuration, dependency or journal format changes. It does not make every later
 startup failure transactional, reconstruct missing evidence, establish physical
-power-loss safety or attribute the historical payment stalls. The r28 packaged
+power-loss safety or attribute the historical payment stalls. The r29 packaged
 executable passes both the capacity and full-filesystem variants in isolated Linux.
 
 Fresh service manifests now also bind the native payment sender's public identity.
@@ -636,9 +636,9 @@ allows restart, paid forwarding and final settlement of all 512 test sats.
 Both feature profiles, initialization guards, strict all-target lint, formatting
 and source-size checks pass on native macOS ARM64. The fresh-profile manifest is
 version 2; no migration or saved-account rewrite is performed. Wire messages,
-configuration terms and dependencies are unchanged. The r28 executable predates
-this binding: fresh-profile ARM64 package acceptance remains pending. This does
-not reconcile conflicting channel evidence or attribute the historical stalls.
+configuration terms and dependencies are unchanged. The r29 packaged executable
+passes this extended check in both isolated Linux storage scenarios. This does not
+reconcile conflicting channel evidence or attribute the historical stalls.
 
 ### Receipt completion read bounds
 
@@ -828,9 +828,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `533f601c23` includes SDK `2c9788782422` and CDK
-`dd45a9c0861b`, contains 36,075 inventoried files and resolves 697 packages,
-including 676 vendored registry packages. All 2,781
+The source bundle at `1b8e68e0b2` includes SDK `2c9788782422` and CDK
+`dd45a9c0861b`, contains 36,076 inventoried files and resolves 697 packages,
+including 676 vendored registry packages. All 2,782
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -840,8 +840,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,208,992
-bytes, static and stripped. The unsigned APK is 11,541,262 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,205,472
+bytes, static and stripped. The unsigned APK is 11,538,570 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -1967,12 +1967,12 @@ and ledger, then replaying the same payment, restores exactly 3 sats of credit;
 settlement conserves all 64 test sats within the original wallet limit.
 Both payment-control cases pass with optional features enabled and disabled,
 strict all-target lint, formatting and source-size checks. This extends the existing
-fixture without changing runtime behavior; r28 remains the accepted executable.
+fixture without changing runtime behavior; r29 is the accepted executable.
 The checks cover forced writes and component reload, not automatic daemon retry,
 a process kill, physical power loss or attribution of the historical stalls.
 
-Automatic signer recovery also has native macOS ARM64 process acceptance. The
-existing three-node UDP/TCP lifecycle temporarily removes write permission from
+Automatic signer recovery has native macOS ARM64 and exact-packaged ARM64 Linux
+process acceptance. The existing three-node UDP/TCP lifecycle removes write permission from
 one disposable wallet directory. Existing signer files remain readable and
 lockable, but atomic replacement fails after the buyer durably authorizes new
 usage. The original signer file and seller credit remain unchanged. While that
@@ -1989,8 +1989,8 @@ checks pass. This is an opt-in extension of
 in the `service` integration target: set `FIPS_TEST_SIGNER_WRITE_FAILURE=1` and
 run as an unprivileged user with the matching dependency graph. The test checks
 that file creation is actually denied and restores permissions on scope exit.
-No runtime, wire or dependency changes are needed; the accepted r28 executable
-is unchanged. This covers one transient signer-write failure, not physical power
+The check needs no runtime fault-injection hook or protocol change. The r29
+packaged TCP case requires both automatic-recovery markers. This covers one transient signer-write failure, not physical power
 loss, current-device acceptance or attribution of the historical stalls.
 
 A separate six-node regression reproduces interference between neighbor renewals.
