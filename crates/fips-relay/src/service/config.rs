@@ -82,6 +82,7 @@ pub(super) struct Manifest {
     pub(super) version: u16,
     pub(super) npub: String,
     pub(super) receiver_pubkey: String,
+    pub(super) sender_pubkey: String,
     pub(super) terms: ServiceTerms,
 }
 

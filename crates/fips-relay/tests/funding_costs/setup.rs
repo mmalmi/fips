@@ -20,6 +20,10 @@ pub(super) async fn reject_swapped_financial_identities(
             "receiver/spilman-receiver-key.json",
             "stored payment receiver identity changed",
         ),
+        (
+            "wallet/spilman-sender-key.json",
+            "stored payment sender identity changed",
+        ),
     ] {
         let path = root.join(name);
         let original = std::fs::read(&path).unwrap();

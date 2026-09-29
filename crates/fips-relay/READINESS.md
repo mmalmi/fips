@@ -32,6 +32,8 @@ are rejected by the existing service profile preflight, before the SDK guard;
 this does not replace the SDK's direct regression or prove financial reconstruction.
 This supersedes r27 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
+The later sender-identity binding below uses fresh version-2 service profiles and
+still needs a new ARM64 package acceptance; r28 does not include that guard.
 
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
@@ -623,6 +625,20 @@ configuration, dependency or journal format changes. It does not make every late
 startup failure transactional, reconstruct missing evidence, establish physical
 power-loss safety or attribute the historical payment stalls. The r28 packaged
 executable passes both the capacity and full-filesystem variants in isolated Linux.
+
+Fresh service manifests now also bind the native payment sender's public identity.
+The extended funded fixture first reproduced startup failing to reject another
+valid sender key within its ten-second deadline. The service now checks the
+validated sender key against the saved public identity before accounting recovery.
+Substituting wallet seed, receiver key or sender key leaves the original seller,
+buyer and controller journals byte-for-byte unchanged. Restoring the originals
+allows restart, paid forwarding and final settlement of all 512 test sats.
+Both feature profiles, initialization guards, strict all-target lint, formatting
+and source-size checks pass on native macOS ARM64. The fresh-profile manifest is
+version 2; no migration or saved-account rewrite is performed. Wire messages,
+configuration terms and dependencies are unchanged. The r28 executable predates
+this binding: fresh-profile ARM64 package acceptance remains pending. This does
+not reconcile conflicting channel evidence or attribute the historical stalls.
 
 ### Receipt completion read bounds
 

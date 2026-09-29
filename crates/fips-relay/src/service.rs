@@ -25,7 +25,7 @@ use crate::{
 };
 use cashu_service::{
     CashuWalletService, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
-    FileSpilmanPaymentSigner,
+    FileSpilmanPaymentSigner, load_or_create_cashu_spilman_sender_key,
 };
 use fips_core::{
     FipsEndpoint, Identity, PeerIdentity,
@@ -107,6 +107,7 @@ pub struct RelayService {
     service_carriers: Vec<ServiceCarrierDiagnostics>,
     receive_task: tokio::task::JoinHandle<()>,
     receiver_pubkey: String,
+    sender_pubkey: String,
     forwarding: Arc<ServiceForwarder>,
     free: Arc<crate::free_routes::FreeRoutes>,
     _owner: File,
@@ -125,9 +126,10 @@ impl RelayService {
         .map_err(|e| e.to_string())?;
         let service = Self::assemble(config.clone(), identity, None).await?;
         let manifest = Manifest {
-            version: 1,
+            version: 2,
             npub: service.endpoint.npub().to_string(),
             receiver_pubkey: service.receiver_pubkey.clone(),
+            sender_pubkey: service.sender_pubkey.clone(),
             terms: config.terms,
         };
         service.shutdown().await?;
@@ -185,7 +187,7 @@ impl RelayService {
     fn stored_state(config: &ServiceConfig) -> Result<(Identity, Manifest), String> {
         config.validate()?;
         let manifest: Manifest = read_json(&config.state_directory.join("service.json"))?;
-        if manifest.version != 1 || manifest.terms != config.terms {
+        if manifest.version != 2 || manifest.terms != config.terms {
             return Err(
                 "configuration differs from saved terms; explicit reconciliation required".into(),
             );
@@ -225,6 +227,11 @@ impl RelayService {
             drop(FileSpilmanPaymentSigner::load(&directory)?);
         } else {
             Self::check_wallet_capacity(&config).await?;
+        }
+        let sender_pubkey =
+            load_or_create_cashu_spilman_sender_key(&root.join("wallet"))?.public_key_hex;
+        if manifest.is_some_and(|m| m.sender_pubkey != sender_pubkey) {
+            return Err("stored payment sender identity changed".into());
         }
         let receiver = FileSpilmanPaymentReceiver::load(
             &root.join("receiver"),
@@ -465,6 +472,7 @@ impl RelayService {
             service_carriers,
             receive_task,
             receiver_pubkey,
+            sender_pubkey,
             forwarding,
             free,
             _owner: owner,
