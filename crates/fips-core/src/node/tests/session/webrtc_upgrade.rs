@@ -24,6 +24,29 @@ fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
         let identity_b = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
         let webrtc_addr_a = identity_transport_addr(nodes[0].node.identity());
         let webrtc_addr_b = identity_transport_addr(nodes[1].node.identity());
+        let mut endpoint_a = nodes[0].node.attach_endpoint_data_io(8).unwrap();
+        let mut endpoint_b = nodes[1].node.attach_endpoint_data_io(8).unwrap();
+        // Public WebRTC negotiation already has an FSP session over WSS.
+        // Exercise an existing application session, not only a fresh session
+        // created after the direct carrier has finished upgrading.
+        send_endpoint_data_via_dataplane(
+            &mut nodes[0].node,
+            identity_b,
+            b"before-direct-upgrade".to_vec(),
+        )
+        .await
+        .unwrap();
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint_b.event_rx,
+            Duration::from_secs(10),
+            "endpoint data over initial WSS carrier",
+        )
+        .await;
+        assert_eq!(
+            expect_single_endpoint_data_event(event).payload.as_slice(),
+            b"before-direct-upgrade"
+        );
 
         // Only A dials: B has no pending outbound WebRTC address-index entry.
         // The production failure is B treating this already-authenticated
@@ -50,11 +73,24 @@ fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
                 if physical_path_is_connected(&nodes[0].node, &webrtc_addr_b)
                     && physical_path_is_connected(&nodes[1].node, &webrtc_addr_a)
                 {
-                    for node in &mut nodes {
-                        node.node.poll_pending_connects().await;
-                    }
+                    break;
                 }
-                process_available_packets(&mut nodes).await;
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("physical WebRTC carrier should open");
+        for node in &mut nodes {
+            node.node.poll_pending_connects().await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                process_available_packets_for_node(&mut nodes[0]).await;
+                // A closes the old WSS carrier after authenticating Msg2.
+                // Let B's ordinary liveness maintenance observe that closure
+                // before B receives the first data on the new WebRTC carrier.
+                nodes[1].node.check_link_heartbeats().await;
+                process_available_packets_for_node(&mut nodes[1]).await;
                 if active_path_is_webrtc(&nodes[0].node, identity_b.node_addr(), &webrtc_addr_b)
                     && active_path_is_webrtc(&nodes[1].node, identity_a.node_addr(), &webrtc_addr_a)
                 {
@@ -72,7 +108,6 @@ fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
             )
         });
 
-        let mut endpoint = nodes[1].node.attach_endpoint_data_io(8).unwrap();
         send_endpoint_data_via_dataplane(
             &mut nodes[0].node,
             identity_b,
@@ -82,7 +117,7 @@ fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
         .unwrap();
         let event = recv_endpoint_event_while_draining(
             &mut nodes,
-            &mut endpoint.event_rx,
+            &mut endpoint_b.event_rx,
             Duration::from_secs(10),
             "endpoint data after admission under load",
         )
@@ -90,6 +125,24 @@ fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
         assert_eq!(
             expect_single_endpoint_data_event(event).payload.as_slice(),
             b"authenticated-upgrade-under-load"
+        );
+        send_endpoint_data_via_dataplane(
+            &mut nodes[1].node,
+            identity_a,
+            b"reverse-existing-session-after-upgrade".to_vec(),
+        )
+        .await
+        .unwrap();
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint_a.event_rx,
+            Duration::from_secs(10),
+            "reverse existing-session data over promoted WebRTC carrier",
+        )
+        .await;
+        assert_eq!(
+            expect_single_endpoint_data_event(event).payload.as_slice(),
+            b"reverse-existing-session-after-upgrade"
         );
         assert!(
             !nodes[1]

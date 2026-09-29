@@ -181,7 +181,11 @@ impl Node {
         );
     }
 
-    fn remove_active_peer_inner(&mut self, node_addr: &NodeAddr, preserve_end_to_end: bool) {
+    pub(in crate::node) fn remove_active_peer_inner(
+        &mut self,
+        node_addr: &NodeAddr,
+        preserve_end_to_end: bool,
+    ) {
         self.forget_neighbor_reconnection(node_addr);
         let removed_peer = match self.peers.remove_with_session_indices(node_addr) {
             Some(removed) => removed,
@@ -219,8 +223,8 @@ impl Node {
         }
 
         // Generic removal still discards stale end-to-end state. Elective
-        // rotation only removes adjacency: the remote has not reset its FSP
-        // session, and the same keys can survive a route change or rejoin.
+        // rotation and an authenticated same-epoch handoff only remove the
+        // adjacency: the remote still owns the same end-to-end session keys.
         if !preserve_end_to_end {
             let session_mmp = self.session_mmp_snapshot(node_addr);
             self.remove_dataplane_fsp_owner(node_addr);
