@@ -44,17 +44,17 @@ restoring the guards restores the passing source. Exact sources, tested locks,
 negative-test recipes and 15 gate records are preserved in
 `work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
 
-The r34 ARM64 package includes these database-read and repository-entry changes
-and the refund/signing isolation fix in SDK `1d520f1a1d60` described below.
-The newer [interrupted-send debit check](#interrupted-send-debit-evidence) is
-accepted locally with SDK `d0dae6f2a794`; r34 does not contain it.
+The r35 ARM64 package includes these database-read and repository-entry changes,
+the refund/signing isolation fix and the
+[interrupted-send debit check](#interrupted-send-debit-evidence) in SDK
+`d0dae6f2a794` described below.
 Current-device acceptance, physical power-loss and sustained performance checks
 remain outstanding. The historical intermittent stalls remain unattributed.
 Default package builds omit optional payment-stage measurements, which retain
 their separate native acceptance below.
 
-The r34 package accepts FIPS source `6e1ede3d2d51`, native CDK
-`418380651373` and SDK `1d520f1a1d60` from the verified offline source bundle.
+The r35 package accepts FIPS source `d25379873924`, native CDK
+`418380651373` and SDK `d0dae6f2a794` from the verified offline source bundle.
 Its fourteen isolated Linux process cases pass against the executable extracted
 from the APK: two storage/restart cases, four expiry/funding/retirement cases,
 six mixed-transport/renewal cases and two
@@ -65,12 +65,12 @@ across a shared provider. The separate initialization guard also passes; its
 empty-account buyer-identity check calls the embedded service loader, while its
 command-line checks use the packaged executable.
 
-The offline production build took 516.130 seconds with Rust 1.96.0,
+The offline production build took 405.842 seconds with Rust 1.96.0,
 cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,271,168 bytes, SHA-256
-`eb607e00756ea326cd77dee76a855801547f07325f564245694e6bc06dad9abf`.
-The unsigned `0.1.0-r34` APK is 11,560,851 bytes, SHA-256
-`351f4414b5c268007841fe4a3369c943ca7bd328c967f14129370c632e526d41`.
+25,288,480 bytes, SHA-256
+`52986e15945092c4e53b19168fc72a547bc351d612c23444a10be4e90772b389`.
+The unsigned `0.1.0-r35` APK is 11,566,366 bytes, SHA-256
+`d3efb91c17c8a010b3ac2c91c4c8096dda8bc3dea4f17ea5b2ef4b1b25cbbc2b`.
 Inspection verifies all eleven payload files, root ownership, lifecycle scripts
 and the exact dependency set; no saved accounts are included and the service is
 disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
@@ -86,10 +86,10 @@ the tested lock and exact dependency graph, including enabled features and edges
 All 36,083 source files remain unchanged throughout the gates. The harnesses and
 extracted daemon retain their original hashes. Final verification binds each
 result to its exact test, harness and read-only packaged-executable mount.
-All 110 files in the previous r33 evidence and artifact inventory remain unchanged.
-The new package, harnesses, runners and 89 evidence files are preserved in
-`work/paid-relay-verification/2026-09-29-arm64-r34`; its source reference identifies
-the refund-signing bundle and full dependency inventory. The two clean,
+All 110 files in the previous r34 evidence and artifact inventory remain unchanged.
+The new package, harnesses, runners and 88 evidence files are preserved in
+`work/paid-relay-verification/2026-09-30-arm64-r35`; its source reference identifies
+the native-debit bundle and full dependency inventory. The two clean,
 integrated temporary checkouts were removed after the verified source export.
 
 Every runtime case uses a fresh, unprivileged, network-isolated ARM64 Linux
@@ -98,7 +98,7 @@ container and local test money through a verified local Docker endpoint. A
 the uniquely named container's ownership before removing it. All cases finish
 without watchdog expiry or cleanup errors, and no owned containers remain.
 No package is installed or published, and no physical device is accessed.
-This supersedes r32's package-process acceptance;
+This supersedes r34's package-process acceptance;
 current-device checks, physical power loss, sustained performance and attribution
 of the historical intermittent stalls remain outstanding.
 
@@ -688,8 +688,9 @@ preserved in `work/paid-relay-verification/2026-09-30-native-debit-evidence`.
 No schema, dependency or protocol message changes. Completed SDK results may still
 outlive acknowledged native receipt retirement. This preserves uncertain evidence;
 it does not reconstruct missing originals, reconcile arbitrary conflicting records
-or attribute the historical payment stalls. The r34 package predates this fix;
-package, current-device and physical power-loss acceptance remain outstanding.
+or attribute the historical payment stalls. The r35 package includes this fix
+and passes the isolated Linux acceptance above; current-device and physical
+power-loss acceptance remain outstanding.
 
 ### Missing withdrawal journals
 
