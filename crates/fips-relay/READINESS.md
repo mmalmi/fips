@@ -14,7 +14,7 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The current r24 ARM64 package at `02298cb796` includes
+The current r25 ARM64 package at `3a272d8974` includes independent neighbor renewal workers,
 [demand-driven local checkpoints](#packet-demand-before-the-checkpoint-threshold),
 wallet main-file preservation, configurable funding request pacing, and withdrawal
 recovery for unconfirmed channels and interrupted upgrades of shared channels.
@@ -27,7 +27,7 @@ each SQLite recovery-file kind with and without the seed. Stored bytes remain
 unchanged and restoring the original files restores wallet access. Missing files
 are rejected by the existing service profile preflight, before the SDK guard;
 this does not replace the SDK's direct regression or prove financial reconstruction.
-This supersedes r23 package acceptance; the intermittent recovery timeouts,
+This supersedes r24 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
 
 The peer API uses eight requests across quote, controller and payment services.
@@ -791,9 +791,9 @@ SDK workspace suite, all 18 SDK feature profiles, 295 relay unit tests, five
 opening recovery process cases and the payout/refund crash case, with strict
 native, SDK and relay lint. These results do not accept a new hardware deployment.
 
-The source bundle at `02298cb796` includes SDK `2c9788782422` and CDK
-`dd45a9c0861b`, contains 36,070 inventoried files and resolves 697 packages,
-including 676 vendored registry packages. All 2,776
+The source bundle at `3a272d8974` includes SDK `2c9788782422` and CDK
+`dd45a9c0861b`, contains 36,071 inventoried files and resolves 697 packages,
+including 676 vendored registry packages. All 2,777
 recorded source/dependency inputs match the accepted native graph, with the
 explicit tested root lockfile substituted for the portable development lock.
 The relocated bundle builds offline with Rust 1.96.0, Zig 0.15.2 and
@@ -803,8 +803,8 @@ previous build outputs. Exported revision metadata does not inherit the unrelate
 parent repository. See the
 [bundle workflow](FUNDING-COSTS.md#portable-development-source-bundle).
 
-Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,162,376
-bytes, static and stripped. The unsigned APK is 11,525,822 bytes. Package integrity
+Its default-feature `aarch64-unknown-linux-musl` OpenWrt executable is 25,200,712
+bytes, static and stripped. The unsigned APK is 11,535,829 bytes. Package integrity
 and all 11 payload hashes verify the executable, exact source metadata, root
 ownership and disabled default configuration. The builder rejects a mismatched
 architecture. The executable starts in isolated ARM64 Linux; no package is
@@ -1848,9 +1848,10 @@ material. It is volatile diagnostic state, not financial evidence or peer traffi
 The existing lost-update fixture fails its new diagnostic assertion before the
 change and passes afterward for both prompt cancellation and silent timeout.
 All 302 relay unit tests, 288 without optional features, strict all-target lint
-in both modes, and the TLS process/status case pass. The r24 package predates
-this status-field addition; historical timeout causes and current-device
-acceptance remain open. See the [observation semantics](../../testing/relay-cadence/README.md).
+in both modes, and the TLS process/status case pass. The r25 source bundle includes
+this optional status-field addition; the packaged default-feature executable omits
+measurements. Historical timeout causes and current-device acceptance remain open.
+See the [observation semantics](../../testing/relay-cadence/README.md).
 
 A separate six-node regression reproduces interference between neighbor renewals.
 It holds the real mint's successful close response for one provider, then drives
@@ -1882,8 +1883,12 @@ in [funding and recovery](FUNDING-COSTS.md).
 
 This is a demonstrated scheduling fault and controlled recovery evidence, not an
 attribution of the earlier intermittent TLS, payment or delivery failures. Current
-ARM64 packaging and physical-device acceptance of this scheduler change remain
-outstanding.
+ARM64 package acceptance now covers this scheduler revision through the twelve
+isolated process cases. The two six-node renewal scenarios also pass in a separate
+no-default-feature ARM64 Linux harness built from the same bundle, with test-money
+conservation and unchanged source hashes. Those simulated-link cases exercise
+linked controllers; the twelve process cases exercise the packaged daemon. Physical
+device and sustained-performance acceptance remain outstanding.
 
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during
@@ -2020,7 +2025,7 @@ The existing tests now require the scheduling hint, retry the rejected packet,
 and retain idle, financial-limit and crash-exposure checks. The scheduling
 assertion fails on the previous runtime. This identifies a checkpoint defect;
 it does not establish the cause of the historical delivery/payment timeouts.
-The r24 package includes this change and passes the isolated Linux process cases;
+The r25 package includes this change and passes the isolated Linux process cases;
 current-device acceptance remains open.
 
 The first controller acceptance run also exposed an offline wallet inspection
