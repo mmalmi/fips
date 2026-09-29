@@ -208,31 +208,6 @@ impl RelayService {
         let create = manifest.is_none();
         let owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
         let root = &config.state_directory;
-        let seller = Arc::new(
-            if create {
-                DurableRelay::create(
-                    &root.join("seller"),
-                    Limits::default(),
-                    config.terms.window_msat,
-                )
-            } else {
-                DurableRelay::load(&root.join("seller"))
-            }
-            .map_err(|e| e.to_string())?,
-        );
-        let buyer = Arc::new(
-            if create {
-                BuyerAuthorizer::create(
-                    &root.join("buyer"),
-                    *identity.node_addr(),
-                    config.terms.buyer_budget_sat,
-                    Limits::default(),
-                )
-            } else {
-                BuyerAuthorizer::load(&root.join("buyer"))
-            }
-            .map_err(|e| e.to_string())?,
-        );
         if create {
             let directory = root.join("wallet");
             let wallet = match config.terms.wallet_capacity_bytes {
@@ -259,6 +234,31 @@ impl RelayService {
         if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
             return Err("stored payment receiver identity changed".into());
         }
+        let seller = Arc::new(
+            if create {
+                DurableRelay::create(
+                    &root.join("seller"),
+                    Limits::default(),
+                    config.terms.window_msat,
+                )
+            } else {
+                DurableRelay::load(&root.join("seller"))
+            }
+            .map_err(|e| e.to_string())?,
+        );
+        let buyer = Arc::new(
+            if create {
+                BuyerAuthorizer::create(
+                    &root.join("buyer"),
+                    *identity.node_addr(),
+                    config.terms.buyer_budget_sat,
+                    Limits::default(),
+                )
+            } else {
+                BuyerAuthorizer::load(&root.join("buyer"))
+            }
+            .map_err(|e| e.to_string())?,
+        );
         let mut free = crate::free_routes::FreeRoutes::for_accounts(seller.clone(), buyer.clone());
         if let Some(policy) = &config.free_bandwidth {
             free = free.with_bandwidth(policy.clone())?;

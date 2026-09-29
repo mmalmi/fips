@@ -33,6 +33,10 @@ this does not replace the SDK's direct regression or prove financial reconstruct
 This supersedes r26 package acceptance; the intermittent recovery timeouts,
 current-device checks and other outstanding requirements remain open.
 
+The latest source also validates stored payment identities before recovering
+funded accounting journals; see [startup identity rejection](#wallet-seed-and-database-identity).
+The r27 executable predates that ordering fix and needs replacement acceptance.
+
 The peer API uses eight requests across quote, controller and payment services.
 Only the controller admits and seals channels; payment requests report usage or
 update existing credit. The unused manual `Open` and `StopForwarding` operations
@@ -605,6 +609,24 @@ recovery-file kinds, with the seed present and absent, and reopen the restored
 original database. Those command-line checks stop at the earlier service profile
 preflight; the direct SDK regression above exercises its main-file guard.
 Current-device and physical power-loss acceptance remain pending.
+
+Funded service startup now checks the wallet seed and saved receiver identity
+before loading seller or buyer journals. Previously, seller recovery could persist
+another forwarding allowance before a conflicting identity rejected startup.
+The four-process paid restart fixture reproduces that mutation before the fix.
+It now substitutes a different valid wallet seed and receiver key in turn, checks
+each rejection leaves seller, buyer and controller journals byte-for-byte unchanged,
+then restores the original identities and completes restart, bidirectional delivery
+and concurrent settlement. Original lifetime budgets and wallet capacity remain
+intact, with all 512 test sats accounted for, including mint costs.
+
+The existing funded fixture passes with optional features enabled and disabled;
+initialization guards, strict all-target lint, formatting and source-size checks
+also pass. The fix only reorders existing validation and recovery: no protocol,
+configuration, dependency or journal format changes. It does not make every later
+startup failure transactional, reconstruct missing evidence, establish physical
+power-loss safety or attribute the historical payment stalls. The r27 packaged
+executable predates this fix.
 
 ### Receipt completion read bounds
 
