@@ -217,7 +217,7 @@ async fn test_mint_refuses_public_or_wildcard_binding() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn command_line_tools_fund_over_the_private_control_socket() {
+async fn command_line_tools_fund_and_recover_export_over_the_private_control_socket() {
     use std::{process::Stdio, time::Duration};
     use tokio::{io::AsyncWriteExt, process::Command};
 
@@ -319,6 +319,49 @@ async fn command_line_tools_fund_over_the_private_control_socket() {
             serde_json::from_slice::<Value>(&imported.stdout).unwrap()["amount_sat"],
             16
         );
+        let mut original: Option<(Value, Vec<u8>)> = None;
+        for _ in 0..2 {
+            let output = cli(
+                env!("CARGO_BIN_EXE_fips-relay"),
+                "wallet",
+                &relay_path,
+                json!({"type":"export","id":"return-phone","amount_sat":5}),
+            )
+            .await;
+            assert!(
+                output.status.success(),
+                "wallet export process must succeed"
+            );
+            let summary: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(summary.get("token").is_none());
+            let exported = Path::new(summary["path"].as_str().unwrap());
+            let bytes = std::fs::read(exported).unwrap();
+            if let Some((prior, token)) = &original {
+                assert_eq!(&summary, prior);
+                assert!(
+                    bytes == *token,
+                    "retry must recover the original bearer token"
+                );
+            } else {
+                // The next invocation is a separate process with no published token.
+                std::fs::rename(exported, root.path().join("retained-export.json")).unwrap();
+                original = Some((summary, bytes));
+            }
+        }
+        let balance = cli(
+            env!("CARGO_BIN_EXE_fips-relay"),
+            "wallet",
+            &relay_path,
+            json!({"type":"balance"}),
+        )
+        .await;
+        assert!(balance.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&balance.stdout).unwrap()["balance_sat"],
+            11,
+            "separate export processes must not debit the wallet twice"
+        );
+        eprintln!("wallet CLI recovered the original export without another debit");
         assert_eq!(
             std::fs::metadata(cfg.state_directory.join("control.sock"))
                 .unwrap()
