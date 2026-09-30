@@ -203,15 +203,16 @@ impl Node {
         );
 
         // A smaller authenticated identity must advertise a root smaller than
-        // ours. On its first RTT only, let its missing declaration arrive before
-        // spending our send interval on the old root. This cannot defer both
-        // ends; later reports still repair a lost declaration without refresh.
+        // ours. Before and on its first valid RTT, let its missing declaration
+        // arrive before spending our send interval on the old root. This cannot
+        // defer both ends; later measured reports still repair a lost declaration.
         let peer_coords = self.tree_state.peer_coords(from);
-        let defer_first_missing =
-            processed.first_rtt && peer_coords.is_none() && from < self.tree_state.root();
-        // A successful local announcement can still be lost. All subsequent
+        let defer_initial_missing = (processed.first_rtt || processed.srtt_ms.is_none())
+            && peer_coords.is_none()
+            && from < self.tree_state.root();
+        // A successful local announcement can still be lost. Later measured
         // missing-state reports and all root disagreements retain normal repair.
-        if !defer_first_missing
+        if !defer_initial_missing
             && peer_coords.is_none_or(|coords| coords.root_id() != self.tree_state.root())
         {
             self.mark_tree_announce_pending(from);

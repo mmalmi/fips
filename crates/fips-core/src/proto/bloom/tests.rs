@@ -2,6 +2,7 @@ use super::*;
 use crate::NodeAddr;
 use std::collections::HashMap;
 
+mod deadlines;
 mod fanout;
 
 fn make_node_addr(val: u8) -> NodeAddr {

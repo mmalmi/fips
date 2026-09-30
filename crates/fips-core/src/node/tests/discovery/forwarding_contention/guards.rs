@@ -1,5 +1,8 @@
 //! Controlled invalidation of real authenticated waiting requests.
 use super::*;
+use crate::node::tests::spanning_tree::{
+    process_dataplane_completions, process_dataplane_packet_once,
+};
 
 #[derive(Clone, Copy, Debug)]
 enum Case {
@@ -54,16 +57,51 @@ fn run_case(case: Case) {
     });
 }
 
-async fn wait_record(nodes: &mut [TestNode], node: usize, id: u64) {
-    let until = Instant::now() + Duration::from_millis(250);
-    while !nodes[node].node.recent_requests.contains_key(&id) {
-        process_available_packets(nodes).await;
-        assert!(
-            Instant::now() < until,
-            "real lookup reaches authenticated receiver"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
+fn record_status(node: &TestNode, id: u64, deadline: Instant) -> Option<bool> {
+    if Instant::now() >= deadline {
+        Some(false)
+    } else {
+        node.node.recent_requests.contains_key(&id).then_some(true)
     }
+}
+
+async fn record_within_deadline(nodes: &mut [TestNode], node: usize, id: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    tokio::time::timeout_at(deadline, async {
+        loop {
+            // The general topology drain can await unrelated crypto readiness
+            // for a second. Drive bounded ready turns and all nodes instead;
+            // only the decoded request's admission satisfies this wait.
+            for index in 0..nodes.len() {
+                for _ in 0..64 {
+                    if let Some(outcome) = record_status(&nodes[node], id, deadline) {
+                        return outcome;
+                    }
+                    let Ok(packet) = nodes[index].packet_rx.try_recv() else {
+                        break;
+                    };
+                    process_dataplane_packet_once(&mut nodes[index].node, packet).await;
+                }
+                if let Some(outcome) = record_status(&nodes[node], id, deadline) {
+                    return outcome;
+                }
+                process_dataplane_completions(&mut nodes[index].node).await;
+            }
+            if let Some(outcome) = record_status(&nodes[node], id, deadline) {
+                return outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+async fn wait_record(nodes: &mut [TestNode], node: usize, id: u64) {
+    assert!(
+        record_within_deadline(nodes, node, id).await,
+        "real lookup {id} reaches authenticated receiver {node} within 250ms"
+    );
 }
 
 async fn source_request(nodes: &mut [TestNode], id: u64) {
@@ -86,6 +124,12 @@ async fn source_request(nodes: &mut [TestNode], id: u64) {
 
 async fn exercise(nodes: &mut [TestNode], case: Case) {
     setup(nodes).await;
+    if matches!(case, Case::IngressGone) {
+        assert!(
+            !record_within_deadline(nodes, 1, 100).await,
+            "unrelated ready traffic cannot satisfy the absent request predicate"
+        );
+    }
     let relay = *nodes[1].node.node_addr();
     let source = *nodes[0].node.node_addr();
     let target = *nodes[2].node.node_addr();
@@ -96,6 +140,13 @@ async fn exercise(nodes: &mut [TestNode], case: Case) {
         nodes[1].node.config.node.discovery.recent_expiry_secs = 1;
     }
     source_request(nodes, 100).await;
+    if matches!(case, Case::IngressGone) {
+        assert_eq!(
+            record_status(&nodes[1], 100, Instant::now()),
+            Some(false),
+            "even an admitted request cannot satisfy an elapsed wall deadline"
+        );
+    }
     assert_eq!(nodes[1].node.pending_lookups.len(), 0);
     let reserved = nodes[1]
         .node
