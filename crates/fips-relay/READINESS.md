@@ -15,12 +15,11 @@ Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
 SDK `05d0b6656876` adds native coin-history handoff for acknowledged exports to
-the cached-result recovery base `b8da3c1a2bd4`. Its native acceptance below uses
-FIPS core 0.4.87 and TCP endpoint 0.2.20; matching Linux package acceptance remains
-outstanding. The r43 package accepts its recorded core 0.4.86/endpoint 0.2.19
-sources, while r42 covers the earlier export workflow. Neither accepts the latest
-handoff implementation. The broader seventeen-case r38 suite and r37 cadence
-measurements retain their original revisions and scope.
+the cached-result recovery base `b8da3c1a2bd4`. Its native and r44 Linux package
+acceptance below use FIPS core 0.4.87 and TCP endpoint 0.2.20. The r43 package
+retains its recorded core 0.4.86/endpoint 0.2.19 scope, while r42 covers the earlier
+export workflow. The broader seventeen-case r38 suite and r37 cadence measurements
+retain their original revisions and scope.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -64,9 +63,45 @@ reclaim guard; the corrected guard reuses the existing validation, and the full
 suite was rerun successfully. Earlier failures and read-only storage observations
 are retained with the acceptance evidence under
 `work/paid-relay-verification/2026-09-30-export-proof-retirement`.
-This is native macOS ARM64 acceptance. Matching Linux package checks, current
-hardware, physical power loss and the broader outstanding requirements above
-remain open. No deployment, publication or real-money operation was performed.
+This is native macOS ARM64 acceptance. The r44 result below adds matching Linux
+package checks. Current hardware, physical power loss and the broader outstanding
+requirements above remain open. No deployment, publication or real-money operation
+was performed.
+
+The r44 package binds FIPS `61a353a34f37` (core 0.4.87), SDK `05d0b6656876`
+and TCP endpoint `5d4d0d7e8b02` (0.2.20) to the retained CDK/dependency closure.
+Fifteen isolated ARM64 Linux cases pass: nine routing checks, the crowded/lossy
+paid encounter, both customer billing flows, the wallet command-line workflow,
+and the three- and 131-export custody fixtures. The customer and command-line
+checks run the extracted packaged executable; routing and export fixtures use
+the matching embedded sources. The paid encounter restores delivery and all-hop
+credit after departure/rejoin and reconciles all 1,536 test sats.
+
+The Linux 131-export case matches the native custody result under the fixed
+16 MiB wallet limit: all 256 test sats reconcile, no send requests or archived
+references remain, and 188 coin records are collected. The final 21 coin records
+are below the initial 42. The test takes 1,588.81 seconds under normal mint
+request pacing. Read-only aggregate observations are retained separately from
+the test assertions. This remains finite lifecycle acceptance, not a performance
+benchmark or a bound on every wallet store.
+
+The offline optimized build takes 463.20 seconds. The static binary is
+25,458,352 bytes, SHA-256
+`e23c6d0db601fec0e9dfee697cd9d356ddc878dbebd79ba8b3944723bdb01511`.
+The unsigned `0.1.0-r44` package is 11,661,691 bytes, SHA-256
+`0b858723e9b0fdec13f81cdb0207850672c927b58a1f14794250b5b64bd52931`.
+All eleven payload files, 36,271 source files and tested executables retain their
+verified hashes. The relocated dependency graph matches native acceptance;
+all owned containers are absent and the complete r43 directory is unchanged.
+The 108 evidence files are indexed under
+`work/paid-relay-verification/2026-09-30-arm64-r44`.
+
+Package preflight initially mistook an independent core build's log for shared
+inputs. The harness ownership check was restricted to this run's source and cache
+directories before resuming; it revalidated toolchain metadata and retained the
+successful production build. Original and amended runner hashes are preserved,
+and the final verifier checks both. Runtime sources remained unchanged throughout.
+No device installation, publication or real-money operation was performed.
 
 Periodic tree and reachability repair now runs in the bounded liveness tick,
 before optional discovery. A real encrypted-peer regression on core 0.4.86
