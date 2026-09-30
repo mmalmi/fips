@@ -121,6 +121,20 @@ async fn prompt_repair(asymmetric: bool) {
         assert!(!synchronized(&nodes), "lost declaration is the premise");
         let stale_before = nodes[0].node.stats().tree.stale;
         let started = Instant::now();
+        if asymmetric {
+            // MMP can repair this loss without a repeated child declaration.
+            // Supply the stale signed declaration this case intends to exercise,
+            // using the unchanged authenticated edge and ordinary send limit.
+            let root = *nodes[0].node.node_addr();
+            let child = *nodes[1].node.node_addr();
+            let declaration = nodes[1].node.tree_state().my_declaration().clone();
+            assert_eq!(nodes[0].node.tree_state().peer_declaration(&child), Some(&declaration));
+            assert!(nodes[1].node.get_peer(&root).unwrap().can_send_tree_announce(Node::now_ms()));
+            let sent = nodes[1].node.stats().tree.sent;
+            nodes[1].node.send_tree_announce_to_peer(&root).await.unwrap();
+            assert_eq!(nodes[1].node.stats().tree.sent, sent + 1);
+            assert_eq!(nodes[1].node.tree_state().my_declaration(), &declaration);
+        }
         let mut next_tick = started + Duration::from_secs(1);
         let mut first_measured = None;
         let mut observed = sent_counts(&nodes);
@@ -157,7 +171,8 @@ async fn prompt_repair(asymmetric: bool) {
                     timestamps[index] = timestamp;
                 }
             }
-            if synchronized(&nodes) && first_measured.is_some() { break; }
+            if synchronized(&nodes) && first_measured.is_some()
+                && (!asymmetric || nodes[0].node.stats().tree.stale > stale_before) { break; }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let root = *nodes[0].node.node_addr();
