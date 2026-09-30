@@ -38,8 +38,8 @@ tests in each feature profile, strict SDK/relay lint, changed-file formatting an
 source-size checks. The twelve final gates share unchanged source fingerprints.
 Exact sources, locks, failed reproductions and verification inputs are retained in
 `work/paid-relay-verification/2026-09-30-automatic-key-rotation`.
-The r35 package predates this fix. Current ARM64 package/device acceptance and
-attribution of the other historical stalls remain outstanding.
+The r36 ARM64 package acceptance below includes this fix. Current-device
+acceptance and attribution of the other historical stalls remain outstanding.
 
 Current source lets a watched route leave a disconnected provider while its
 committed funding reply remains unresolved. The wallet worker retains ownership
@@ -68,9 +68,8 @@ sats; lost-settlement recovery collects all 259. Strict all-target relay lint,
 formatting and source-size checks pass. Exact sources, tested locks, failed
 reproductions and successful gates are retained in
 `work/paid-relay-verification/2026-09-30-pending-route-funding`.
-That mobile-funding change left SDK and CDK sources unchanged. The r35 package
-predates it; current ARM64 package/device acceptance and the other historical
-stalls remain open.
+That mobile-funding change left SDK and CDK sources unchanged. The r36 package
+includes it; current-device acceptance and the other historical stalls remain open.
 
 Native CDK `418380651373` and SDK `66f5cf67dbc6` now bound each service
 repository to 32 distinct mint/unit wallets. Admission holds the repository write
@@ -102,53 +101,50 @@ restoring the guards restores the passing source. Exact sources, tested locks,
 negative-test recipes and 15 gate records are preserved in
 `work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
 
-The r35 ARM64 package includes these database-read and repository-entry changes,
-the refund/signing isolation fix and the
-[interrupted-send debit check](#interrupted-send-debit-evidence) in SDK
-`d0dae6f2a794` described below.
-Current-device acceptance, physical power-loss and sustained performance checks
-remain outstanding. The historical intermittent stalls remain unattributed.
+The r36 ARM64 package accepts FIPS source `31c52fc35c63`, native CDK
+`418380651373` and SDK `c3fd5b2f8c1b` from the verified offline source bundle.
+It includes the receiver key refresh and mobile-funding changes above, along with
+the database-read and repository-entry bounds, refund/signing isolation and
+[interrupted-send debit check](#interrupted-send-debit-evidence) described below.
+Its fourteen isolated Linux process cases pass against the executable extracted
+from the APK: two storage/restart cases, four expiry/funding/retirement cases,
+six mixed-transport/renewal cases and two customer-restart cases. They cover saved
+budget enforcement, full-filesystem recovery and both ordinary and explicitly
+enabled self-signed TLS. The renewal case rotates mint keys between buyers;
+the second buyer and all eight replacement channels use the new keys, and all
+384 test sats reconcile.
+
+Two additional cases pass. The initialization guard combines embedded service
+loading with packaged command-line checks. The moving-route funding case uses
+embedded controllers and a local test mint to verify fallback while funding is
+unresolved, retained channel identities, bounded capital and final settlement.
+That case is ARM64 controller evidence, not packaged-process or radio acceptance.
 Default package builds omit optional payment-stage measurements, which retain
 their separate native acceptance below.
 
-The r35 package accepts FIPS source `d25379873924`, native CDK
-`418380651373` and SDK `d0dae6f2a794` from the verified offline source bundle.
-Its fourteen isolated Linux process cases pass against the executable extracted
-from the APK: two storage/restart cases, four expiry/funding/retirement cases,
-six mixed-transport/renewal cases and two
-customer-restart cases. These include rejection of an increased saved buyer
-budget before accounting recovery, full-filesystem recovery, both ordinary and
-explicitly enabled self-signed TLS, and eight automatic channel replacements
-across a shared provider. The separate initialization guard also passes; its
-empty-account buyer-identity check calls the embedded service loader, while its
-command-line checks use the packaged executable.
-
-The offline production build took 405.842 seconds with Rust 1.96.0,
+The offline production build took 363.818 seconds with Rust 1.96.0,
 cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,288,480 bytes, SHA-256
-`52986e15945092c4e53b19168fc72a547bc351d612c23444a10be4e90772b389`.
-The unsigned `0.1.0-r35` APK is 11,566,366 bytes, SHA-256
-`d3efb91c17c8a010b3ac2c91c4c8096dda8bc3dea4f17ea5b2ef4b1b25cbbc2b`.
+25,295,040 bytes, SHA-256
+`3194c3f72496e89a7408fe97a6b8863eedb96f42dc7d753fe60446b23e929337`.
+The unsigned `0.1.0-r36` APK is 11,569,477 bytes, SHA-256
+`faf4e8826cf9a47937aec579880d4d06931be1f391acee2a532c558d0f5935ac`.
 Inspection verifies all eleven payload files, root ownership, lifecycle scripts
 and the exact dependency set; no saved accounts are included and the service is
 disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
-dynamic-linking segment. The accepted inspection uses apk-tools 3.0.1-r1 with
-standard system parent directories
-precreated in disposable storage. The earlier 3.0.8-r0 build/extract attempt rejected
-omitted parent-directory records; neither inspection establishes OpenWrt
-installation acceptance.
+dynamic-linking segment. Inspection uses apk-tools 3.0.1-r1 with standard system
+parent directories precreated in disposable storage; it does not establish
+OpenWrt installation acceptance.
 
 The new bundle exports the exact clean FIPS and SDK commits while retaining the
 accepted CDK, Spilman, TCP, bitreq and registry sources. Offline resolution preserves
 the tested lock and exact dependency graph, including enabled features and edges.
-All 36,083 source files remain unchanged throughout the gates. The harnesses and
+All 36,084 source files remain unchanged throughout the gates. The harnesses and
 extracted daemon retain their original hashes. Final verification binds each
-result to its exact test, harness and read-only packaged-executable mount.
-All 110 files in the previous r34 evidence and artifact inventory remain unchanged.
-The new package, harnesses, runners and 88 evidence files are preserved in
-`work/paid-relay-verification/2026-09-30-arm64-r35`; its source reference identifies
-the native-debit bundle and full dependency inventory. The two clean,
-integrated temporary checkouts were removed after the verified source export.
+result to its exact test, harness, execution kind and read-only executable mount.
+All 109 files in the previous r35 evidence and artifact inventory remain unchanged.
+The new package, four harnesses, runners and 93 evidence files are preserved in
+`work/paid-relay-verification/2026-09-30-arm64-r36`; its source reference identifies
+the automatic-key-rotation bundle and full dependency inventory.
 
 Every runtime case uses a fresh, unprivileged, network-isolated ARM64 Linux
 container and local test money through a verified local Docker endpoint. A
@@ -156,7 +152,7 @@ container and local test money through a verified local Docker endpoint. A
 the uniquely named container's ownership before removing it. All cases finish
 without watchdog expiry or cleanup errors, and no owned containers remain.
 No package is installed or published, and no physical device is accessed.
-This supersedes r34's package-process acceptance;
+This supersedes r35's package-process acceptance;
 current-device checks, physical power loss, sustained performance and attribution
 of the historical intermittent stalls remain outstanding.
 
