@@ -1,6 +1,6 @@
 //! FIPS-specific Bloom filter announcement state management.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use super::BloomFilter;
 use crate::NodeAddr;
@@ -23,6 +23,8 @@ pub struct BloomState {
     /// Pending peers and their fast-dispatch retry floors. Periodic maintenance
     /// still uses only the successful-send debounce.
     pending_updates: HashMap<NodeAddr, u64>,
+    /// One effective deadline per pending peer, ordered for incremental updates.
+    pending_update_deadlines: BTreeSet<(u64, NodeAddr)>,
     /// Cached earliest pending deadline; idle RX turns never scan peer state.
     pending_update_deadline_ms: Option<u64>,
     /// Current sequence number for outgoing filters.
@@ -41,6 +43,7 @@ impl BloomState {
             update_debounce_ms: 500,
             last_update_sent: HashMap::new(),
             pending_updates: HashMap::new(),
+            pending_update_deadlines: BTreeSet::new(),
             pending_update_deadline_ms: None,
             sequence: 0,
             last_sent_filters: HashMap::new(),
@@ -108,12 +111,11 @@ impl BloomState {
 
     /// Mark that a peer needs an update.
     pub fn mark_update_needed(&mut self, peer_id: NodeAddr) {
-        self.pending_updates.entry(peer_id).or_insert(0);
-        let due = self.pending_peer_deadline_ms(&peer_id).unwrap();
-        self.pending_update_deadline_ms = Some(
-            self.pending_update_deadline_ms
-                .map_or(due, |previous| previous.min(due)),
-        );
+        match self.pending_updates.entry(peer_id) {
+            Entry::Occupied(_) => return,
+            Entry::Vacant(entry) => entry.insert(0),
+        };
+        self.update_pending_deadline(peer_id, None);
     }
 
     /// Mark all peers as needing updates.
@@ -156,20 +158,21 @@ impl BloomState {
     }
 
     pub(crate) fn pending_peers_due(&self, now_ms: u64) -> Vec<NodeAddr> {
-        self.pending_updates
-            .keys()
-            .filter(|peer| {
-                self.pending_peer_deadline_ms(peer)
-                    .is_some_and(|due| due <= now_ms)
-            })
-            .copied()
+        self.pending_update_deadlines
+            .iter()
+            .take_while(|(due, _)| *due <= now_ms)
+            .map(|(_, peer)| *peer)
             .collect()
     }
 
     pub(crate) fn defer_update_retry(&mut self, peer: &NodeAddr, retry_at_ms: u64) {
+        let previous = self.pending_peer_deadline_ms(peer);
         if let Some(floor) = self.pending_updates.get_mut(peer) {
+            if *floor >= retry_at_ms {
+                return;
+            }
             *floor = (*floor).max(retry_at_ms);
-            self.refresh_pending_deadline();
+            self.update_pending_deadline(*peer, previous);
         }
     }
 
@@ -181,11 +184,24 @@ impl BloomState {
     }
 
     fn refresh_pending_deadline(&mut self) {
-        self.pending_update_deadline_ms = self
+        self.pending_update_deadlines = self
             .pending_updates
             .keys()
-            .filter_map(|peer| self.pending_peer_deadline_ms(peer))
-            .min();
+            .filter_map(|peer| self.pending_peer_deadline_ms(peer).map(|due| (due, *peer)))
+            .collect();
+        self.pending_update_deadline_ms =
+            self.pending_update_deadlines.first().map(|(due, _)| *due);
+    }
+
+    fn update_pending_deadline(&mut self, peer: NodeAddr, previous: Option<u64>) {
+        if let Some(due) = previous {
+            self.pending_update_deadlines.remove(&(due, peer));
+        }
+        if let Some(due) = self.pending_peer_deadline_ms(&peer) {
+            self.pending_update_deadlines.insert((due, peer));
+        }
+        self.pending_update_deadline_ms =
+            self.pending_update_deadlines.first().map(|(due, _)| *due);
     }
 
     /// Whether a previously sent filter needs periodic loss repair. Content
@@ -200,14 +216,16 @@ impl BloomState {
 
     /// Record that we sent an update to a peer.
     pub fn record_update_sent(&mut self, peer_id: NodeAddr, current_time_ms: u64) {
+        let previous = self.pending_peer_deadline_ms(&peer_id);
         self.last_update_sent.insert(peer_id, current_time_ms);
         self.pending_updates.remove(&peer_id);
-        self.refresh_pending_deadline();
+        self.update_pending_deadline(peer_id, previous);
     }
 
     /// Clear all pending updates.
     pub fn clear_pending_updates(&mut self) {
         self.pending_updates.clear();
+        self.pending_update_deadlines.clear();
         self.pending_update_deadline_ms = None;
     }
 
@@ -218,10 +236,11 @@ impl BloomState {
 
     /// Remove stored filter state for a peer that was removed.
     pub fn remove_peer_state(&mut self, peer_id: &NodeAddr) {
+        let previous = self.pending_peer_deadline_ms(peer_id);
         self.last_sent_filters.remove(peer_id);
         self.last_update_sent.remove(peer_id);
         self.pending_updates.remove(peer_id);
-        self.refresh_pending_deadline();
+        self.update_pending_deadline(*peer_id, previous);
     }
 
     /// Mark only peers whose outgoing filter has actually changed.

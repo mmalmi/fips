@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.88] - 2026-09-30
+
+### Fixed
+
+- Update pending Bloom deadlines incrementally when reserving, completing or
+  removing peer updates, avoiding repeated full scans on busy nodes. Preserve
+  retry floors, per-peer debounce, cancellation state and update contents.
+
+### Changed
+
+- Dispatch due Bloom updates in deadline order, with peer address as a tie-breaker.
+- Release the reusable core and endpoint libraries as 0.4.88. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.87] - 2026-09-30
 
 ### Fixed
