@@ -16,11 +16,10 @@ and phone demonstrations do not accept the latest software for deployment.
 
 SDK `b8da3c1a2bd4` adds a read-only send-result lookup to the interrupted-send
 recovery base `e69538152a5e`, described [below](#interrupted-send-debit-evidence).
-The native SDK/relay checks and five focused r41 ARM64 Linux cases below accept
-cached-export validation using this lookup. The broader seventeen-case r38 suite
-retains its original revision and scope. The cadence measurements still use r37
-and predate these recovery checks. The newer native export-retirement acceptance
-below is not included in the r41 package.
+The native SDK/relay checks and seven focused r42 ARM64 Linux cases below accept
+cached-export recovery and acknowledged export retirement. The broader
+seventeen-case r38 suite retains its original revision and scope. The cadence
+measurements still use r37 and predate these recovery checks.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -60,9 +59,48 @@ restored after the first Android compile failed. Native relay runtime and SDK
 sources remain identical across the long run and subsequent checks; the shared
 test fixture/documentation changed after the long run. Evidence is retained in
 `work/paid-relay-verification/2026-09-30-export-retirement`.
-This is native macOS ARM64 and simulated Android-activity acceptance. Current
-package/device checks, physical power loss and remaining native wallet stores,
-queries and aggregate resource limits remain open.
+This is native macOS ARM64 and simulated Android-activity acceptance. The r42
+result below adds Linux package acceptance. Current-device checks, physical power
+loss and remaining native wallet stores, queries and aggregate resource limits
+remain open.
+
+The r42 package binds FIPS `d30985270489` to SDK `b8da3c1a2bd4` and the unchanged
+CDK/dependency closure. Seven focused Linux cases pass: the packaged command-line
+workflow and both customer billing flows, one mixed startup case, and three
+embedded wallet cases covering recovery, ordinary retirement and the 131-export
+soak. The command-line case collects the original export, acknowledges its prefix
+twice without changing gross costs, and rejects retired and skipped IDs while
+11 test sats remain. Its strengthened native check, strict lint, formatting and
+source-size checks also pass without a runtime change.
+
+The 131-export Linux case passes in 1,586.51 seconds under the same 16 MiB wallet
+limit, reconciles all 256 test sats and retains no send requests. Its first run
+hit the common ten-minute watchdog while continuing to advance. Read-only
+observations showed queued CDK pacing under its default 20 requests per minute,
+consistent with the earlier 1,589.34-second native run. The separate successful
+run uses a thirty-minute watchdog; application code, assertions, wallet pacing,
+container isolation and all other case deadlines remain unchanged. The original
+failure is retained. These timings are not a performance benchmark.
+
+The observations also retain the remaining storage limitation: between 71 and
+124 acknowledged exports, spent relay-wallet coin records increase from 117 to
+189 while logical storage charges increase from 207,396 to 294,487 bytes. Export
+retirement does not authorize deleting every native coin record. Other custody
+and recovery owners must release their evidence before that cleanup is safe.
+
+The offline optimized build took 485.731 seconds. The static executable is
+25,317,928 bytes, SHA-256
+`5e28b8f2fd41da377a032bf5730c59d83598d086db411efa4be613b4c52ed540`.
+The unsigned `0.1.0-r42` package is 11,580,075 bytes, SHA-256
+`46810fbf812abf94f5e8731ae3e713774faa9c79e815b7902015d81a47da0568`.
+Inspection verifies all eleven payload files and the extracted binary's identity.
+All 36,264 source files and tested executables retain their verified hashes;
+all owned containers are confirmed absent. The 74 retained r41 files remain
+unchanged. The 91 new evidence files, including observer scripts and aggregate
+storage observations, are indexed under
+`work/paid-relay-verification/2026-09-30-arm64-r42`.
+This run does not repeat the broader r38 suite or attribute the historical mesh
+stalls. No device installation, publication or real-money operation was performed.
 
 Cached wallet exports compare every payment field with the SDK's retained result
 through a read-only lookup. Missing, unfinished or conflicting original results
