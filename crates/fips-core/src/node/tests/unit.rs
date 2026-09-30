@@ -17,6 +17,7 @@ mod liveness_sparse;
 mod liveness_window;
 mod node_lifecycle;
 mod path_mtu;
+mod peer_snapshot;
 mod promotion_paths;
 mod promotion_replacements;
 mod registries_core;
