@@ -983,7 +983,3 @@ async fn test_initiate_peer_connections_schedules_retry_on_no_transport() {
          without a daemon restart"
     );
 }
-
-// ============================================================================
-// transport_mtu() — ISSUE-2026-0011 regression coverage
-// ============================================================================

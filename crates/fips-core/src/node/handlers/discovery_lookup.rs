@@ -703,6 +703,17 @@ impl Node {
             .purge_expired(current_time_ms, expiry_ms);
     }
 
+    fn lookup_peer_mtu(&self, addr: &NodeAddr) -> u16 {
+        let Some(peer) = self.peers.get(addr) else {
+            return 0;
+        };
+        let Some(transport) = peer.transport_id().and_then(|id| self.transports.get(&id)) else {
+            return 0;
+        };
+        peer.current_addr()
+            .map_or_else(|| transport.mtu(), |addr| transport.link_mtu(addr))
+    }
+
     /// Min-fold our outgoing-link MTU into a LookupResponse's `path_mtu`.
     ///
     /// Used at both transit-side reverse-path forward and at the target's
@@ -715,15 +726,8 @@ impl Node {
         response: &mut LookupResponse,
         next_hop: &NodeAddr,
     ) {
-        if let Some(peer) = self.peers.get(next_hop)
-            && let Some(tid) = peer.transport_id()
-            && let Some(transport) = self.transports.get(&tid)
-        {
-            let link_mtu = if let Some(addr) = peer.current_addr() {
-                transport.link_mtu(addr)
-            } else {
-                transport.mtu()
-            };
+        let link_mtu = self.lookup_peer_mtu(next_hop);
+        if link_mtu > 0 {
             response.path_mtu = response.path_mtu.min(link_mtu);
         }
     }

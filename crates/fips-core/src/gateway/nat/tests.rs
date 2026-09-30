@@ -84,8 +84,8 @@ fn rebuild_deletes_and_recreates_the_table_inside_one_batch() {
         batches.len(),
         1,
         "a rebuild that sends the delete in a batch of its own leaves the \
-             fips_gateway table absent between the two sends, so the gateway \
-             has no NAT at all in that window: {batches:?}"
+         fips_gateway table absent between the two sends, so the gateway \
+         has no NAT at all in that window: {batches:?}"
     );
     assert_eq!(
         batches[0][..3],
@@ -95,7 +95,7 @@ fn rebuild_deletes_and_recreates_the_table_inside_one_batch() {
             NatOp::Table(MsgType::Add),
         ],
         "the delete needs a preceding add so it always has a target, and a \
-             following add to recreate the table inside the same transaction"
+         following add to recreate the table inside the same transaction"
     );
 }
 
@@ -204,7 +204,7 @@ fn rebuild_for_2000_mappings_requests_exactly_one_ack_on_the_last_message() {
     assert!(
         encoded.len() > 212_960,
         "the 2000-mapping batch ({} bytes) must be past the default \
-             netlink send limit for this test to cover the large case",
+         netlink send limit for this test to cover the large case",
         encoded.len()
     );
 
@@ -227,8 +227,8 @@ fn rebuild_for_2000_mappings_requests_exactly_one_ack_on_the_last_message() {
         acked,
         vec![headers.len() - 2],
         "only the last object before the batch end may request an ack; \
-             one ack per message overflows the receive buffer after the \
-             kernel has committed the batch"
+         one ack per message overflows the receive buffer after the \
+         kernel has committed the batch"
     );
 }
 
@@ -240,7 +240,7 @@ fn sndbuf_for_admits_the_2000_mapping_batch_and_small_batches_after_kernel_doubl
         assert!(
             2 * sndbuf as u64 - 32 >= len as u64,
             "a send buffer of {sndbuf}, doubled by the kernel, refuses a \
-                 {len}-byte batch"
+             {len}-byte batch"
         );
     }
 }

@@ -4,6 +4,28 @@ mod connection_cleanup;
 mod handshake_lifetime;
 mod write_lifetime;
 
+#[test]
+fn websocket_path_budget_uses_stream_capacity_and_respects_explicit_limits() {
+    let default = WebSocketConfig::default();
+    assert_eq!(default.mtu(), u16::MAX);
+    assert!(default.max_frame_bytes() >= usize::from(default.mtu()) + 64);
+    let bounded = WebSocketConfig {
+        max_frame_bytes: Some(4096),
+        ..default
+    };
+    assert_eq!(bounded.mtu(), 4032);
+    let explicit = WebSocketConfig {
+        mtu: Some(1400),
+        ..bounded
+    };
+    assert_eq!(explicit.mtu(), 1400);
+    let undersized = WebSocketConfig {
+        max_frame_bytes: Some(64),
+        ..WebSocketConfig::default()
+    };
+    assert!(undersized.validate().is_err());
+}
+
 // Framing fixtures start after HTTP upgrade. Install the matching attempt
 // ownership normally created by prepare_dial before entering the common loop.
 async fn run_framing_connection<S>(

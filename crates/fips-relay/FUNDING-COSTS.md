@@ -366,14 +366,13 @@ independent checks that protect coin and receipt ownership. Use matched SDK/CDK
 sources; the published versions do not provide this storage contract.
 
 The TCP stack and endpoint override must include `set_connection_reservation`.
-Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace still
-pins stack 0.2.2 and endpoint 0.2.16, whose FIPS core requirement is 0.4.81. Use
-the matching development checkout with the reservation change (verified TCP/FIPS
-revision `491b11209aba`). Endpoint 0.2.17
-requires core 0.4.82 and cannot silently replace this graph. Shared Rust/TypeScript
-admission vectors and live interoperability checks cover the new local policy;
-the wire encoding is unchanged. Dependency version alignment remains a distribution
-requirement, separate from these matching-graph development tests.
+Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace pins
+stack 0.2.2 and endpoint 0.2.19, aligned with FIPS core 0.4.86. The published TCP
+packages do not yet include the reservation API, so a matching development
+checkout is still required. Shared Rust/TypeScript admission vectors and live
+interoperability checks cover this local policy; the wire encoding is unchanged.
+Publishing the remaining development APIs is a distribution requirement,
+separate from these matching-graph development tests.
 
 ### Portable development source bundle
 

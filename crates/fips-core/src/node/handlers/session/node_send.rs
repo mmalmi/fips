@@ -232,6 +232,24 @@ impl Node {
                             .collect()
                     })
                     .unwrap_or_default();
+                // Preserve the first matching session for each carrier without
+                // rescanning the entire session table for every peer.
+                let mut outbound_routes = std::collections::HashMap::new();
+                for (dest_addr, _) in self.sessions.iter() {
+                    if let Some(next_hop) = self
+                        .dataplane
+                        .fsp_owner_activity(dest_addr)
+                        .and_then(|activity| activity.last_outbound_next_hop())
+                    {
+                        outbound_routes
+                            .entry(next_hop)
+                            .or_insert(if *dest_addr == next_hop {
+                                "direct"
+                            } else {
+                                "fallback"
+                            });
+                    }
+                }
                 let mut peers = self
                     .peers()
                     .map(|peer| {
@@ -247,22 +265,9 @@ impl Node {
                         });
                         let stats = peer.link_stats();
                         let direct_probe_pending = retry_state.is_some();
-                        let last_outbound_route = self
-                            .sessions
-                            .iter()
-                            .find(|(dest_addr, _)| {
-                                self.dataplane
-                                    .fsp_owner_activity(dest_addr)
-                                    .and_then(|activity| activity.last_outbound_next_hop())
-                                    == Some(*peer.node_addr())
-                            })
-                            .map(|(dest_addr, _)| {
-                                if dest_addr == peer.node_addr() {
-                                    "direct".to_string()
-                                } else {
-                                    "fallback".to_string()
-                                }
-                            });
+                        let last_outbound_route = outbound_routes
+                            .get(peer.node_addr())
+                            .map(|route| (*route).to_string());
                         let srtt = self
                             .dataplane
                             .fmp_link_metrics(peer.node_addr(), snapshot_now)

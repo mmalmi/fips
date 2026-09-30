@@ -7,7 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.86] - 2026-09-30
+
 ### Fixed
+
+- Build peer-status route information in one session-table pass, reducing
+  repeated work on busy nodes with many peers and sessions. Preserve existing
+  route selection and connection freshness checks.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.86. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
+## [0.4.85] - 2026-09-30
+
+### Fixed
+
+- Honor the minimum frame capacity in route discovery on every incoming and
+  outgoing link. WebSocket links advertise their bounded stream capacity, so
+  larger signaling records can avoid narrow datagram routes.
+- Allow route requests that could not be sent or deferred to retry when a peer
+  connects. Preserve duplicate protection for attempted and queued requests.
+- Expire forwarded-packet receipts by elapsed time instead of unrelated
+  completions, retaining the bounded control-loop work budget.
+- Ignore duplicate offers for the same WebRTC negotiation while its original
+  admission is pending, including asynchronous local-name resolution.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.85. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
+## [0.4.84] - 2026-09-29
+
+### Fixed
+
+- Admit an existing authenticated peer's WebRTC upgrade through the maintenance
+  handshake budget, while requiring the Noise identity to match the signaling
+  identity. Preserve stranger-admission and pending-connection limits.
+- Keep maintenance handshake refill capacity independent of long rekey
+  intervals so healthy peers can recover under public handshake load.
+- Preserve end-to-end session keys when a closed old carrier is removed during
+  a fresh, authenticated same-process carrier handoff. Expired or unauthenticated
+  attempts and explicit disconnects still clear stale session state.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.84. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
+## [0.4.83] - 2026-09-28
+
+### Fixed
+
+- Bound nested local-capability send futures so debug endpoint handshakes stay
+  within the normal Tokio worker stack without changing packet behavior.
 
 - Harden the LAN gateway with supervised DNS on default port 5365, bounded
   mapping admission, atomic firewall replacements, and conntrack netlink
@@ -23,6 +78,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh runtime peer aliases in DNS, display names, and alias-based peer
   access rules, retaining hosts-file overrides and retrying failed ACL reads.
   Adapted from the identity and alias fixes in jmcorgan/fips.
+
+- Cancel retired WebSocket, TCP and Tor connection attempts and stream writers;
+  keep WebSocket reads progressing while writes are blocked.
+- Preserve queued payloads and routing announcements across interrupted sends,
+  parent changes and connection replacement.
+- Retry discovery and refresh reachability after delayed requests, packet loss
+  and changing neighbors, retaining bounded admission and forwarding work.
+- Retain the published 0.4.82 recovery-handshake and sparse-session fixes.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.83. The identity
+  library remains 0.3.3; existing protocol message bytes and wire layouts are
+  unchanged.
+- Add opt-in FIPS-authenticated WebSocket TLS.
+- Keep the experimental paid-relay applications outside the stable release
+  workspace; they depend on unreleased payment and TCP integration work.
+
+## [0.4.82] - 2026-09-15
+
+### Fixed
+
+- Preserve an unanswered recovery handshake when the old UDP path still returns
+  payload, allowing the new path to finish authenticating instead of discarding
+  its response.
 - Recover an unresponsive end-to-end session after a single unanswered request,
   even when the sender stops transmitting and link heartbeats remain healthy.
   Outstanding receiver-report feedback now survives the recent-send window;

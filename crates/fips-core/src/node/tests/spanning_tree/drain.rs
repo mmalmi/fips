@@ -38,6 +38,19 @@ pub(in crate::node::tests) async fn process_dataplane_packet(
 /// A caller awaiting an exact outcome must poll again: readiness also covers
 /// deferred control work and is not a fence for a particular crypto operation.
 pub(in crate::node::tests) async fn process_dataplane_completions(node: &mut Node) -> usize {
+    process_dataplane_ready_turn(node, None).await
+}
+
+/// Dispatch one raw packet without serially waiting for a crypto notification.
+/// Timed multi-node fixtures must keep driving other nodes and their deadlines.
+pub(in crate::node::tests) async fn process_dataplane_packet_once(
+    node: &mut Node,
+    packet: ReceivedPacket,
+) -> usize {
+    process_dataplane_ready_turn(node, Some(packet)).await
+}
+
+async fn process_dataplane_ready_turn(node: &mut Node, packet: Option<ReceivedPacket>) -> usize {
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
@@ -51,7 +64,19 @@ pub(in crate::node::tests) async fn process_dataplane_completions(node: &mut Nod
         &mut tun_rx,
         &endpoint_tx,
     );
-    let mut turn = Box::pin(node.drain_dataplane_completion_turn(&mut io, 64)).await;
+    let mut turn = if let Some(packet) = packet {
+        Box::pin(node.drain_dataplane_turn_with_firsts(
+            &mut io,
+            crate::dataplane::DataplaneLiveTurnFirsts {
+                raw_packet: Some(packet),
+                ..Default::default()
+            },
+            crate::node::handlers::RxLoopDataplaneTurnLimits::new(1, 64, 64, 64),
+        ))
+        .await
+    } else {
+        Box::pin(node.drain_dataplane_completion_turn(&mut io, 64)).await
+    };
     let had_activity = turn.has_activity();
     let processed = finish_synthetic_dataplane_turn(node, &mut turn).await;
     usize::from(had_activity || processed > 0)

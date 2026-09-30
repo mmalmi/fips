@@ -494,11 +494,11 @@ fn test_large_prefix_capped() {
 /// without `CONFIG_NF_CONNTRACK_PROCFS`; OpenWrt's generic kernel config
 /// sets it, which is the kernel this parser exists for.
 const KERNEL_LINE: &str = "ipv6     10 tcp      6 431999 ESTABLISHED \
-         src=fd02:0000:0000:0000:0000:0000:0000:0020 \
-         dst=fd01:0000:0000:0000:0000:0000:0000:0001 sport=45678 dport=8000 \
-         src=fd01:0000:0000:0000:0000:0000:0000:0001 \
-         dst=fd02:0000:0000:0000:0000:0000:0000:0020 sport=8000 dport=45678 \
-         [ASSURED] mark=0 use=1";
+     src=fd02:0000:0000:0000:0000:0000:0000:0020 \
+     dst=fd01:0000:0000:0000:0000:0000:0000:0001 sport=45678 dport=8000 \
+     src=fd01:0000:0000:0000:0000:0000:0000:0001 \
+     dst=fd02:0000:0000:0000:0000:0000:0000:0020 sport=8000 dport=45678 \
+     [ASSURED] mark=0 use=1";
 
 #[test]
 fn conntrack_parse_counts_a_kernel_format_line_for_its_virtual_ip() {
@@ -509,7 +509,7 @@ fn conntrack_parse_counts_a_kernel_format_line_for_its_virtual_ip() {
         counts.get(&virtual_ip).copied().unwrap_or(0),
         1,
         "the kernel writes the uncompressed form, so matching on the \
-             address's compressed Display form counts nothing"
+         address's compressed Display form counts nothing"
     );
 
     // Healthy path: a different address in the same pool is not counted.
@@ -521,11 +521,11 @@ fn conntrack_parse_counts_a_kernel_format_line_for_its_virtual_ip() {
 fn conntrack_parse_counts_a_line_once_however_many_tuples_name_the_address() {
     // A hairpin flow: the address is the destination of both tuples.
     let line = "ipv6     10 udp      17 29 \
-             src=fd01:0000:0000:0000:0000:0000:0000:0001 \
-             dst=fd01:0000:0000:0000:0000:0000:0000:0001 sport=1 dport=2 \
-             src=fd01:0000:0000:0000:0000:0000:0000:0001 \
-             dst=fd01:0000:0000:0000:0000:0000:0000:0001 sport=2 dport=1 \
-             mark=0 use=1";
+         src=fd01:0000:0000:0000:0000:0000:0000:0001 \
+         dst=fd01:0000:0000:0000:0000:0000:0000:0001 sport=1 dport=2 \
+         src=fd01:0000:0000:0000:0000:0000:0000:0001 \
+         dst=fd01:0000:0000:0000:0000:0000:0000:0001 sport=2 dport=1 \
+         mark=0 use=1";
     let counts = parse_conntrack(line);
     let virtual_ip: Ipv6Addr = "fd01::1".parse().unwrap();
 
@@ -544,7 +544,7 @@ fn conntrack_parse_counts_each_line_that_names_the_address() {
 #[test]
 fn conntrack_parse_skips_a_value_that_is_not_an_ipv6_address() {
     let content = "ipv4     2 tcp      6 431999 ESTABLISHED src=192.0.2.1 \
-             dst=192.0.2.2 sport=1 dport=2 mark=0 use=1\n";
+         dst=192.0.2.2 sport=1 dport=2 mark=0 use=1\n";
 
     assert!(parse_conntrack(content).is_empty());
 }

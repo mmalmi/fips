@@ -809,9 +809,9 @@ dependencies = [
  "cashu-credit",
  "cdk",
  "cdk-axum",
- "cdk-common",
+ "cdk-common 0.17.3",
  "cdk-spilman",
- "cdk-sqlite",
+ "cdk-sqlite 0.17.3",
  "fs2",
  "futures",
  "hex",
@@ -901,7 +901,7 @@ dependencies = [
  "bitcoin",
  "bitcoin-payment-instructions",
  "cbor-diag",
- "cdk-common",
+ "cdk-common 0.17.3",
  "cdk-signatory",
  "ciborium",
  "futures",
@@ -982,6 +982,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-common"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ddedb8955b9cc7d21f67d88e63962c5e8e796ab03788b3645ada43265e091c4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "cashu 0.18.0",
+ "futures",
+ "getrandom 0.4.1",
+ "gloo-timers",
+ "jsonwebtoken",
+ "lightning",
+ "lightning-invoice",
+ "parking_lot",
+ "paste",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-time",
+]
+
+[[package]]
 name = "cdk-http-client"
 version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1013,7 +1043,7 @@ dependencies = [
  "async-trait",
  "bip39",
  "bitcoin",
- "cdk-common",
+ "cdk-common 0.17.3",
  "clap",
  "getrandom 0.2.17",
  "home",
@@ -1057,10 +1087,27 @@ checksum = "9ed515d34378fa51a5531882ea7c774f1f7af69bd4f50958c120c96f9159ac2f"
 dependencies = [
  "async-trait",
  "bitcoin",
- "cdk-common",
+ "cdk-common 0.17.3",
  "lightning-invoice",
  "once_cell",
  "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cdk-sql-common"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd8976496abd27706ff538d8563503a2d2ab8076e80e91f0505ce5eff3250aa9"
+dependencies = [
+ "async-trait",
+ "bitcoin",
+ "cdk-common 0.18.0",
+ "lightning-invoice",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -1076,14 +1123,30 @@ checksum = "f96798d170b82f860daa83b2fc8f997151e6b77eb9f37c2ff4a92a7b5d650033"
 dependencies = [
  "async-trait",
  "bitcoin",
- "cdk-common",
- "cdk-sql-common",
+ "cdk-common 0.17.3",
+ "cdk-sql-common 0.17.3",
  "lightning-invoice",
  "paste",
  "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cdk-sqlite"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71f9d916dc52dec6d8a4105c9e6cb33ce3aa82551063312a0a0e994b95a4c541"
+dependencies = [
+ "async-trait",
+ "cdk-common 0.18.0",
+ "cdk-sql-common 0.18.0",
+ "rusqlite",
+ "serde_json",
  "tokio",
  "tracing",
  "uuid",
@@ -2069,8 +2132,8 @@ version = "0.1.0"
 dependencies = [
  "cashu 0.18.0",
  "cashu-service",
- "cdk-common",
- "cdk-sqlite",
+ "cdk-common 0.18.0",
+ "cdk-sqlite 0.18.0",
  "fs2",
  "ipnet",
  "libc",
@@ -3708,7 +3771,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-core"
-version = "0.4.81"
+version = "0.4.86"
 dependencies = [
  "base64 0.22.1",
  "bluer",
@@ -3756,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-endpoint"
-version = "0.4.81"
+version = "0.4.86"
 dependencies = [
  "nvpn-fips-core",
 ]
@@ -3782,9 +3845,9 @@ checksum = "7d5078996e38a6e568e2783b93601dc55eb96bb3df0fa1c4307cdab80b85ab97"
 
 [[package]]
 name = "nvpn-fips-tcp-endpoint"
-version = "0.2.16"
+version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b56ce6b754bb4157d204543467b2eecd167d86df7c80d78950652d2630e76a"
+checksum = "15c2a4475084aceda17934c488ef639319ca74c67d0052af77398649066b5eeb"
 dependencies = [
  "nvpn-fips-core",
  "nvpn-fips-tcp",

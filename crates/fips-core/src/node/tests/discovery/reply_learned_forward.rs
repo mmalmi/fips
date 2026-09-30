@@ -34,6 +34,10 @@ async fn test_reply_learned_forward_fallback_uses_non_tree_peer_without_origin_e
     let request = LookupRequest::new(4343, target, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -44,12 +48,14 @@ async fn test_reply_learned_forward_fallback_uses_non_tree_peer_without_origin_e
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        nodes[2].node.recent_requests.contains_key(&4343),
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_received,
+        received_before[2] + 1,
         "reply-learned fallback should fan out through the non-tree peer"
     );
-    assert!(
-        !nodes[0].node.recent_requests.contains_key(&4343),
+    assert_eq!(
+        nodes[0].node.stats().discovery.req_received,
+        received_before[0],
         "transit fallback must not echo lookup requests to the originator"
     );
 
@@ -82,6 +88,10 @@ async fn test_reply_learned_initiate_lookup_uses_stale_sendable_fallback_peer() 
     );
 
     let target = make_node_addr(0x88);
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     let sent = nodes[0].node.initiate_lookup(&target, 5).await;
     assert_eq!(sent, 1, "stale sendable fallback peer should be used");
 
@@ -90,12 +100,9 @@ async fn test_reply_learned_initiate_lookup_uses_stale_sendable_fallback_peer() 
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        nodes[1]
-            .node
-            .recent_requests
-            .values()
-            .any(|recent| recent.from_peer == *nodes[0].node.node_addr()),
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_received,
+        received_before[1] + 1,
         "fallback peer should receive the initiated lookup"
     );
 
@@ -269,6 +276,10 @@ async fn test_reply_learned_forward_fanout_skips_bootstrap_transit_peer() {
     let request = LookupRequest::new(4545, node4_addr, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -283,12 +294,14 @@ async fn test_reply_learned_forward_fanout_skips_bootstrap_transit_peer() {
         nodes[2].node.recent_requests.contains_key(&4545),
         "tree/bloom match should receive the forwarded lookup"
     );
-    assert!(
-        !nodes[3].node.recent_requests.contains_key(&4545),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3],
         "bootstrap transit peer should not receive private fallback lookup"
     );
-    assert!(
-        !nodes[0].node.recent_requests.contains_key(&4545),
+    assert_eq!(
+        nodes[0].node.stats().discovery.req_received,
+        received_before[0],
         "transit fanout must not echo lookup requests to the originator"
     );
 
@@ -341,6 +354,10 @@ async fn test_reply_learned_forward_fanout_skips_disabled_transit_peer() {
     let request = LookupRequest::new(4646, node4_addr, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -355,12 +372,14 @@ async fn test_reply_learned_forward_fanout_skips_disabled_transit_peer() {
         nodes[2].node.recent_requests.contains_key(&4646),
         "tree/bloom match should receive the forwarded lookup"
     );
-    assert!(
-        !nodes[3].node.recent_requests.contains_key(&4646),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3],
         "fallback-disabled transit peer should not receive private fallback lookup"
     );
-    assert!(
-        !nodes[0].node.recent_requests.contains_key(&4646),
+    assert_eq!(
+        nodes[0].node.stats().discovery.req_received,
+        received_before[0],
         "transit fanout must not echo lookup requests to the originator"
     );
 
@@ -395,6 +414,10 @@ async fn test_reply_learned_open_policy_skips_unconfigured_lookup_fanout() {
     let request = LookupRequest::new(4747, target, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -405,8 +428,9 @@ async fn test_reply_learned_open_policy_skips_unconfigured_lookup_fanout() {
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        !nodes[2].node.recent_requests.contains_key(&4747),
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_received,
+        received_before[2],
         "open-discovery fallback must not amplify unconfigured public lookups"
     );
 
@@ -442,6 +466,10 @@ async fn test_reply_learned_configured_policy_skips_unconfigured_lookup_fanout()
     let request = LookupRequest::new(4788, target, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -452,8 +480,9 @@ async fn test_reply_learned_configured_policy_skips_unconfigured_lookup_fanout()
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        !nodes[2].node.recent_requests.contains_key(&4788),
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_received,
+        received_before[2],
         "configured-only fallback must not amplify unconfigured public lookups"
     );
 

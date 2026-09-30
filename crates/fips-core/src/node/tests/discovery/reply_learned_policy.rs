@@ -98,6 +98,10 @@ async fn test_reply_learned_forwards_lookup_fanout_despite_tree_match() {
     let request = LookupRequest::new(4444, node4_addr, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -112,12 +116,14 @@ async fn test_reply_learned_forwards_lookup_fanout_despite_tree_match() {
         nodes[2].node.recent_requests.contains_key(&4444),
         "tree/bloom match should receive the forwarded lookup"
     );
-    assert!(
-        nodes[3].node.recent_requests.contains_key(&4444),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3] + 1,
         "non-tree peer should also receive reply-learned fanout"
     );
-    assert!(
-        !nodes[0].node.recent_requests.contains_key(&4444),
+    assert_eq!(
+        nodes[0].node.stats().discovery.req_received,
+        received_before[0],
         "transit fanout must not echo lookup requests to the originator"
     );
 

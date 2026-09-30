@@ -484,7 +484,7 @@ const DEFAULT_TCP_MAX_INBOUND: usize = 256;
 const DEFAULT_WEBSOCKET_PATH: &str = "/fips";
 
 /// Default WebSocket FIPS path MTU.
-const DEFAULT_WEBSOCKET_MTU: u16 = 1400;
+const DEFAULT_WEBSOCKET_MTU: u16 = u16::MAX;
 
 /// Largest legal FIPS record plus conservative header room.
 const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES: usize = 66 * 1024;
@@ -663,7 +663,8 @@ pub struct WebSocketConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
-    /// Dataplane/path budget. Defaults to 1400 bytes.
+    /// Dataplane/path budget. Defaults to the bounded stream record capacity,
+    /// at most 65535 bytes; TCP segmentation handles the underlay packet MTU.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,
 
@@ -724,7 +725,11 @@ impl WebSocketConfig {
     }
 
     pub fn mtu(&self) -> u16 {
-        self.mtu.unwrap_or(DEFAULT_WEBSOCKET_MTU)
+        self.mtu.unwrap_or_else(|| {
+            self.max_frame_bytes()
+                .saturating_sub(64)
+                .clamp(1400, usize::from(DEFAULT_WEBSOCKET_MTU)) as u16
+        })
     }
 
     pub fn max_frame_bytes(&self) -> usize {

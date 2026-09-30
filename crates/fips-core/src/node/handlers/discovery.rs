@@ -19,9 +19,10 @@ pub(in crate::node) const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
 pub(in crate::node) const MIN_RECENT_DISCOVERY_REQUESTS_PER_PEER: usize = 64;
 const MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS: usize = 16;
 
-enum LookupForwardOutcome {
+pub(in crate::node) enum LookupForwardOutcome {
     Forwarded,
     RateLimited,
+    SendFailed,
     NoPeer,
 }
 
@@ -54,6 +55,12 @@ impl Node {
                 return;
             }
         };
+
+        // Reject before dedup: the same request can still arrive on a route
+        // whose links are large enough to carry the requested record.
+        if self.lookup_peer_mtu(from) < request.min_mtu {
+            return;
+        }
 
         let now_ms = Self::now_ms();
         self.purge_expired_requests(now_ms);
@@ -143,6 +150,7 @@ impl Node {
 
         // Forward if TTL permits
         if request.can_forward() {
+            let request_id = request.request_id;
             match self.forward_lookup_request(from, request).await {
                 LookupForwardOutcome::Forwarded => {
                     self.stats_mut().discovery.req_forwarded += 1;
@@ -150,7 +158,12 @@ impl Node {
                 LookupForwardOutcome::RateLimited => {
                     self.stats_mut().discovery.req_forward_rate_limited += 1;
                 }
-                LookupForwardOutcome::NoPeer => {}
+                LookupForwardOutcome::NoPeer => {
+                    // No send was attempted or deferred. A later same-ID retry
+                    // may find a newly connected capacity-qualified neighbor.
+                    self.recent_requests.remove(request_id);
+                }
+                LookupForwardOutcome::SendFailed => {}
             }
         } else {
             self.stats_mut().discovery.req_ttl_exhausted += 1;
@@ -607,7 +620,7 @@ impl Node {
     /// discovery at the cost of more traffic. Transit forwarding excludes the
     /// previous hop and the originator so request IDs keep their originator vs.
     /// relay meaning.
-    async fn forward_lookup_request(
+    pub(in crate::node) async fn forward_lookup_request(
         &mut self,
         from: &NodeAddr,
         mut request: LookupRequest,
@@ -628,7 +641,11 @@ impl Node {
     ) -> LookupForwardOutcome {
         let mut forward_limiter_checked = false;
 
-        let candidates = self.lookup_peer_candidates(&request.target);
+        let candidates: Vec<_> = self
+            .lookup_peer_candidates(&request.target)
+            .into_iter()
+            .filter(|candidate| self.lookup_peer_mtu(&candidate.addr) >= request.min_mtu)
+            .collect();
         let reply_learned_fallback_enabled = self.config.node.routing.mode
             == RoutingMode::ReplyLearned
             && self.should_use_reply_learned_lookup_fallback_for_origin_target(
@@ -655,6 +672,7 @@ impl Node {
         let stale_direct_probe_allowed =
             self.config.node.routing.mode != RoutingMode::ReplyLearned || forward_to.is_empty();
         let direct_target_sendable = request.target != *from
+            && self.lookup_peer_mtu(&request.target) >= request.min_mtu
             && self.peers.get(&request.target).is_some_and(|peer| {
                 peer.can_send() && (peer.is_healthy() || stale_direct_probe_allowed)
             });
@@ -696,7 +714,13 @@ impl Node {
                 request_id = request.request_id,
                 "No eligible peers to forward LookupRequest"
             );
-            return LookupForwardOutcome::NoPeer;
+            // A failed direct send may still own queued dataplane work.
+            // Preserve its reverse path and dedup even without a fallback.
+            return if forward_limiter_checked {
+                LookupForwardOutcome::SendFailed
+            } else {
+                LookupForwardOutcome::NoPeer
+            };
         }
 
         if !forward_limiter_checked

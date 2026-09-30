@@ -269,7 +269,7 @@ async fn an_a_query_returns_nodata_and_mints_no_mapping() {
     assert!(
         matches!(event_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
         "an A query minted a mapping, so any LAN host can take a pool \
-             address per name with a query type it is never given one for"
+         address per name with a query type it is never given one for"
     );
     assert!(
         pool.lock()

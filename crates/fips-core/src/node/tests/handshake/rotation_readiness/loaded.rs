@@ -80,7 +80,21 @@ impl Traffic {
                 node.node.check_bloom_state().await;
             }
         }
-        process_available_packets(nodes).await;
+        // A timed population must not wait up to a second for one node's
+        // crypto notification while every other node and deadline is stopped.
+        for test in nodes.iter_mut() {
+            for _ in 0..256 {
+                let Ok(packet) = test.packet_rx.try_recv() else {
+                    break;
+                };
+                crate::node::tests::spanning_tree::process_dataplane_packet_once(
+                    &mut test.node,
+                    packet,
+                )
+                .await;
+            }
+            crate::node::tests::spanning_tree::process_dataplane_completions(&mut test.node).await;
+        }
         for (destination, io) in self.io.iter_mut().enumerate() {
             while let Ok(event) = io.event_rx.try_recv() {
                 io.event_rx.release_messages(event.messages.len());
