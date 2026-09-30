@@ -92,9 +92,10 @@ printf '%s\n' '{"type":"export","id":"return-1","amount_sat":512}' |
 Use the actual balance rather than the example amount. Export writes a new
 private file inside the saved state directory; the result contains only its
 path, amount and operation ID. Reusing the ID checks the saved export against
-the original SDK result. A cached file without its original wallet request or
-with conflicting payment fields is refused and preserved for reconciliation;
-it cannot authorize a replacement send. If the file is missing, the SDK resumes the
+the original SDK result through a read-only lookup. A cached file without a
+completed result for its exact request, or with conflicting payment fields, is
+refused and preserved for reconciliation. Validation never starts or recovers
+a wallet send. If the file is missing, the SDK resumes the
 original wallet request and publishes its token atomically; it never substitutes
 a new send. A changed amount or mint is refused. Keep the saved wallet evidence
 and retry with the original ID, rather than inventing another ID.

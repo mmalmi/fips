@@ -75,6 +75,24 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
         .is_err()
     );
     live.shutdown().await.unwrap();
+    let unfunded = WalletRequest::Export {
+        id: "pending-cached".into(),
+        amount_sat: 10,
+    };
+    assert!(offline_wallet(&cfg, unfunded.clone()).await.is_err());
+    let wallet =
+        cashu_service::CashuWalletService::open_file_backed(&cfg.state_directory.join("wallet"))
+            .await
+            .unwrap();
+    assert!(
+        wallet
+            .wallet_send_request("fips-export:pending-cached")
+            .await
+            .unwrap()
+            .is_some(),
+        "the unfunded export retains its original request"
+    );
+    drop(wallet);
     let received = offline_wallet(
         &cfg,
         WalletRequest::Import {
@@ -126,6 +144,15 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
         );
     }
     std::fs::write(exported, &original).unwrap();
+    let unfinished = cfg.state_directory.join("exports/pending-cached.json");
+    std::fs::write(&unfinished, &original).unwrap();
+    assert!(offline_wallet(&cfg, unfunded).await.is_err());
+    assert!(std::fs::read(&unfinished).unwrap() == original);
+    assert_eq!(
+        offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"],
+        246,
+        "checking a cached export cannot fund an unfinished wallet request"
+    );
     let orphan = cfg.state_directory.join("exports/unrecorded.json");
     std::fs::write(&orphan, &original).unwrap();
     assert!(

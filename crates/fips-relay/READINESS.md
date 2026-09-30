@@ -14,12 +14,12 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-SDK `e69538152a5e` binds interrupted-send recovery to the original
-authorization and coin sets, as described [below](#interrupted-send-debit-evidence).
-Native SDK/relay checks and the r38 ARM64 package's seventeen cases pass.
-The cadence measurements still use r37 and predate these SDK recovery checks.
-The latest cached-export validation passes five focused r40 ARM64 cases described
-below. The other r38 cases retain their original revision and scope.
+SDK `b8da3c1a2bd4` adds a read-only send-result lookup to the interrupted-send
+recovery base `e69538152a5e`, described [below](#interrupted-send-debit-evidence).
+The native SDK/relay checks below accept cached-export validation using this
+lookup. The latest ARM64 package, r40, predates this fix; its five focused cases
+and the broader seventeen-case r38 suite retain their original revision and
+scope. The cadence measurements still use r37 and predate these recovery checks.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -33,26 +33,31 @@ below. The other r38 cases retain their original revision and scope.
 
 ## Verified implementation and test history
 
-Cached wallet exports now compare every payment field with the SDK's retained
-send result, rather than trusting only the amount and mint. A cached file whose
-original request is absent cannot create a new wallet send. Conflicting files
-remain untouched for reconciliation; restoring the original file permits retry.
-The existing SDK journal and exclusive wallet ownership provide this check,
-without a new dependency, journal format or peer message.
+Cached wallet exports compare every payment field with the SDK's retained result
+through a read-only lookup. Missing, unfinished or conflicting original results
+refuse validation and preserve the cached file. Validation cannot start or recover
+a wallet send. Missing-file recovery continues to use the original request ID.
+The lookup shares the bounded journal and exclusive wallet ownership, without a
+new dependency, journal format or peer message.
 
-The strengthened existing test-mint fixture reproduces the old acceptance of a
-changed operation ID. The fix rejects changed operation, token, unit and fee,
-and a cached file without a matching request creates no send reservation.
-Missing-file recovery and redemption of all 256 test sats still pass. All three
-bench cases, all three customer cases (including both billing flows), 307 library
-tests with all features and 293 without optional features pass. Strict all-target
-lint in both profiles, formatting and source-size checks also pass. Each gate
-retains unchanged source fingerprints; a comment clarifying caller ownership is
-the only runtime-source difference between the test and lint inputs.
-Evidence is retained in `work/paid-relay-verification/2026-09-30-export-evidence`.
-This does not accept missing or conflicting native wallet evidence, automatic
-export-history retirement or physical power-loss recovery. The r40 result below
-accepts this validation on isolated ARM64 Linux; current-device acceptance remains open.
+The existing test-mint fixture now includes an export attempted before funding,
+followed by a conflicting cached file after funds arrive. The previous code
+returned an error but still spent another 10 test sats, leaving 236 instead of
+246. The fixed fixture preserves the balance and cached evidence, rejects the
+existing four conflicting-field cases and absent request, recovers a missing
+file, and ultimately redeems all 256 test sats. Existing SDK cases also verify
+that result lookup leaves an interrupted preparation unfinished, returns its
+completed result after reopening and rejects changed terms.
+
+All 430 SDK tests pass, with the existing opt-in storage soak excluded. All three
+bench cases, all three customer cases and 307 relay library tests pass. Strict
+all-target SDK/relay lint with all features, changed-file formatting and source-size
+checks pass. All nine passing gates retain identical source fingerprints.
+The failed reproduction, tested locks, dependency graph and accepted sources are
+retained in `work/paid-relay-verification/2026-09-30-cached-export-read`.
+This is native macOS ARM64 acceptance. The fix still needs current Linux-package
+and device acceptance; export-history retirement and physical power-loss recovery
+remain open.
 
 The r40 package binds FIPS `5981944e4eb3` to the unchanged accepted SDK/CDK graph.
 Five focused Linux cases pass: three run the extracted production executable

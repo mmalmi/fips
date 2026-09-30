@@ -125,39 +125,32 @@ pub(crate) async fn export_payment(
         max_total_amount_sat: None,
         metadata: Default::default(),
     };
-    // A published export cannot authorize a new send if its wallet evidence is lost.
-    // Callers retain exclusive wallet access throughout lookup and recovery.
-    if cached.is_some()
-        && wallet
-            .wallet_send_request(&request.request_id)
+    if let Some(cached) = cached {
+        // Validation cannot start or recover an unfinished wallet send.
+        let original = wallet
+            .wallet_send_result(request)
             .await
             .map_err(|e| e.to_string())?
-            .is_none()
-    {
-        return Err(
-            "export is missing its original wallet request; reconcile before retrying".into(),
-        );
+            .ok_or("export is missing its original wallet result; reconcile before retrying")?;
+        if cached != original.payment {
+            return Err(
+                "export conflicts with its original wallet result; reconcile before retrying"
+                    .into(),
+            );
+        }
+        return Ok(export_summary(&path, &original.payment));
     }
     let payment = wallet
         .send_payment_token_for_request(request)
         .await
         .map_err(|e| e.to_string())?
         .payment;
-    if let Some(cached) = cached {
-        if cached != payment {
-            return Err(
-                "export conflicts with its original wallet result; reconcile before retrying"
-                    .into(),
-            );
-        }
-    } else {
-        write_private_journal(
-            &directory,
-            &format!("{id}.json"),
-            &serde_json::to_vec(&payment).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    write_private_journal(
+        &directory,
+        &format!("{id}.json"),
+        &serde_json::to_vec(&payment).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(export_summary(&path, &payment))
 }
 
