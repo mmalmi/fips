@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.87] - 2026-09-30
+
+### Fixed
+
+- Aggregate Bloom filter inputs once when checking which peers need updates,
+  reducing repeated merging and identity hashing on busy nodes. Preserve each
+  recipient's excluded contribution, shared bits, and pending update state.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.87. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.86] - 2026-09-30
 
 ### Fixed
