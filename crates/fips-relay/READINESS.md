@@ -53,9 +53,32 @@ and a 31-second absence. Both sustained encounters resume bidirectional delivery
 and increase credit on every original channel; collection reconciles all 1,536
 test sats. The test takes 206.84 seconds, excluding compilation. This is native
 macOS ARM64 simulation/loopback acceptance, not a timing guarantee or an
-explanation of every historical stall. Current Linux-package and device checks
-remain open. Failed reproductions, the interrupted log and passing evidence are
+explanation of every historical stall. The r43 result below adds focused Linux
+acceptance; current-device checks remain open. Failed reproductions, the
+interrupted log and passing evidence are
 retained in `work/paid-relay-verification/2026-09-30-periodic-routing-maintenance`.
+
+The r43 package binds FIPS `7861ccdf592d` (core 0.4.86), SDK `b8da3c1a2bd4`
+and TCP endpoint `a0f30384fcba` (0.2.19) to the retained CDK/dependency closure.
+Twelve isolated ARM64 Linux cases pass: nine routing checks covering periodic
+repair, cancellation, pacing, the maintenance deadline and short contacts; the
+same crowded/lossy paid encounter; and both customer billing flows using the
+extracted packaged executable. Both encounters restore delivery and all-hop
+credit, and collection reconciles all 1,536 test sats. The paid encounter test
+takes 230.39 seconds, excluding compilation and container setup; this is not a
+performance guarantee. The unchanged wallet storage/recovery suites retain
+their separately recorded revisions and scope.
+
+The offline optimized build takes 377.21 seconds. The static binary is
+25,315,872 bytes, SHA-256
+`fbc60607102cd3885cd5b196b3ebab4428d40e8a9af3f246a713aff8967edba7`.
+The unsigned `0.1.0-r43` package is 11,580,758 bytes, SHA-256
+`5dc14f41516af1e18aaa252ef75c7b57f8165b235e70ba05d111d8e8ecb7d418`.
+All eleven payload files, 36,267 source files and tested executables retain
+their verified hashes. The relocated dependency graph matches native acceptance;
+all owned containers are absent and r42 artifacts remain unchanged. The 83
+evidence files are indexed under `work/paid-relay-verification/2026-09-30-arm64-r43`.
+No device installation, publication or real-money operation was performed.
 
 Numbered wallet exports now reuse the SDK's permanent retired-number limit.
 A local custody acknowledgement releases a completed prefix only after the caller
