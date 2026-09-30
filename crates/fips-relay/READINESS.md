@@ -14,12 +14,11 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-SDK `05d0b6656876` adds native coin-history handoff for acknowledged exports to
-the cached-result recovery base `b8da3c1a2bd4`. Its native and r44 Linux package
-acceptance below use FIPS core 0.4.87 and TCP endpoint 0.2.20. The r43 package
-retains its recorded core 0.4.86/endpoint 0.2.19 scope, while r42 covers the earlier
-export workflow. The broader seventeen-case r38 suite and r37 cadence measurements
-retain their original revisions and scope.
+The latest recorded acceptance pairs FIPS core 0.4.88 and TCP endpoint 0.2.21
+with SDK `948a93782f9b` and CDK `738e08534ce6` in the r45 Linux package below.
+The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
+Earlier package suites and cadence measurements retain their recorded revisions
+and workloads; they do not establish current-device or general production readiness.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -51,13 +50,46 @@ The standalone SQLite tests record their separate native dependency lock.
 
 Evidence is retained under
 `work/paid-relay-verification/2026-10-01-quote-record-bounds`.
-This is native macOS ARM64 acceptance with FIPS core 0.4.87 and TCP endpoint
-0.2.20. The independent core 0.4.88 integration on master needs combined relay
-acceptance with this SDK change. Matching Linux package acceptance also remains
-outstanding; r44 below retains its earlier recorded sources. Legacy bulk quote
-APIs, remaining wallet workflows, aggregate resource limits, current hardware
-and physical power-loss checks remain open. No deployment, publication or
-real-money operation was performed.
+That wallet milestone used native macOS ARM64 with FIPS core 0.4.87 and TCP
+endpoint 0.2.20. The r45 acceptance below adds the combined core 0.4.88/endpoint
+0.2.21 and matching Linux package. Legacy bulk quote APIs, remaining wallet
+workflows, aggregate resource limits, current hardware and physical power-loss
+checks remain open. No deployment, publication or real-money operation was performed.
+
+The r45 candidate binds FIPS `a8b7e3bd6255`, SDK `948a93782f9b`, CDK
+`738e08534ce6` and TCP endpoint `6fe9fe951ca89` to one frozen dependency graph.
+Its combined native acceptance passes 329 tests: nine routing checks, 307 relay
+library checks, seven wallet/customer cases, five mixed-link cases and the crowded,
+lossy paid encounter. Strict lint and source-size checks pass. The accepted SDK
+suite is reused with identical wallet sources and dependency graph.
+
+Sixteen isolated ARM64 Linux cases pass: nine routing checks, the paid encounter,
+both customer billing flows, the wallet command-line workflow, mixed UDP/TCP,
+explicitly configured self-signed WebSocket and the exact wallet quote-read bound.
+Customer, command-line and mixed-link cases execute the extracted packaged binary;
+routing and wallet fixtures execute the matching embedded sources. The paid
+encounter restores bidirectional delivery and all-hop credit after departure/rejoin
+and reconciles all 1,536 test sats. The unchanged 131-export soak was not repeated;
+its r44 evidence retains its earlier scope. These are finite acceptance scenarios,
+not a timing guarantee or attribution of every historical stall.
+
+The offline optimized build takes 394.97 seconds. The static binary is
+25,485,240 bytes, SHA-256
+`7cd5ff648ade90967748e77bc3963e52d1bf5f8ed21b84e05e445717a9245b37`.
+The unsigned `0.1.0-r45` package is 11,670,716 bytes, SHA-256
+`220d8e40d22f28114af8830980a0d7c201e1a6d9d01d204c9ee80dac5c3dac02`.
+All eleven payload files, 36,273 source files and eight accepted executables retain
+their verified hashes. Native and Linux source fingerprints match; only the
+verification runner's cache-directory allowlist changed between phases. All owned
+containers are absent, and the earlier wallet/native/r44 evidence remains intact.
+The first Linux preflight stopped at the disk reserve before running a test;
+removing the completed build cache restored space while preserving all executables.
+The first mixed-link attempt expected optional measurement counters absent from
+the default-feature package. Rebuilding the existing harness with matching features
+preserves its payment/recovery assertions and passes; the failed attempt and original
+harness remain archived. Runtime sources and the package are unchanged.
+Evidence is indexed under `work/paid-relay-verification/2026-10-01-arm64-r45`.
+No device installation, publication or real-money operation was performed.
 
 Acknowledged exports now hand off exact native coin identities before releasing
 their SDK send owners. One authenticated intent in the existing send journal
