@@ -33,6 +33,30 @@ measurements still use r37 and predate these recovery checks.
 
 ## Verified implementation and test history
 
+Periodic tree and reachability repair now runs in the bounded liveness tick,
+before optional discovery. A real encrypted-peer regression on core 0.4.86
+reproduces starvation: a 25 ms optional-maintenance delay repeatedly exhausts
+the 10 ms busy budget, so neither due tree nor filter refresh is sent. Moving
+the existing checks preserves the liveness deadline, announcement rate limits,
+pending-work ownership and wire protocol. Both refreshes then reach their peer
+without changing authenticated owners or cascading unchanged filters.
+
+The five refresh/cancellation checks pass. A related 81-check selection records
+70 completed passes before a turn interruption stopped the process; the remaining
+11 pass in a separate run. Source and dependency fingerprints are identical
+across the interrupted interval and all completed gates. Strict all-target core
+lint with simulation enabled, changed-file formatting and source-size checks pass.
+
+The existing six-node paid mesh scenario also passes on this source: eight
+competing neighbors, two-slot rosters, a 5% loss/10 ms/1 Mbps bridge, brief contacts
+and a 31-second absence. Both sustained encounters resume bidirectional delivery
+and increase credit on every original channel; collection reconciles all 1,536
+test sats. The test takes 206.84 seconds, excluding compilation. This is native
+macOS ARM64 simulation/loopback acceptance, not a timing guarantee or an
+explanation of every historical stall. Current Linux-package and device checks
+remain open. Failed reproductions, the interrupted log and passing evidence are
+retained in `work/paid-relay-verification/2026-09-30-periodic-routing-maintenance`.
+
 Numbered wallet exports now reuse the SDK's permanent retired-number limit.
 A local custody acknowledgement releases a completed prefix only after the caller
 has retained the complete tokens elsewhere or collected them. Unfinished sends
