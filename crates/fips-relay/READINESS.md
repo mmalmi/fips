@@ -14,12 +14,13 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-SDK `b8da3c1a2bd4` adds a read-only send-result lookup to the interrupted-send
-recovery base `e69538152a5e`, described [below](#interrupted-send-debit-evidence).
-The native SDK/relay checks and seven focused r42 ARM64 Linux cases below accept
-cached-export recovery and acknowledged export retirement. The broader
-seventeen-case r38 suite retains its original revision and scope. The cadence
-measurements still use r37 and predate these recovery checks.
+SDK `05d0b6656876` adds native coin-history handoff for acknowledged exports to
+the cached-result recovery base `b8da3c1a2bd4`. Its native acceptance below uses
+FIPS core 0.4.87 and TCP endpoint 0.2.20; matching Linux package acceptance remains
+outstanding. The r43 package accepts its recorded core 0.4.86/endpoint 0.2.19
+sources, while r42 covers the earlier export workflow. Neither accepts the latest
+handoff implementation. The broader seventeen-case r38 suite and r37 cadence
+measurements retain their original revisions and scope.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -27,11 +28,45 @@ measurements still use r37 and predate these recovery checks.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
-| Long-running history | Acknowledged export prefixes, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
+| Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Acknowledged exports now hand off exact native coin identities before releasing
+their SDK send owners. One authenticated intent in the existing send journal
+reserves recovery space and resumes capture, financial retirement and archive
+acknowledgement after interruption. The shared paged archive retains unspent coins
+and other recovery owners. An exported token may still await its recipient's
+claim; its matching native operation keeps custody, while the pending handoff
+fences reclaim of those originals. Imported originals require their separate
+owner's release. The [export workflow](HISTORY.md#acknowledged-wallet-exports)
+adds no peer messages or changes to gross costs and permanent replay cutoffs.
+
+The strengthened real test-mint run completes 131 exports under the existing
+16 MiB wallet limit and reconciles all 256 test sats. It ends with no retained
+send requests or archived references, 188 collected coin records, and 21 remaining
+coin records versus 42 before exporting. Original incoming receipt custody remains
+intact. The shared three-export fixture also passes. Both cover acknowledgement
+before token redemption, interrupted cache deletion, conflicting cached evidence,
+full-cache refusal, permanent retirement of skipped IDs and unchanged buyer
+authorization. The long test takes 1,609.69 seconds under the normal mint request
+pacing; this is finite lifecycle acceptance, not a performance benchmark or a
+bound on every wallet store.
+
+All 433 SDK tests pass, with one existing opt-in storage test excluded. The 307
+relay library checks, four routine bench cases and three customer cases pass.
+Strict all-target SDK/relay lint, changed-file formatting and source-size checks
+pass. All six final gates retain identical source and dependency fingerprints.
+The full suite first caught an invalid-operation-ID error regression in the new
+reclaim guard; the corrected guard reuses the existing validation, and the full
+suite was rerun successfully. Earlier failures and read-only storage observations
+are retained with the acceptance evidence under
+`work/paid-relay-verification/2026-09-30-export-proof-retirement`.
+This is native macOS ARM64 acceptance. Matching Linux package checks, current
+hardware, physical power loss and the broader outstanding requirements above
+remain open. No deployment, publication or real-money operation was performed.
 
 Periodic tree and reachability repair now runs in the bounded liveness tick,
 before optional discovery. A real encrypted-peer regression on core 0.4.86

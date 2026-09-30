@@ -316,6 +316,29 @@ oversized original allowed to progress alone. Neither queue references nor its
 checkpoint duplicate complete proof payloads. Older queue formats require fresh
 profiles.
 
+## Acknowledged wallet exports
+
+The local export acknowledgement hands off native send coin history through the
+SDK's `retire_owned_send_requests` API. The caller must first retain the complete
+tokens elsewhere or collect them, and finish any other external obligation that
+needs the original wallet records. Conflicting cached results and unfinished
+sends refuse the handoff.
+
+The SDK saves one authenticated intent and captures original identities before
+removing send owners. The permanent export-number cutoff and gross costs commit
+before archive acknowledgement or cached-token deletion. Retrying the
+acknowledgement, or preparing a later export, resumes that exact intent. Previously
+acknowledged and skipped numbers cannot create another payment. Unknown files
+remain untouched and count against the existing export-cache limit.
+
+An acknowledged token can still be redeemed later. Native claim tracking retains
+its own coin ownership until recovery completes, and collection preserves all
+unspent value, other send/receipt owners and imported originals without a separate
+release. The handoff runs bounded collection; it does not query the mint or
+pretend an unclaimed token has been spent. This adds no peer messages or changes
+to the export command fields. Remaining wallet workflows and total storage bounds
+still require separate acceptance.
+
 ## Proof custody storage
 
 Outgoing channel retirement hands off exact completed sender refunds and

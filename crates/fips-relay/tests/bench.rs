@@ -302,6 +302,21 @@ async fn acknowledged_exports_outlive_the_request_limit_without_reusing_spends()
     check_export_retirement(131).await;
 }
 
+async fn export_coin_count(cfg: &ServiceConfig) -> usize {
+    use cdk_common::database::WalletDatabase;
+    // Only the fixed test wallet is inspected; never log its original proofs.
+    let database = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+        &cfg.state_directory.join("wallet"),
+    ))
+    .await
+    .unwrap();
+    database
+        .get_proofs(None, None, None, None)
+        .await
+        .unwrap()
+        .len()
+}
+
 async fn check_export_retirement(exports: u64) {
     let root = tempfile::tempdir().unwrap();
     let mut mint = BenchMint::start(BenchConfig {
@@ -379,6 +394,7 @@ async fn check_export_retirement(exports: u64) {
     for n in 1..128 {
         std::fs::remove_file(directory.join(format!("retained-{n}"))).unwrap();
     }
+    let initial_coins = export_coin_count(&cfg).await;
     let mut last_history = Value::Null;
     for id in 1..=exports {
         let amount_sat = if id == exports { 257 - exports } else { 1 };
@@ -416,11 +432,12 @@ async fn check_export_retirement(exports: u64) {
             std::fs::write(path, &original).unwrap();
         }
         let payment: Value = serde_json::from_slice(&original).unwrap();
-        mint.handle(BenchRequest::Collect {
+        let collect = BenchRequest::Collect {
             token: payment["token"].as_str().unwrap().into(),
-        })
-        .await
-        .unwrap();
+        };
+        if id != 2 {
+            mint.handle(collect.clone()).await.unwrap();
+        }
         if id == 1 {
             // Fail cache deletion after the SDK has durably retired the request.
             let permissions = std::fs::metadata(&directory).unwrap().permissions();
@@ -458,6 +475,11 @@ async fn check_export_retirement(exports: u64) {
             b"retained"
         );
         if id == 2 {
+            // An acknowledgement may hand off a still-unclaimed token. Keep it
+            // outside the cache and prove it remains redeemable after cleanup.
+            mint.handle(collect).await.unwrap();
+        }
+        if id == 2 {
             // Model an acknowledged cache file still present after interruption.
             std::fs::write(path, &original).unwrap();
         }
@@ -480,6 +502,11 @@ async fn check_export_retirement(exports: u64) {
             .unwrap()
             .retained_requests,
         0
+    );
+    let proof_history = wallet.payment_proof_history().await.unwrap();
+    assert!(
+        proof_history.retired_proofs > 0,
+        "acknowledged exports must release their native coin history"
     );
     drop(wallet);
     // Close an absent number too: it must never become fresh spending authority.
@@ -506,6 +533,33 @@ async fn check_export_retirement(exports: u64) {
     assert_eq!(
         buyer,
         std::fs::read(cfg.state_directory.join("buyer/buyer.json")).unwrap()
+    );
+    let wallet =
+        cashu_service::CashuWalletService::open_file_backed(&cfg.state_directory.join("wallet"))
+            .await
+            .unwrap();
+    let recovered = wallet.recover_startup_state().await;
+    assert!(recovered.warnings.is_empty());
+    assert_eq!(recovered.failed_sagas, 0);
+    wallet
+        .retire_owned_send_requests("fips-exports", exports + 1)
+        .await
+        .unwrap();
+    // Fixed cleanup work for this fixture, independent of the export count.
+    // Original incoming receipt owners remain; their coin rows are not garbage.
+    for _ in 0..64 {
+        wallet.collect_released_proof_history().await.unwrap();
+    }
+    let proof_history = wallet.payment_proof_history().await.unwrap();
+    drop(wallet);
+    let native_coins = export_coin_count(&cfg).await;
+    eprintln!(
+        "exports={exports} initial_coins={initial_coins} native_coins={native_coins} retired_coins={} archived_refs={}",
+        proof_history.retired_proofs, proof_history.archived_proofs
+    );
+    assert!(
+        native_coins <= initial_coins,
+        "export coin history exceeds original receipt custody: {native_coins} > {initial_coins}"
     );
     let report = mint.handle(BenchRequest::Report).await.unwrap();
     assert_eq!(report["collected_sat"], 256);
