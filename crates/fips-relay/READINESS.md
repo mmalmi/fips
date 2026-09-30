@@ -2262,13 +2262,16 @@ These native checks postdate r32; packaged default builds omit measurements.
 Historical timeout causes and current-device acceptance remain open.
 See the [observation semantics](../../testing/relay-cadence/README.md).
 
-The existing TCP/FIPS carrier regression additionally drops a completed control
-reply on the encrypted simulated link. The closing stream retransmits it and
-finishes with exactly one application request in both relay feature profiles.
-Strict target lint, formatting and source-size checks pass. Production behavior
-and the fixture's 20-second deadline are unchanged; the historical stalls remain
-unattributed. Evidence is retained in
-`work/paid-relay-verification/2026-09-30-control-reply-loss`.
+The existing TCP/FIPS carrier regression now drops the initial SYN, SYN/ACK and
+completed control reply on the encrypted simulated link. No application record
+can be submitted before connection recovery, and the completed exchange contains
+exactly one application request. The separate port's accounting counters remain
+unchanged. Both relay feature profiles pass in 4.19 and 4.15 seconds within the
+existing twenty-second deadline, along with strict target lint, formatting and
+the source-size gate. This extends one existing case without changing runtime
+behavior, protocol or dependencies. It does not reproduce or attribute the
+historical stalls. Exact sources, the tested lock and all six unchanged-source
+gates are retained in `work/paid-relay-verification/2026-09-30-control-handshake-loss`.
 
 With these diagnostics enabled, one bounded run each of seeded WebSocket
 recovery, ordinary TLS and repeated bidirectional UDP/TLS renewal passes against
