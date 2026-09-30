@@ -112,6 +112,32 @@ power-loss behavior. Current Pixel acceptance remains outstanding. Sources,
 failed reproduction, passing checks and images are retained in
 `work/paid-relay-verification/2026-09-30-android-export`.
 
+The existing crowded, lossy long-absence scenario now passes on FIPS `631165186977`
+with the accepted dependency graph. Six paying nodes retain their eight original
+channels while eight unfunded candidates compete for full two-neighbor rosters.
+The inter-group link has 5% loss, 10 ms latency and a 1 Mbps limit. Short contacts
+and a 31-second absence after bridge removal retain the existing 60-second recovery
+deadline, spending authority and collection checks.
+
+With extra timing queries disabled, delivery and all-hop credit recover after
+23.809 and 44.615 seconds in the two encounters. Both independent local streams
+deliver 160/160 packets without duplicates, and all 1,536 test sats are collected.
+A diagnostic run also passes, with recovery at 18.824 and 54.901 seconds and
+165/165 local deliveries per direction. Its second encounter spends 39.671 seconds
+reacquiring the bridge, followed by coordinate lookup and application retries;
+all-hop credit is observed 13 ms after the final fresh delivery. This run does not
+show a payment-scheduler stall or establish the cause of the historical failures.
+
+Cold short contacts deliver 0/17 ordinary and 0/18 diagnostic offers. Warm contacts
+deliver 30/31 and 32/34 before their cuts. These finite cases do not guarantee cold
+admission or lossless handover. Both use the same native macOS ARM64 all-features
+harness and unchanged source; no runtime code or test deadline changes accompany
+the result. High shared-host load and scheduling-dependent loss preclude timing
+guarantees or a comparison of observer overhead. This is embedded SimNetwork and
+test-mint evidence, not current-device or Linux package acceptance. Exact commands,
+source fingerprints, timing traces, host samples and verified outcomes are under
+`work/paid-relay-verification/2026-09-30-crowded-recovery`.
+
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize
 authorization; refund recovery still requires the exclusive wallet owner.
