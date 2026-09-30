@@ -1,71 +1,68 @@
 # Paid-relay cadence measurements
 
-## Accepted ARM64 Linux comparison — 27 September 2026
+## Accepted ARM64 Linux comparison — 30 September 2026
 
-The r12 source bundle uses FIPS `9c180baeb`, Cashu SDK `9480336`, CDK
-`9a8e9792`, TCP/FIPS `491b112`, Spilman `7ceb4df` and bitreq `f22cf3e`.
-The existing five-process loopback experiment runs with the OpenWrt optimization
-profile and `measurements` enabled. This instrumented executable is separate
-from the accepted default-feature r12 package; both use the same source bundle.
+The r37 source bundle uses FIPS `6b367afc9878`, Cashu SDK `c3fd5b2f8c1b`
+and CDK `418380651373`. The existing five-process loopback experiment runs
+with the OpenWrt optimization profile and `measurements` enabled. This
+instrumented executable is separate from the accepted default-feature package.
+The package executables and all 94 indexed acceptance files remain unchanged.
 
 All 285,696 original packets arrive without loss, duplicates, invalid packets or
-rejected timestamps. Five arrive out of order: one steady and three high-rate
-packets in the first 1-s trial, and one high-rate packet in its second trial.
-All eight trials settle six channels each and collect all 40,960 test sats. The unchanged strict analyzer passes, including
-credit/payment boundaries and exact reconciliation of 15 disjoint intervals per
-trial. Its 120 regression tests pass. Source, dependency, lock, analyzer,
-measurement executable and existing package hashes remain unchanged.
+rejected timestamps; 13 arrive out of order. All eight trials settle six channels
+each and collect all 40,960 test sats. The unchanged strict analyzer passes,
+including credit/payment boundaries and exact reconciliation of 15 disjoint
+intervals per trial. Its 121 regression tests pass. The source bundle, lock,
+analyzer and measurement executables remain unchanged throughout verification.
 
 Both directions are funded across three paid forwarding hops. Policies run in
 opposite orders, 250/500/1000/2000 and 2000/1000/500/250 ms. Values below sum all
 five processes and average two workload windows. Each window has the same
 three-second tail. Bursty sends 512, steady 3,200 and high rate 32,000 packets per
 repetition, each with a 1,000-byte payload; offered steady/high rates are 3.2/32 Mbps.
+No measured packets are retried and no explicit payment flush is added.
 
 | Workload | Limit ms | Payment CPU ms | Process CPU ms | Updates | Records KiB | Payment journal KiB | Local carrier KiB | Mean delay ms |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| idle | 250 | 0.00 | 578.93 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| idle | 500 | 0.00 | 600.04 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| idle | 1000 | 0.00 | 696.23 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| idle | 2000 | 0.00 | 751.58 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| bursty | 250 | 17.14 | 1238.98 | 2.0 | 1.60 | 18.04 | 4.61 | 1.243 |
-| bursty | 500 | 17.64 | 1447.32 | 2.0 | 1.60 | 18.04 | 4.61 | 1.389 |
-| bursty | 1000 | 17.47 | 1564.77 | 2.0 | 1.60 | 18.07 | 4.61 | 1.434 |
-| bursty | 2000 | 20.33 | 1588.11 | 2.0 | 1.60 | 18.10 | 4.61 | 1.423 |
-| steady | 250 | 132.20 | 4753.52 | 19.0 | 15.19 | 175.52 | 43.77 | 1.214 |
-| steady | 500 | 137.17 | 5494.82 | 19.0 | 15.19 | 175.72 | 43.77 | 1.360 |
-| steady | 1000 | 104.41 | 5373.59 | 14.0 | 11.19 | 130.66 | 32.25 | 1.396 |
-| steady | 2000 | 80.22 | 5448.16 | 10.0 | 8.00 | 94.21 | 23.04 | 1.454 |
-| high_rate | 250 | 312.01 | 6418.98 | 63.0 | 50.76 | 602.16 | 145.50 | 2.049 |
-| high_rate | 500 | 244.52 | 6695.10 | 44.0 | 35.46 | 420.59 | 101.63 | 1.235 |
-| high_rate | 1000 | 230.14 | 6825.30 | 40.0 | 32.24 | 378.14 | 92.39 | 1.270 |
-| high_rate | 2000 | 222.54 | 6795.13 | 40.0 | 32.24 | 377.89 | 92.39 | 1.238 |
+| idle | 250 | 0.00 | 688.83 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 500 | 0.00 | 777.80 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 1000 | 0.00 | 628.42 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 2000 | 0.00 | 674.65 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| bursty | 250 | 24.55 | 1544.59 | 2.0 | 1.60 | 18.09 | 4.61 | 1.282 |
+| bursty | 500 | 26.40 | 1498.10 | 2.0 | 1.60 | 18.09 | 4.61 | 1.328 |
+| bursty | 1000 | 21.84 | 1434.00 | 2.0 | 1.60 | 18.03 | 4.61 | 1.251 |
+| bursty | 2000 | 23.00 | 1534.85 | 2.0 | 1.60 | 18.09 | 4.61 | 1.351 |
+| steady | 250 | 145.08 | 4870.69 | 19.0 | 15.19 | 176.72 | 43.77 | 1.391 |
+| steady | 500 | 123.12 | 5082.94 | 19.0 | 15.19 | 176.81 | 43.77 | 1.226 |
+| steady | 1000 | 97.05 | 4977.20 | 14.0 | 11.19 | 130.24 | 32.25 | 1.262 |
+| steady | 2000 | 79.57 | 5013.30 | 10.0 | 8.00 | 94.24 | 23.04 | 1.407 |
+| high_rate | 250 | 296.20 | 7247.45 | 60.0 | 48.34 | 576.04 | 138.57 | 1.120 |
+| high_rate | 500 | 243.26 | 6506.68 | 44.0 | 35.46 | 417.58 | 101.63 | 1.175 |
+| high_rate | 1000 | 216.87 | 6212.30 | 40.0 | 32.24 | 375.54 | 92.39 | 1.136 |
+| high_rate | 2000 | 229.99 | 6646.48 | 40.0 | 32.24 | 378.03 | 92.39 | 1.152 |
 
 All eight idle windows have zero payment polling, signing, updates, records,
 attributed payment carriers and relay-journal writes. Total observed process CPU
-is 113,270.526 ms, including 729.400 ms in the guards and gaps retained
-separately from the workload rows. These costs are not baseline-subtracted.
+is 111,599.538 ms, including 922.990 ms in the guards and gaps retained separately
+from the workload rows. These costs are not baseline-subtracted.
 
-At high rate, 500 ms costs 8.01 ms of measured payment CPU and
-0.219 total process CPU-seconds per delivered MiB. Locally attributed
-payment carriers are 0.325% of application bytes. Independent durable checkpoints
-add 9.90 ms of CPU and 195.41 KiB of relay-journal writes per
-window, included in process CPU and total journal counters but not the payment
-columns. Its mean delivery delay is 1.235 ms and both p95 histogram
-bounds are 2 ms. The 1-s policy uses 9.1% fewer updates/carrier bytes and
-5.9% less measured payment CPU, but 1.9% more total process CPU.
-The 500-ms payment CPU samples are 232.27/256.77 ms;
-the 1-s samples are 234.30/225.98 ms. Two repetitions on a
-shared host do not establish a reliable optimum; the default remains 500 ms.
+At high rate, 500 ms costs 7.97 ms of measured payment CPU and 0.213 total process
+CPU-seconds per delivered MiB. Locally attributed payment carriers are 0.325% of
+application bytes. Mean delivery delay is 1.175 ms; the two p95 histogram bounds
+are 2 ms and 5 ms. The 1-s policy uses 9.1% fewer updates/carrier bytes and measures
+10.8% lower payment CPU and 4.5% lower total process CPU. The payment CPU samples
+are 254.65/231.88 ms at 500 ms and 226.96/206.78 ms at 1 s. Two repetitions with
+shared-host interference do not establish an optimum; the default stays 500 ms.
 
-Measurement takes 387.063 seconds, with all task builds/tests finished
-before traffic starts. An isolated ARM64 Linux container has a four-CPU quota,
-2 GiB memory limit and 512 MiB temporary memory-backed filesystem for wallets
-and journals, on an ARM64 macOS host with 14 logical CPUs. Host load averages
-change from 3.49/3.57/3.60 to 3.46/4.44/4.29. High-rate timing also varies: the
-two 250-ms p95 bounds are 10 ms and 2 ms. This run does not isolate
-software changes from differences in OS, compiler profile or storage versus the
-older macOS release measurements.
+Measurement takes 392.050 seconds with all task builds/tests finished before
+traffic starts. The isolated ARM64 Linux container has a four-CPU quota, 2 GiB
+memory limit and 512 MiB temporary memory-backed filesystem for wallets and
+journals, on an ARM64 macOS host with 14 logical CPUs. No compiler is active at
+startup, but unrelated host compilers appear in 9 of 77 five-second samples.
+Host load averages change from 7.82/8.18/6.90 to 6.79/7.36/6.94. These are observed
+costs under that interference, not a controlled estimate of software speedup or
+regression against the earlier measurements. The container is removed after
+collection; no router, saved account or installed package is changed.
 
 CPU attribution covers synchronous payment spans, not whole payment tasks.
 Journal bytes exclude SDK snapshots, SQLite and physical writes. Carrier bytes
@@ -76,9 +73,11 @@ maximum throughput, flash behavior or router performance. No production code,
 feature default or payment policy changes accompany this result.
 
 The instrumented relay SHA-256 is
-`82eed6315864f35fe9bbd14adfb15fc0b450f110fadadc21dad5eb14aeb1451f`;
+`090f3afe3344ce6b700de154a476b97d34f6a0a4c10d26c3e37626ca830c74d3`;
 the raw report SHA-256 is
-`b23c5b6dd66922bdfbaca4ed2e3e615d38c6430951243120af3fb0d0b63aad94`.
+`ada28f662ef912e686238c5069b9022527b5860e1f45d35016ccb9f42d0004a9`.
+Exact build/runtime commands, host samples, raw reports and the complete interval
+analysis are retained in `work/paid-relay-verification/2026-09-30-cadence-r37`.
 Reproduce with the existing [loopback experiment](../../testing/relay-cadence/README.md),
 using the matched source bundle and `--profile openwrt --features measurements`.
 
