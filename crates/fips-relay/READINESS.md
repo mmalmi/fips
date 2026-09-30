@@ -14,6 +14,10 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+SDK `6e29c7cf56c2` adds the interrupted-send authorization check described
+[below](#interrupted-send-debit-evidence). Native SDK/relay checks pass; the r37
+ARM64 package and cadence measurements predate this SDK change.
+
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize
 authorization; refund recovery still requires the exclusive wallet owner.
@@ -750,6 +754,26 @@ That checkpoint did not configure service-level capacity.
 
 
 ### Interrupted-send debit evidence
+
+SDK `6e29c7cf56c2` checks a native send's saved confirmation against the original
+SDK authorization before recovery can submit another mint swap or publish its
+result. The shared request check compares amount, maximum debit, required keyset,
+fee policy, memo, spending conditions and metadata using the ordinary send options.
+The previous source accepted a confirmation whose debit limit disagreed with the
+original request. The existing interrupted-funding fixture now rejects nine
+missing/conflicting cases, retains both journals without another swap, and
+recovers the same operation after its original confirmation is restored.
+
+All 430 SDK workspace tests pass (one existing opt-in soak excluded), as do strict
+all-target SDK lint and changed-source formatting. FIPS fee-bearing settlement
+and interrupted funding recovery after route expiry pass against the same
+unchanged candidate. An interrupted integration compilation is preserved separately
+and contributes no passing result. Exact sources, tested locks and results are in
+`work/paid-relay-verification/2026-09-30-confirmation-evidence`.
+No schema, dependency or protocol message changes. This preserves conflicting
+authority; it does not reconstruct missing originals or reconcile arbitrary wallet
+corruption. ARM64 package and current-device acceptance of this SDK change remain
+outstanding.
 
 SDK `d0dae6f2a794` validates the original native debit before publishing an
 unfinished numbered-send result. It reuses the existing 4-MiB bounded receipt
