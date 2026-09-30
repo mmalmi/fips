@@ -95,6 +95,10 @@ async fn test_reply_learned_lookup_does_not_stop_at_stale_direct_target() {
     let request = LookupRequest::new(4343, node2_addr, node0_addr, origin_coords, 5, 0);
     let payload = &request.encode()[1..];
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     nodes[1]
         .node
         .handle_lookup_request(&node0_addr, payload)
@@ -105,12 +109,14 @@ async fn test_reply_learned_lookup_does_not_stop_at_stale_direct_target() {
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        !nodes[2].node.recent_requests.contains_key(&4343),
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_received,
+        received_before[2],
         "stale direct target should not consume lookup as the only route"
     );
-    assert!(
-        nodes[3].node.recent_requests.contains_key(&4343),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3] + 1,
         "healthy fallback neighbor should still receive the lookup"
     );
 
@@ -126,7 +132,6 @@ async fn test_reply_learned_initiates_lookup_to_sendable_non_tree_peer() {
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
 
-    let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
     nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
     nodes[0].node.tree_state_mut().remove_peer(&node1_addr);
@@ -145,6 +150,10 @@ async fn test_reply_learned_initiates_lookup_to_sendable_non_tree_peer() {
     );
 
     let target = make_node_addr(0x55);
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     let sent = nodes[0].node.initiate_lookup(&target, 5).await;
     assert_eq!(
         sent, 1,
@@ -157,12 +166,10 @@ async fn test_reply_learned_initiates_lookup_to_sendable_non_tree_peer() {
     }
 
     assert_eq!(
-        nodes[1].node.recent_requests.len(),
-        1,
+        nodes[1].node.stats().discovery.req_received,
+        received_before[1] + 1,
         "fallback lookup should arrive at the non-tree peer"
     );
-    let recent = nodes[1].node.recent_requests.values().next().unwrap();
-    assert_eq!(recent.from_peer, node0_addr);
 
     cleanup_nodes(&mut nodes).await;
 }
@@ -273,7 +280,6 @@ async fn test_reply_learned_initiates_lookup_fanout_despite_tree_match() {
     let mut nodes = run_tree_test(4, &edges, false).await;
     verify_tree_convergence(&nodes);
 
-    let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
     let node2_addr = *nodes[2].node.node_addr();
     let node3_addr = *nodes[3].node.node_addr();
@@ -303,6 +309,10 @@ async fn test_reply_learned_initiates_lookup_fanout_despite_tree_match() {
         "node3 should not be a tree peer in this regression fixture"
     );
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     let sent = nodes[0].node.initiate_lookup(&node2_addr, 5).await;
     assert_eq!(
         sent, 2,
@@ -314,12 +324,9 @@ async fn test_reply_learned_initiates_lookup_fanout_despite_tree_match() {
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        nodes[3]
-            .node
-            .recent_requests
-            .values()
-            .any(|request| request.from_peer == node0_addr),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3] + 1,
         "non-tree peer should receive reply-learned fanout despite tree match"
     );
 
@@ -376,6 +383,10 @@ async fn test_reply_learned_origin_fanout_uses_only_explicit_bootstrap_transit_p
         "node3 should not be a tree peer in this regression fixture"
     );
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     let sent = nodes[0].node.initiate_lookup(&node2_addr, 5).await;
     assert_eq!(
         sent, 1,
@@ -393,8 +404,9 @@ async fn test_reply_learned_origin_fanout_uses_only_explicit_bootstrap_transit_p
         }),
         "tree path should still deliver the lookup"
     );
-    assert!(
-        nodes[3].node.recent_requests.is_empty(),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3],
         "bootstrap transit peer should not receive private fallback lookup"
     );
 
@@ -413,6 +425,10 @@ async fn test_reply_learned_origin_fanout_uses_only_explicit_bootstrap_transit_p
         .await
         .expect("configured bootstrap transit peer update");
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     let sent = nodes[0].node.initiate_lookup(&node2_addr, 5).await;
     assert_eq!(
         sent, 2,
@@ -424,12 +440,9 @@ async fn test_reply_learned_origin_fanout_uses_only_explicit_bootstrap_transit_p
         process_available_packets(&mut nodes).await;
     }
 
-    assert!(
-        nodes[3]
-            .node
-            .recent_requests
-            .values()
-            .any(|request| request.from_peer == *nodes[0].node.node_addr()),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3] + 1,
         "the configured bootstrap peer should receive fallback discovery"
     );
 
@@ -477,6 +490,10 @@ async fn test_reply_learned_origin_fanout_skips_disabled_transit_peer() {
         "node3 should not be a tree peer in this regression fixture"
     );
 
+    let received_before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().discovery.req_received)
+        .collect();
     let sent = nodes[0].node.initiate_lookup(&node2_addr, 5).await;
     assert_eq!(
         sent, 1,
@@ -494,8 +511,9 @@ async fn test_reply_learned_origin_fanout_skips_disabled_transit_peer() {
         }),
         "tree path should still deliver the lookup"
     );
-    assert!(
-        nodes[3].node.recent_requests.is_empty(),
+    assert_eq!(
+        nodes[3].node.stats().discovery.req_received,
+        received_before[3],
         "fallback-disabled transit peer should not receive private fallback lookup"
     );
 

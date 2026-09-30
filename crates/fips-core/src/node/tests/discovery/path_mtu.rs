@@ -1,6 +1,70 @@
 use super::*;
 
 #[tokio::test]
+async fn oversized_lookup_does_not_consume_request_id_at_target() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    let origin = *nodes[0].node.node_addr();
+    let target = *nodes[1].node.node_addr();
+    let mut request = LookupRequest::generate(
+        target,
+        origin,
+        nodes[0].node.tree_state().my_coords().clone(),
+        5,
+        1281,
+    );
+    let before = nodes[1].node.stats().discovery.req_target_is_us;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &request.encode()[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_target_is_us,
+        before,
+        "an undersized ingress must not produce a route response"
+    );
+    request.min_mtu = 1280;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &request.encode()[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_target_is_us,
+        before + 1,
+        "rejected ingress must not consume dedup ownership"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn oversized_lookup_does_not_leave_a_narrow_transit_link() {
+    let mut nodes =
+        spanning_tree::run_tree_test_with_mtus(&[4096, 1280, 4096], &[(0, 1), (1, 2)]).await;
+    let origin = *nodes[0].node.node_addr();
+    let transit = *nodes[1].node.node_addr();
+    let target = *nodes[2].node.node_addr();
+    let request = LookupRequest::generate(
+        target,
+        origin,
+        nodes[0].node.tree_state().my_coords().clone(),
+        5,
+        2912,
+    );
+    let before = nodes[2].node.stats().discovery.req_received;
+    // Exercise the forwarding path independently of ingress admission.
+    nodes[1].node.forward_lookup_request(&origin, request).await;
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        process_available_packets(&mut nodes).await;
+    }
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_received,
+        before,
+        "transit {transit} must not qualify its 1280-byte egress for a 2912-byte record"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_response_path_mtu_two_node() {
     // Two-node topology: node0 — node1
     // Node0 initiates lookup for node1. node1 is the target and generates
@@ -321,4 +385,126 @@ async fn sub_floor_lookup_mtu_is_ignored_while_signed_coordinates_are_kept() {
     );
     assert_eq!(node.path_mtu_lookup_get(&target_fips), None);
     assert_eq!(node.stats().errors.lookup_resp_mtu_below_floor, 1);
+}
+
+#[tokio::test]
+async fn qualified_lookup_retries_when_target_connects_after_no_peer() {
+    let mut nodes = spanning_tree::run_tree_test_with_mtus(&[4096, 4096, 4096], &[(0, 1)]).await;
+    let origin = *nodes[0].node.node_addr();
+    let target = *nodes[2].node.node_addr();
+    let request = LookupRequest::generate(
+        target,
+        origin,
+        nodes[0].node.tree_state().my_coords().clone(),
+        5,
+        2912,
+    );
+    let encoded = request.encode();
+    let no_peer_before = nodes[1].node.stats().discovery.req_no_tree_peer;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_no_tree_peer,
+        no_peer_before + 1
+    );
+    assert!(
+        !nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id),
+        "a lookup with no send or deferred work must not poison its same-ID retry"
+    );
+
+    // The target now joins the same seed over a real authenticated link.
+    spanning_tree::initiate_handshake(&mut nodes, 1, 2).await;
+    spanning_tree::drain_all_packets(&mut nodes, false).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_peer(&target)
+            .is_some_and(|peer| peer.can_send())
+    );
+    let target_before = nodes[2].node.stats().discovery.req_target_is_us;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &encoded[1..])
+        .await;
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id)
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while nodes[2].node.stats().discovery.req_target_is_us == target_before {
+            process_available_packets(&mut nodes).await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the unchanged retry must reach the newly connected target");
+
+    let duplicates_before = nodes[1].node.stats().discovery.req_duplicate;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_duplicate,
+        duplicates_before + 1
+    );
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id)
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn failed_direct_lookup_keeps_dedup_without_a_fallback() {
+    let mut nodes =
+        spanning_tree::run_tree_test_with_mtus(&[4096, 4096, 4096], &[(0, 1), (1, 2)]).await;
+    let from = *nodes[0].node.node_addr();
+    let target = *nodes[2].node.node_addr();
+    // Origin is unsigned input. Claiming the target as origin excludes it from
+    // the ordinary forwarding plan but cannot bypass direct-target probing.
+    let request = LookupRequest::generate(target, target, TreeCoordinate::root(target), 5, 2912);
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.tree_state_mut().remove_peer(&target);
+    nodes[1].node.tree_state_mut().become_root();
+    nodes[1]
+        .node
+        .dataplane
+        .unregister_owner(crate::dataplane::OwnerId::fmp_node(target));
+    let encoded = request.encode();
+    let no_peer_before = nodes[1].node.stats().discovery.req_no_tree_peer;
+    nodes[1]
+        .node
+        .handle_lookup_request(&from, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_no_tree_peer,
+        no_peer_before + 1
+    );
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id),
+        "an attempted send must keep dedup even when its receipt failed"
+    );
+    let duplicates_before = nodes[1].node.stats().discovery.req_duplicate;
+    nodes[1]
+        .node
+        .handle_lookup_request(&from, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_duplicate,
+        duplicates_before + 1
+    );
+    cleanup_nodes(&mut nodes).await;
 }

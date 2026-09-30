@@ -192,7 +192,7 @@ async fn test_recent_request_expiry() {
     let target = make_node_addr(0xBB);
     let origin = make_node_addr(0xCC);
     let coords = TreeCoordinate::from_addrs(vec![origin, make_node_addr(0)]).unwrap();
-    let request = LookupRequest::new(789, target, origin, coords, 3, 0);
+    let request = LookupRequest::new(789, target, origin, coords, 0, 0);
     let payload = &request.encode()[1..];
     node.handle_lookup_request(&make_node_addr(0xAA), payload)
         .await;

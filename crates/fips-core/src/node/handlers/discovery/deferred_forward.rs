@@ -206,7 +206,10 @@ impl Node {
             LookupForwardOutcome::RateLimited => {
                 self.stats_mut().discovery.req_forward_rate_limited += 1
             }
-            LookupForwardOutcome::NoPeer => {}
+            LookupForwardOutcome::NoPeer => {
+                self.recent_requests.remove(entry.request_id);
+            }
+            LookupForwardOutcome::SendFailed => {}
         }
     }
 }

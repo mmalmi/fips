@@ -21,10 +21,10 @@ async fn test_request_dedup() {
     let origin = make_node_addr(0xCC);
     let coords = TreeCoordinate::from_addrs(vec![origin, make_node_addr(0)]).unwrap();
 
-    let request = LookupRequest::new(999, target, origin, coords, 5, 0);
+    let request = LookupRequest::new(999, target, origin, coords, 0, 0);
     let payload = &request.encode()[1..]; // skip msg_type byte
 
-    // First request: accepted
+    // TTL-exhausted requests retain loop protection without forwarding.
     node.handle_lookup_request(&from, payload).await;
     assert_eq!(node.recent_requests.len(), 1);
 
