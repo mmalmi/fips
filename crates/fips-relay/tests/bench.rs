@@ -362,6 +362,18 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
             "{}",
             String::from_utf8_lossy(&initialized.stderr)
         );
+        let pending = json!({"type":"export","id":"pending-cached","amount_sat":5});
+        assert!(
+            !cli(
+                env!("CARGO_BIN_EXE_fips-relay"),
+                "wallet",
+                &relay_path,
+                pending.clone(),
+            )
+            .await
+            .status
+            .success()
+        );
         let grant = cli(
             env!("CARGO_BIN_EXE_fips-relay-test-mint"),
             "ctl",
@@ -423,6 +435,21 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
                 original = Some((summary, bytes));
             }
         }
+        let cached = relay.state_directory.join("exports/pending-cached.json");
+        let (_, token) = original.unwrap();
+        std::fs::write(&cached, &token).unwrap();
+        assert!(
+            !cli(
+                env!("CARGO_BIN_EXE_fips-relay"),
+                "wallet",
+                &relay_path,
+                pending,
+            )
+            .await
+            .status
+            .success()
+        );
+        assert!(std::fs::read(&cached).unwrap() == token);
         let balance = cli(
             env!("CARGO_BIN_EXE_fips-relay"),
             "wallet",
@@ -437,6 +464,7 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
             "separate export processes must not debit the wallet twice"
         );
         eprintln!("wallet CLI recovered the original export without another debit");
+        eprintln!("wallet CLI rejected an unfinished cached export without spending");
         assert_eq!(
             std::fs::metadata(cfg.state_directory.join("control.sock"))
                 .unwrap()
