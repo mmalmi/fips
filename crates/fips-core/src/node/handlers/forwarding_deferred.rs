@@ -121,6 +121,7 @@ fn decrement_forwarding_lane_map(
 struct PendingSessionForward {
     forward: PreparedSessionForward,
     lane: ForwardingLane,
+    submitted_at: tokio::time::Instant,
 }
 
 #[derive(Default)]
@@ -128,6 +129,7 @@ pub(in crate::node) struct DeferredSessionForwards {
     window: ForwardingInFlightWindow,
     pending: HashMap<u64, PendingSessionForward>,
     completed: VecDeque<(PreparedSessionForward, Result<(), NodeError>)>,
+    next_receipt_deadline: Option<tokio::time::Instant>,
 }
 
 impl DeferredSessionForwards {
@@ -145,11 +147,21 @@ impl DeferredSessionForwards {
     }
 
     fn insert(&mut self, send_token: u64, forward: PreparedSessionForward, lane: ForwardingLane) {
+        let submitted_at = tokio::time::Instant::now();
+        if lane != ForwardingLane::Background {
+            self.next_receipt_deadline
+                .get_or_insert(submitted_at + DEFERRED_SESSION_FORWARD_RECEIPT_TIMEOUT);
+        }
         self.window
             .reserve(forward.next_hop_addr, forward.src_addr, lane);
-        let replaced = self
-            .pending
-            .insert(send_token, PendingSessionForward { forward, lane });
+        let replaced = self.pending.insert(
+            send_token,
+            PendingSessionForward {
+                forward,
+                lane,
+                submitted_at,
+            },
+        );
         debug_assert!(replaced.is_none(), "forwarding send tokens must be unique");
     }
 
@@ -164,9 +176,49 @@ impl DeferredSessionForwards {
     }
 
     fn abort_pending(&mut self, reason: &'static str, include_background: bool) {
-        for (_, pending) in self.pending.extract_if(|_, pending| {
+        self.abort_pending_matching(reason, |pending| {
             include_background || pending.lane != ForwardingLane::Background
-        }) {
+        });
+        debug_assert!(!include_background || self.window.is_empty());
+    }
+
+    fn expire_pending(&mut self, include_background: bool) -> usize {
+        let now = tokio::time::Instant::now();
+        if !include_background
+            && self
+                .next_receipt_deadline
+                .is_none_or(|deadline| now < deadline)
+        {
+            return 0;
+        }
+        let expired =
+            self.abort_pending_matching("dataplane forwarding receipt timed out", |pending| {
+                (include_background || pending.lane != ForwardingLane::Background)
+                    && now.duration_since(pending.submitted_at)
+                        >= DEFERRED_SESSION_FORWARD_RECEIPT_TIMEOUT
+            });
+        self.next_receipt_deadline = self
+            .pending
+            .values()
+            .filter(|pending| pending.lane != ForwardingLane::Background)
+            .map(|pending| pending.submitted_at + DEFERRED_SESSION_FORWARD_RECEIPT_TIMEOUT)
+            .min();
+        if expired > 0 {
+            warn!(
+                expired,
+                "Aborting deferred session forwards after receipt deadline expired"
+            );
+        }
+        expired
+    }
+
+    fn abort_pending_matching(
+        &mut self,
+        reason: &'static str,
+        mut matches: impl FnMut(&PendingSessionForward) -> bool,
+    ) -> usize {
+        let mut aborted = 0;
+        for (_, pending) in self.pending.extract_if(|_, pending| matches(pending)) {
             let next_hop_addr = pending.forward.next_hop_addr;
             self.window
                 .release(next_hop_addr, pending.forward.src_addr, pending.lane);
@@ -177,8 +229,9 @@ impl DeferredSessionForwards {
                     reason: reason.into(),
                 }),
             ));
+            aborted += 1;
         }
-        debug_assert!(!include_background || self.window.is_empty());
+        aborted
     }
 
     fn pending_len(&self) -> usize {

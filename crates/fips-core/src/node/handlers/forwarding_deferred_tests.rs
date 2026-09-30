@@ -416,3 +416,138 @@ async fn orphan_forward_receipt_does_not_block_queued_endpoint_peer_snapshot() {
     assert!(node.deferred_session_forwards.completed.is_empty());
     assert_eq!(node.stats().forwarding.drop_send_error_packets, 1);
 }
+
+#[tokio::test]
+async fn queued_forward_survives_unrelated_priority_completion_turns() {
+    use crate::dataplane::{
+        ActivityTick, DataplaneLiveOutboundFirsts, DataplaneLiveOwnerRoutes, OutboundPacket,
+        OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass, TransportPath,
+    };
+    use crate::transport::{TransportAddr, TransportHandle, TransportId};
+
+    let mut node = Node::new(crate::Config::new()).unwrap();
+    let audit = std::sync::Arc::new(CompletionAudit::default());
+    let forward = admitted_test_forward(&node, &audit);
+    let owner = OwnerId::fmp_node(forward.next_hop_addr);
+    let transport_id = TransportId::new(181);
+    let (recv_tx, mut recv_rx) = crate::transport::packet_channel(64);
+    let mut receiver = crate::transport::udp::UdpTransport::new(
+        TransportId::new(182),
+        None,
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            mtu: Some(1400),
+            ..Default::default()
+        },
+        recv_tx,
+    );
+    receiver.start_async().await.unwrap();
+    let remote = TransportAddr::from_string(&receiver.local_addr().unwrap().to_string());
+    let (send_tx, _send_rx) = crate::transport::packet_channel(64);
+    let mut sender = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+        transport_id,
+        None,
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            mtu: Some(1400),
+            ..Default::default()
+        },
+        send_tx,
+    ));
+    sender.start().await.unwrap();
+    node.transports.insert(transport_id, sender);
+    node.dataplane.register_owner(
+        owner,
+        OwnerConfig::new(1, 64).with_fmp_session_start_ms(1_000),
+    );
+    let key = std::sync::Arc::new(ring::aead::LessSafeKey::new(
+        ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[9; 32]).unwrap(),
+    ));
+    node.dataplane
+        .install_owner_fmp_session_routes(
+            owner,
+            OwnerConfig::new(1, 64).with_fmp_session_start_ms(1_000),
+            OwnerCryptoKeys::new(key.clone(), key),
+            TransportPath::live(transport_id, remote),
+            DataplaneLiveOwnerRoutes::new(),
+        )
+        .unwrap();
+
+    let mut outbound: Vec<_> = (0..16)
+        .map(|n| {
+            OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Liveness,
+                181,
+                0,
+                PacketBuffer::new(vec![n as u8; 8]),
+            )
+            .with_activity_tick(ActivityTick::new(1_234))
+        })
+        .collect();
+    let payload =
+        SessionDatagram::new(forward.src_addr, forward.dest_addr, vec![0x42; 1248]).encode();
+    outbound.push(
+        OutboundPacket::fmp(
+            owner,
+            1,
+            PacketClass::Bulk,
+            181,
+            0,
+            PacketBuffer::new(payload),
+        )
+        .with_activity_tick(ActivityTick::new(1_234))
+        .with_send_token(999),
+    );
+    node.deferred_session_forwards
+        .insert(999, forward, ForwardingLane::Bulk);
+    let first = node
+        .pump_dataplane_pending_outbound_firsts(
+            DataplaneLiveOutboundFirsts {
+                initial_outbound_batch: outbound,
+                collect_transport_sent_receipts: true,
+                ..Default::default()
+            },
+            0,
+            0,
+            0,
+        )
+        .await;
+    assert_eq!(first.summary().outbound_admitted(), 17);
+
+    node.drain_deferred_session_forwards().await;
+    assert!(
+        audit.0.lock().unwrap().is_empty(),
+        "queued forward must not be declared failed because unrelated priority work completed first"
+    );
+    assert_eq!(node.deferred_session_forwards.pending_len(), 1);
+    for _ in 0..40 {
+        node.drain_one_deferred_session_forward_turn().await;
+        if !node.has_deferred_session_forwards() {
+            break;
+        }
+    }
+    assert_eq!(
+        *audit.0.lock().unwrap(),
+        vec![crate::node::ForwardingOutcome::Submitted]
+    );
+    assert_eq!(node.stats().forwarding.drop_send_error_packets, 0);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(packet) = recv_rx.recv().await {
+            if packet.data.len() == 1320 {
+                return;
+            }
+        }
+        panic!("UDP receiver closed before the forwarded record arrived");
+    })
+    .await
+    .expect("the admitted opaque session record must reach the real UDP receiver");
+    node.transports
+        .get_mut(&transport_id)
+        .unwrap()
+        .stop()
+        .await
+        .unwrap();
+    receiver.stop_async().await.unwrap();
+}

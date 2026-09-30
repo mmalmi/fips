@@ -3,6 +3,9 @@
 // missing terminal receipt monopolize the node RX loop and starve endpoint
 // control commands.
 const DEFERRED_SESSION_FORWARD_DRAIN_TURN_LIMIT: usize = 8;
+// Keep the existing eight 100ms completion waits as a receipt deadline.
+// Unrelated completions can wake all eight turns much sooner than that.
+const DEFERRED_SESSION_FORWARD_RECEIPT_TIMEOUT: Duration = Duration::from_millis(800);
 
 impl Node {
     pub(in crate::node) fn collect_deferred_session_forward_terminals(
@@ -80,6 +83,7 @@ impl Node {
     }
 
     pub(in crate::node) async fn finish_completed_session_forwards(&mut self) -> usize {
+        self.deferred_session_forwards.expire_pending(false);
         let mut processed = 0usize;
         let mut failed_routes = std::collections::HashSet::new();
         while let Some((forward, result)) = self.deferred_session_forwards.pop_completed() {
@@ -146,16 +150,10 @@ impl Node {
                 processed.saturating_add(self.drain_one_deferred_session_forward_turn().await);
             turns = turns.saturating_add(1);
         }
-        let pending = self
+        let expired = self
             .deferred_session_forwards
-            .drain_pending_len(include_background);
-        if pending > 0 {
-            warn!(
-                pending,
-                turns, "Aborting deferred session forwards after receipt drain budget expired"
-            );
-            self.deferred_session_forwards
-                .abort_pending("dataplane forwarding receipt timed out", include_background);
+            .expire_pending(include_background);
+        if expired > 0 {
             processed = processed.saturating_add(self.finish_completed_session_forwards().await);
         }
         processed
