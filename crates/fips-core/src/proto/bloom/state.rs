@@ -226,24 +226,55 @@ impl BloomState {
 
     /// Mark only peers whose outgoing filter has actually changed.
     ///
-    /// Computes the outgoing filter for each peer and compares it
-    /// against what was last sent. Only marks peers where the filter
-    /// differs. This prevents cascading update loops in steady state.
+    /// Compare each outgoing filter against what was last sent. Aggregate the
+    /// current inputs once; bits contributed more than once survive any single
+    /// peer's exclusion. This avoids remerging every tree filter (and rehashing
+    /// local identities) for every recipient, without caching mutable inputs.
     pub fn mark_changed_peers(
         &mut self,
         exclude_from: &NodeAddr,
         peer_addrs: &[NodeAddr],
         peer_filters: &HashMap<NodeAddr, BloomFilter>,
     ) {
+        let base = self.base_filter();
+        let mut combined = base.as_bytes().to_vec();
+        let mut shared = vec![0; combined.len()];
+        for filter in peer_filters
+            .values()
+            .filter(|filter| filter.num_bits() == base.num_bits())
+        {
+            for ((all, shared), incoming) in
+                combined.iter_mut().zip(&mut shared).zip(filter.as_bytes())
+            {
+                *shared |= *all & incoming;
+                *all |= incoming;
+            }
+        }
+
         for peer_addr in peer_addrs {
             if peer_addr == exclude_from {
                 continue;
             }
-            let new_filter = self.compute_outgoing_filter(peer_addr, peer_filters);
-            let changed = match self.last_sent_filters.get(peer_addr) {
-                Some(last) => *last != new_filter,
-                None => true, // never sent → must send
-            };
+            let changed = self.last_sent_filters.get(peer_addr).is_none_or(|last| {
+                if last.num_bits() != base.num_bits() || last.hash_count() != base.hash_count() {
+                    return true;
+                }
+                match peer_filters
+                    .get(peer_addr)
+                    .filter(|filter| filter.num_bits() == base.num_bits())
+                {
+                    Some(excluded) => last
+                        .as_bytes()
+                        .iter()
+                        .zip(&combined)
+                        .zip(&shared)
+                        .zip(excluded.as_bytes())
+                        .any(|(((last, all), shared), excluded)| {
+                            *last != *all & (!*excluded | *shared)
+                        }),
+                    None => last.as_bytes() != combined,
+                }
+            });
             if changed {
                 self.mark_update_needed(*peer_addr);
             }

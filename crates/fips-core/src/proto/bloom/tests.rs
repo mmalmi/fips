@@ -2,6 +2,8 @@ use super::*;
 use crate::NodeAddr;
 use std::collections::HashMap;
 
+mod fanout;
+
 fn make_node_addr(val: u8) -> NodeAddr {
     let mut bytes = [0u8; 16];
     bytes[0] = val;
