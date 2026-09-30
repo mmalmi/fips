@@ -113,10 +113,18 @@ closed and requires operator recovery.
    forwarding attempts.
 5. Tap **Settle and stop**. The destination/router accounts also require their
    normal operator settlement and collection steps.
-6. Tap **Prepare fund return**. The app saves an export summary in its private
-   `files/fund-return.json`; the bearer token remains in the wallet export file
-   referenced by that summary. Collect it privately, redeem it with the test mint
-   and verify the combined conservation report.
+6. Tap **Prepare fund return**. Before exporting, the app saves the request ID and
+   amount in private `files/fund-return.json`. After success, that file also holds
+   the export path and operation ID; the bearer token stays in the referenced
+   wallet export file. Collect it privately, redeem it with the test mint and
+   verify the combined conservation report. If interrupted, **Retry fund return**
+   reuses the saved ID and amount, including after restart at zero balance. A
+   pending file has no export path yet. Preserve unreadable or incomplete files
+   for operator recovery; do not delete them to authorize another export.
+
+Later loaded funds can create a new return request after the previous one
+completes. The app checks the current wallet balance first and replaces only the
+summary; the wallet retains each original export and its recovery evidence.
 
 **Stop**, leaving the foreground and ordinary app restarts preserve the account.
 Wallet imports/exports run only while the relay service is stopped. A stop timeout
@@ -131,6 +139,17 @@ chosen Wi-Fi network/interface, but no bearer token. Do not publish these files.
 Cloud backup and device transfer of account state are disabled.
 
 ## Verification
+
+The Android activity tests exercise the real screen lifecycle and private files
+with a simulated native wallet and Wi-Fi binding. They cover an interrupted return,
+restart at zero balance, atomic-file backup recovery, incomplete saved requests,
+later funds and a failed balance refresh after export. They do not execute JNI,
+contact a mint or prove physical power-loss behavior. Run with Java 17 and the
+Android SDK available:
+
+```sh
+gradle -p crates/fips-relay-app/android :app:testDebugUnitTest :app:lintDebug
+```
 
 The `fips-relay` customer integration test uses a real local simulated mint, an
 entry that has no static customer enrollment, and a real destination. It imports

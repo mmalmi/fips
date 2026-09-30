@@ -91,11 +91,26 @@ runtime cases and 53 evidence hashes are under
 
 These focused cases do not repeat the other r38 workloads or attribute the older
 intermittent stalls. They do not establish physical power-loss behavior, current
-radio/device acceptance or Android UI retry after restart. Code inspection shows
-the Android bench retains the export ID but takes the amount from the current
-balance; preserving the original request and exercising its restart path remain
-follow-up work. No device installation, publication or real-money operation was
-performed.
+radio/device acceptance or Android UI retry after restart. The separate Android
+check below covers the activity flow with a simulated wallet. No device
+installation, publication or real-money operation was performed.
+
+The Android bench now saves the return ID and amount together before calling the
+wallet. A pending request remains retryable after restart at zero or unknown
+balance. Successful replies replace the request with its completed summary;
+later returns read the current balance before allocating another ID. Private
+file reads are bounded, and writes sync and verify the saved content before
+authorizing an export. Incomplete saved evidence refuses a replacement request.
+
+The original activity fails the interrupted-return regression because restart
+at zero balance hides the retry. The fixed activity passes that flow, atomic-file
+backup recovery, later funding, a failed post-export balance refresh and refusal
+of incomplete evidence. Two activity tests, Android lint and source-size checks
+pass; rendered pending/completed screens were inspected. The native wallet and
+Wi-Fi are simulated in these tests: they do not run JNI or establish physical
+power-loss behavior. Current Pixel acceptance remains outstanding. Sources,
+failed reproduction, passing checks and images are retained in
+`work/paid-relay-verification/2026-09-30-android-export`.
 
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize

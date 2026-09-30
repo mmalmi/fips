@@ -9,6 +9,7 @@
     <string name="finish">Settle and stop</string>
     <string name="stop">Stop</string>
     <string name="return_funds">Prepare fund return</string>
+    <string name="retry_return">Retry fund return</string>
     <string name="refresh">Refresh</string>
     <string name="wifi_settings">Wi-Fi settings</string>
     <string name="queued">1,000 bytes queued. Check the destination for delivery.</string>

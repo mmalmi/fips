@@ -17,6 +17,7 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -38,6 +39,7 @@ public final class MainActivity extends Activity {
     private JSONObject networkEvidence = new JSONObject();
     private long balance = -1;
     private boolean busy;
+    private boolean returnPending;
     private TextView status;
     private TextView details;
     private TextView message;
@@ -111,15 +113,7 @@ public final class MainActivity extends Activity {
         stop = button(content, R.string.stop, () -> action("stop", false, () -> {
             call(command("stop")); wifi.unbindAfterStop(); refresh(false);
         }));
-        export = button(content, R.string.return_funds, () -> action("export", true, () -> {
-            File idFile = new File(getFilesDir(), "return-id");
-            if (!idFile.exists()) writePrivate("return-id", UUID.randomUUID().toString().replace("-", ""));
-            JSONObject result = call(new JSONObject().put("type", "export")
-                .put("id", readPrivate("return-id", 64)).put("amount_sat", balance));
-            writePrivate("fund-return.json", result.toString());
-            refresh();
-            showMessage(getString(R.string.return_prepared));
-        }));
+        export = button(content, R.string.return_funds, () -> action("export", true, this::returnFunds));
         button(content, R.string.refresh, () -> action("status",
             state.optBoolean("configured") && !state.optBoolean("running"), () -> refresh()));
         button(content, R.string.wifi_settings, () -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)));
@@ -130,6 +124,7 @@ public final class MainActivity extends Activity {
     private void loadSetup(Intent intent) {
         action("preview", false, () -> {
             state = call(command("status"));
+            readReturn();
             JSONObject candidate = null;
             if (state.optBoolean("configured")) {
                 candidate = state.getJSONObject("profile");
@@ -190,10 +185,61 @@ public final class MainActivity extends Activity {
     private void refresh() throws Exception { refresh(true); }
     private void refresh(boolean wallet) throws Exception {
         state = call(command("status"));
+        readReturn();
         if (wallet && state.optBoolean("configured") && !state.optBoolean("running")) {
             balance = call(command("balance")).getLong("balance_sat");
         }
         saveState();
+    }
+
+    private void returnFunds() throws Exception {
+        JSONObject request = readReturn();
+        if (request == null || !returnPending) {
+            // A previous reply may have been saved before the displayed balance refreshed.
+            balance = call(command("balance")).getLong("balance_sat");
+            if (balance <= 0) return;
+            request = new JSONObject().put("id", UUID.randomUUID().toString().replace("-", ""))
+                .put("amount_sat", balance);
+            returnPending = true;
+            writePrivate("fund-return.json", request.toString());
+        }
+        JSONObject result = call(new JSONObject().put("type", "export")
+            .put("id", request.getString("id")).put("amount_sat", request.getLong("amount_sat")));
+        result.put("id", request.getString("id"));
+        if (!validateReturn(result) || result.getLong("amount_sat") != request.getLong("amount_sat")) {
+            throw new IllegalStateException("Fund return reply does not match the saved request");
+        }
+        writePrivate("fund-return.json", result.toString());
+        refresh();
+        showMessage(getString(R.string.return_prepared));
+    }
+
+    private JSONObject readReturn() throws Exception {
+        returnPending = hasPrivate("fund-return.json") || hasPrivate("return-id");
+        if (!returnPending) return null;
+        if (!hasPrivate("fund-return.json")) {
+            throw new IllegalStateException("Fund return amount is missing; reconcile the original wallet request");
+        }
+        JSONObject request = new JSONObject(readPrivate("fund-return.json", 8192));
+        returnPending = !validateReturn(request);
+        return request;
+    }
+
+    /** Validate both pending requests and completed summaries before reusing either. */
+    private static boolean validateReturn(JSONObject request) throws Exception {
+        Object amount = request.opt("amount_sat");
+        if (!request.getString("id").matches("[a-f0-9]{32}")
+            || !(amount instanceof Integer || amount instanceof Long) || request.getLong("amount_sat") <= 0) {
+            throw new IllegalStateException("Fund return request is incomplete; preserve it for recovery");
+        }
+        if (!request.has("path") && !request.has("operation_id")) return false;
+        for (String field : new String[] {"path", "operation_id"}) {
+            Object value = request.opt(field);
+            if (!(value instanceof String) || ((String) value).isEmpty()) {
+                throw new IllegalStateException("Fund return summary is incomplete; preserve it for recovery");
+            }
+        }
+        return true;
     }
 
     private void saveState() throws Exception {
@@ -226,7 +272,8 @@ public final class MainActivity extends Activity {
         send.setVisibility(running && paid ? View.VISIBLE : View.GONE);
         finish.setVisibility(running ? View.VISIBLE : View.GONE);
         stop.setVisibility(running ? View.VISIBLE : View.GONE);
-        export.setVisibility(configured && !running && balance > 0 ? View.VISIBLE : View.GONE);
+        export.setText(returnPending ? R.string.retry_return : R.string.return_funds);
+        export.setVisibility(configured && !running && (returnPending || balance > 0) ? View.VISIBLE : View.GONE);
     }
 
     private TextView text(LinearLayout parent, int size) {
@@ -249,20 +296,31 @@ public final class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void showMessage(String value) { runOnUiThread(() -> { if (!isDestroyed()) message.setText(value); }); }
 
+    private boolean hasPrivate(String name) {
+        return new File(getFilesDir(), name).exists() || new File(getFilesDir(), name + ".bak").exists()
+            || new File(getFilesDir(), name + ".new").exists();
+    }
     private String readPrivate(String name, int limit) throws Exception {
-        File file = new File(getFilesDir(), name);
-        if (file.length() > limit) throw new IllegalStateException("Private input exceeds its limit");
-        byte[] bytes = new AtomicFile(file).readFully();
-        if (bytes.length > limit) throw new IllegalStateException("Private input exceeds its limit");
-        return new String(bytes, StandardCharsets.UTF_8);
+        try (FileInputStream stream = new AtomicFile(new File(getFilesDir(), name)).openRead()) {
+            byte[] bytes = new byte[limit + 1];
+            int size = 0, count;
+            while (size < bytes.length && (count = stream.read(bytes, size, bytes.length - size)) != -1) size += count;
+            if (size > limit) throw new IllegalStateException("Private input exceeds its limit");
+            return new String(bytes, 0, size, StandardCharsets.UTF_8);
+        }
     }
     private void writePrivate(String name, String value) throws Exception {
         AtomicFile file = new AtomicFile(new File(getFilesDir(), name));
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
         FileOutputStream stream = null;
         try {
             stream = file.startWrite();
-            stream.write(value.getBytes(StandardCharsets.UTF_8));
+            stream.write(bytes);
+            stream.getFD().sync();
             file.finishWrite(stream);
+            if (!value.equals(readPrivate(name, bytes.length))) {
+                throw new IllegalStateException("Private state could not be saved");
+            }
         } catch (Exception error) { file.failWrite(stream); throw error; }
     }
 
