@@ -33,6 +33,32 @@ retain their original revisions and scope.
 
 ## Verified implementation and test history
 
+SDK `948a93782f9b` and CDK `738e08534ce6` apply a
+4 MiB stored-payload limit to ordinary exact wallet invoice reads and atomic
+quote comparisons. Conditional SQL projection rejects oversized fields before
+decoding and preserves original financial evidence. New quote writes and atomic
+issue/melt admission reserve later scalar and owner growth plus the supported
+64 KiB payment proof; an admitted near-limit quote completes and remains readable.
+This adds no peer message, Wallet method or database schema change.
+
+The unchanged SDK regression reproduces unchecked oversized reads on the original
+source and passes with the configured reader. All 186 SQLite wallet tests and
+434 SDK workspace tests pass; one existing opt-in SDK storage test is excluded.
+The 307 relay library tests and seven routine wallet/customer cases pass, with
+the existing 131-export soak excluded. Strict lint, formatting and source-size
+checks pass. All nine final gates retain identical source/dependency fingerprints.
+The standalone SQLite tests record their separate native dependency lock.
+
+Evidence is retained under
+`work/paid-relay-verification/2026-10-01-quote-record-bounds`.
+This is native macOS ARM64 acceptance with FIPS core 0.4.87 and TCP endpoint
+0.2.20. The independent core 0.4.88 integration on master needs combined relay
+acceptance with this SDK change. Matching Linux package acceptance also remains
+outstanding; r44 below retains its earlier recorded sources. Legacy bulk quote
+APIs, remaining wallet workflows, aggregate resource limits, current hardware
+and physical power-loss checks remain open. No deployment, publication or
+real-money operation was performed.
+
 Acknowledged exports now hand off exact native coin identities before releasing
 their SDK send owners. One authenticated intent in the existing send journal
 reserves recovery space and resumes capture, financial retirement and archive

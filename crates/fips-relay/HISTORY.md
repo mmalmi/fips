@@ -403,6 +403,14 @@ already held by the caller instead of another decoded batch. Duplicate identitie
 operation ownership, full typed equality and atomic storage claims remain checked.
 This does not bound the initial operation or receipt reads used during admission.
 
+Ordinary exact wallet invoice reads and atomic quote comparisons share a 4 MiB
+stored-payload limit before SQL projection and decoding. New quote writes and
+atomic issue/melt admission reserve later scalar/owner growth and the existing
+64 KiB payment-proof maximum within that limit. Refusal preserves original quotes
+and recovery owners; restoring the original evidence permits retry. Unconfigured
+native stores keep their previous behavior. Legacy bulk quote APIs, other receipt
+reads, aggregate memory and physical storage remain separate bounds.
+
 Output preparation also bounds cached mint-key comparison before SQL driver
 projection and decoding. The ceiling is 4 MiB or the larger caller-owned original,
 measured with the production key encoder. Full typed equality and keyset identity
