@@ -25,6 +25,76 @@ fn incoming(store: &Store, old: &Outgoing, number: usize) -> Incoming {
     }
 }
 
+#[tokio::test]
+async fn stopped_route_confirms_only_the_payer_and_installed_channel_accounting() {
+    let root = tempfile::tempdir().unwrap();
+    let controller = crate::controller::refresh::tests::disconnected_controller(root.path()).await;
+    let (store, old) = super::super::transition_tests::fixture(&root.path().join("fixture"));
+    let payer = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let stranger = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let mut prepared = incoming(&store, &old, 0);
+    prepared.offer.provider = *controller.services.endpoint.node_addr();
+    prepared.offer.path[0] = prepared.offer.provider;
+    prepared.offer.buyer = *payer.node_addr();
+    prepared.channel.buyer = *payer.node_addr();
+    prepared.contract = contract_from_offer(&prepared.offer, &prepared.channel).unwrap();
+    let saved = prepared.clone();
+    controller
+        .change(move |j| {
+            j.incoming.insert(saved.contract.id.clone(), saved);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        controller
+            .handle_stop_route(stranger, &prepared.contract.id)
+            .await
+            .is_err()
+    );
+    assert!(
+        controller.snapshot().await.unwrap().incoming[&prepared.contract.id].phase
+            == Phase::Prepared
+    );
+    assert!(
+        matches!(controller.handle_stop_route(payer, &prepared.contract.id).await,
+        Err(ref error) if error == "stopped route channel accounting unavailable")
+    );
+    assert!(
+        controller.snapshot().await.unwrap().incoming[&prepared.contract.id].phase
+            == Phase::Stopped
+    );
+    assert!(
+        controller
+            .services
+            .seller
+            .channel_terms(&prepared.channel.id)
+            .is_none()
+    );
+    controller
+        .services
+        .seller
+        .open_channel_verified(prepared.channel.clone(), 0)
+        .unwrap();
+    assert!(
+        matches!(controller.handle_stop_route(payer, &prepared.contract.id).await,
+        Ok(ControllerResponse::RouteStopped { contract_id }) if contract_id == prepared.contract.id)
+    );
+    assert!(
+        controller.snapshot().await.unwrap().incoming[&prepared.contract.id].phase
+            == Phase::Stopped
+    );
+    assert!(
+        controller
+            .snapshot()
+            .await
+            .unwrap()
+            .seller_settlements
+            .is_empty()
+    );
+    controller.services.endpoint.shutdown().await.unwrap();
+}
+
 #[test]
 fn last_incoming_slot_excludes_competing_receiver_writes_but_keeps_retries() {
     let root = tempfile::tempdir().unwrap();

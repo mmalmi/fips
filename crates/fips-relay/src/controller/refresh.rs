@@ -130,6 +130,7 @@ impl Controller {
         if Self::offer_paused(j, &offer.id) {
             return Err("route change paused".into());
         }
+        Self::check_purchase(j, offer, None)?;
         let watch = j
             .watched_routes
             .get_mut(&expected.destination)
@@ -363,9 +364,11 @@ impl Controller {
     pub(super) async fn refresh_watched_routes(&self) -> Result<(), String> {
         let _work = self.refresh_work.lock().await;
         self.withdraw_disconnected_purchases().await?;
+        // Stop notices let a returning provider replace its old quote. Wallet
+        // recovery may be occupied by another neighbor's unresolved funding.
+        let mut first_error = self.resume_route_changes().await.err();
         let snapshot = self.snapshot().await?;
         let timestamp = now()?;
-        let mut first_error = None;
         for (id, watch) in snapshot.watched_routes.clone() {
             if watch.paused {
                 continue;

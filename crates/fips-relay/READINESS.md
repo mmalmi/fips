@@ -14,6 +14,36 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+Current source lets a watched route leave a disconnected provider while its
+committed funding reply remains unresolved. The wallet worker retains ownership
+and the original funding intent; another already-funded provider can resume
+delivery and automatic payment without waiting for that wallet operation. New
+funding still obtains wallet ownership before reserving capital. Retired cached
+quotes cannot bind the watch, and route-stop notices progress independently of
+financial recovery. This adds no wire message, journal field or dependency.
+
+The real-mint diamond reproduces the old wait until mint timeout. With the fix,
+fallback delivers and pays after 18.66 and 18.77 seconds in the two feature
+profiles, while funding is still unresolved. Both original channel identities
+survive departure/rejoin, locked capital stays at 128 sats, and collection after
+reload accounts for all 259 test sats. These are simulated-carrier observations,
+not physical-radio handover guarantees.
+
+Broader verification also reproduced a pre-existing lost-acceptance recovery
+failure on the base source. Recovery now uses the existing authenticated
+stopped-route reply to confirm the provider's installed channel accounting;
+unknown accounts remain retained and reusable. See [withdrawal before provider
+acceptance](FUNDING-COSTS.md#withdrawal-before-provider-acceptance).
+The final source passes 306 relay library tests in each feature profile, the
+funding-mobility case in both profiles, lost-settlement recovery, all four slow
+renewal cases and pending encounter funding. The latter collects all 1,536 test
+sats; lost-settlement recovery collects all 259. Strict all-target relay lint,
+formatting and source-size checks pass. Exact sources, tested locks, failed
+reproductions and successful gates are retained in
+`work/paid-relay-verification/2026-09-30-pending-route-funding`.
+SDK and CDK sources are unchanged. The r35 package predates this fix; current
+ARM64 package/device acceptance and the other historical stalls remain open.
+
 Native CDK `418380651373` and SDK `66f5cf67dbc6` now bound each service
 repository to 32 distinct mint/unit wallets. Admission holds the repository write
 lock; startup checks every saved unit before constructing wallets. Existing

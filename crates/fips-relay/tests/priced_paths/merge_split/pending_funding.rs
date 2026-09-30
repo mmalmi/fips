@@ -283,7 +283,7 @@ fn recovery_diagnostic(bench: &Bench, pending: &Pending) -> Value {
 }
 
 async fn exercise() {
-    let (mut bench, proxy) = bench::start_with_mint_proxy(0, 121).await;
+    let (mut bench, proxy) = bench::start_with_mint_proxy(0, Scenario::MergeSplit, 121).await;
     converge(
         &bench,
         false,

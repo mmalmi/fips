@@ -73,38 +73,60 @@ fn withdrawn_reservation_retains_exact_capital_and_fences_stale_funding() {
 }
 
 #[test]
-fn late_acceptance_records_knowledge_without_reviving_withdrawn_routing() {
-    let root = tempfile::tempdir().unwrap();
-    let (mut store, mut old) = fixture(&root.path().join("controller"));
-    old.accepted = false;
-    store
-        .journal
-        .outgoing
-        .insert(old.purchase.contract.id.clone(), old.clone());
-    let captured = watch(&mut store.journal, &old.offer);
-    store
-        .change(|j| Controller::withdraw_watched_purchase(j, &captured))
-        .unwrap();
-    let mut store = reload(store);
-    assert!(
-        Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).is_err(),
-        "unconfirmed provider acceptance cannot start automatic cooperative closure"
-    );
-    assert!(
-        !store
-            .change(|j| Controller::finish_acceptance(j, &old.purchase.contract.id))
-            .unwrap()
-    );
-    let saved = &store.journal.outgoing[&old.purchase.contract.id];
-    assert!(
-        saved.accepted,
-        "a real late success remains financial knowledge"
-    );
-    assert!(!Controller::routing_eligible(&store.journal, saved));
-    assert!(!saved.retired);
-    Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).unwrap();
-    assert!(store.journal.buyer_settlements.is_empty());
-    reload(store);
+fn late_confirmation_records_knowledge_without_reviving_withdrawn_routing() {
+    for stopped in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, mut old) = fixture(&root.path().join("controller"));
+        old.accepted = false;
+        store
+            .journal
+            .outgoing
+            .insert(old.purchase.contract.id.clone(), old.clone());
+        assert!(
+            store
+                .change(|j| Controller::confirm_withdrawn_stop(j, &old))
+                .is_err()
+        );
+        let captured = watch(&mut store.journal, &old.offer);
+        store
+            .change(|j| Controller::withdraw_watched_purchase(j, &captured))
+            .unwrap();
+        let mut store = reload(store);
+        let old = store.journal.outgoing[&old.purchase.contract.id].clone();
+        assert!(
+            Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id)
+                .is_err(),
+            "unconfirmed provider acceptance cannot start automatic cooperative closure"
+        );
+        if stopped {
+            let mut changed = old.clone();
+            changed.offer.price.msat += 1;
+            assert!(
+                store
+                    .change(|j| Controller::confirm_withdrawn_stop(j, &changed))
+                    .is_err()
+            );
+            store
+                .change(|j| Controller::confirm_withdrawn_stop(j, &old))
+                .unwrap();
+        } else {
+            assert!(
+                !store
+                    .change(|j| Controller::finish_acceptance(j, &old.purchase.contract.id))
+                    .unwrap()
+            );
+        }
+        let saved = &store.journal.outgoing[&old.purchase.contract.id];
+        assert!(
+            saved.accepted,
+            "a real late success remains financial knowledge"
+        );
+        assert!(!Controller::routing_eligible(&store.journal, saved));
+        assert!(!saved.retired);
+        Controller::check_recovery_settlement(&store.journal, &old.purchase.channel.id).unwrap();
+        assert!(store.journal.buyer_settlements.is_empty());
+        reload(store);
+    }
 }
 
 #[test]

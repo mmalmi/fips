@@ -39,7 +39,28 @@ impl Controller {
     }
 
     pub(super) async fn fund(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
-        if Self::offer_paused(&self.snapshot().await?, &offer.id) {
+        let funding = self.fund_inner(offer);
+        tokio::pin!(funding);
+        loop {
+            tokio::select! {
+                result = &mut funding => return result,
+                _ = tokio::time::sleep(refresh::REFRESH_RECHECK) => {
+                    // Wallet recovery may be waiting on this same operation.
+                    // Persist withdrawal before ending the routing wait. The
+                    // blocking wallet worker retains ownership until it ends;
+                    // recovery must still reconcile its original funding intent.
+                    self.withdraw_disconnected_purchases().await?;
+                    if Self::offer_paused(&self.snapshot().await?, &offer.id) {
+                        return Err("route change paused".into());
+                    }
+                }
+            }
+        }
+    }
+
+    async fn fund_inner(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
+        let snapshot = self.snapshot().await?;
+        if Self::offer_paused(&snapshot, &offer.id) {
             return Err("route change paused".into());
         }
         if offer.buyer != *self.services.endpoint.node_addr()
@@ -48,8 +69,19 @@ impl Controller {
         {
             return Err("unapproved funding destination or mint".into());
         }
-        let wallet_guard = self.wallet.clone().lock_owned().await;
         let provider = offer.provider;
+        // Existing funded accounts need only local accounting. New funding
+        // still obtains wallet ownership before reserving capital or an ID.
+        let reusable = snapshot.funding.values().any(|f| {
+            f.provider == provider && f.funded.is_some() && !Self::funding_released(&snapshot, f)
+        });
+        drop(snapshot);
+        let wallet_guard = if reusable {
+            None
+        } else {
+            Some(self.wallet.clone().lock_owned().await)
+        };
+        let may_fund = wallet_guard.is_some();
         let receiver = offer.receiver_pubkey_hex.clone();
         let capacity = self.policy.channel_capacity_sat.min(offer.capacity_sat);
         let grace = offer
@@ -65,6 +97,9 @@ impl Controller {
                     .values()
                     .find(|f| f.provider == provider && !Self::funding_released(j, f))
                 {
+                    if f.funded.is_none() && !may_fund {
+                        return Err("funding changed before wallet ownership".into());
+                    }
                     if f.receiver_pubkey_hex != receiver
                         || f.capacity_sat > capacity
                         || f.grace_msat > grace
@@ -75,6 +110,9 @@ impl Controller {
                         );
                     }
                     return Ok(f.clone());
+                }
+                if !may_fund {
+                    return Err("funding changed before wallet ownership".into());
                 }
                 if j.funding.len() >= MAX_CHANNELS {
                     return Err("funding history capacity".into());
@@ -117,6 +155,7 @@ impl Controller {
         let funded = if let Some(funded) = f.funded.clone() {
             funded
         } else {
+            let wallet_guard = wallet_guard.ok_or("unfunded channel needs wallet ownership")?;
             let request = f.wallet_request(&self.policy)?;
             let directory = self.services.wallet_directory.clone();
             let runtime = tokio::runtime::Handle::current();
@@ -407,12 +446,12 @@ impl Controller {
         channel: &ChannelTerms,
         provider: NodeAddr,
     ) -> Result<CashuSpilmanPayment, String> {
-        let wallet_guard = self.wallet.clone().lock_owned().await;
         let buyer = self.services.buyer.clone();
         let directory = self.services.wallet_directory.clone();
         let id = channel.id.clone();
         blocking(move || {
-            let _wallet = wallet_guard;
+            // The signer serializes its channel store and enforces its closing
+            // fence; reproducing existing credit never opens the cash wallet.
             let signer = FileSpilmanPaymentSigner::load(&directory)?;
             buyer
                 .reproduce_payment(&signer, provider, &id, now()?)

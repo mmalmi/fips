@@ -293,16 +293,64 @@ impl Controller {
             .collect();
         let mut first_error = None;
         for (id, provider) in ids {
-            if Self::check_recovery_settlement(&snapshot, &id).is_err()
-                || self.neighbor(provider).await.is_err()
-            {
+            if self.neighbor(provider).await.is_err() {
                 continue;
             }
             let _channel = self.channel_work(&id)?.lock_owned().await;
+            // A lost Accept reply need not leave known provider funding locked
+            // until expiry. StopRoute confirms that exact contract while keeping
+            // it stopped; rejection leaves wholly unknown funding reusable.
+            let known = snapshot
+                .outgoing
+                .values()
+                .any(|o| o.accepted && o.purchase.channel.id == id);
+            if !known
+                && let Some(outgoing) = snapshot.outgoing.values().find(|o| {
+                    !o.retired
+                        && o.purchase.channel.id == id
+                        && snapshot.recovery_only.contains(&o.offer.id)
+                })
+            {
+                if self.request_route_stop(&outgoing.purchase).await.is_err() {
+                    continue;
+                }
+                let expected = outgoing.clone();
+                if let Err(error) = self
+                    .change(move |j| Self::confirm_withdrawn_stop(j, &expected))
+                    .await
+                {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            }
+            if Self::check_recovery_settlement(&self.snapshot().await?, &id).is_err() {
+                continue;
+            }
             if let Err(error) = self.settle_purchase(&id, true).await {
                 first_error.get_or_insert(error);
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    pub(super) fn confirm_withdrawn_stop(
+        j: &mut Journal,
+        expected: &Outgoing,
+    ) -> Result<(), String> {
+        let current = j
+            .outgoing
+            .get(&expected.purchase.contract.id)
+            .ok_or("withdrawn purchase missing")?;
+        if current.offer != expected.offer
+            || current.purchase != expected.purchase
+            || current.retired
+            || !j.recovery_only.contains(&current.offer.id)
+        {
+            return Err("withdrawn purchase changed before stop confirmation".into());
+        }
+        // The authenticated provider can acknowledge StopRoute only for a
+        // retained incoming agreement. Record financial knowledge, never routing.
+        Self::finish_acceptance(j, &expected.purchase.contract.id)?;
+        Ok(())
     }
 }

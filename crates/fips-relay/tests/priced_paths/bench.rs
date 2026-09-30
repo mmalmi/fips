@@ -77,17 +77,13 @@ pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> B
     .0
 }
 
-#[cfg(unix)]
-pub(super) async fn start_with_mint_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
-    let (bench, proxy) = start_inner(
-        root_index,
-        Scenario::MergeSplit,
-        seed,
-        MintMode::Proxy,
-        false,
-        None,
-    )
-    .await;
+pub(super) async fn start_with_mint_proxy(
+    root_index: usize,
+    scenario: Scenario,
+    seed: u64,
+) -> (Bench, MintProxy) {
+    let (bench, proxy) =
+        start_inner(root_index, scenario, seed, MintMode::Proxy, false, None).await;
     (bench, proxy.unwrap())
 }
 
@@ -146,7 +142,9 @@ async fn start_inner(
     let interrupted = matches!(scenario, Scenario::InterruptedMobility { .. });
     let mobile = matches!(
         scenario,
-        Scenario::Mobility | Scenario::InterruptedMobility { .. }
+        Scenario::Mobility
+            | Scenario::PendingFundingMobility
+            | Scenario::InterruptedMobility { .. }
     );
     let changing_neighbors = mobile || matches!(scenario, Scenario::QualityChurn);
     let selection = scenario.selection_policy();

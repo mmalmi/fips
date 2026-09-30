@@ -96,12 +96,16 @@ async fn exercise(accepted: Option<bool>) {
     std::fs::write(root.path().join("wallet"), b"signer unavailable").unwrap();
     let mut offered = old.offer.clone();
     offered.id = "new-source-quote-for-retained-service".into();
+    // Another channel's mint work cannot prevent reuse of this funded account
+    // or reproducing its opening payment at the local signer boundary.
+    let wallet_owner = controller.wallet.lock().await;
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         controller.accept_watched_offer(&id, offered),
     )
     .await
     .expect("bounded coalesced purchase");
+    drop(wallet_owner);
     let snapshot = controller.snapshot().await.unwrap();
     if accepted == Some(true) {
         let RouteAccess::Paid(purchase) =

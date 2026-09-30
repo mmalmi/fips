@@ -267,6 +267,40 @@ fn watched_intent_is_atomic_with_initial_and_replacement_reservations() {
 }
 
 #[test]
+fn retired_cached_offer_cannot_bind_an_authorized_watch() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old) = super::super::transition_tests::fixture(&root.path().join("controller"));
+    let watch = authorized_watch(&old.offer);
+    store
+        .change(|j| {
+            let mut replacement = super::super::transition_tests::change(&old);
+            replacement.prepared = true;
+            j.outgoing
+                .get_mut(&old.purchase.contract.id)
+                .unwrap()
+                .retired = true;
+            j.requested.remove(&old.offer.id);
+            j.requested
+                .insert(replacement.offer.id.clone(), replacement.offer.clone());
+            j.route_changes
+                .insert(replacement.offer.id.clone(), replacement);
+            j.watched_routes
+                .insert(watch.destination.clone(), watch.clone());
+            Ok(())
+        })
+        .unwrap();
+    let before = serde_json::to_value(&store.journal).unwrap();
+    assert_eq!(
+        store
+            .change(|j| Controller::reserve_watched_offer(j, Some(&watch), &old.offer))
+            .unwrap_err(),
+        "purchase authorization retired"
+    );
+    assert!(serde_json::to_value(&store.journal).unwrap() == before);
+    super::super::transition_tests::reload(store);
+}
+
+#[test]
 fn changed_watch_rejects_stale_reservations_without_partial_writes() {
     for replacement in [false, true] {
         for change in [

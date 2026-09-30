@@ -104,13 +104,18 @@ receiving settlement rejection because the provider did not know the channel.
 That durable closure prevented the unpaused Watch from reusing its recovered
 funding after rejoin, even though quotes and controller requests were delivered.
 
-Automatic withdrawal recovery requires a withdrawn purchase and retained acceptance
-of that exact channel before reserving cooperative closure. If no purchase on the
-channel has confirmed acceptance, its funding remains available to a fresh authorized
-purchase or recovery at its original expiry; it is not treated as refunded or
-released. A genuine late acceptance still enables ordinary closure without
-reviving the withdrawn route. Existing fences, capital and lifetime spending
-limits remain in force, with no new message, journal field or dependency.
+Automatic withdrawal recovery requires a withdrawn purchase and confirmed provider
+knowledge of that exact channel before reserving cooperative closure. An earlier
+acceptance establishes that knowledge. If its reply was lost, recovery sends the
+existing authenticated `StopRoute` request for the retained contract. The provider
+acknowledges only the correct payer and matching installed channel accounting.
+The buyer records that confirmation without reviving the withdrawn route.
+
+Unknown, uninstalled or unresponsive accounts remain available to a fresh authorized
+purchase or recovery at their original expiry; they are not treated as refunded or
+released. A genuine late acceptance also enables ordinary closure. Existing shared
+channel fences, capital and lifetime spending limits remain in force, with no new
+message, journal field or dependency.
 
 The existing late-acceptance regression fails before the guard and passes after
 it. The six-node held-opening reproduction then recovers the original Watch,
@@ -119,11 +124,19 @@ mint response is held, all final streams deliver, and all 1,536 test sats collec
 This corrects the reproduced unconfirmed-purchase closure. Other historical
 delivery and payment timeouts remain separate unresolved cases.
 
-The final source graph passes all 302 relay unit tests, all seven controller
+The earlier acceptance guard passed all 302 relay unit tests, all seven controller
 cases, held-opening rejoin and slow-renewal isolation with and without optional
 features, strict all-target relay lint, formatting and source-size checks. SDK
 and native CDK sources are unchanged. The r22 package predates this correction;
 current-device and physical power-loss acceptance remain outstanding.
+
+That guard also left lost acceptance replies unreconciled. The existing mobile
+lost-acceptance test reproduces the failure on the base source; stopped-route
+confirmation restores automatic refund after authenticated rejoin. The final
+lost-settlement case also preserves its exact report through another departure,
+reloads and collects all 259 test sats. Wrong payers, missing installed accounting
+and changed or live purchases cannot establish recovery authority. Current
+verification is recorded in [readiness](READINESS.md#scope-and-outstanding-acceptance).
 
 ## Shared-channel withdrawal after an interrupted upgrade
 

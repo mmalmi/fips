@@ -148,11 +148,20 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let recovery_timing = matches!(scenario, Scenario::RecoveryTiming);
     let exhaust_trial = matches!(scenario, Scenario::Exhaustion);
     let interrupted = matches!(scenario, Scenario::InterruptedMobility { .. });
+    let pending_funding = matches!(scenario, Scenario::PendingFundingMobility);
     let mobile = matches!(
         scenario,
-        Scenario::Mobility | Scenario::InterruptedMobility { .. }
+        Scenario::Mobility
+            | Scenario::PendingFundingMobility
+            | Scenario::InterruptedMobility { .. }
     );
     let selection = scenario.selection_policy();
+    let (assembly, mint_proxy) = if pending_funding {
+        let (bench, proxy) = bench::start_with_mint_proxy(root_index, scenario, seed).await;
+        (bench, Some(proxy))
+    } else {
+        (bench::start(root_index, scenario, seed).await, None)
+    };
     let bench::Bench {
         root,
         mint,
@@ -174,7 +183,8 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         payment_servers,
         mut interrupted_acceptance,
         admissions: _,
-    } = bench::start(root_index, scenario, seed).await;
+    } = assembly;
+    let mint_url = mint_proxy.as_ref().map_or(mint.url(), |proxy| &proxy.url);
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut n = 0;
@@ -417,6 +427,19 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
                 &upgraded,
                 root.path(),
                 quote_inputs[0].0.statistics(),
+            )
+            .await;
+        } else if pending_funding {
+            mobility::pending::funding::exercise(
+                &network,
+                &nodes,
+                &peers,
+                &controllers,
+                &services,
+                &mut receivers[3],
+                &upgraded,
+                root.path(),
+                mint_proxy.as_ref().unwrap(),
             )
             .await;
         } else if interrupted {
@@ -679,7 +702,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
     let mut total = 0;
     let mut balances = Vec::new();
     for wallet in &wallets {
-        let balance = load_mint_balance(wallet, mint.url())
+        let balance = load_mint_balance(wallet, mint_url)
             .await
             .unwrap()
             .balance_sat;
@@ -691,14 +714,16 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         "all isolated test money is conserved after settlement"
     );
     assert_eq!(balances, expected_balances);
-    if matches!(
-        scenario,
-        Scenario::InterruptedMobility {
-            lose_settlement: true
-        }
-    ) {
-        bench::collect_wallets(root.path(), &wallets, mint.url(), &balances).await;
-        eprintln!("lost settlement report: all 259 test sats collected; all node wallets empty");
+    if pending_funding
+        || matches!(
+            scenario,
+            Scenario::InterruptedMobility {
+                lose_settlement: true
+            }
+        )
+    {
+        bench::collect_wallets(root.path(), &wallets, mint_url, &balances).await;
+        eprintln!("interrupted mobility: all 259 test sats collected; all node wallets empty");
     }
     if let Some(gate) = interrupted_acceptance {
         gate.stop().await;

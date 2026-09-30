@@ -303,20 +303,25 @@ impl Controller {
     ) -> Result<ControllerResponse, String> {
         let id = id.to_string();
         let saved = id.clone();
-        let offer_id = self
+        let (offer_id, channel) = self
             .change(move |j| {
                 let old = j.incoming.get_mut(&saved).ok_or("unknown route")?;
                 if old.channel.buyer != *peer.node_addr() {
                     return Err("wrong route buyer".into());
                 }
                 old.phase = Phase::Stopped;
-                Ok(old.offer.id.clone())
+                Ok((old.offer.id.clone(), old.channel.clone()))
             })
             .await?;
         self.services.quotes.stop_reusing(&offer_id)?;
         let seller = self.services.seller.clone();
         let saved = id.clone();
         blocking(move || {
+            // A stopped prepared request may not have installed accounting yet.
+            // Do not acknowledge it as a cooperatively recoverable channel.
+            if seller.channel_terms(&channel.id).as_ref() != Some(&channel) {
+                return Err("stopped route channel accounting unavailable".into());
+            }
             if seller.usage(&saved).is_some() {
                 seller.close_contract(&saved).map_err(|e| e.to_string())?;
             }
@@ -347,23 +352,7 @@ impl Controller {
                 .iter()
                 .filter(|p| !change.stopped_remotes.contains(&p.contract.id))
             {
-                let Ok(peer) = self.neighbor(old.provider).await else {
-                    continue;
-                };
-                let response = self
-                    .services
-                    .acceptance
-                    .request(
-                        peer,
-                        serde_json::to_vec(&ControllerRequest::StopRoute {
-                            contract_id: old.contract.id.clone(),
-                        })
-                        .map_err(|e| e.to_string())?,
-                    )
-                    .await;
-                if let Ok(bytes) = response
-                    && matches!(serde_json::from_slice::<ControllerResponse>(&bytes),Ok(ControllerResponse::RouteStopped{contract_id}) if contract_id==old.contract.id)
-                {
+                if self.request_route_stop(old).await.is_ok() {
                     let id = change.offer.id.clone();
                     let old_id = old.contract.id.clone();
                     self.change(move |j| {
@@ -379,5 +368,28 @@ impl Controller {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    pub(super) async fn request_route_stop(&self, purchase: &Purchase) -> Result<(), String> {
+        let peer = self.neighbor(purchase.provider).await?;
+        let response = self
+            .services
+            .acceptance
+            .request(
+                peer,
+                serde_json::to_vec(&ControllerRequest::StopRoute {
+                    contract_id: purchase.contract.id.clone(),
+                })
+                .map_err(|e| e.to_string())?,
+            )
+            .await?;
+        match serde_json::from_slice::<ControllerResponse>(&response) {
+            Ok(ControllerResponse::RouteStopped { contract_id })
+                if contract_id == purchase.contract.id =>
+            {
+                Ok(())
+            }
+            _ => Err("provider did not confirm the stopped route".into()),
+        }
     }
 }
