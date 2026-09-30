@@ -14,6 +14,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 mod cold_contact;
+mod repair_state;
 
 type PacketObserver = Box<dyn FnMut(&ReceivedPacket, bool) + Send>;
 

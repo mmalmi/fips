@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update pending Bloom deadlines incrementally when reserving, completing or
   removing peer updates, avoiding repeated full scans on busy nodes. Preserve
   retry floors, per-peer debounce, cancellation state and update contents.
+- Preserve a short contact's tree announcement opportunity when a smaller peer's
+  first receiver report has no usable RTT sample or declaration yet. Keep the
+  existing send limit and subsequent measured-peer repair.
 
 ### Changed
 
