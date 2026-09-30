@@ -123,9 +123,11 @@ cargo test -p fips-relay --features testbench --test bench
 Tests exercise real mint funding, wallet import/replay rejection, an active
 relay's exclusive lock, retained spending state, private idempotent export and
 redemption, lost-file recovery without another debit, issuance bounds, refused
-public binds, and both command-line tools
-through the private mint control socket. These supplement the native paid
-forwarding tests; they do not replace hardware path or customer-flow checks.
+public binds, and both command-line tools through the private mint control socket.
+The command-line fixture also recovers a lost export file across separate process
+invocations and verifies that the wallet was debited only once. These supplement
+the native paid forwarding tests; they do not replace hardware path or
+customer-flow checks.
 
 ## Holding a committed acceptance response
 

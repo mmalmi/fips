@@ -18,8 +18,8 @@ SDK `e69538152a5e` binds interrupted-send recovery to the original
 authorization and coin sets, as described [below](#interrupted-send-debit-evidence).
 Native SDK/relay checks and the r38 ARM64 package's seventeen cases pass.
 The cadence measurements still use r37 and predate these SDK recovery checks.
-The newer native export-recovery fix described below is not included in r38;
-its ARM64 package acceptance remains outstanding.
+The newer export-recovery fix passes five focused r39 ARM64 cases described
+below. The other r38 cases retain their original revision and scope.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -55,8 +55,47 @@ kill the process during export or simulate physical power loss. Export records
 share the SDK's 128-request, 4 MiB journal and 64 KiB per-record limit. Automatic
 export-history retirement remains outstanding; capacity exhaustion retains
 financial evidence and refuses a new send. See [export recovery](TESTBENCH.md#collect-and-verify).
-The r38 package predates this runtime change, so its passing results do not
-accept the new export helper on ARM64 or current devices.
+The r38 package predates this runtime change. The r39 result below accepts
+the export helper on isolated ARM64 Linux; current-device acceptance remains open.
+
+The r39 package binds FIPS `4e4a7005ef13` to the unchanged r38 dependency graph,
+including SDK `e69538152a5e` and native CDK `418380651373`. Five focused Linux
+cases pass. Three exercise the executable extracted from the package: wallet
+export through separate command-line processes and both customer billing flows,
+including saved-account restart and final export. Startup combines embedded
+service loading with packaged command-line checks; the remaining case exercises
+the embedded wallet against a local test mint.
+
+The strengthened existing command-line fixture loses the published export file
+between process invocations. The retry must return the original operation and
+token, leaving 11 of the original 16 test sats after a single 5-sat export.
+Restoring the old export implementation reproduces the failure with the same
+fixture. Native bench, lint, formatting and source-size checks also pass, with no
+new test case or longer deadline. The ARM64 fixture mounts the packaged executable
+at the harness's compiled relay path and uses a separately hashed test-mint helper.
+It retains the existing container isolation: no external network, an unprivileged
+user, read-only inputs, dropped capabilities, two CPUs and 2 GiB of memory.
+
+The offline optimized build took 446.296 seconds. Its static executable is
+25,296,032 bytes, SHA-256
+`1ec7e2f0a33f1c21d3856da302989ab62785b16854904527eb8f2a0f4dd5eeca`.
+The unsigned `0.1.0-r39` package is 11,569,599 bytes, SHA-256
+`edcc7b28b2109646b8ad7dbe8b626ef296cea02cefad0bdd7b2e04befcc23a65`.
+Inspection verifies all eleven payload files and the extracted binary's identity.
+The 36,262 source files and every executable remain unchanged through acceptance,
+all owned containers are removed, and the r38 evidence remains unchanged.
+Native reproduction and source inputs are under
+`work/paid-relay-verification/2026-09-30-package-export-cli`; the package, five
+runtime cases and 53 evidence hashes are under
+`work/paid-relay-verification/2026-09-30-arm64-r39`.
+
+These focused cases do not repeat the other r38 workloads or attribute the older
+intermittent stalls. They do not establish physical power-loss behavior, current
+radio/device acceptance or Android UI retry after restart. Code inspection shows
+the Android bench retains the export ID but takes the amount from the current
+balance; preserving the original request and exercising its restart path remain
+follow-up work. No device installation, publication or real-money operation was
+performed.
 
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize
