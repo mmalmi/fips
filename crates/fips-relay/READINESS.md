@@ -36,8 +36,8 @@ source-size checks pass. Exact source snapshots, the failed reproduction and
 successful gates are retained in
 `work/paid-relay-verification/2026-09-30-settlement-signing`.
 This establishes the reproduced cross-channel settlement wait's cause. The older
-intermittent delivery/payment failures remain unattributed. The r36 package below
-predates this change; updated package and current-device acceptance remain open.
+intermittent delivery/payment failures remain unattributed. The r37 package below
+includes this change; current-device acceptance remains open.
 
 Automatic receiver refresh now handles mint key rotation without manual cache
 updates. The previous 60-second successful-refresh cache rejected a new funded
@@ -64,7 +64,7 @@ changed-file formatting and source-size checks. The twelve final gates share
 unchanged source fingerprints.
 Exact sources, locks, failed reproductions and verification inputs are retained in
 `work/paid-relay-verification/2026-09-30-automatic-key-rotation`.
-The r36 ARM64 package acceptance below includes this fix. Current-device
+The r37 ARM64 package acceptance below includes this fix. Current-device
 acceptance and attribution of the other historical stalls remain outstanding.
 
 Current source lets a watched route leave a disconnected provider while its
@@ -95,7 +95,7 @@ sats; lost-settlement recovery collects all 259. Strict all-target relay lint,
 formatting and source-size checks pass. Exact sources, tested locks, failed
 reproductions and successful gates are retained in
 `work/paid-relay-verification/2026-09-30-pending-route-funding`.
-That mobile-funding change left SDK and CDK sources unchanged. The r36 package
+That mobile-funding change left SDK and CDK sources unchanged. The r37 package
 includes it; current-device acceptance and the other historical stalls remain open.
 
 Native CDK `418380651373` and SDK `66f5cf67dbc6` now bound each service
@@ -128,7 +128,7 @@ restoring the guards restores the passing source. Exact sources, tested locks,
 negative-test recipes and 15 gate records are preserved in
 `work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
 
-The r36 ARM64 package accepts FIPS source `31c52fc35c63`, native CDK
+The r37 ARM64 package accepts FIPS source `6b367afc9878`, native CDK
 `418380651373` and SDK `c3fd5b2f8c1b` from the verified offline source bundle.
 It includes the receiver key refresh and mobile-funding changes above, along with
 the database-read and repository-entry bounds, refund/signing isolation and
@@ -141,6 +141,12 @@ enabled self-signed TLS. The renewal case rotates mint keys between buyers;
 the second buyer and all eight replacement channels use the new keys, and all
 384 test sats reconcile.
 
+Restart and full-filesystem recovery also require outgoing settlement to reach
+its provider while an incoming payout is held. The TCP case explicitly enables
+the existing signer-write failure check and verifies both continued payment by
+the other buyer and automatic recovery of the original channel. The r36 runner
+did not enable that optional fault check.
+
 Two additional cases pass. The initialization guard combines embedded service
 loading with packaged command-line checks. The moving-route funding case uses
 embedded controllers and a local test mint to verify fallback while funding is
@@ -149,12 +155,12 @@ That case is ARM64 controller evidence, not packaged-process or radio acceptance
 Default package builds omit optional payment-stage measurements, which retain
 their separate native acceptance below.
 
-The offline production build took 363.818 seconds with Rust 1.96.0,
+The offline production build took 380.335 seconds with Rust 1.96.0,
 cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,295,040 bytes, SHA-256
-`3194c3f72496e89a7408fe97a6b8863eedb96f42dc7d753fe60446b23e929337`.
-The unsigned `0.1.0-r36` APK is 11,569,477 bytes, SHA-256
-`faf4e8826cf9a47937aec579880d4d06931be1f391acee2a532c558d0f5935ac`.
+25,290,800 bytes, SHA-256
+`1800936685b06d898cf16bd772c349ae4400a2b9a70df07bcf06c04d2f3d73f1`.
+The unsigned `0.1.0-r37` APK is 11,567,619 bytes, SHA-256
+`44744182297d3020679076d0ac39bcc27ccefddd0d2d52398241e36d375ae56c`.
 Inspection verifies all eleven payload files, root ownership, lifecycle scripts
 and the exact dependency set; no saved accounts are included and the service is
 disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
@@ -168,10 +174,10 @@ the tested lock and exact dependency graph, including enabled features and edges
 All 36,084 source files remain unchanged throughout the gates. The harnesses and
 extracted daemon retain their original hashes. Final verification binds each
 result to its exact test, harness, execution kind and read-only executable mount.
-All 109 files in the previous r35 evidence and artifact inventory remain unchanged.
-The new package, four harnesses, runners and 93 evidence files are preserved in
-`work/paid-relay-verification/2026-09-30-arm64-r36`; its source reference identifies
-the automatic-key-rotation bundle and full dependency inventory.
+All 116 files in the previous r36 evidence and artifact inventory remain unchanged.
+The new package, four harnesses, runners and 94 evidence files are preserved in
+`work/paid-relay-verification/2026-09-30-arm64-r37`; its source reference identifies
+the settlement-signing bundle and full dependency inventory.
 
 Every runtime case uses a fresh, unprivileged, network-isolated ARM64 Linux
 container and local test money through a verified local Docker endpoint. A
@@ -179,7 +185,7 @@ container and local test money through a verified local Docker endpoint. A
 the uniquely named container's ownership before removing it. All cases finish
 without watchdog expiry or cleanup errors, and no owned containers remain.
 No package is installed or published, and no physical device is accessed.
-This supersedes r35's package-process acceptance;
+This supersedes r36's package-process acceptance;
 current-device checks, physical power loss, sustained performance and attribution
 of the historical intermittent stalls remain outstanding.
 
@@ -2417,7 +2423,7 @@ checks pass. This is an opt-in extension of
 in the `service` integration target: set `FIPS_TEST_SIGNER_WRITE_FAILURE=1` and
 run as an unprivileged user with the matching dependency graph. The test checks
 that file creation is actually denied and restores permissions on scope exit.
-The check needs no runtime fault-injection hook or protocol change. The r30
+The check needs no runtime fault-injection hook or protocol change. The r37
 packaged TCP case requires both automatic-recovery markers. This covers one transient signer-write failure, not physical power
 loss, current-device acceptance or attribution of the historical stalls.
 
