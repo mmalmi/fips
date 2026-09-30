@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.85] - 2026-09-30
+
+### Fixed
+
+- Honor the minimum frame capacity in route discovery on every incoming and
+  outgoing link. WebSocket links advertise their bounded stream capacity, so
+  larger signaling records can avoid narrow datagram routes.
+- Allow route requests that could not be sent or deferred to retry when a peer
+  connects. Preserve duplicate protection for attempted and queued requests.
+- Expire forwarded-packet receipts by elapsed time instead of unrelated
+  completions, retaining the bounded control-loop work budget.
+- Ignore duplicate offers for the same WebRTC negotiation while its original
+  admission is pending, including asynchronous local-name resolution.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.85. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.84] - 2026-09-29
 
 ### Fixed
