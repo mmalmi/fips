@@ -16,10 +16,10 @@ and phone demonstrations do not accept the latest software for deployment.
 
 SDK `b8da3c1a2bd4` adds a read-only send-result lookup to the interrupted-send
 recovery base `e69538152a5e`, described [below](#interrupted-send-debit-evidence).
-The native SDK/relay checks below accept cached-export validation using this
-lookup. The latest ARM64 package, r40, predates this fix; its five focused cases
-and the broader seventeen-case r38 suite retain their original revision and
-scope. The cadence measurements still use r37 and predate these recovery checks.
+The native SDK/relay checks and five focused r41 ARM64 Linux cases below accept
+cached-export validation using this lookup. The broader seventeen-case r38 suite
+retains its original revision and scope. The cadence measurements still use r37
+and predate these recovery checks.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -55,27 +55,38 @@ all-target SDK/relay lint with all features, changed-file formatting and source-
 checks pass. All nine passing gates retain identical source fingerprints.
 The failed reproduction, tested locks, dependency graph and accepted sources are
 retained in `work/paid-relay-verification/2026-09-30-cached-export-read`.
-This is native macOS ARM64 acceptance. The fix still needs current Linux-package
-and device acceptance; export-history retirement and physical power-loss recovery
-remain open.
+This is native macOS ARM64 acceptance. The r41 result below adds Linux-package
+acceptance; current-device checks, export-history retirement and physical
+power-loss recovery remain open.
 
-The r40 package binds FIPS `5981944e4eb3` to the unchanged accepted SDK/CDK graph.
-Five focused Linux cases pass: three run the extracted production executable
-through command-line export recovery and both customer billing flows, one mixes
-embedded service startup with packaged command-line checks, and one exercises
-the embedded wallet against a local test mint. The latter includes conflicting
-cached-export fields and an absent original request, preserves the refused files,
-and redeems all 256 test sats after normal recovery.
+The existing command-line fixture also reproduces the unintended debit in a
+separate process: the old export helper returns an error but leaves 6 of 16 test
+sats, instead of 11 after one authorized 5-sat export. The fixed executable
+preserves both balance and cached file, while missing-file recovery still reuses
+the original token. The test keeps its original sixty-second deadline; no runtime
+change accompanies it. All three bench cases, strict lint, formatting and
+source-size checks pass.
+Evidence is under `work/paid-relay-verification/2026-09-30-package-export-read-cli`.
 
-The offline optimized build took 434.541 seconds. The static executable is
-25,299,240 bytes, SHA-256
-`83842a52f71cf6dfc84b7790f8257d06abeb3f98a521dd5c8dbd569732b1532b`.
-The unsigned `0.1.0-r40` package is 11,570,117 bytes, SHA-256
-`f64e6787619a5a06800ea9c87a33272873f51b8355ce2e86535f93a3d17c902f`.
+The r41 package binds FIPS `d1411966b6c8` to SDK `b8da3c1a2bd4` and the unchanged
+CDK/dependency closure. Five focused Linux cases pass: three run the extracted
+production executable through the strengthened command-line check and both
+customer billing flows, one mixes embedded startup with packaged command-line
+checks, and one exercises the embedded wallet against a local test mint.
+Both wallet cases reject an unfinished cached export without another debit.
+The embedded case also checks conflicting payment fields and an absent original
+request, preserves refused files, and redeems all 256 test sats after recovery.
+
+The offline optimized build took 388.325 seconds. The static executable is
+25,300,104 bytes, SHA-256
+`885cc251b8101d4e3d06cfacaa3828ec3e226dcaa9dc2b1b851219854959bfb7`.
+The unsigned `0.1.0-r41` package is 11,571,173 bytes, SHA-256
+`671e3843ec00815fbdd8b99fc4b88c50dd088070d5facbe85b9c5f97cb9c1d64`.
 Inspection verifies all eleven payload files and the extracted binary's identity.
-All 36,263 source files and the tested executables retain their verified hashes;
-all owned test containers are absent and the r39 artifacts remain unchanged.
-The 57 evidence files are indexed under `work/paid-relay-verification/2026-09-30-arm64-r40`.
+All 36,263 source files and tested executables retain their verified hashes;
+all owned test containers are confirmed absent after acceptance. The 79 retained
+r40 artifact/evidence files remain unchanged. The 52 new evidence files are indexed
+under `work/paid-relay-verification/2026-09-30-arm64-r41`.
 This focused run does not repeat the broader r38 suite or attribute historical
 stalls. No device installation, publication or real-money operation was performed.
 
