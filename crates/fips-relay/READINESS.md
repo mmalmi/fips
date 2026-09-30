@@ -16,8 +16,20 @@ and phone demonstrations do not accept the latest software for deployment.
 
 SDK `e69538152a5e` binds interrupted-send recovery to the original
 authorization and coin sets, as described [below](#interrupted-send-debit-evidence).
-Native SDK/relay checks pass; the r37 ARM64 package and cadence measurements
-predate these SDK recovery checks.
+Native SDK/relay checks and the r38 ARM64 package's seventeen cases pass.
+The cadence measurements still use r37 and predate these SDK recovery checks.
+
+| Requirement | Evidence in place | Outstanding acceptance |
+| --- | --- | --- |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
+| Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
+| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
+| Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
+| Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
+
+## Verified implementation and test history
 
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize
@@ -41,7 +53,7 @@ source-size checks pass. Exact source snapshots, the failed reproduction and
 successful gates are retained in
 `work/paid-relay-verification/2026-09-30-settlement-signing`.
 This establishes the reproduced cross-channel settlement wait's cause. The older
-intermittent delivery/payment failures remain unattributed. The r37 package below
+intermittent delivery/payment failures remain unattributed. The r38 package below
 includes this change; current-device acceptance remains open.
 
 Automatic receiver refresh now handles mint key rotation without manual cache
@@ -69,7 +81,7 @@ changed-file formatting and source-size checks. The twelve final gates share
 unchanged source fingerprints.
 Exact sources, locks, failed reproductions and verification inputs are retained in
 `work/paid-relay-verification/2026-09-30-automatic-key-rotation`.
-The r37 ARM64 package acceptance below includes this fix. Current-device
+The r38 ARM64 package acceptance below includes this fix. Current-device
 acceptance and attribution of the other historical stalls remain outstanding.
 
 Current source lets a watched route leave a disconnected provider while its
@@ -100,7 +112,7 @@ sats; lost-settlement recovery collects all 259. Strict all-target relay lint,
 formatting and source-size checks pass. Exact sources, tested locks, failed
 reproductions and successful gates are retained in
 `work/paid-relay-verification/2026-09-30-pending-route-funding`.
-That mobile-funding change left SDK and CDK sources unchanged. The r37 package
+That mobile-funding change left SDK and CDK sources unchanged. The r38 package
 includes it; current-device acceptance and the other historical stalls remain open.
 
 Native CDK `418380651373` and SDK `66f5cf67dbc6` now bound each service
@@ -133,66 +145,62 @@ restoring the guards restores the passing source. Exact sources, tested locks,
 negative-test recipes and 15 gate records are preserved in
 `work/paid-relay-verification/2026-09-29-wallet-read-bounds`.
 
-The r37 ARM64 package accepts FIPS source `6b367afc9878`, native CDK
-`418380651373` and SDK `c3fd5b2f8c1b` from the verified offline source bundle.
-It includes the receiver key refresh and mobile-funding changes above, along with
-the database-read and repository-entry bounds, refund/signing isolation and
-[interrupted-send debit check](#interrupted-send-debit-evidence) described below.
-Its fourteen isolated Linux process cases pass against the executable extracted
-from the APK: two storage/restart cases, four expiry/funding/retirement cases,
-six mixed-transport/renewal cases and two customer-restart cases. They cover saved
-budget enforcement, full-filesystem recovery and both ordinary and explicitly
-enabled self-signed TLS. The renewal case rotates mint keys between buyers;
-the second buyer and all eight replacement channels use the new keys, and all
-384 test sats reconcile.
+The r38 ARM64 package accepts FIPS `b3e60280b422`, native CDK
+`418380651373` and SDK `e69538152a5e` from the verified offline source bundle.
+It includes the original-authorization and coin-set recovery checks described
+[below](#interrupted-send-debit-evidence), along with the previously accepted
+forwarding, accounting, storage and settlement changes.
 
-Restart and full-filesystem recovery also require outgoing settlement to reach
-its provider while an incoming payout is held. The TCP case explicitly enables
-the existing signer-write failure check and verifies both continued payment by
-the other buyer and automatic recovery of the original channel. The r36 runner
-did not enable that optional fault check.
+Seventeen isolated Linux cases pass. Fourteen run the executable extracted from
+the APK: two storage/restart cases, four expiry/funding/retirement cases, six
+mixed-transport/renewal cases and two customer-restart cases. They retain saved
+budgets and cover full-filesystem recovery, ordinary TLS and explicitly enabled
+FIPS-authenticated self-signed TLS. Renewal rotates mint keys between buyers;
+the second buyer and all eight replacement channels use the new keys, with all
+384 test sats reconciled. The TCP case also requires continued payment by another
+buyer during signer-write failure and automatic recovery of the original channel.
 
-Two additional cases pass. The initialization guard combines embedded service
-loading with packaged command-line checks. The moving-route funding case uses
-embedded controllers and a local test mint to verify fallback while funding is
-unresolved, retained channel identities, bounded capital and final settlement.
-That case is ARM64 controller evidence, not packaged-process or radio acceptance.
-Default package builds omit optional payment-stage measurements, which retain
+The other three cases have distinct scopes. Initialization combines embedded
+service loading with packaged command-line checks. Moving-route funding uses
+embedded controllers and a local mint to check fallback, retained funding,
+bounded capital and settlement. The SDK wallet case rejects sixteen conflicting
+confirmations before mint submission, then recovers the original operation after
+a lost reply. Its harness is bound to the exact SDK package, source target and
+revision in the bundle. These embedded cases supply controller and wallet evidence;
+current radio and device acceptance remain outstanding.
+
+The offline production build took 728.081 seconds with
+Rust 1.96.0, cargo-zigbuild 0.22.1 and Zig 0.15.2. The stripped static musl
+executable is 25,297,952 bytes, SHA-256
+`09d4fd4636a9b722a2efe9b47e36d2d1588f8d6654a53891ddfdf0b55f4713e4`.
+The unsigned `0.1.0-r38` APK is 11,571,654 bytes, SHA-256
+`594d38e913fc5b140dbba2a48566e57c823b1a1d83b5bc5da91bcc856bc87b30`.
+Inspection verifies all eleven payload files, root ownership, lifecycle scripts,
+the dependency set and ARM64 ELF structure without dynamic linking. The service
+is disabled by default and the package contains no saved accounts. Installation
+on OpenWrt still requires its separate acceptance.
+The default package omits optional payment-stage measurements, which retain
 their separate native acceptance below.
 
-The offline production build took 380.335 seconds with Rust 1.96.0,
-cargo-zigbuild 0.22.1 and Zig 0.15.2. Its stripped static musl executable is
-25,290,800 bytes, SHA-256
-`1800936685b06d898cf16bd772c349ae4400a2b9a70df07bcf06c04d2f3d73f1`.
-The unsigned `0.1.0-r37` APK is 11,567,619 bytes, SHA-256
-`44744182297d3020679076d0ac39bcc27ccefddd0d2d52398241e36d375ae56c`.
-Inspection verifies all eleven payload files, root ownership, lifecycle scripts
-and the exact dependency set; no saved accounts are included and the service is
-disabled by default. ELF inspection confirms ARM64 with no dynamic-loader or
-dynamic-linking segment. Inspection uses apk-tools 3.0.1-r1 with standard system
-parent directories precreated in disposable storage; it does not establish
-OpenWrt installation acceptance.
+The bundle preserves the FIPS dependency graph and the SDK graph from native
+acceptance, including the tested locks. Its added SDK test vendor crate is the
+same `axum-macros 0.5.1` covered by the native vendor manifest. All
+36,262 source files remain unchanged through the gates.
+Final verification binds each result to its exact test, harness, execution kind
+and read-only mounts. The earlier r37 package and evidence remain unchanged.
+The new package, five harnesses, frozen runners and 112 evidence
+files are retained in `work/paid-relay-verification/2026-09-30-arm64-r38`.
 
-The new bundle exports the exact clean FIPS and SDK commits while retaining the
-accepted CDK, Spilman, TCP, bitreq and registry sources. Offline resolution preserves
-the tested lock and exact dependency graph, including enabled features and edges.
-All 36,084 source files remain unchanged throughout the gates. The harnesses and
-extracted daemon retain their original hashes. Final verification binds each
-result to its exact test, harness, execution kind and read-only executable mount.
-All 116 files in the previous r36 evidence and artifact inventory remain unchanged.
-The new package, four harnesses, runners and 94 evidence files are preserved in
-`work/paid-relay-verification/2026-09-30-arm64-r37`; its source reference identifies
-the settlement-signing bundle and full dependency inventory.
-
-Every runtime case uses a fresh, unprivileged, network-isolated ARM64 Linux
-container and local test money through a verified local Docker endpoint. A
-600-second outer watchdog preserves the existing test deadlines; cleanup checks
-the uniquely named container's ownership before removing it. All cases finish
-without watchdog expiry or cleanup errors, and no owned containers remain.
-No package is installed or published, and no physical device is accessed.
-This supersedes r36's package-process acceptance;
-current-device checks, physical power loss, sustained performance and attribution
-of the historical intermittent stalls remain outstanding.
+Every completed case uses a fresh, unprivileged, network-isolated ARM64 Linux
+container and local test money. A stopped execution interrupted the first retirement
+attempt without a test outcome. Its partial evidence is retained separately; the
+child and owned container were confirmed absent before resuming that case. The six
+completed results were preserved. All seventeen accepted cases finish within the
+existing deadlines without watchdog expiry or cleanup errors; all owned containers
+are removed. No package was installed or published and no physical device was
+accessed. This supersedes r37 package acceptance. Current-device checks,
+physical power loss, sustained
+performance and the historical intermittent stalls remain outstanding.
 
 Startup now binds the buyer journal's identity and lifetime spending budget to
 the saved service terms before recovering either buyer or seller accounting.
@@ -344,16 +352,6 @@ also covers key rotation, malformed restore evidence and replay after spending.
 The r20 ARM64 package includes this extension and passes the missed-collection
 case in isolated Linux, alongside ordinary shared expiry and interrupted-opening
 recovery. Current-device and physical power-loss acceptance remain pending.
-
-| Requirement | Evidence in place | Outstanding acceptance |
-| --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
-| Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
-| Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
-| Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 Customer entry recovery now has local process acceptance under both tariffs and
 both relay feature profiles. The entry process is killed while the customer stays
@@ -780,7 +778,8 @@ reproduction and passing results are retained in
 `work/paid-relay-verification/2026-09-30-confirmation-inputs`.
 No schema, dependency or protocol message changes. This preserves conflicting
 authority; it does not reconstruct missing originals or reconcile arbitrary wallet
-corruption. ARM64 package and current-device acceptance remain outstanding.
+corruption. The r38 ARM64 package acceptance includes this fix and the same
+SDK regression; current-device acceptance remains outstanding.
 
 SDK `d0dae6f2a794` validates the original native debit before publishing an
 unfinished numbered-send result. It reuses the existing 4-MiB bounded receipt
