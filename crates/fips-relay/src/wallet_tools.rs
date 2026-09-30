@@ -1,13 +1,13 @@
 //! Offline administration of the existing relay wallet, never relay credit.
 
 use crate::{
-    durable::acquire_owner,
+    durable::{acquire_owner, write_private_journal},
     service::{RelayService, ServiceConfig, read_json},
 };
 use cashu::nuts::{CurrencyUnit, Token};
 use cashu_service::{
-    CashuSentPayment, load_mint_balance, normalize_mint_url, receive_payment_token,
-    send_payment_token,
+    CashuSentPayment, CashuWalletSendRequest, CashuWalletService, load_mint_balance,
+    normalize_mint_url, receive_payment_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -85,6 +85,7 @@ pub(crate) async fn export_payment(
     amount: u64,
 ) -> Result<Value, String> {
     let path = export_path(root, id)?;
+    let mint = normalize_mint_url(mint).map_err(|e| e.to_string())?;
     if amount == 0 {
         return Err("export amount must be positive".into());
     }
@@ -102,23 +103,36 @@ pub(crate) async fn export_payment(
         }
         return Ok(export_summary(&path, &payment));
     }
-    // Reserve the id before the wallet operation. If interrupted before its
-    // token is saved, fail closed; the Cashu activity/saga journal remains the
-    // recovery source. Retrying must not produce another spend automatically.
-    private_new(
-        &directory.join(format!("{id}.intent")),
-        &serde_json::to_vec(&json!({"amount_sat":amount,"mint":mint})).unwrap(),
-    )
-    .map_err(|_| {
-        "export is pending or cannot be reserved; reconcile its wallet activity before retrying"
-    })?;
-    let payment = send_payment_token(&root.join("wallet"), mint, amount)
+    // Older reservations do not identify an SDK request. Their absence of a
+    // token cannot authorize a new send under the current request namespace.
+    match std::fs::symlink_metadata(directory.join(format!("{id}.intent"))) {
+        Ok(_) => return Err("export is pending; reconcile its original wallet operation".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let wallet = CashuWalletService::open_file_backed(&root.join("wallet"))
         .await
         .map_err(|e| e.to_string())?;
-    private_new(
-        &path,
+    // The SDK retains the original terms, coins and result before publication.
+    // Keep this identity stable: a retry must never become another wallet send.
+    let payment = wallet
+        .send_payment_token_for_request(CashuWalletSendRequest {
+            request_id: format!("fips-export:{id}"),
+            mint_url: mint,
+            amount_sat: amount,
+            required_keyset_id: None,
+            max_total_amount_sat: None,
+            metadata: Default::default(),
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .payment;
+    write_private_journal(
+        &directory,
+        &format!("{id}.json"),
         &serde_json::to_vec(&payment).map_err(|e| e.to_string())?,
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(export_summary(&path, &payment))
 }
 

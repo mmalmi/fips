@@ -18,6 +18,8 @@ SDK `e69538152a5e` binds interrupted-send recovery to the original
 authorization and coin sets, as described [below](#interrupted-send-debit-evidence).
 Native SDK/relay checks and the r38 ARM64 package's seventeen cases pass.
 The cadence measurements still use r37 and predate these SDK recovery checks.
+The newer native export-recovery fix described below is not included in r38;
+its ARM64 package acceptance remains outstanding.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -30,6 +32,31 @@ The cadence measurements still use r37 and predate these SDK recovery checks.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Wallet exports now bind the caller's ID to the SDK's existing retained send
+request. When the wallet send completed but its export file is missing, retrying
+the same request recovers the original token and operation without another debit.
+The amount and mint remain immutable. Publication uses the existing atomic,
+private journal writer. No SDK, dependency or peer-message change is needed.
+
+The strengthened existing real-mint fixture fails on the original implementation
+and passes with the fix. It retains enough wallet balance for an accidental
+second send, rejects a changed amount, compares the recovered token privately,
+and redeems all 256 test sats. All three bench cases and both customer billing
+flows pass, including saved-account restart and final export. Library checks
+pass 307 tests with all features and 293 without optional features; strict
+all-target lint in both profiles, changed-file formatting and source-size checks
+also pass. The nine verification gates retain identical source fingerprints.
+Exact inputs, the failed reproduction and passing results are preserved in
+`work/paid-relay-verification/2026-09-30-export-recovery`.
+
+This fixture models a missing publication after a completed send; it does not
+kill the process during export or simulate physical power loss. Export records
+share the SDK's 128-request, 4 MiB journal and 64 KiB per-record limit. Automatic
+export-history retirement remains outstanding; capacity exhaustion retains
+financial evidence and refuses a new send. See [export recovery](TESTBENCH.md#collect-and-verify).
+The r38 package predates this runtime change, so its passing results do not
+accept the new export helper on ARM64 or current devices.
 
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize

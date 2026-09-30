@@ -101,9 +101,37 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
     );
     let export = WalletRequest::Export {
         id: "return-1".into(),
-        amount_sat: 256,
+        amount_sat: 10,
     };
     let sent = offline_wallet(&cfg, export.clone()).await.unwrap();
+    let exported = Path::new(sent["path"].as_str().unwrap());
+    let original = std::fs::read(exported).unwrap();
+    // The wallet completed its send, but the caller lost the published file.
+    // Retrying must recover that operation even though enough funds remain to
+    // accidentally create another token. Keep the original private for comparison.
+    std::fs::rename(exported, root.path().join("retained-export.json")).unwrap();
+    assert!(
+        offline_wallet(
+            &cfg,
+            WalletRequest::Export {
+                id: "return-1".into(),
+                amount_sat: 11,
+            },
+        )
+        .await
+        .is_err(),
+        "an unfinished export cannot change its original amount"
+    );
+    assert_eq!(
+        offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"],
+        246
+    );
+    let recovered = offline_wallet(&cfg, export.clone()).await.unwrap();
+    assert_eq!(sent, recovered, "the original operation must be recovered");
+    assert!(
+        std::fs::read(exported).unwrap() == original,
+        "recovery must return the original token without printing bearer funds"
+    );
     assert_eq!(sent, offline_wallet(&cfg, export).await.unwrap());
     assert!(!sent.to_string().contains("cashuB"));
     assert!(
@@ -121,6 +149,27 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
         serde_json::from_slice(&std::fs::read(sent["path"].as_str().unwrap()).unwrap()).unwrap();
     mint.handle(BenchRequest::Collect {
         token: returned["token"].as_str().unwrap().into(),
+    })
+    .await
+    .unwrap();
+    let remaining = offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(remaining, 246, "recovering the export cannot spend again");
+    let remainder = offline_wallet(
+        &cfg,
+        WalletRequest::Export {
+            id: "return-remainder".into(),
+            amount_sat: remaining,
+        },
+    )
+    .await
+    .unwrap();
+    let payment: Value =
+        serde_json::from_slice(&std::fs::read(remainder["path"].as_str().unwrap()).unwrap())
+            .unwrap();
+    mint.handle(BenchRequest::Collect {
+        token: payment["token"].as_str().unwrap().into(),
     })
     .await
     .unwrap();

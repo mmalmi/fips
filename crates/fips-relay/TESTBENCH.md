@@ -91,10 +91,20 @@ printf '%s\n' '{"type":"export","id":"return-1","amount_sat":512}' |
 
 Use the actual balance rather than the example amount. Export writes a new
 private file inside the saved state directory; the result contains only its
-path, amount and operation ID. Reusing the ID returns the existing export.
-A reserved export without a completed file fails closed; inspect the Cashu
-activity and saga journals before any recovery action. It is not automatically
-reissued as another spend.
+path, amount and operation ID. Reusing the ID with the same amount and mint
+returns the original export. If the file is missing, the SDK resumes the
+original wallet request and publishes its token atomically; it never substitutes
+a new send. A changed amount or mint is refused. Keep the saved wallet evidence
+and retry with the original ID, rather than inventing another ID.
+
+Export requests retain their original identity and result in the shared SDK send
+journal, which permits at most 128 retained requests and 4 MiB, with a 64 KiB
+limit per record. Other pending sends use the same capacity; these are upper
+bounds, not a guarantee of 128 exports. Export history has no automatic
+retirement yet. Capacity exhaustion refuses a new request before sending.
+Do not delete the journal to reclaim space. An older `.intent` reservation
+without its completed export still requires reconciliation of the original
+wallet activity: that marker cannot identify a recoverable SDK request.
 
 Send `{"type":"collect","token":"ENCODED_TOKEN"}` to the mint's private
 control socket to redeem each return. `{"type":"report"}` reports reserved
@@ -112,7 +122,8 @@ cargo test -p fips-relay --features testbench --test bench
 
 Tests exercise real mint funding, wallet import/replay rejection, an active
 relay's exclusive lock, retained spending state, private idempotent export and
-redemption, issuance bounds, refused public binds, and both command-line tools
+redemption, lost-file recovery without another debit, issuance bounds, refused
+public binds, and both command-line tools
 through the private mint control socket. These supplement the native paid
 forwarding tests; they do not replace hardware path or customer-flow checks.
 
