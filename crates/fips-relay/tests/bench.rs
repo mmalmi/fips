@@ -584,7 +584,7 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
             "{}",
             String::from_utf8_lossy(&initialized.stderr)
         );
-        let pending = json!({"type":"export","id":1,"amount_sat":5});
+        let pending = json!({"type":"export","id":3,"amount_sat":5});
         assert!(
             !cli(
                 env!("CARGO_BIN_EXE_fips-relay"),
@@ -634,7 +634,7 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
                 env!("CARGO_BIN_EXE_fips-relay"),
                 "wallet",
                 &relay_path,
-                json!({"type":"export","id":2,"amount_sat":5}),
+                json!({"type":"export","id":1,"amount_sat":5}),
             )
             .await;
             assert!(
@@ -657,8 +657,8 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
                 original = Some((summary, bytes));
             }
         }
-        let cached = relay.state_directory.join("exports/1.json");
-        let (_, token) = original.unwrap();
+        let cached = relay.state_directory.join("exports/3.json");
+        let (summary, token) = original.unwrap();
         std::fs::write(&cached, &token).unwrap();
         assert!(
             !cli(
@@ -687,6 +687,68 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
         );
         eprintln!("wallet CLI recovered the original export without another debit");
         eprintln!("wallet CLI rejected an unfinished cached export without spending");
+        let payment: Value = serde_json::from_slice(&token).unwrap();
+        let collected = cli(
+            env!("CARGO_BIN_EXE_fips-relay-test-mint"),
+            "ctl",
+            &path,
+            json!({"type":"collect","token":payment["token"]}),
+        )
+        .await;
+        assert!(collected.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&collected.stdout).unwrap()["amount_sat"],
+            5
+        );
+        for _ in 0..2 {
+            let acknowledged = cli(
+                env!("CARGO_BIN_EXE_fips-relay"),
+                "wallet",
+                &relay_path,
+                json!({"type":"acknowledge_exports","through":2}),
+            )
+            .await;
+            assert!(acknowledged.status.success());
+            let history: Value = serde_json::from_slice(&acknowledged.stdout).unwrap();
+            assert_eq!(history["through"], 2);
+            assert_eq!(history["requests"], 1);
+            assert_eq!(history["requested_sat"], 5);
+            assert_eq!(history["cost"]["wallet_debit_sat"], 5);
+        }
+        assert!(!Path::new(summary["path"].as_str().unwrap()).exists());
+        assert!(
+            std::fs::read(&cached).unwrap() == token,
+            "unfinished evidence remains outside the acknowledged prefix"
+        );
+        for id in [1, 2] {
+            assert!(
+                !cli(
+                    env!("CARGO_BIN_EXE_fips-relay"),
+                    "wallet",
+                    &relay_path,
+                    json!({"type":"export","id":id,"amount_sat":5}),
+                )
+                .await
+                .status
+                .success(),
+                "retired and skipped numbers cannot create another send"
+            );
+        }
+        let balance = cli(
+            env!("CARGO_BIN_EXE_fips-relay"),
+            "wallet",
+            &relay_path,
+            json!({"type":"balance"}),
+        )
+        .await;
+        assert!(balance.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&balance.stdout).unwrap()["balance_sat"],
+            11
+        );
+        eprintln!(
+            "wallet CLI retired collected exports without resetting costs or allowing replay"
+        );
         assert_eq!(
             std::fs::metadata(cfg.state_directory.join("control.sock"))
                 .unwrap()
