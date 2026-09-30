@@ -112,7 +112,10 @@ impl Controller {
             replacement_retired: false,
             replaces,
         };
-        self.services.payment_control.prepare_funding().await?;
+        self.services
+            .payment_control
+            .prepare_funding(&payment)
+            .await?;
         let payments = self.services.payment_control.clone();
         let wallet_guard = self.wallet.clone().lock_owned().await;
         // Keep the admission owner through receiver persistence and the journal

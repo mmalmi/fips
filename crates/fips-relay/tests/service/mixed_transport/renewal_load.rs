@@ -1,7 +1,7 @@
 //! Opt-in turnover acceptance using real UDP/TLS processes and the existing gates.
 use super::bench::controller_phases;
 use super::*;
-use cashu_service::simulation::MintProxy;
+use cashu_service::{simulation::MintProxy, spilman_client_store_path};
 use fips_relay::controller::FundingRequestBudget;
 use std::num::NonZeroU32;
 
@@ -39,6 +39,7 @@ async fn scenario() {
         .await;
     bench.assert_carriers().await;
     bench.set_stage("turnover-initial-purchase");
+    let mut rotated_keyset = None;
     for (source, destination) in [(0, 2), (2, 0)] {
         request(
             &bench.configs[source],
@@ -48,8 +49,27 @@ async fn scenario() {
         )
         .await
         .unwrap();
+        if source == 0 {
+            // The shared provider cached the original mint keys for the first
+            // buyer. A new buyer must work before renewal can refresh that cache.
+            let keyset = mint
+                .mint()
+                .rotate_keyset(
+                    cashu::nuts::CurrencyUnit::Sat,
+                    (0..=20).map(|bit| 1u64 << bit).collect(),
+                    0,
+                    false,
+                    None,
+                )
+                .await
+                .unwrap();
+            rotated_keyset = Some(keyset.id.to_string());
+        }
     }
+    let rotated_keyset = rotated_keyset.unwrap();
     let original = bench.states().await;
+    assert_ne!(issuing_keyset(&bench, 0, &original[0]), rotated_keyset);
+    assert_eq!(issuing_keyset(&bench, 2, &original[2]), rotated_keyset);
     let funding = bench.funding_intents(false);
     let budget = bench.configs[0].terms.buyer_budget_sat;
     let capacity = bench.configs[0].terms.controller.channel_capacity_sat;
@@ -61,6 +81,14 @@ async fn scenario() {
         bench.set_renewals_paused(true).await;
         bench.set_stage("turnover-payment");
         let states = bench.states().await;
+        if round > 0 {
+            for source in [0, 2] {
+                assert_eq!(
+                    issuing_keyset(&bench, source, &states[source]),
+                    rotated_keyset
+                );
+            }
+        }
         let channels: Vec<_> = [0, 2]
             .into_iter()
             .map(|source| {
@@ -136,6 +164,22 @@ async fn scenario() {
     }
     assert_eq!(total, 384);
     assert!(network.accounting().unwrap().is_conserved());
+    eprintln!(
+        "automatic key rotation: new buyer and eight replacements; all 384 test sats conserved"
+    );
+}
+
+fn issuing_keyset(bench: &MixedBench, node: usize, state: &Value) -> String {
+    let channel = state["purchases"][0]["channel"]["id"].as_str().unwrap();
+    let path = spilman_client_store_path(&bench.configs[node].state_directory.join("wallet"));
+    let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let keys: Value = serde_json::from_str(
+        saved["funding"][channel]["keyset_info_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    keys["keysetId"].as_str().unwrap().to_owned()
 }
 
 async fn held_close_with_other_payment(

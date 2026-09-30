@@ -59,9 +59,12 @@ impl PaymentControl {
         self
     }
 
-    pub(crate) async fn prepare_funding(&self) -> Result<(), String> {
+    pub(crate) async fn prepare_funding(
+        &self,
+        payment: &CashuSpilmanPayment,
+    ) -> Result<(), String> {
         if let Some(refresh) = &self.keysets {
-            refresh.prepare(self.receiver.receiver_pubkey_hex()).await?;
+            refresh.prepare(&self.receiver, payment).await?;
         }
         Ok(())
     }

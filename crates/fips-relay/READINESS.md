@@ -14,6 +14,33 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+Automatic receiver refresh now handles mint key rotation without manual cache
+updates. The previous 60-second successful-refresh cache rejected a new funded
+buyer after rotation. A read-only SDK lookup now distinguishes retained funding
+or cached issuing keys from missing keys. Known keys bypass refresh ownership;
+missing keys trigger a serialized lookup of configured mints, with the existing
+ten-second deadline and a one-second cooldown. Failed lookups remain cached during
+that cooldown. Signature, payer and funding validation still run afterward; this
+lookup grants no financial authority. No wire message, journal field or native
+CDK change is introduced.
+
+The existing bidirectional UDP/TLS process test rotates the mint keys after its
+first buyer is accepted. The second buyer and all eight later replacement channels
+use the new issuing keyset, while original accounts, spending bounds and all 384
+test sats reconcile. Both relay feature profiles pass with their existing deadlines.
+Restoring only the original FIPS refresh implementation reproduces the rejection
+with the same strengthened test and SDK source. Focused checks also prove that
+known keys bypass a held refresh owner, repeated failed lookups are paced, and a
+missing receiver identity is not recreated by refresh.
+
+All 430 SDK tests pass (one opt-in soak excluded), along with 307 relay library
+tests in each feature profile, strict SDK/relay lint, changed-file formatting and
+source-size checks. The twelve final gates share unchanged source fingerprints.
+Exact sources, locks, failed reproductions and verification inputs are retained in
+`work/paid-relay-verification/2026-09-30-automatic-key-rotation`.
+The r35 package predates this fix. Current ARM64 package/device acceptance and
+attribution of the other historical stalls remain outstanding.
+
 Current source lets a watched route leave a disconnected provider while its
 committed funding reply remains unresolved. The wallet worker retains ownership
 and the original funding intent; another already-funded provider can resume
@@ -41,8 +68,9 @@ sats; lost-settlement recovery collects all 259. Strict all-target relay lint,
 formatting and source-size checks pass. Exact sources, tested locks, failed
 reproductions and successful gates are retained in
 `work/paid-relay-verification/2026-09-30-pending-route-funding`.
-SDK and CDK sources are unchanged. The r35 package predates this fix; current
-ARM64 package/device acceptance and the other historical stalls remain open.
+That mobile-funding change left SDK and CDK sources unchanged. The r35 package
+predates it; current ARM64 package/device acceptance and the other historical
+stalls remain open.
 
 Native CDK `418380651373` and SDK `66f5cf67dbc6` now bound each service
 repository to 32 distinct mint/unit wallets. Admission holds the repository write
@@ -2258,9 +2286,10 @@ case also passes without optional features. Strict priced-path test lint,
 formatting and the source-size gate pass. The additional case shares the existing
 traffic and settlement helpers and their deadlines. Exact sources and results are
 retained in `work/paid-relay-verification/2026-09-30-renewal-preparation`.
-This changes only tests. Physical-device acceptance and attribution of historical
-stalls remain open; the diagnostic mint
-rotation is not acceptance of automatic key-cache refresh during deployment.
+This changes only tests. Its manual receiver refresh isolates the wallet-send
+wait; automatic receiver refresh is covered separately by the UDP/TLS process
+case in the scope section above. Physical-device acceptance and attribution of
+historical stalls remain open.
 
 The same mesh fixture now holds mint keyset replies during the renewing buyer's
 unstarted admission. The existing mint proxy gains a simulation-only matching
