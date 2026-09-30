@@ -1,4 +1,4 @@
-//! A held payout must allow other settlement intents to queue for the same wallet.
+//! A held payout must not block signing and collection by another provider.
 use super::*;
 use cashu_service::spilman_client_store_path;
 use fips_relay::service::ServiceConfig;
@@ -46,8 +46,8 @@ pub(super) async fn settle(
     for (index, config) in configs.iter().enumerate().skip(1) {
         spawn_settlement(&mut requests, index, config.clone());
     }
-    // The incoming close holds the wallet owner. The outgoing settlement must
-    // still persist its intent and sealed usage before waiting to sign locally.
+    // The incoming close owns this wallet. Signing and remote collection need
+    // no local wallet proofs; only the outgoing refund must wait for ownership.
     restore::wait_journal(
         &configs[1]
             .state_directory
@@ -59,10 +59,16 @@ pub(super) async fn settle(
             sale["payment"].is_object()
                 && sale["report"].is_null()
                 && purchase["usage"].is_object()
-                && purchase["payment"].is_null()
+                && purchase["payment"].is_object()
+                && purchase["report"].is_object()
+                && purchase["refunded"] == false
         },
     )
     .await;
+    assert!(
+        !release.is_closed(),
+        "the other provider must collect before the held mint reply is released"
+    );
     let capacity = middle_db.storage_capacity().await.unwrap().unwrap();
     assert_eq!(
         capacity, before,

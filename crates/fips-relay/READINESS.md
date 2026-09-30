@@ -14,6 +14,31 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+Final settlement signing now proceeds while an unrelated incoming payout owns
+the local wallet. The existing channel guard and signing-store lock serialize
+authorization; refund recovery still requires the exclusive wallet owner.
+Removing the redundant wallet wait lets the other provider collect before the
+local refund can be imported. SDK, CDK, message formats and journal formats are
+unchanged.
+
+The existing four-node funding/restart fixture holds a real incoming mint-close
+reply. Its strengthened check requires the outgoing final payment and provider
+report while the incoming report remains absent and the local refund remains
+pending. Wallet storage capacity must stay unchanged. The original implementation
+fails the existing fifteen-second observation window; the fix passes with all
+features and without optional features. The fixture retains its fee, refund,
+lifetime-budget and restart checks, with no additional test case or longer deadline.
+
+Bidirectional UDP/TLS renewal and mint key rotation also pass in both feature
+profiles. Relay library checks pass 307 tests with all features and 293 without
+optional features; strict all-target lint in both profiles, formatting and
+source-size checks pass. Exact source snapshots, the failed reproduction and
+successful gates are retained in
+`work/paid-relay-verification/2026-09-30-settlement-signing`.
+This establishes the reproduced cross-channel settlement wait's cause. The older
+intermittent delivery/payment failures remain unattributed. The r36 package below
+predates this change; updated package and current-device acceptance remain open.
+
 Automatic receiver refresh now handles mint key rotation without manual cache
 updates. The previous 60-second successful-refresh cache rejected a new funded
 buyer after rotation. A read-only SDK lookup now distinguishes retained funding
@@ -34,8 +59,9 @@ known keys bypass a held refresh owner, repeated failed lookups are paced, and a
 missing receiver identity is not recreated by refresh.
 
 All 430 SDK tests pass (one opt-in soak excluded), along with 307 relay library
-tests in each feature profile, strict SDK/relay lint, changed-file formatting and
-source-size checks. The twelve final gates share unchanged source fingerprints.
+tests with all features and 293 without optional features, strict SDK/relay lint,
+changed-file formatting and source-size checks. The twelve final gates share
+unchanged source fingerprints.
 Exact sources, locks, failed reproductions and verification inputs are retained in
 `work/paid-relay-verification/2026-09-30-automatic-key-rotation`.
 The r36 ARM64 package acceptance below includes this fix. Current-device
@@ -61,9 +87,10 @@ failure on the base source. Recovery now uses the existing authenticated
 stopped-route reply to confirm the provider's installed channel accounting;
 unknown accounts remain retained and reusable. See [withdrawal before provider
 acceptance](FUNDING-COSTS.md#withdrawal-before-provider-acceptance).
-The final source passes 306 relay library tests in each feature profile, the
-funding-mobility case in both profiles, lost-settlement recovery, all four slow
-renewal cases and pending encounter funding. The latter collects all 1,536 test
+The final source passes 306 relay library tests with all features and 292 without
+optional features, the funding-mobility case in both profiles, lost-settlement
+recovery, all four slow renewal cases and pending encounter funding. The latter
+collects all 1,536 test
 sats; lost-settlement recovery collects all 259. Strict all-target relay lint,
 formatting and source-size checks pass. Exact sources, tested locks, failed
 reproductions and successful gates are retained in

@@ -313,12 +313,12 @@ impl Controller {
             .await?;
         }
         if purchase.payment.is_none() {
-            let wallet_guard = self.wallet.clone().lock_owned().await;
             let directory = self.services.wallet_directory.clone();
             let buyer = self.services.buyer.clone();
             let saved = purchase.clone();
             let payment = blocking(move || {
-                let _wallet = wallet_guard;
+                // The channel guard and signer serialize final authorization.
+                // Wallet ownership is needed later to recover the refund.
                 buyer
                     .close_channel(&saved.channel.id)
                     .map_err(|e| e.to_string())?;
