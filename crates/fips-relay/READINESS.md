@@ -18,7 +18,7 @@ SDK `e69538152a5e` binds interrupted-send recovery to the original
 authorization and coin sets, as described [below](#interrupted-send-debit-evidence).
 Native SDK/relay checks and the r38 ARM64 package's seventeen cases pass.
 The cadence measurements still use r37 and predate these SDK recovery checks.
-The newer export-recovery fix passes five focused r39 ARM64 cases described
+The latest cached-export validation passes five focused r40 ARM64 cases described
 below. The other r38 cases retain their original revision and scope.
 
 | Requirement | Evidence in place | Outstanding acceptance |
@@ -51,8 +51,28 @@ retains unchanged source fingerprints; a comment clarifying caller ownership is
 the only runtime-source difference between the test and lint inputs.
 Evidence is retained in `work/paid-relay-verification/2026-09-30-export-evidence`.
 This does not accept missing or conflicting native wallet evidence, automatic
-export-history retirement or physical power-loss recovery. The r39 package
-predates this additional validation; current-target acceptance remains open.
+export-history retirement or physical power-loss recovery. The r40 result below
+accepts this validation on isolated ARM64 Linux; current-device acceptance remains open.
+
+The r40 package binds FIPS `5981944e4eb3` to the unchanged accepted SDK/CDK graph.
+Five focused Linux cases pass: three run the extracted production executable
+through command-line export recovery and both customer billing flows, one mixes
+embedded service startup with packaged command-line checks, and one exercises
+the embedded wallet against a local test mint. The latter includes conflicting
+cached-export fields and an absent original request, preserves the refused files,
+and redeems all 256 test sats after normal recovery.
+
+The offline optimized build took 434.541 seconds. The static executable is
+25,299,240 bytes, SHA-256
+`83842a52f71cf6dfc84b7790f8257d06abeb3f98a521dd5c8dbd569732b1532b`.
+The unsigned `0.1.0-r40` package is 11,570,117 bytes, SHA-256
+`f64e6787619a5a06800ea9c87a33272873f51b8355ce2e86535f93a3d17c902f`.
+Inspection verifies all eleven payload files and the extracted binary's identity.
+All 36,263 source files and the tested executables retain their verified hashes;
+all owned test containers are absent and the r39 artifacts remain unchanged.
+The 57 evidence files are indexed under `work/paid-relay-verification/2026-09-30-arm64-r40`.
+This focused run does not repeat the broader r38 suite or attribute historical
+stalls. No device installation, publication or real-money operation was performed.
 
 Wallet exports now bind the caller's ID to the SDK's existing retained send
 request. When the wallet send completed but its export file is missing, retrying
