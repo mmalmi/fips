@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.86] - 2026-09-30
+
+### Fixed
+
+- Build peer-status route information in one session-table pass, reducing
+  repeated work on busy nodes with many peers and sessions. Preserve existing
+  route selection and connection freshness checks.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.86. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.85] - 2026-09-30
 
 ### Fixed
