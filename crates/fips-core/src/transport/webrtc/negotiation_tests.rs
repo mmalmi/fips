@@ -799,3 +799,103 @@ async fn one_same_peer_offer_is_admitted_before_expensive_mdns_work() {
             .await
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_offer_during_mdns_admission_does_not_reject_the_owner() {
+    let local = crate::Identity::generate();
+    let remote = crate::Identity::generate();
+    let remote_full_key = remote.pubkey_full();
+    let remote_addr = test_webrtc_addr(&remote);
+    let (remote_xonly, _) = remote_full_key.x_only_public_key();
+    let sender = PublicKey::from_slice(&remote_xonly.serialize()).unwrap();
+    let sender_full_hex = hex::encode(remote_full_key.serialize());
+    let (packet_tx, _packet_rx) = packet_channel(1);
+    let mut transport = WebRtcTransport::new(
+        TransportId::new(108),
+        None,
+        WebRtcConfig {
+            accept_connections: Some(true),
+            max_connections: Some(1),
+            connect_timeout_ms: Some(5_000),
+            resolve_mdns_candidates: Some(true),
+            stun_servers: Some(Vec::new()),
+            ..WebRtcConfig::default()
+        },
+        packet_tx,
+        &local,
+        &NostrDiscoveryConfig::default(),
+    )
+    .unwrap();
+    let now = now_ms();
+    let signal = WebRtcSignal {
+        version: crate::transport::link_negotiation::LINK_NEGOTIATION_VERSION,
+        negotiation_id: "in-flight-admission".into(),
+        link_type: "webrtc".into(),
+        kind: LinkNegotiationKind::Offer,
+        created_at_ms: now,
+        expires_at_ms: now + 5_000,
+        payload: WebRtcSignalPayload {
+            sdp: Some(format!(
+                "v=0\r\na=candidate:1 1 UDP 1 unresolved-{}.local 5000 typ host\r\n",
+                &sender_full_hex[..16]
+            )),
+            candidates: None,
+        },
+    };
+    let runtime = transport.runtime();
+    let first = IncomingSignal {
+        signal: signal.clone(),
+        sender,
+        sender_full_hex: sender_full_hex.clone(),
+    };
+    let owner = tokio::spawn(async move { runtime.handle_incoming_signal(first).await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while transport.mdns_resolver.snapshot().active_waiters == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first offer owns admission before waiting for mDNS");
+    assert!(transport.physical.has_offer_handler(&remote_addr));
+    assert!(!owner.is_finished());
+    assert!(!transport.pending.lock().await.contains_key(&remote_addr));
+
+    let duplicate = transport
+        .runtime()
+        .handle_incoming_signal(IncomingSignal {
+            signal: signal.clone(),
+            sender,
+            sender_full_hex: sender_full_hex.clone(),
+        })
+        .await;
+    assert!(
+        duplicate.is_ok(),
+        "same-ID replay must be benign: {duplicate:?}"
+    );
+    assert!(transport.drain_link_negotiations(8).is_empty());
+    assert!(!owner.is_finished());
+
+    // A different negotiation still cannot replace an in-flight admission.
+    let mut conflicting = signal;
+    conflicting.negotiation_id = "conflicting-admission".into();
+    let rejected = transport
+        .runtime()
+        .handle_incoming_signal(IncomingSignal {
+            signal: conflicting,
+            sender,
+            sender_full_hex,
+        })
+        .await;
+    assert!(matches!(rejected, Err(TransportError::ConnectionRefused)));
+    let outbound = transport.drain_link_negotiations(8);
+    assert_eq!(outbound.len(), 1);
+    let rejection = LinkNegotiationMessage::decode(&outbound[0].payload).unwrap();
+    assert_eq!(rejection.kind, LinkNegotiationKind::Reject);
+    assert_eq!(rejection.negotiation_id, "conflicting-admission");
+
+    owner.abort();
+    assert!(owner.await.unwrap_err().is_cancelled());
+    assert!(!transport.physical.has_offer_handler(&remote_addr));
+    assert_eq!(transport.physical.snapshot().created_total, 0);
+    transport.mdns_resolver.stop().await.unwrap();
+}

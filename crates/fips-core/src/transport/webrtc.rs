@@ -59,8 +59,8 @@ use candidate_policy::{
 };
 pub use lifecycle::WebRtcResourceSnapshot;
 use lifecycle::{
-    ManagedPeer, ManagedPeerConnection, PhysicalPhase, PhysicalReservation, PhysicalReserveError,
-    PhysicalResources, WeakPhysicalResources, WebRtcSessionOwner,
+    ManagedPeer, ManagedPeerConnection, PhysicalOfferAdmission, PhysicalPhase, PhysicalReservation,
+    PhysicalReserveError, PhysicalResources, WeakPhysicalResources, WebRtcSessionOwner,
 };
 use mdns::SharedMdnsResolver;
 use signaling::FipsSignalSender;

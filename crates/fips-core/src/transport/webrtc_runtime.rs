@@ -339,6 +339,19 @@ impl WebRtcRuntime {
         ))?
         .to_string();
         let remote_addr = TransportAddr::from_string(&sender_full_hex);
+        // Admission starts before asynchronous mDNS or physical creation.
+        // A replay of that negotiation must not reject its still-running owner.
+        let _offer_admission = match self
+            .physical
+            .try_claim_offer(&remote_addr, &signal.negotiation_id)
+        {
+            PhysicalOfferAdmission::Accepted(admission) => admission,
+            PhysicalOfferAdmission::Duplicate => return Ok(()),
+            PhysicalOfferAdmission::Refused => {
+                let _ = self.send_reject(sender_xonly, signal.negotiation_id).await;
+                return Err(TransportError::ConnectionRefused);
+            }
+        };
         let mut pending = self.pending.lock().await.get(&remote_addr).map(|pending| {
             (
                 WebRtcSessionOwner::new(&pending.session_id, &pending.pc),
@@ -382,12 +395,6 @@ impl WebRtcRuntime {
                 return Err(TransportError::ConnectionRefused);
             }
         }
-        let Some(_offer_admission) = self.physical.try_claim_offer(&remote_addr) else {
-            let _ = self
-                .send_reject(sender_xonly, signal.negotiation_id)
-                .await;
-            return Err(TransportError::ConnectionRefused);
-        };
         if let Some((pending_owner, _, _)) = pending
             && !evict_pending_webrtc_session_for_offer(
                 &self.pool,

@@ -21,7 +21,7 @@ struct PhysicalSlot {
 struct PhysicalState {
     next_generation: u64,
     peers: HashMap<TransportAddr, PhysicalSlot>,
-    offer_handlers: HashSet<TransportAddr>,
+    offer_handlers: HashMap<TransportAddr, String>,
     creating: usize,
     active: usize,
     closing: usize,
@@ -107,6 +107,12 @@ pub(super) struct PhysicalCleanupGuard {
 }
 
 pub(super) struct StragglerWaitGuard(PhysicalResources);
+
+pub(super) enum PhysicalOfferAdmission {
+    Accepted(PhysicalOfferGuard),
+    Duplicate,
+    Refused,
+}
 
 pub(super) struct PhysicalOfferGuard {
     resources: PhysicalResources,
@@ -310,15 +316,26 @@ impl PhysicalResources {
             .map(|slot| slot.phase)
     }
 
-    pub(super) fn try_claim_offer(&self, addr: &TransportAddr) -> Option<PhysicalOfferGuard> {
+    pub(super) fn try_claim_offer(
+        &self,
+        addr: &TransportAddr,
+        negotiation_id: &str,
+    ) -> PhysicalOfferAdmission {
         if !self.is_accepting() {
-            return None;
+            return PhysicalOfferAdmission::Refused;
         }
         let mut state = self.0.state.lock().expect("WebRTC physical state");
-        if !state.offer_handlers.insert(addr.clone()) {
-            return None;
+        if let Some(active_id) = state.offer_handlers.get(addr) {
+            return if active_id == negotiation_id {
+                PhysicalOfferAdmission::Duplicate
+            } else {
+                PhysicalOfferAdmission::Refused
+            };
         }
-        Some(PhysicalOfferGuard {
+        state
+            .offer_handlers
+            .insert(addr.clone(), negotiation_id.to_owned());
+        PhysicalOfferAdmission::Accepted(PhysicalOfferGuard {
             resources: self.clone(),
             addr: addr.clone(),
         })
@@ -443,7 +460,7 @@ impl PhysicalResources {
             .lock()
             .expect("WebRTC physical state")
             .offer_handlers
-            .contains(addr)
+            .contains_key(addr)
     }
 
     pub(super) fn note_ice_stop_failure(&self) {
