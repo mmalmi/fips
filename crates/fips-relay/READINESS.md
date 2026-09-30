@@ -14,9 +14,10 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-SDK `6e29c7cf56c2` adds the interrupted-send authorization check described
-[below](#interrupted-send-debit-evidence). Native SDK/relay checks pass; the r37
-ARM64 package and cadence measurements predate this SDK change.
+SDK `e69538152a5e` binds interrupted-send recovery to the original
+authorization and coin sets, as described [below](#interrupted-send-debit-evidence).
+Native SDK/relay checks pass; the r37 ARM64 package and cadence measurements
+predate these SDK recovery checks.
 
 Final settlement signing now proceeds while an unrelated incoming payout owns
 the local wallet. The existing channel guard and signing-store lock serialize
@@ -755,25 +756,31 @@ That checkpoint did not configure service-level capacity.
 
 ### Interrupted-send debit evidence
 
-SDK `6e29c7cf56c2` checks a native send's saved confirmation against the original
-SDK authorization before recovery can submit another mint swap or publish its
-result. The shared request check compares amount, maximum debit, required keyset,
-fee policy, memo, spending conditions and metadata using the ordinary send options.
-The previous source accepted a confirmation whose debit limit disagreed with the
-original request. The existing interrupted-funding fixture now rejects nine
-missing/conflicting cases, retains both journals without another swap, and
-recovers the same operation after its original confirmation is restored.
+SDK `e69538152a5e` checks a native send's saved confirmation against the
+original SDK authorization before recovery can submit another mint swap or
+publish its result. It compares the original amount, maximum debit, keyset,
+fee policy, memo, spending conditions and metadata, plus the distinct swap and
+recipient-retained coin sets. Coin identity includes amount, keyset, secret and
+mint signature; order and legitimate signing-evidence changes are allowed.
+The previous implementation could spend a valid same-value coin outside the
+original authorization before a later custody check rejected it.
+
+The existing interrupted-funding fixture rejects sixteen missing/conflicting
+confirmations, preserves both journals and makes no additional mint submission.
+Substituted coins remain unspent. Restoring the original confirmation permits an
+automatic retry of the unsubmitted operation, followed by recovery after the
+successful mint reply is lost. The original source fails with the same fixture.
 
 All 430 SDK workspace tests pass (one existing opt-in soak excluded), as do strict
-all-target SDK lint and changed-source formatting. FIPS fee-bearing settlement
-and interrupted funding recovery after route expiry pass against the same
-unchanged candidate. An interrupted integration compilation is preserved separately
-and contributes no passing result. Exact sources, tested locks and results are in
-`work/paid-relay-verification/2026-09-30-confirmation-evidence`.
+all-target SDK lint and changed-source formatting. The full suite uses its
+documented serial test setting; concurrency within individual cases remains.
+FIPS fee-bearing settlement and interrupted funding recovery after route expiry
+pass against the same candidate. Exact sources, tested locks, the failing
+reproduction and passing results are retained in
+`work/paid-relay-verification/2026-09-30-confirmation-inputs`.
 No schema, dependency or protocol message changes. This preserves conflicting
 authority; it does not reconstruct missing originals or reconcile arbitrary wallet
-corruption. ARM64 package and current-device acceptance of this SDK change remain
-outstanding.
+corruption. ARM64 package and current-device acceptance remain outstanding.
 
 SDK `d0dae6f2a794` validates the original native debit before publishing an
 unfinished numbered-send result. It reuses the existing 4-MiB bounded receipt
