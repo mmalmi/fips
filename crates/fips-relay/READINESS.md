@@ -2228,9 +2228,35 @@ case also passes without optional features. Strict priced-path test lint,
 formatting and the source-size gate pass. The additional case shares the existing
 traffic and settlement helpers and their deadlines. Exact sources and results are
 retained in `work/paid-relay-verification/2026-09-30-renewal-preparation`.
-This changes only tests. A full-mesh held keyset-lookup check, physical-device
-acceptance and attribution of historical stalls remain open; the diagnostic mint
+This changes only tests. Physical-device acceptance and attribution of historical
+stalls remain open; the diagnostic mint
 rotation is not acceptance of automatic key-cache refresh during deployment.
+
+The same mesh fixture now holds mint keyset replies during the renewing buyer's
+unstarted admission. The existing mint proxy gains a simulation-only matching
+reply gate: earlier refund lookups pass, while every matching metadata reply stays
+held until release. A single paused reply was insufficient on the shared mint;
+the initial fault experiments are retained without attributing a runtime defect.
+
+Healthy-neighbor payments advance both before and after the ordinary 30-second
+metadata request timeout. The SDK releases its unstarted admission without a wallet
+send; the controller retains its original request, policy and 64-sat reservation.
+Restoring replies resumes automatic renewal without a new funding counter or
+changed authority. Final settlement and collection reconcile all 1,536 test sats.
+The elapsed-time check starts at the held reply, independently of healthy-link
+traffic duration; production timeouts and the existing fixture deadlines stay
+unchanged.
+
+All four slow-renewal cases pass with all features, and the metadata-outage case
+also passes without optional features. The full SDK workspace suite passes 430
+tests with one existing opt-in soak ignored. Its new proxy check verifies both
+concurrent replies stay held, nonmatching replies pass, and release restores
+access. Strict SDK and relay-test lint, changed-file formatting and the relay
+source-size gate pass. Evidence is retained in
+`work/paid-relay-verification/2026-09-30-renewal-keysets`.
+Only simulation support, tests and this readiness record change. This closes the
+full-mesh metadata-outage check, not historical-stall attribution, automatic mint
+key-rotation acceptance or physical-device acceptance.
 
 A separate SDK regression reproduced cross-channel signing contention during
 refund recovery: a held mint-state request prevented the real nonblocking signer
@@ -6250,9 +6276,9 @@ original Watch recovers using the same restored wallet operation and channel.
 All three final 12-payload streams complete; the four original authorized
 channels settle, and all 1,536 test sats are collected. This is one controlled
 simulation, not a hardware handover or latency guarantee. This run covers the
-final funding wait. The later renewal-preparation regression above covers the
-wallet-send wait after a forced keyset change; held keyset lookups and interrupted
-selector trials still require separate regressions.
+final funding wait. The later renewal-preparation regressions above also cover
+the wallet-send wait after a forced keyset change and a metadata outage through
+request timeout. Interrupted selector trials still require separate regressions.
 
 That checkpoint passed all 234 relay library tests and all 18 priced-path
 scenarios, including a repeat of this held-funding encounter. The payment SDK

@@ -6,8 +6,30 @@ use pending_funding::{healthy_progress, journal, read};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FundingStage {
+    Keysets,
     WalletSend,
     ChannelFunding,
+}
+
+enum HeldReply {
+    Swap(tokio::sync::oneshot::Sender<()>),
+    Metadata(tokio::sync::watch::Sender<()>),
+}
+
+impl HeldReply {
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Swap(release) => release.is_closed(),
+            Self::Metadata(release) => release.receiver_count() == 0,
+        }
+    }
+
+    fn release(self) {
+        match self {
+            Self::Swap(release) => release.send(()).expect("release replacement response"),
+            Self::Metadata(release) => drop(release),
+        }
+    }
 }
 
 async fn start() -> (Bench, MintProxy, String, String) {
@@ -43,6 +65,13 @@ async fn slow_renewal_wallet_send_preserves_healthy_credit_and_original_authorit
     tokio::time::timeout(Duration::from_secs(480), exercise(FundingStage::WalletSend))
         .await
         .expect("slow wallet preparation and settlement deadline");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_renewal_keysets_preserve_healthy_credit_and_original_authority() {
+    tokio::time::timeout(Duration::from_secs(480), exercise(FundingStage::Keysets))
+        .await
+        .expect("slow keyset preparation and settlement deadline");
 }
 
 async fn exercise(stage: FundingStage) {
@@ -96,55 +125,68 @@ async fn exercise(stage: FundingStage) {
         .cloned()
         .collect();
     let refunded_channel = previous.clone();
-    let (mut committed, release) = proxy.state.pause_matching_swap_reply(move |request| {
-        let saved = read(&store);
-        if stage == FundingStage::WalletSend {
-            let refunded: Vec<cashu::nuts::Proof> =
-                saved["settled_refunds"][&refunded_channel]["proofs_json"]
-                    .as_str()
-                    .map(|wire| serde_json::from_str(wire).unwrap())
-                    .unwrap_or_default();
-            let inputs: std::collections::BTreeSet<_> = wallet_inputs
-                .iter()
-                .copied()
-                .chain(refunded.iter().map(|proof| proof.y().unwrap()))
-                .collect();
-            // The previous channel's close precedes this admission. Match only
-            // the replacement's wallet send, before channel funding is prepared.
-            return request
-                .inputs()
-                .iter()
-                .any(|proof| inputs.contains(&proof.y().unwrap()))
-                && saved["admissions"]
+    let (mut committed, release) = if stage == FundingStage::Keysets {
+        let (reached, release) = proxy.state.pause_matching_keysets_replies(move || {
+            read(&store)["admissions"]
+                .as_object()
+                .is_some_and(|entries| {
+                    entries
+                        .values()
+                        .any(|entry| entry["funding_started"] == false)
+                })
+        });
+        (reached, HeldReply::Metadata(release))
+    } else {
+        let (reached, release) =
+            proxy.state.pause_matching_swap_reply(move |request| {
+                let saved = read(&store);
+                if stage == FundingStage::WalletSend {
+                    let refunded: Vec<cashu::nuts::Proof> = saved["settled_refunds"]
+                        [&refunded_channel]["proofs_json"]
+                        .as_str()
+                        .map(|wire| serde_json::from_str(wire).unwrap())
+                        .unwrap_or_default();
+                    let inputs: std::collections::BTreeSet<_> = wallet_inputs
+                        .iter()
+                        .copied()
+                        .chain(refunded.iter().map(|proof| proof.y().unwrap()))
+                        .collect();
+                    // The previous channel's close precedes this admission. Match only
+                    // the replacement's wallet send, before channel funding is prepared.
+                    return request
+                        .inputs()
+                        .iter()
+                        .any(|proof| inputs.contains(&proof.y().unwrap()))
+                        && saved["admissions"].as_object().into_iter().flatten().any(
+                            |(id, entry)| {
+                                entry["funding_started"] == true
+                                    && !initial.contains(&format!("r:{id}"))
+                                    && saved["openings"].get(format!("r:{id}")).is_none()
+                            },
+                        );
+                }
+                saved["openings"]
                     .as_object()
-                    .into_iter()
-                    .flatten()
-                    .any(|(id, entry)| {
-                        entry["funding_started"] == true
-                            && !initial.contains(&format!("r:{id}"))
-                            && saved["openings"].get(format!("r:{id}")).is_none()
-                    });
-        }
-        saved["openings"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .any(|(id, opening)| {
-                !initial.contains(id)
-                    && opening["swap_request_json"].as_str().is_some_and(|wire| {
-                        let original: cashu::nuts::SwapRequest =
-                            serde_json::from_str(wire).unwrap();
-                        original.outputs() == request.outputs()
+                    .unwrap()
+                    .iter()
+                    .any(|(id, opening)| {
+                        !initial.contains(id)
+                            && opening["swap_request_json"].as_str().is_some_and(|wire| {
+                                let original: cashu::nuts::SwapRequest =
+                                    serde_json::from_str(wire).unwrap();
+                                original.outputs() == request.outputs()
+                            })
                     })
-            })
-    });
-    // Stop generating renewal traffic as soon as the real replacement commits.
-    // Its response stays held while the opposite paid direction makes progress.
+            });
+        (reached, HeldReply::Swap(release))
+    };
+    // Stop renewal traffic at the selected real mint boundary. Its response
+    // stays held while the opposite paid direction makes progress.
     tokio::time::timeout(Duration::from_secs(120), async {
         for tag in 30..50 {
             tokio::select! {
                 signal = &mut committed => {
-                    signal.expect("replacement funding reached the real mint");
+                    signal.expect("renewal reached the selected mint boundary");
                     return;
                 }
                 _ = traffic(&mut bench, 2, 5, tag) => {}
@@ -152,10 +194,11 @@ async fn exercise(stage: FundingStage) {
         }
         committed
             .await
-            .expect("bounded traffic triggers replacement funding");
+            .expect("bounded traffic triggers renewal preparation");
     })
     .await
-    .expect("replacement funding observation deadline");
+    .expect("renewal preparation observation deadline");
+    let held_at = Instant::now();
 
     let held = journal(&bench, 2);
     let pending: Vec<_> = held["funding"]
@@ -181,21 +224,33 @@ async fn exercise(stage: FundingStage) {
     assert!(budget.exposure_sat <= bench.controller_policy.max_wallet_spend_sat);
     let saved = read(&pending_store);
     let opening = saved["openings"].get(format!("r:{id}"));
-    let operation = if stage == FundingStage::WalletSend {
+    let operation = if stage == FundingStage::Keysets {
+        assert!(opening.is_none(), "metadata precedes channel funding");
+        let admission = &saved["admissions"][id];
+        assert_eq!(admission["funding_started"], false);
+        assert!(
+            wallet_request_entry(&bench.wallets[2], &admission["request"])
+                .await
+                .is_none()
+        );
+        None
+    } else if stage == FundingStage::WalletSend {
         assert!(
             opening.is_none(),
             "wallet preparation precedes channel funding"
         );
         let admission = &saved["admissions"][id];
         assert_eq!(admission["funding_started"], true);
-        pending_wallet_operation(&bench.wallets[2], &admission["request"]).await
+        Some(pending_wallet_operation(&bench.wallets[2], &admission["request"]).await)
     } else {
-        opening.unwrap()["wallet_send"]["operation_id"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+        Some(
+            opening.unwrap()["wallet_send"]["operation_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        )
     };
-    assert!(!operation.is_empty());
+    assert!(operation.as_ref().is_none_or(|id| !id.is_empty()));
     assert!(!release.is_closed());
     let progressed = healthy_progress(&mut bench, &healthy).await;
     let after = journal(&bench, 2);
@@ -206,10 +261,16 @@ async fn exercise(stage: FundingStage) {
     let after_store = read(&pending_store);
     assert!(after_store["admissions"] == saved["admissions"]);
     assert!(after_store["openings"] == saved["openings"]);
-    if stage == FundingStage::WalletSend {
+    if stage == FundingStage::Keysets {
+        assert!(
+            wallet_request_entry(&bench.wallets[2], &saved["admissions"][id]["request"])
+                .await
+                .is_none()
+        );
+    } else if stage == FundingStage::WalletSend {
         assert_eq!(
             pending_wallet_operation(&bench.wallets[2], &saved["admissions"][id]["request"]).await,
-            operation,
+            *operation.as_ref().unwrap(),
         );
     }
     assert!(
@@ -220,9 +281,27 @@ async fn exercise(stage: FundingStage) {
         progressed,
         "replacement funding blocked another neighbor's payment"
     );
-    release
-        .send(())
-        .expect("release the original replacement response");
+    if stage == FundingStage::Keysets {
+        // A failed metadata lookup must release only its unstarted SDK
+        // admission. The controller keeps the original funding authority.
+        tokio::time::timeout(Duration::from_secs(40), async {
+            while read(&pending_store)["admissions"].get(id).is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("metadata request timeout releases the unstarted admission");
+        assert!(held_at.elapsed() >= Duration::from_secs(25));
+        assert!(journal(&bench, 2)["funding"][id] == *intent);
+        assert_eq!(bench.controllers[2].funding_budget().await.unwrap(), budget);
+        assert!(
+            wallet_request_entry(&bench.wallets[2], &saved["admissions"][id]["request"])
+                .await
+                .is_none()
+        );
+        assert!(healthy_progress(&mut bench, &healthy).await);
+    }
+    release.release();
 
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -242,7 +321,15 @@ async fn exercise(stage: FundingStage) {
     let restored = journal(&bench, 2);
     let mut completed = restored["funding"][id].clone();
     let funded = completed["funded"].take();
-    assert_eq!(funded["wallet_operation_id"], operation);
+    if let Some(operation) = operation {
+        assert_eq!(funded["wallet_operation_id"], operation);
+    } else {
+        assert!(
+            funded["wallet_operation_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+    }
     assert!(
         completed == *intent,
         "replacement cannot change its funding authority"
@@ -255,7 +342,7 @@ async fn exercise(stage: FundingStage) {
     collect(bench).await;
 }
 
-async fn pending_wallet_operation(wallet: &std::path::Path, request: &Value) -> String {
+async fn wallet_request_entry(wallet: &std::path::Path, request: &Value) -> Option<Value> {
     let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(wallet))
         .await
         .unwrap();
@@ -278,12 +365,17 @@ async fn pending_wallet_operation(wallet: &std::path::Path, request: &Value) -> 
                 })
         })
         .collect();
-    assert_eq!(
-        entries.len(),
-        1,
-        "exact admitted funding has one wallet operation"
+    assert!(
+        entries.len() <= 1,
+        "admitted funding has at most one wallet operation"
     );
-    let entry = entries[0];
+    entries.first().map(|entry| (*entry).clone())
+}
+
+async fn pending_wallet_operation(wallet: &std::path::Path, request: &Value) -> String {
+    let entry = wallet_request_entry(wallet, request)
+        .await
+        .expect("exact admitted funding has one wallet operation");
     assert!(
         entry["outcome"].is_null(),
         "held send must remain incomplete"
