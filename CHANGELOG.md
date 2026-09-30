@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Dispatch due Bloom updates in deadline order, with peer address as a tie-breaker.
 - Release the reusable core and endpoint libraries as 0.4.88. The identity
   library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
 

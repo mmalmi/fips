@@ -111,73 +111,72 @@ async fn test_routing_stops_after_peer_removal() {
 
 // === Bloom-filter-only transit routing (no globally injected coords) ===
 
-/// Verify that transit routers can forward using bloom filters alone.
-///
-/// In a converged network, only the SOURCE has the destination's coords
-/// in its cache (simulating a real first-contact scenario where only the
-/// source ran discovery). Transit routers have no cached coords for the
-/// destination. Routing should still work because transit routers use
-/// bloom filter hits to select next hops.
-///
-/// Chain: 0 -- 1 -- 2 -- 3. Only node 0 has node 3's coords cached.
-/// Nodes 1 and 2 route using bloom filters only.
+/// Nonroot transit routing needs destination coordinates, even with a Bloom hit.
+/// Chain: 0 -- 1 -- 2 -- 3. Direct adjacency must still work without a cache entry.
 #[tokio::test]
 async fn test_routing_bloom_only_transit() {
     let edges = vec![(0, 1), (1, 2), (2, 3)];
     let mut nodes = run_tree_test(4, &edges, false).await;
     verify_tree_convergence(&nodes);
 
+    // The current root has a valid local ancestry hint without cached coords.
+    // Reverse this same chain if necessary to test a nonroot destination.
+    let destination_was_root = nodes[3].node.node_addr() == nodes[3].node.tree_state().root();
+    eprintln!("transit cache precondition: destination_was_root={destination_was_root}");
+    if destination_was_root {
+        nodes.reverse();
+    }
     let node3_addr = *nodes[3].node.node_addr();
     let node3_coords = nodes[3].node.tree_state().my_coords().clone();
+    assert_ne!(&node3_addr, nodes[1].node.tree_state().root());
+    assert!(nodes[1].node.get_peer(&node3_addr).is_none());
+    assert!(nodes[2].node.get_peer(&node3_addr).is_some());
+    assert!(
+        nodes[1]
+            .node
+            .peers
+            .values()
+            .any(|peer| peer.may_reach(&node3_addr))
+    );
 
-    // Only inject node 3's coords at node 0 (the source).
-    // Transit nodes (1, 2) have NO coords for node 3 in their caches.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    // Convergence can legitimately cache ancestor coordinates. Establish only
+    // the destination-cache precondition; keep the real links and filters.
+    for transit in &mut nodes[1..=2] {
+        transit.node.coord_cache_mut().remove(&node3_addr);
+        assert!(
+            !transit
+                .node
+                .coord_cache()
+                .contains(&node3_addr, Node::now_ms())
+        );
+    }
     nodes[0]
         .node
         .coord_cache_mut()
-        .insert(node3_addr, node3_coords, now_ms);
-
-    // Node 0 should find a next hop (bloom filter hit at peer node 1,
-    // with coords available for tie-breaking at the source)
-    let hop = nodes[0].node.find_next_hop(&node3_addr);
-    assert!(hop.is_some(), "Node 0 should route to node 3 (has coords)");
-
-    // Node 1 should also find a next hop using bloom filter alone.
-    // But wait — find_next_hop requires dest_coords to be cached when
-    // bloom filter hits exist (loop prevention). Node 1 has no coords
-    // for node 3, so it should return None.
-    let hop_at_1 = nodes[1].node.find_next_hop(&node3_addr);
-
-    // This is the key insight: bloom-filter-only transit routing does NOT
-    // work in the current implementation because find_next_hop gates bloom
-    // filter candidate selection on having cached dest_coords. Transit
-    // routers without coords return None, which is the correct behavior
-    // (prevents loops) but means the SessionSetup must carry coords to
-    // warm transit router caches before data packets can flow.
+        .insert(node3_addr, node3_coords.clone(), Node::now_ms());
+    assert!(nodes[0].node.find_next_hop(&node3_addr).is_some());
     assert!(
-        hop_at_1.is_none(),
-        "Node 1 should NOT route without cached coords (loop prevention)"
+        nodes[1].node.find_next_hop(&node3_addr).is_none(),
+        "nonroot transit needs destination coords for loop prevention"
     );
 
-    // However, node 1 IS a direct peer of node 2, and node 2 IS a direct
-    // peer of node 3. The "direct peer" priority (step 2 in find_next_hop)
-    // would handle adjacency. Let's verify node 2 can route to its direct
-    // peer node 3.
-    let hop_at_2 = nodes[2].node.find_next_hop(&node3_addr);
-    assert!(
-        hop_at_2.is_some(),
-        "Node 2 should route to node 3 (direct peer)"
-    );
+    // Counterexample: the same transit becomes routable with genuine coords,
+    // and loses that route again when only this cache entry is removed.
+    nodes[1]
+        .node
+        .coord_cache_mut()
+        .insert(node3_addr, node3_coords, Node::now_ms());
+    assert!(nodes[1].node.find_next_hop(&node3_addr).is_some());
+    nodes[1].node.coord_cache_mut().remove(&node3_addr);
+    assert!(nodes[1].node.find_next_hop(&node3_addr).is_none());
     assert_eq!(
-        hop_at_2.unwrap().node_addr(),
-        &node3_addr,
-        "Node 2's next hop to node 3 should be node 3 itself"
+        nodes[2]
+            .node
+            .find_next_hop(&node3_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(node3_addr),
+        "direct peer routing does not require cached destination coords"
     );
-
     cleanup_nodes(&mut nodes).await;
 }
 

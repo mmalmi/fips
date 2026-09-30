@@ -158,10 +158,13 @@ impl BloomState {
     }
 
     pub(crate) fn pending_peers_due(&self, now_ms: u64) -> Vec<NodeAddr> {
-        self.pending_update_deadlines
-            .iter()
-            .take_while(|(due, _)| *due <= now_ms)
-            .map(|(_, peer)| *peer)
+        self.pending_updates
+            .keys()
+            .filter(|peer| {
+                self.pending_peer_deadline_ms(peer)
+                    .is_some_and(|due| due <= now_ms)
+            })
+            .copied()
             .collect()
     }
 
