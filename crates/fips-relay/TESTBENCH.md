@@ -91,8 +91,10 @@ printf '%s\n' '{"type":"export","id":"return-1","amount_sat":512}' |
 
 Use the actual balance rather than the example amount. Export writes a new
 private file inside the saved state directory; the result contains only its
-path, amount and operation ID. Reusing the ID with the same amount and mint
-returns the original export. If the file is missing, the SDK resumes the
+path, amount and operation ID. Reusing the ID checks the saved export against
+the original SDK result. A cached file without its original wallet request or
+with conflicting payment fields is refused and preserved for reconciliation;
+it cannot authorize a replacement send. If the file is missing, the SDK resumes the
 original wallet request and publishes its token atomically; it never substitutes
 a new send. A changed amount or mint is refused. Keep the saved wallet evidence
 and retry with the original ID, rather than inventing another ID.
@@ -103,8 +105,8 @@ limit per record. Other pending sends use the same capacity; these are upper
 bounds, not a guarantee of 128 exports. Export history has no automatic
 retirement yet. Capacity exhaustion refuses a new request before sending.
 Do not delete the journal to reclaim space. An older `.intent` reservation
-without its completed export still requires reconciliation of the original
-wallet activity: that marker cannot identify a recoverable SDK request.
+also requires reconciliation of the original wallet activity: that marker
+cannot identify a recoverable SDK request.
 
 Send `{"type":"collect","token":"ENCODED_TOKEN"}` to the mint's private
 control socket to redeem each return. `{"type":"report"}` reports reserved

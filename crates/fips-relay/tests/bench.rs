@@ -106,6 +106,54 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
     let sent = offline_wallet(&cfg, export.clone()).await.unwrap();
     let exported = Path::new(sent["path"].as_str().unwrap());
     let original = std::fs::read(exported).unwrap();
+    for (field, value) in [
+        ("operation_id", json!("different-operation")),
+        ("token", json!("different-token")),
+        ("unit", json!("usd")),
+        ("send_fee_sat", json!(1)),
+    ] {
+        let mut conflicting: Value = serde_json::from_slice(&original).unwrap();
+        conflicting[field] = value;
+        let conflicting = serde_json::to_vec(&conflicting).unwrap();
+        std::fs::write(exported, &conflicting).unwrap();
+        assert!(
+            offline_wallet(&cfg, export.clone()).await.is_err(),
+            "cached export {field} must match the original wallet result"
+        );
+        assert!(
+            std::fs::read(exported).unwrap() == conflicting,
+            "conflicting export evidence must remain untouched"
+        );
+    }
+    std::fs::write(exported, &original).unwrap();
+    let orphan = cfg.state_directory.join("exports/unrecorded.json");
+    std::fs::write(&orphan, &original).unwrap();
+    assert!(
+        offline_wallet(
+            &cfg,
+            WalletRequest::Export {
+                id: "unrecorded".into(),
+                amount_sat: 10,
+            },
+        )
+        .await
+        .is_err(),
+        "a cached export cannot authorize a new wallet request"
+    );
+    assert!(std::fs::read(&orphan).unwrap() == original);
+    let wallet =
+        cashu_service::CashuWalletService::open_file_backed(&cfg.state_directory.join("wallet"))
+            .await
+            .unwrap();
+    assert!(
+        wallet
+            .wallet_send_request("fips-export:unrecorded")
+            .await
+            .unwrap()
+            .is_none(),
+        "refusing an export must not reserve another send"
+    );
+    drop(wallet);
     // The wallet completed its send, but the caller lost the published file.
     // Retrying must recover that operation even though enough funds remain to
     // accidentally create another token. Keep the original private for comparison.

@@ -33,6 +33,27 @@ below. The other r38 cases retain their original revision and scope.
 
 ## Verified implementation and test history
 
+Cached wallet exports now compare every payment field with the SDK's retained
+send result, rather than trusting only the amount and mint. A cached file whose
+original request is absent cannot create a new wallet send. Conflicting files
+remain untouched for reconciliation; restoring the original file permits retry.
+The existing SDK journal and exclusive wallet ownership provide this check,
+without a new dependency, journal format or peer message.
+
+The strengthened existing test-mint fixture reproduces the old acceptance of a
+changed operation ID. The fix rejects changed operation, token, unit and fee,
+and a cached file without a matching request creates no send reservation.
+Missing-file recovery and redemption of all 256 test sats still pass. All three
+bench cases, all three customer cases (including both billing flows), 307 library
+tests with all features and 293 without optional features pass. Strict all-target
+lint in both profiles, formatting and source-size checks also pass. Each gate
+retains unchanged source fingerprints; a comment clarifying caller ownership is
+the only runtime-source difference between the test and lint inputs.
+Evidence is retained in `work/paid-relay-verification/2026-09-30-export-evidence`.
+This does not accept missing or conflicting native wallet evidence, automatic
+export-history retirement or physical power-loss recovery. The r39 package
+predates this additional validation; current-target acceptance remains open.
+
 Wallet exports now bind the caller's ID to the SDK's existing retained send
 request. When the wallet send completed but its export file is missing, retrying
 the same request recovers the original token and operation without another debit.

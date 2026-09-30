@@ -96,13 +96,15 @@ pub(crate) async fn export_payment(
             .create(&directory)
             .map_err(|e| e.to_string())?;
     }
-    if path.try_exists().map_err(|e| e.to_string())? {
+    let cached = if path.try_exists().map_err(|e| e.to_string())? {
         let payment: CashuSentPayment = read_json(&path)?;
         if payment.amount_sat != amount || payment.mint_url != mint {
             return Err("export id already has different terms".into());
         }
-        return Ok(export_summary(&path, &payment));
-    }
+        Some(payment)
+    } else {
+        None
+    };
     // Older reservations do not identify an SDK request. Their absence of a
     // token cannot authorize a new send under the current request namespace.
     match std::fs::symlink_metadata(directory.join(format!("{id}.intent"))) {
@@ -115,24 +117,47 @@ pub(crate) async fn export_payment(
         .map_err(|e| e.to_string())?;
     // The SDK retains the original terms, coins and result before publication.
     // Keep this identity stable: a retry must never become another wallet send.
+    let request = CashuWalletSendRequest {
+        request_id: format!("fips-export:{id}"),
+        mint_url: mint,
+        amount_sat: amount,
+        required_keyset_id: None,
+        max_total_amount_sat: None,
+        metadata: Default::default(),
+    };
+    // A published export cannot authorize a new send if its wallet evidence is lost.
+    // Callers retain exclusive wallet access throughout lookup and recovery.
+    if cached.is_some()
+        && wallet
+            .wallet_send_request(&request.request_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+    {
+        return Err(
+            "export is missing its original wallet request; reconcile before retrying".into(),
+        );
+    }
     let payment = wallet
-        .send_payment_token_for_request(CashuWalletSendRequest {
-            request_id: format!("fips-export:{id}"),
-            mint_url: mint,
-            amount_sat: amount,
-            required_keyset_id: None,
-            max_total_amount_sat: None,
-            metadata: Default::default(),
-        })
+        .send_payment_token_for_request(request)
         .await
         .map_err(|e| e.to_string())?
         .payment;
-    write_private_journal(
-        &directory,
-        &format!("{id}.json"),
-        &serde_json::to_vec(&payment).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    if let Some(cached) = cached {
+        if cached != payment {
+            return Err(
+                "export conflicts with its original wallet result; reconcile before retrying"
+                    .into(),
+            );
+        }
+    } else {
+        write_private_journal(
+            &directory,
+            &format!("{id}.json"),
+            &serde_json::to_vec(&payment).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(export_summary(&path, &payment))
 }
 
