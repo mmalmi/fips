@@ -395,7 +395,7 @@ async fn exercise(billing: BillingBasis) {
         let amount = final_wallet["balance_sat"].as_u64().unwrap();
         let export = client
             .execute(Action::Export {
-                id: "return-test".into(),
+                id: 1,
                 amount_sat: amount,
             })
             .await
@@ -408,7 +408,7 @@ async fn exercise(billing: BillingBasis) {
             export,
             client
                 .execute(Action::Export {
-                    id: "return-test".into(),
+                    id: 1,
                     amount_sat: amount
                 })
                 .await
@@ -424,6 +424,21 @@ async fn exercise(billing: BillingBasis) {
         assert_eq!(
             client.execute(Action::Balance).await.unwrap()["balance_sat"],
             0
+        );
+        let history = client
+            .execute(Action::AcknowledgeExports { through: 1 })
+            .await
+            .unwrap();
+        assert_eq!(history["requested_sat"], amount);
+        assert!(!Path::new(export["path"].as_str().unwrap()).exists());
+        assert!(
+            client
+                .execute(Action::Export {
+                    id: 1,
+                    amount_sat: amount
+                })
+                .await
+                .is_err()
         );
         for cfg in &configs {
             request(cfg, &AdminRequest::Settle).await.unwrap();

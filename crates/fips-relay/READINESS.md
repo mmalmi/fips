@@ -19,7 +19,8 @@ recovery base `e69538152a5e`, described [below](#interrupted-send-debit-evidence
 The native SDK/relay checks and five focused r41 ARM64 Linux cases below accept
 cached-export validation using this lookup. The broader seventeen-case r38 suite
 retains its original revision and scope. The cadence measurements still use r37
-and predate these recovery checks.
+and predate these recovery checks. The newer native export-retirement acceptance
+below is not included in the r41 package.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -27,11 +28,41 @@ and predate these recovery checks.
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
-| Long-running history | Route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
+| Long-running history | Acknowledged export prefixes, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Numbered wallet exports now reuse the SDK's permanent retired-number limit.
+A local custody acknowledgement releases a completed prefix only after the caller
+has retained the complete tokens elsewhere or collected them. Unfinished sends
+and conflicting cached results refuse retirement. Gross amounts and fees persist;
+old and skipped numbers cannot become new sends. The durable limit commits before
+cache deletion, and a retry or later export finishes interrupted cleanup. Unknown
+files are preserved and count against the 128-file export limit. These are local
+wallet/customer commands, with no new peer messages or SDK change.
+
+A real test-mint run completes 131 exports with a fixed 16 MiB wallet limit,
+collects all 256 test sats, retains no send requests and leaves buyer authorization
+unchanged. It checks a deletion failure after retirement commits and rejects
+retired requests while spendable funds remain. The routine fixture shares that
+workflow with three exports and additionally checks full-cache refusal, unknown
+file preservation and cleanup before a later export. Its four bench cases pass in
+8.13 seconds; the 131-export case is now explicitly opt-in.
+
+Both customer billing flows and the third customer case pass, as do 307 relay
+library tests with all features and 293 with default features, strict all-target
+lint, formatting and source-size checks. The phone saves increasing numeric IDs
+and retains interrupted requests; its two activity tests and Android lint pass.
+Pending/completed screens were inspected. A required packet-generator import was
+restored after the first Android compile failed. Native relay runtime and SDK
+sources remain identical across the long run and subsequent checks; the shared
+test fixture/documentation changed after the long run. Evidence is retained in
+`work/paid-relay-verification/2026-09-30-export-retirement`.
+This is native macOS ARM64 and simulated Android-activity acceptance. Current
+package/device checks, physical power loss and remaining native wallet stores,
+queries and aggregate resource limits remain open.
 
 Cached wallet exports compare every payment field with the SDK's retained result
 through a read-only lookup. Missing, unfinished or conflicting original results
@@ -56,7 +87,7 @@ checks pass. All nine passing gates retain identical source fingerprints.
 The failed reproduction, tested locks, dependency graph and accepted sources are
 retained in `work/paid-relay-verification/2026-09-30-cached-export-read`.
 This is native macOS ARM64 acceptance. The r41 result below adds Linux-package
-acceptance; current-device checks, export-history retirement and physical
+acceptance of that cached-export fix; current-device checks and physical
 power-loss recovery remain open.
 
 The existing command-line fixture also reproduces the unintended debit in a
@@ -109,9 +140,10 @@ Exact inputs, the failed reproduction and passing results are preserved in
 
 This fixture models a missing publication after a completed send; it does not
 kill the process during export or simulate physical power loss. Export records
-share the SDK's 128-request, 4 MiB journal and 64 KiB per-record limit. Automatic
-export-history retirement remains outstanding; capacity exhaustion retains
-financial evidence and refuses a new send. See [export recovery](TESTBENCH.md#collect-and-verify).
+share the SDK's 128-request, 4 MiB journal and 64 KiB per-record limit. At that revision, capacity exhaustion retained
+financial evidence and refused a new send. Current numbered exports add the local
+custody acknowledgements described above; a phone summary alone never releases
+the wallet evidence. See [export recovery](TESTBENCH.md#collect-and-verify).
 The r38 package predates this runtime change. The r39 result below accepts
 the export helper on isolated ARM64 Linux; current-device acceptance remains open.
 

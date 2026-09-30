@@ -1,4 +1,5 @@
 //! Offline administration of the existing relay wallet, never relay credit.
+mod history;
 
 use crate::{
     durable::{acquire_owner, write_private_journal},
@@ -23,8 +24,17 @@ use std::{
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WalletRequest {
     Balance,
-    Import { token: String },
-    Export { id: String, amount_sat: u64 },
+    Import {
+        token: String,
+    },
+    Export {
+        id: u64,
+        amount_sat: u64,
+    },
+    /// Release a prefix only after retaining its tokens elsewhere or collecting them.
+    AcknowledgeExports {
+        through: u64,
+    },
 }
 
 pub(crate) fn valid_id(id: &str) -> bool {
@@ -78,11 +88,42 @@ fn export_summary(path: &Path, payment: &CashuSentPayment) -> Value {
     json!({"path": path, "amount_sat": payment.amount_sat, "operation_id": payment.operation_id})
 }
 
+fn send_request(mint: String, request_id: String, amount_sat: u64) -> CashuWalletSendRequest {
+    CashuWalletSendRequest {
+        request_id,
+        mint_url: mint,
+        amount_sat,
+        required_keyset_id: None,
+        max_total_amount_sat: None,
+        metadata: Default::default(),
+    }
+}
+
+async fn check_cached(
+    wallet: &CashuWalletService,
+    request: CashuWalletSendRequest,
+    cached: &CashuSentPayment,
+) -> Result<(), String> {
+    // Validation cannot start or recover an unfinished wallet send.
+    let original = wallet
+        .wallet_send_result(request)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("export is missing its original wallet result; reconcile before retrying")?;
+    if *cached != original.payment {
+        return Err(
+            "export conflicts with its original wallet result; reconcile before retrying".into(),
+        );
+    }
+    Ok(())
+}
+
 pub(crate) async fn export_payment(
     root: &Path,
     mint: &str,
     id: &str,
     amount: u64,
+    request_id: String,
 ) -> Result<Value, String> {
     let path = export_path(root, id)?;
     let mint = normalize_mint_url(mint).map_err(|e| e.to_string())?;
@@ -117,28 +158,10 @@ pub(crate) async fn export_payment(
         .map_err(|e| e.to_string())?;
     // The SDK retains the original terms, coins and result before publication.
     // Keep this identity stable: a retry must never become another wallet send.
-    let request = CashuWalletSendRequest {
-        request_id: format!("fips-export:{id}"),
-        mint_url: mint,
-        amount_sat: amount,
-        required_keyset_id: None,
-        max_total_amount_sat: None,
-        metadata: Default::default(),
-    };
+    let request = send_request(mint, request_id, amount);
     if let Some(cached) = cached {
-        // Validation cannot start or recover an unfinished wallet send.
-        let original = wallet
-            .wallet_send_result(request)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("export is missing its original wallet result; reconcile before retrying")?;
-        if cached != original.payment {
-            return Err(
-                "export conflicts with its original wallet result; reconcile before retrying"
-                    .into(),
-            );
-        }
-        return Ok(export_summary(&path, &original.payment));
+        check_cached(&wallet, request, &cached).await?;
+        return Ok(export_summary(&path, &cached));
     }
     let payment = wallet
         .send_payment_token_for_request(request)
@@ -184,7 +207,18 @@ pub async fn offline_wallet(
             .map_err(|e| e.to_string())
         }
         WalletRequest::Export { id, amount_sat } => {
-            export_payment(&config.state_directory, mint, &id, amount_sat).await
+            let request_id = history::prepare_export(&config.state_directory, mint, id).await?;
+            export_payment(
+                &config.state_directory,
+                mint,
+                &id.to_string(),
+                amount_sat,
+                request_id,
+            )
+            .await
+        }
+        WalletRequest::AcknowledgeExports { through } => {
+            history::acknowledge(&config.state_directory, mint, through).await
         }
     }
 }

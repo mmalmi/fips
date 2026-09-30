@@ -32,7 +32,8 @@ pub enum CustomerCommand {
     Send { payload: String },
     Finish,
     Stop,
-    Export { id: String, amount_sat: u64 },
+    Export { id: u64, amount_sat: u64 },
+    AcknowledgeExports { through: u64 },
 }
 
 struct Running {
@@ -108,6 +109,10 @@ impl CustomerClient {
                 Balance => self.wallet(WalletRequest::Balance).await,
                 Export { id, amount_sat } => {
                     self.wallet(WalletRequest::Export { id, amount_sat }).await
+                }
+                AcknowledgeExports { through } => {
+                    self.wallet(WalletRequest::AcknowledgeExports { through })
+                        .await
                 }
                 Stop => {
                     self.stop().await?;

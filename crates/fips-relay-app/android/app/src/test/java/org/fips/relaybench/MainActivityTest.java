@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
@@ -81,7 +80,8 @@ public final class MainActivityTest {
         export.performClick();
         settle(activity);
         assertEquals(2, Wallet.exports);
-        assertEquals(Wallet.original.getString("id"), Wallet.latest.getString("id"));
+        assertEquals(1, Wallet.original.getLong("id"));
+        assertEquals(Wallet.original.getLong("id"), Wallet.latest.getLong("id"));
         assertEquals(Wallet.original.getLong("amount_sat"), Wallet.latest.getLong("amount_sat"));
         JSONObject completed = new JSONObject(new String(Files.readAllBytes(
             new File(activity.getFilesDir(), "fund-return.json").toPath()), StandardCharsets.UTF_8));
@@ -99,7 +99,7 @@ public final class MainActivityTest {
         export.performClick();
         settle(activity);
         assertEquals(3, Wallet.exports);
-        assertNotEquals(Wallet.original.getString("id"), Wallet.latest.getString("id"));
+        assertEquals(2, Wallet.latest.getLong("id"));
         assertEquals(9, Wallet.latest.getLong("amount_sat"));
         assertEquals(0, Wallet.balance);
         byte[] saved = Files.readAllBytes(summary.toPath());
@@ -120,12 +120,15 @@ public final class MainActivityTest {
         MainActivity activity = controller.get();
         settle(activity);
         tap(activity, R.string.refresh);
-        String id = "0123456789abcdef0123456789abcdef";
+        String id = "1";
         String[][] evidence = {
             {"fund-return.json", "{"},
-            {"fund-return.json", "{\"id\":\"" + id + "\",\"amount_sat\":1.5}"},
-            {"fund-return.json", "{\"id\":\"" + id + "\",\"amount_sat\":16,\"path\":\"incomplete\"}"},
-            {"fund-return.json.new", "{\"id\":\"" + id + "\",\"amount_sat\":16}"},
+            {"fund-return.json", "{\"id\":\"1\",\"amount_sat\":16}"},
+            {"fund-return.json", "{\"id\":0,\"amount_sat\":16}"},
+            {"fund-return.json", "{\"id\":9223372036854775807,\"amount_sat\":16,\"path\":\"saved\",\"operation_id\":\"saved\"}"},
+            {"fund-return.json", "{\"id\":" + id + ",\"amount_sat\":1.5}"},
+            {"fund-return.json", "{\"id\":" + id + ",\"amount_sat\":16,\"path\":\"incomplete\"}"},
+            {"fund-return.json.new", "{\"id\":" + id + ",\"amount_sat\":16}"},
             {"return-id", id}
         };
         for (String[] entry : evidence) {
@@ -214,7 +217,8 @@ public final class MainActivityTest {
                     latest = command;
                     JSONObject saved = new JSONObject(new String(Files.readAllBytes(
                         new File(new File(directory).getParentFile(), "fund-return.json").toPath()), StandardCharsets.UTF_8));
-                    if (!saved.getString("id").equals(command.getString("id"))
+                    if (!(command.get("id") instanceof Integer || command.get("id") instanceof Long)
+                        || saved.getLong("id") != command.getLong("id")
                         || saved.getLong("amount_sat") != command.getLong("amount_sat")) {
                         return new JSONObject().put("error", "Export request was not saved").toString();
                     }

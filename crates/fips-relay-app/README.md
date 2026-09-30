@@ -113,8 +113,8 @@ closed and requires operator recovery.
    forwarding attempts.
 5. Tap **Settle and stop**. The destination/router accounts also require their
    normal operator settlement and collection steps.
-6. Tap **Prepare fund return**. Before exporting, the app saves the request ID and
-   amount in private `files/fund-return.json`. After success, that file also holds
+6. Tap **Prepare fund return**. Before exporting, the app saves a positive numbered
+   request ID and amount in private `files/fund-return.json`. After success, that file also holds
    the export path and operation ID; the bearer token stays in the referenced
    wallet export file. Collect it privately, redeem it with the test mint and
    verify the combined conservation report. If interrupted, **Retry fund return**
@@ -124,7 +124,14 @@ closed and requires operator recovery.
 
 Later loaded funds can create a new return request after the previous one
 completes. The app checks the current wallet balance first and replaces only the
-summary; the wallet retains each original export and its recovery evidence.
+summary; the wallet retains each original export and its recovery evidence. The
+next return increments the saved number; malformed IDs and overflow refuse a new
+export. This fresh-profile protocol does not convert old named return requests.
+The local customer API accepts `{"type":"acknowledge_exports","through":N}` only
+while stopped. A trusted collector can use it after taking durable custody of all
+tokens through N or redeeming them. Saving a phone summary does **not** acknowledge
+custody and the activity never automatically discards those wallet records. See
+[collection and acknowledgement](../fips-relay/TESTBENCH.md#collect-and-verify).
 
 **Stop**, leaving the foreground and ordinary app restarts preserve the account.
 Wallet imports/exports run only while the relay service is stopped. A stop timeout

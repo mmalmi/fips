@@ -198,14 +198,15 @@ public final class MainActivity extends Activity {
             // A previous reply may have been saved before the displayed balance refreshed.
             balance = call(command("balance")).getLong("balance_sat");
             if (balance <= 0) return;
-            request = new JSONObject().put("id", UUID.randomUUID().toString().replace("-", ""))
+            long id = request == null ? 1 : Math.addExact(request.getLong("id"), 1);
+            request = new JSONObject().put("id", id)
                 .put("amount_sat", balance);
             returnPending = true;
             writePrivate("fund-return.json", request.toString());
         }
         JSONObject result = call(new JSONObject().put("type", "export")
-            .put("id", request.getString("id")).put("amount_sat", request.getLong("amount_sat")));
-        result.put("id", request.getString("id"));
+            .put("id", request.getLong("id")).put("amount_sat", request.getLong("amount_sat")));
+        result.put("id", request.getLong("id"));
         if (!validateReturn(result) || result.getLong("amount_sat") != request.getLong("amount_sat")) {
             throw new IllegalStateException("Fund return reply does not match the saved request");
         }
@@ -228,7 +229,8 @@ public final class MainActivity extends Activity {
     /** Validate both pending requests and completed summaries before reusing either. */
     private static boolean validateReturn(JSONObject request) throws Exception {
         Object amount = request.opt("amount_sat");
-        if (!request.getString("id").matches("[a-f0-9]{32}")
+        Object id = request.opt("id");
+        if (!(id instanceof Integer || id instanceof Long) || request.getLong("id") <= 0
             || !(amount instanceof Integer || amount instanceof Long) || request.getLong("amount_sat") <= 0) {
             throw new IllegalStateException("Fund return request is incomplete; preserve it for recovery");
         }

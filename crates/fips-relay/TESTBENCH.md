@@ -85,12 +85,15 @@ stop the relay. Query and export its remaining wallet balance:
 
 ```sh
 printf '%s\n' '{"type":"balance"}' | fips-relay wallet /absolute/path/relay.json
-printf '%s\n' '{"type":"export","id":"return-1","amount_sat":512}' |
+printf '%s\n' '{"type":"export","id":1,"amount_sat":512}' |
   fips-relay wallet /absolute/path/relay.json
 ```
 
-Use the actual balance rather than the example amount. Export writes a new
-private file inside the saved state directory; the result contains only its
+Use the actual balance rather than the example amount. Export IDs are positive
+integers: keep the number for retries and increase it for each new return. This
+is a fresh-profile protocol; old named export requests are not converted.
+Export writes a new private file inside the saved state directory; the result
+contains only its
 path, amount and operation ID. Reusing the ID checks the saved export against
 the original SDK result through a read-only lookup. A cached file without a
 completed result for its exact request, or with conflicting payment fields, is
@@ -103,8 +106,9 @@ and retry with the original ID, rather than inventing another ID.
 Export requests retain their original identity and result in the shared SDK send
 journal, which permits at most 128 retained requests and 4 MiB, with a 64 KiB
 limit per record. Other pending sends use the same capacity; these are upper
-bounds, not a guarantee of 128 exports. Export history has no automatic
-retirement yet. Capacity exhaustion refuses a new request before sending.
+bounds, not a guarantee of 128 exports. The private export directory also permits
+128 retained files; unknown files consume capacity and are preserved. Capacity
+exhaustion refuses a new request before sending.
 Do not delete the journal to reclaim space. An older `.intent` reservation
 also requires reconciliation of the original wallet activity: that marker
 cannot identify a recoverable SDK request.
@@ -117,7 +121,37 @@ actual funding, and each router's final balance includes its positive net
 forwarding margin before collection. Conservation alone is not evidence that
 traffic used the intended wireless path.
 
+After collecting every export through a given number, or durably retaining their
+complete tokens in another trusted wallet workflow, release that prefix locally:
+
+```sh
+printf '%s\n' '{"type":"acknowledge_exports","through":1}' |
+  fips-relay wallet /absolute/path/relay.json
+```
+
+This is a custody acknowledgement, not a delivery receipt or peer message.
+It permanently closes **every** number through the supplied value, including
+unused numbers. Never acknowledge tokens that exist only in the export directory.
+The SDK refuses unfinished sends, retains cumulative gross amounts and fees, and
+commits the retired-number limit before files are deleted. Conflicting cached
+results are preserved and refused. If cleanup is interrupted, retry the same
+acknowledgement; totals are not counted twice. A new export also completes cleanup
+of already acknowledged files. Old numbers cannot spend again, even with changed
+terms or missing files. Unknown files are never deleted. No spending limit resets.
+This bounds export cache and send-request retention; it does not establish bounded
+lifetime storage for every other native wallet record.
+
 ## Verification
+
+The regular `bench` suite uses three real exports to check custody, capacity,
+interrupted cleanup, cumulative costs and replay refusal. The same fixture has
+an explicit sustained case with 131 exports, exceeding the retained-request
+limit. Run it separately with the accepted dependency configuration:
+
+```sh
+cargo test -p fips-relay --all-features --test bench \
+  acknowledged_exports_outlive_the_request_limit_without_reusing_spends -- --ignored
+```
 
 ```sh
 cargo test -p fips-relay --features testbench --test bench

@@ -200,6 +200,7 @@ impl BenchMint {
                         &self.url,
                         &id,
                         amount_sat,
+                        format!("fips-export:{id}"),
                     )
                     .await;
                 }
@@ -230,7 +231,14 @@ impl BenchMint {
                 if !overview.warnings.is_empty() {
                     return Err("test funding reconciliation has warnings".into());
                 }
-                export_payment(&self.config.state_directory, &self.url, &id, amount_sat).await
+                export_payment(
+                    &self.config.state_directory,
+                    &self.url,
+                    &id,
+                    amount_sat,
+                    format!("fips-export:{id}"),
+                )
+                .await
             }
             BenchRequest::Collect { token } => {
                 checked_token(&token, &self.url)?;
