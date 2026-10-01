@@ -300,6 +300,15 @@ checks; production sources and the r48 package are unchanged. Evidence is indexe
 under `work/paid-relay-verification/2026-10-01-controller-rekey-delay`.
 All owned containers are absent; no hardware or real-money operation was performed.
 
+Three further quarter-CPU runs reuse the saved instrumented runtime and all pass.
+The setup-to-acknowledgement loss intervals are 8.004, 0.606 and 4.003 seconds.
+The traces match credit-bound and absent-contract refusals to identical envelopes
+accepted by the same relay 1.903–7.001 seconds later. The original 33-second gap
+remains unattributed. This bounded replay adds historical diagnosis; it does not
+accept the current runtime or measure an optimization. The 19-file evidence index
+is under `work/paid-relay-verification/2026-10-01-rekey-delay-replay`.
+All owned containers are absent, and the r52 package remains unchanged.
+
 The renewal test now covers an observer starting during a setup rotation's
 old-key drain. With the original observer, all eight adjacent directions already
 had authenticated replacement keys, but none was counted because its first
