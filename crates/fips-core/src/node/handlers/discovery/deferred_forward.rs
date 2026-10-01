@@ -155,8 +155,12 @@ impl Node {
             due: due.min(expiry),
             expires: expiry,
         };
-        self.deferred_discovery_forwards
-            .insert(request.target, entry);
+        if self
+            .deferred_discovery_forwards
+            .insert(request.target, entry)
+        {
+            self.recent_requests.protect(request.request_id);
+        }
     }
 
     pub(super) async fn forward_due_lookup_for_target(&mut self, target: &NodeAddr) {

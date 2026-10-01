@@ -779,6 +779,7 @@ impl Node {
             .discovery_forward_limiter
             .should_forward(from, &request.target)
         {
+            self.recent_requests.protect(request.request_id);
             return true;
         }
 
