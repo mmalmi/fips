@@ -14,8 +14,9 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The latest recorded acceptance pairs FIPS core 0.4.88 and TCP endpoint 0.2.21
-with SDK `948a93782f9b` and CDK `738e08534ce6` in the r45 Linux package below.
+The r46 package verifies the latest outgoing-control fix with FIPS core 0.4.88,
+TCP endpoint 0.2.21, SDK `948a93782f9b` and CDK `738e08534ce6`. Its focused
+customer, mixed-link and control checks supplement the broader r45 suite below.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
@@ -51,8 +52,20 @@ regression source is retained for the failing and passing runs, and all final
 gates use identical source/dependency fingerprints. Evidence is indexed under
 `work/paid-relay-verification/2026-10-01-control-outbound-isolation`.
 This fixes the reproduced outgoing-capacity starvation case without attributing
-the older intermittent delivery/payment timeouts. The change postdates r45;
-matching package and current-device acceptance remain outstanding.
+the older intermittent delivery/payment timeouts. Current-device acceptance remains
+outstanding.
+
+The unsigned r46 OpenWrt package includes that fix at FIPS `4f209a62d47e`,
+with the exact r45 dependency sources and locks. Both customer billing flows,
+mixed UDP/TCP exhaustion and restart, and explicitly configured self-signed
+WebSocket pass using the extracted optimized package on isolated ARM64 Linux.
+The outgoing-capacity regression also passes with matching embedded sources.
+The harnesses use the package's default feature selection. All eleven payload
+files and the static ARM64 executable pass inspection; source and executable
+hashes remain unchanged across the checks, and all owned containers are absent.
+Evidence is indexed under `work/paid-relay-verification/2026-10-01-arm64-r46`.
+Broader unchanged scenarios retain their earlier recorded scope. This is local,
+test-money acceptance; no installation or production-readiness claim follows.
 
 SDK `948a93782f9b` and CDK `738e08534ce6` apply a
 4 MiB stored-payload limit to ordinary exact wallet invoice reads and atomic
