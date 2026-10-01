@@ -460,3 +460,55 @@ async fn endpoint_event_queue_async_recv_closes_when_senders_drop() {
         .expect("async recv task should not panic");
     assert!(result.is_none());
 }
+
+#[test]
+fn contact_publication_trace_distinguishes_success_pressure_and_closed() {
+    let identities: [PeerIdentity; 4] =
+        std::array::from_fn(|_| PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full()));
+    let trace = crate::test_trace::Trace::new(
+        tokio::time::Instant::now(),
+        identities.map(|id| *id.node_addr()),
+        std::array::from_fn(|i| i.to_string()),
+        [b"first original", b"second original"],
+        8,
+    );
+    let (tx, mut rx) = EndpointEventSender::channel(1);
+    tx.set_contact_trace(Some((trace.clone(), 3)));
+    trace.set_active(true);
+    let before = trace.stamp();
+    tx.send(one_message_endpoint_event(
+        identities[2],
+        b"first original".to_vec(),
+    ))
+    .unwrap();
+    let published_by = trace.stamp();
+    // The same matched original is rejected while the one-message queue is full.
+    tx.send(one_message_endpoint_event(
+        identities[2],
+        b"first original".to_vec(),
+    ))
+    .unwrap();
+    let event = rx.try_recv().unwrap();
+    assert_eq!(event.messages[0].payload.as_slice(), b"first original");
+    rx.release_messages(event.message_count());
+    assert!(rx.try_recv().is_err());
+    drop(rx);
+    assert_eq!(
+        tx.send(one_message_endpoint_event(
+            identities[2],
+            b"first original".to_vec()
+        )),
+        Err(EndpointEventSendError::Closed)
+    );
+    let result = trace.finish();
+    let records = result["records"].as_array().unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["kind"], "endpoint_published");
+    assert_eq!(records[1]["kind"], "endpoint_rejected");
+    assert_eq!(records[2]["kind"], "endpoint_rejected");
+    let span = records[0]["values"].as_array().unwrap();
+    assert!(before.us <= span[2].as_u64().unwrap());
+    assert!(span[2].as_u64().unwrap() <= span[3].as_u64().unwrap());
+    assert!(span[3].as_u64().unwrap() <= published_by.us);
+    assert_eq!(result["overflowed"], false);
+}

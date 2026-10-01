@@ -220,7 +220,11 @@ pub(super) async fn observe(
     evidence.observe(nodes, ids, observation.started);
     let requests_before = observation.bridge_msg1;
     let local_rounds_before = *sequence;
+    let contact_trace = (kind == Kind::Mature)
+        .then(|| diagnostic::attach(observation, nodes, endpoints, ids, network, addresses));
+    let driver_trace = contact_trace.clone();
     let network = network.clone();
+    let trace_network = network.clone();
     let addresses = [addresses[0].to_owned(), addresses[1].to_owned()];
     let started = observation.started;
     let (opened_tx, opened_rx) = oneshot::channel();
@@ -229,10 +233,17 @@ pub(super) async fn observe(
     let driver = tokio::spawn(async move {
         let opened = mutate(&network, &addresses, started, true);
         let cut_at = tokio::time::Instant::now() + CONTACT;
+        if let Some(trace) = &driver_trace {
+            trace.record_at(trace.stamp(), "contact_opened", None, &[], [0; 8]);
+        }
         opened_tx.send(opened).unwrap();
         tokio::time::sleep_until(cut_at).await;
         let closed = mutate(&network, &addresses, started, false);
-        tokio::time::sleep(SEPARATION).await;
+        let separation = tokio::time::sleep(SEPARATION);
+        if let Some(trace) = &driver_trace {
+            trace.record_at(trace.stamp(), "contact_cut", None, &[], [0; 8]);
+        }
+        separation.await;
         closed
     });
     let opened = opened_rx.await.unwrap();
@@ -265,7 +276,10 @@ pub(super) async fn observe(
                 if let Some(payloads) = &mut observation.brief_payloads {
                     payloads.drain(endpoints, ids, observation.started);
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                let sleep = tokio::time::sleep(Duration::from_millis(5));
+                observation.trace_phase("sleep_5ms_begin");
+                sleep.await;
+                observation.trace_phase("sleep_5ms_end");
             }
             useful_retained(nodes, ids, &useful);
             evidence.observe(nodes, ids, observation.started);
@@ -276,6 +290,9 @@ pub(super) async fn observe(
     // Join on failure too: a detached cut must never affect later cleanup or
     // the ordinary sustained opening. This wait is bounded by the contact task.
     let closed = driver.await.unwrap();
+    if let Some(trace) = &contact_trace {
+        diagnostic::detach(observation, nodes, endpoints, &trace_network, trace);
+    }
     observation
         .timing
         .observe(nodes, ids, observation.started, "brief-closed");

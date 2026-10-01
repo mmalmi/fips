@@ -13,7 +13,7 @@ pub(super) fn observe_completed_turn(observe: impl FnOnce()) {
 const IDLE_MS: u64 = 10_000;
 const SPACING_MS: u64 = 2_000;
 const FLOWS: [(usize, usize); 2] = [(2, 3), (3, 2)];
-const ORIGINALS: [&[u8]; 2] = [
+pub(super) const ORIGINALS: [&[u8]; 2] = [
     b"ready brief contact: one original useful 2 to 3",
     b"ready brief contact: one original useful 3 to 2",
 ];

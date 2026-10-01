@@ -17,6 +17,8 @@ mod late;
 
 #[path = "responsive_brief.rs"]
 mod brief;
+#[path = "responsive_diagnostic.rs"]
+mod diagnostic;
 #[path = "responsive_live.rs"]
 #[cfg(unix)]
 mod live;
@@ -153,6 +155,7 @@ fn run_population_with_demand(
 }
 
 struct Observation {
+    contact_trace: Option<crate::test_trace::Trace>,
     capacity: CapacityLimits,
     post_deadline_diagnostic: bool,
     started: tokio::time::Instant,
@@ -195,6 +198,7 @@ impl Observation {
     fn new(component_phase: Duration, capacity: CapacityLimits) -> Self {
         let started = tokio::time::Instant::now();
         Self {
+            contact_trace: None,
             capacity,
             post_deadline_diagnostic: false,
             started,
@@ -264,6 +268,7 @@ impl Observation {
         ids: &[PeerIdentity],
         mut observe: impl FnMut(&mut Self),
     ) {
+        self.trace_phase("turn_begin");
         if let Some(setup) = &mut self.initial_handshake {
             setup.drive(nodes).await;
         }
@@ -274,6 +279,7 @@ impl Observation {
             original.observe(nodes, ids, self.started);
         }
         self.timing.observe(nodes, ids, self.started, "turn-entry");
+        self.trace_phase("entry_diagnostics_end");
         let due = if self.component_phase.is_zero() {
             // Preserve the original cold and repeated-control schedule/order.
             let due = tokio::time::Instant::now() >= self.next_tick[0];
@@ -301,6 +307,7 @@ impl Observation {
             for (cohort, ready) in due.into_iter().enumerate() {
                 self.cohort_ticks[cohort] += usize::from(ready);
             }
+            self.trace_phase("maintenance_begin");
             for (i, n) in nodes.iter_mut().enumerate() {
                 if !due[i % 2] {
                     continue;
@@ -325,6 +332,7 @@ impl Observation {
                 n.node.check_bloom_state().await;
                 n.node.send_pending_tree_announces().await;
             }
+            self.trace_phase("maintenance_end");
             self.incumbents(nodes, ids, None);
             for original in &mut self.queued_originals {
                 original.observe(nodes, ids, self.started);
@@ -345,6 +353,8 @@ impl Observation {
         // Production also wakes for these deadlines between periodic ticks.
         // Keep the existing policies; the manual fixture must not strand their
         // work until its next one-second maintenance observation.
+        self.trace_phase("routing_due_begin");
+        self.trace_routing(nodes, ids);
         for n in nodes.iter_mut() {
             let now = Node::now_ms();
             if n.node
@@ -368,6 +378,7 @@ impl Observation {
                 n.node.send_due_filter_announces().await;
             }
         }
+        self.trace_phase("routing_due_end");
         for destination in 0..nodes.len() {
             for _ in 0..256 {
                 let Ok(packet) = nodes[destination].packet_rx.try_recv() else {
@@ -436,12 +447,15 @@ impl Observation {
                         },
                     );
                 }
+                let diagnostic = self.trace_packet(nodes, destination, &packet);
                 crate::node::tests::spanning_tree::process_dataplane_packet_once(
                     &mut nodes[destination].node,
                     packet,
                 )
                 .await;
+                let completed = diagnostic.as_ref().map(diagnostic::PacketProbe::completed);
                 ready::observe_completed_turn(|| observe(self));
+                diagnostic::packet_finished(diagnostic, completed);
                 if let Some(response) = bridge_msg2.as_ref() {
                     let (before_ms, before) = msg2_before.unwrap();
                     let after = response_owner(&nodes[destination].node);
@@ -481,11 +495,16 @@ impl Observation {
             }
             // Production wakes for completed crypto/control work even without
             // another raw frame; reuse the existing ordinary completion turn.
+            let diagnostic = self.trace_completion(destination);
             crate::node::tests::spanning_tree::process_dataplane_completions(
                 &mut nodes[destination].node,
             )
             .await;
+            let completed = diagnostic
+                .as_ref()
+                .map(diagnostic::CompletionProbe::completed);
             ready::observe_completed_turn(|| observe(self));
+            diagnostic::completion_finished(diagnostic, completed);
             self.incumbents(nodes, ids, None);
         }
         caps_with_limits(nodes, self.capacity);

@@ -48,6 +48,11 @@ test(node::tests::bloom::test_bloom_filter_)
 '''
 test-group = 'node-synthetic'
 
+# Preserve the bounded contact trace even when the diagnostic fixture passes.
+[[profile.ci.overrides]]
+filter = 'test(=node::tests::handshake::candidates::rotation::rendezvous::responsive::brief::mature_full_rosters_deliver_originals_during_brief_contact)'
+success-output = 'immediate'
+
 # Measure strict wall-clock contact windows without competing test processes.
 [[profile.ci.overrides]]
 filter = 'test(=node::tests::spanning_tree::first_rtt::cold_contact::live_udp_authenticated_cold_contact_learns_current_declarations_in_400ms)'

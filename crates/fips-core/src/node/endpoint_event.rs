@@ -493,6 +493,8 @@ pub(crate) struct EndpointEventReceiver {
 
 #[derive(Debug, Default)]
 struct EndpointEventReady {
+    #[cfg(test)]
+    trace: StdMutex<Option<(crate::test_trace::Trace, usize)>>,
     sequence: StdMutex<u64>,
     changed: Condvar,
 }
@@ -601,12 +603,18 @@ impl EndpointEventSender {
         event: NodeEndpointEvent,
         split_on_pressure: bool,
     ) -> Result<(), EndpointEventSendError> {
+        #[cfg(test)]
+        let publication = self.publication_probe(&event);
         let count = event.message_count();
         let Some(previous) =
             try_reserve_endpoint_event_messages(&self.queued_messages, self.message_cap, count)
         else {
             if split_on_pressure && count > 1 {
                 return self.split_and_send_event(event);
+            }
+            #[cfg(test)]
+            if let Some(publication) = publication {
+                publication.finish(false);
             }
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::EndpointEventBulkDropped,
@@ -618,10 +626,18 @@ impl EndpointEventSender {
         let queued = previous.saturating_add(count);
         match self.tx.try_send(event) {
             Ok(()) => {
+                #[cfg(test)]
+                if let Some(publication) = publication {
+                    publication.finish(true);
+                }
                 self.note_send_success(previous, queued);
                 Ok(())
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
+                #[cfg(test)]
+                if let Some(publication) = publication {
+                    publication.finish(false);
+                }
                 self.note_send_rejected(count);
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::EndpointEventBulkDropped,
@@ -630,6 +646,10 @@ impl EndpointEventSender {
                 Ok(())
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
+                #[cfg(test)]
+                if let Some(publication) = publication {
+                    publication.finish(false);
+                }
                 self.note_send_rejected(count);
                 drop(event);
                 Err(EndpointEventSendError::Closed)
@@ -893,3 +913,7 @@ pub(crate) struct NodeEndpointRelayStatus {
     pub(crate) url: String,
     pub(crate) status: String,
 }
+
+#[cfg(test)]
+#[path = "endpoint_event_trace.rs"]
+mod trace;

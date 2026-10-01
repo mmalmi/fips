@@ -128,6 +128,8 @@ struct EndpointEntry {
 }
 
 struct SimNetworkInner {
+    #[cfg(test)]
+    trace: Option<crate::test_trace::Trace>,
     endpoints: BTreeMap<String, EndpointEntry>,
     links: HashMap<(String, String), SimLink>,
     directed_links: HashMap<(String, String), SimLink>,
@@ -158,10 +160,17 @@ pub struct SimNetwork {
 }
 
 impl SimNetwork {
+    #[cfg(test)]
+    pub(crate) fn set_contact_trace(&self, trace: Option<crate::test_trace::Trace>) {
+        self.inner.lock().expect("sim network lock").trace = trace;
+    }
+
     /// Create a deterministic simulated network.
     pub fn new(seed: u64) -> Self {
         Self {
             inner: Arc::new(Mutex::new(SimNetworkInner {
+                #[cfg(test)]
+                trace: None,
                 endpoints: BTreeMap::new(),
                 links: HashMap::new(),
                 directed_links: HashMap::new(),
@@ -437,7 +446,30 @@ impl SimNetwork {
             *available_at = (*available_at).max(now) + serialization;
             let delay = queue_delay + Duration::from_millis(link.latency_ms) + serialization;
 
+            #[cfg(test)]
+            let trace = inner.trace.as_ref().and_then(|trace| {
+                let edge = trace.wire_edge(source, &dest)?;
+                trace.active().then(|| {
+                    let stamp = trace.stamp();
+                    let key = crate::test_trace::wire_key(&data);
+                    trace.record_at(
+                        stamp,
+                        "wire_scheduled",
+                        Some(edge),
+                        &["header0", "header1", "bytes", "delay_us"],
+                        [key[0], key[1], key[2], delay.as_micros() as u64, 0, 0, 0, 0],
+                    );
+                    WireProbe {
+                        trace: trace.clone(),
+                        edge,
+                        key,
+                        scheduled: stamp,
+                    }
+                })
+            });
             DeliveryDecision {
+                #[cfg(test)]
+                trace,
                 endpoint,
                 source: TransportAddr::from_string(source),
                 data,
@@ -457,7 +489,47 @@ impl SimNetwork {
                 PacketBuffer::new(decision.data),
                 crate::time::now_ms(),
             );
-            if decision.endpoint.packet_tx.send(packet).is_ok() {
+            #[cfg(test)]
+            let publication_before = decision.trace.as_ref().map(|probe| probe.trace.stamp());
+            let delivered = decision.endpoint.packet_tx.send(packet).is_ok();
+            #[cfg(test)]
+            if let Some(WireProbe {
+                trace,
+                edge,
+                key,
+                scheduled,
+            }) = decision.trace
+            {
+                let after = trace.stamp();
+                trace.record_at(
+                    after,
+                    if delivered {
+                        "wire_send_ok"
+                    } else {
+                        "wire_send_closed"
+                    },
+                    Some(edge),
+                    &[
+                        "header0",
+                        "header1",
+                        "bytes",
+                        "scheduled_us",
+                        "before_us",
+                        "after_us",
+                    ],
+                    [
+                        key[0],
+                        key[1],
+                        key[2],
+                        scheduled.us,
+                        publication_before.unwrap().us,
+                        after.us,
+                        0,
+                        0,
+                    ],
+                );
+            }
+            if delivered {
                 let mut inner = network.inner.lock().expect("sim network lock");
                 inner.stats.packets_delivered += 1;
                 inner.stats.bytes_delivered += delivered_bytes;
@@ -472,6 +544,8 @@ impl SimNetwork {
 }
 
 struct DeliveryDecision {
+    #[cfg(test)]
+    trace: Option<WireProbe>,
     endpoint: EndpointEntry,
     source: TransportAddr,
     data: Vec<u8>,
@@ -722,4 +796,16 @@ fn sanitize_link(mut link: SimLink) -> SimLink {
 fn sanitize_node_behavior(mut behavior: SimNodeBehavior) -> SimNodeBehavior {
     behavior.egress_loss_probability = behavior.egress_loss_probability.clamp(0.0, 1.0);
     behavior
+}
+
+#[cfg(test)]
+#[path = "sim_contact_trace_tests.rs"]
+mod contact_trace_tests;
+
+#[cfg(test)]
+struct WireProbe {
+    trace: crate::test_trace::Trace,
+    edge: (usize, usize),
+    key: [u64; 3],
+    scheduled: crate::test_trace::Stamp,
 }
