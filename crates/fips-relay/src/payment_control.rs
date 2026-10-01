@@ -77,7 +77,8 @@ impl PaymentControl {
 
     /// The controller installs verified bindings in the durable ledger;
     /// usage and payment requests use those same immutable terms.
-    /// Keep the paired wallet directory for the receiver's complete lifetime.
+    /// Initialize the paired wallet first and retain its original directory
+    /// for the receiver's complete lifetime.
     pub fn new(
         receiver: FileSpilmanPaymentReceiver,
         wallet_directory: PathBuf,

@@ -194,6 +194,11 @@ the wallet. Admission, payout import and retirement share the controller's walle
 owner; automatic acceptance acquires it before the journal lock and releases it
 before onward purchase or peer-control waits.
 
+Payment control requires the initialized wallet's original database and seed for
+funding admission, payout import and retirement. Missing files fail recovery
+without creating a replacement wallet or losing the saved capacity policy.
+Restore the original files before retrying.
+
 Settlement imports the SDK's original closed payout through its original wallet
 allowance, including a zero payout, before saving the controller report. Retrying
 an interrupted import does not credit coins twice. Authenticated receiver retirement

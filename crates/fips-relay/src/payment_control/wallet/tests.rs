@@ -325,6 +325,35 @@ async fn funded_payments_recover_journal_writes_without_lifecycle_authority() {
     drop(wallet);
     let _owner = control.wallet.lock().await;
     control.close_at_mint(&channel.id).await.unwrap();
+    drop(db);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while cashu_service::cashu_wallet_database_files(&seller)
+            .iter()
+            .skip(1)
+            .any(|path| path.exists())
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("wallet connections close before removing original evidence");
+    let retained_wallet = root.path().join("original-payout-wallet");
+    for original in [
+        cashu_service::cashu_wallet_seed_path(&seller),
+        cashu_service::cashu_wallet_db_path(&seller),
+        cashu_service::cashu_wallet_dir(&seller),
+    ] {
+        std::fs::rename(&original, &retained_wallet).unwrap();
+        assert!(
+            control.import_wallet_payout(&channel.id).await.is_err(),
+            "payout recovery must require the original wallet"
+        );
+        assert!(
+            !original.exists(),
+            "recovery must not recreate wallet evidence"
+        );
+        std::fs::rename(&retained_wallet, &original).unwrap();
+    }
     control.import_wallet_payout(&channel.id).await.unwrap();
     control.import_wallet_payout(&channel.id).await.unwrap();
     assert_eq!(
@@ -334,6 +363,9 @@ async fn funded_payments_recover_journal_writes_without_lifecycle_authority() {
             .balance_sat,
         3
     );
+    let db = WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&seller))
+        .await
+        .unwrap();
     assert_eq!(
         db.storage_capacity().await.unwrap().unwrap().maximum_bytes,
         charged

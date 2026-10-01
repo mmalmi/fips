@@ -26,6 +26,10 @@ retry fault regression retains its native macOS ARM64 scope. Earlier package
 suites, controller runs and cadence measurements retain their recorded revisions
 and workloads. Current-device acceptance remains pending.
 
+A later receiver-wallet recovery fix requires the original database and seed
+before payment control opens a wallet. Its focused Linux and native SDK checks
+are recorded below; the r52 package does not include this later fix.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
@@ -37,6 +41,29 @@ and workloads. Current-device acceptance remains pending.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Payment control now opens only its initialized wallet, using the SDK's existing
+recovery opener exposed at `8995f435abc6`. Funding admission, payout import
+and retirement reject missing original database or seed files. Previously,
+payout recovery could create a replacement database and lose its saved capacity
+policy and custody history. Initial wallet creation remains in service setup.
+
+The unchanged regression fails on the original implementation and passes on the
+fix using optimized ARM64 Linux. It removes the seed, database and complete wallet
+directory in turn. Recovery refuses each missing original without recreating it;
+restoring the originals permits payout, duplicate import and the existing balance
+and capacity assertions. All 436 native macOS ARM64 SDK tests pass, with one
+existing opt-in storage soak excluded. Strict SDK and relay lint, formatting and
+source-size checks pass; all eight accepted gates retain matching source hashes
+within their respective build scopes.
+
+The 183-file evidence index is under
+`work/paid-relay-verification/2026-10-01-receiver-wallet-recovery`.
+The tested private dependency resolutions are preserved; commits retain their
+published lockfiles. The r52 package and prior evidence remain unchanged. Package
+acceptance for this fix, physical power-loss recovery and current-device checks
+remain pending. All owned containers are absent; no hardware, deployment or
+real-money operation was performed.
 
 The unsigned r52 OpenWrt package at FIPS `725d73d7b138` passes both customer
 billing modes, mixed UDP/TCP exhaustion and restart, and explicitly configured
