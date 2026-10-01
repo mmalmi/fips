@@ -25,6 +25,9 @@ regression and native macOS ARM64 SDK suite below. Earlier controller runs,
 package suites and cadence measurements retain their recorded source scope and
 workloads. Current-device acceptance remains pending.
 
+The newer outgoing-wallet recovery fix has focused source acceptance below;
+rebuilding and exercising a package containing it remains pending.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
@@ -36,6 +39,22 @@ workloads. Current-device acceptance remains pending.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Outgoing channel funding at `603db7280dd8`, integrated by `23f316590a8f`,
+requires the original wallet database and seed. Previously, losing either during
+live operation could initialize a replacement wallet and lose its saved capacity
+policy and custody history. The change reuses the existing SDK recovery opener.
+
+The unchanged optimized ARM64 Linux regression fails before the fix and passes
+afterward. Removing the seed, database or complete wallet directory makes funding
+fail without recreating the missing original. Restoring the files permits funding;
+a repeated call returns the same result, preserves the 16 MiB capacity limit and
+records only one debit. Native all-feature relay library/test lint, formatting and
+source-size checks pass with matching source fingerprints. The exact private test
+dependencies and original receipts remain under
+`work/paid-relay-verification/2026-10-01-purchase-wallet-recovery`; the consolidated
+receipt is `local-acceptance.json`. The commit retains the published lockfile.
+The accepted r53 package remains unchanged and does not include this newer fix.
 
 The unsigned r53 OpenWrt package at FIPS `15360c38b833` and SDK `8995f435abc6`
 passes both customer billing modes, mixed UDP/TCP exhaustion and restart, and
