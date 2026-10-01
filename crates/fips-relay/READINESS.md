@@ -14,21 +14,16 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r52 package includes bounded session retries after local send errors or
-cancellation, final handshake reply windows, the UDP receive-error fix and the
-verified wallet-recovery fixes. It uses FIPS core 0.4.88, TCP endpoint 0.2.21,
-SDK `0879189adab1` and CDK `7c250132ae57`.
+The r53 package includes the receiver-wallet recovery fix: payment control
+requires the original database and seed instead of initializing a replacement.
+It also includes bounded session retries, final handshake reply windows and the
+UDP receive-error fix. It uses FIPS core 0.4.88, TCP endpoint 0.2.21,
+SDK `8995f435abc6` and CDK `7c250132ae57`.
 
-Its customer and mixed-link checks supplement the earlier wallet-recovery results
-below. The session retry fix also has twelve focused Linux checks and fully paid
-and bounded-free controller acceptance at two and quarter CPU. The SDK funding
-retry fault regression retains its native macOS ARM64 scope. Earlier package
-suites, controller runs and cadence measurements retain their recorded revisions
-and workloads. Current-device acceptance remains pending.
-
-A later receiver-wallet recovery fix requires the original database and seed
-before payment control opens a wallet. Its focused Linux and native SDK checks
-are recorded below; the r52 package does not include this later fix.
+Its customer and mixed-link checks supplement the focused ARM64 Linux payout
+regression and native macOS ARM64 SDK suite below. Earlier controller runs,
+package suites and cadence measurements retain their recorded source scope and
+workloads. Current-device acceptance remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -41,6 +36,26 @@ are recorded below; the r52 package does not include this later fix.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+The unsigned r53 OpenWrt package at FIPS `15360c38b833` and SDK `8995f435abc6`
+passes both customer billing modes, mixed UDP/TCP exhaustion and restart, and
+explicitly configured self-signed WebSocket using its extracted optimized
+executable on isolated ARM64 Linux. All eleven payload files and static ARM64
+executables pass inspection. All eight build/runtime gates retain matching source
+fingerprints; saved executable hashes are unchanged and all owned containers
+are absent.
+
+The frozen bundle changes six files from r52: payment control, its existing
+payout regression, two documentation files and the SDK recovery opener's public
+visibility. Sources match the receiver-wallet recovery acceptance below, apart
+from its subsequent readiness update. Other dependency sources, the resolved
+graph and lockfiles are unchanged. The 60-file evidence index is under
+`work/paid-relay-verification/2026-10-01-arm64-r53`.
+
+The r52 package, saved executables and prior evidence remain unchanged. These
+checks do not attribute the historical 33-second delay or establish device
+performance, physical power-loss recovery or production readiness. No hardware,
+deployment or real-money operation was performed.
 
 Payment control now opens only its initialized wallet, using the SDK's existing
 recovery opener exposed at `8995f435abc6`. Funding admission, payout import
@@ -60,9 +75,9 @@ within their respective build scopes.
 The 183-file evidence index is under
 `work/paid-relay-verification/2026-10-01-receiver-wallet-recovery`.
 The tested private dependency resolutions are preserved; commits retain their
-published lockfiles. The r52 package and prior evidence remain unchanged. Package
-acceptance for this fix, physical power-loss recovery and current-device checks
-remain pending. All owned containers are absent; no hardware, deployment or
+published lockfiles. Matching r53 package acceptance is recorded above; the r52
+package and prior evidence remain unchanged. Physical power-loss recovery and
+current-device checks remain pending. All owned containers are absent; no hardware, deployment or
 real-money operation was performed.
 
 The unsigned r52 OpenWrt package at FIPS `725d73d7b138` passes both customer
