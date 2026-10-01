@@ -3,7 +3,9 @@ use crate::config::RoutingMode;
 use crate::discovery::local::{
     LocalInstanceAdvertisement, LocalInstanceCapability, select_capability_provider,
 };
+use futures::FutureExt;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::panic::AssertUnwindSafe;
 use std::process::Stdio;
 
 const SERVICE_CAPABILITY: &str = "hashtree.blob/1";
@@ -311,6 +313,28 @@ fn assert_loopback_udp(peer: &FipsEndpointPeer) {
     assert!(addr.ip().is_loopback());
 }
 
+async fn print_anchor_exit_snapshot(label: &str, endpoint: &FipsEndpoint) {
+    let adverts = endpoint.local_instance_advertisements().map(|mut adverts| {
+        let total = adverts.len();
+        adverts.truncate(4);
+        for advert in &mut adverts {
+            advert.capabilities.truncate(4);
+        }
+        (total, adverts)
+    });
+    eprintln!("after-anchor-exit {label} capabilities: {adverts:?}");
+    let peers = tokio::time::timeout(Duration::from_secs(2), endpoint.peers())
+        .await
+        .map(|result| {
+            result.map(|mut peers| {
+                let total = peers.len();
+                peers.truncate(4);
+                (total, peers)
+            })
+        });
+    eprintln!("after-anchor-exit {label} peers: {peers:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fixed_loopback_rendezvous_authenticates_capabilities_and_survives_anchor_exit() {
     let rendezvous_addr = reserve_rendezvous_addr();
@@ -394,7 +418,22 @@ async fn fixed_loopback_rendezvous_authenticates_capabilities_and_survives_ancho
         )
         .await
         .expect("send after rendezvous failover");
-    let request = receive_service_datagram(&provider_service, b"after-anchor-exit").await;
+    let request = match AssertUnwindSafe(receive_service_datagram(
+        &provider_service,
+        b"after-anchor-exit",
+    ))
+    .catch_unwind()
+    .await
+    {
+        Ok(request) => request,
+        Err(panic) => {
+            tokio::join!(
+                print_anchor_exit_snapshot("consumer", &consumer),
+                print_anchor_exit_snapshot("provider", &provider),
+            );
+            std::panic::resume_unwind(panic);
+        }
+    };
     assert_eq!(request.source_peer.npub(), consumer_npub);
     assert_eq!(request.data.as_slice(), b"after-anchor-exit");
 
