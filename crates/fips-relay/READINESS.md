@@ -14,11 +14,11 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The internal reclaim receipt-read fix below has native acceptance only.
-The r47 package verifies the earlier ordinary receipt-read fix with FIPS core 0.4.88,
-TCP endpoint 0.2.21, SDK `8266ebb1865f` and CDK `0defd5206d02`.
-Its customer, mixed-link and wallet checks supplement the r46 control checks
-and broader r45 suite below. The r46 CPU-pressure results retain their prior wallet sources.
+The r48 package verifies the internal reclaim receipt-read fix with FIPS core
+0.4.88, TCP endpoint 0.2.21, SDK `8266ebb1865f` and CDK `7c250132ae57`.
+Its customer, mixed-link and reclaim checks supplement the earlier r47 ordinary
+receipt-read, r46 control and broader r45 results below. The r46 CPU-pressure
+results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
@@ -55,11 +55,24 @@ the previous full SDK workspace suite retains its recorded scope.
 Evidence is indexed under
 `work/paid-relay-verification/2026-10-01-reclaim-read-bounds`.
 This is native macOS ARM64 acceptance with core 0.4.88 and TCP endpoint 0.2.21.
-The r47 package retains the preceding CDK revision and does not contain this fix.
-Matching Linux package acceptance, remaining wallet queries/workflows, aggregate
-resource pressure, current devices and physical power loss remain open. Prior
-native, r47 and r46 evidence remains unchanged. No deployment, publication or
-real-money operation was performed.
+The unsigned r48 OpenWrt package includes this fix at FIPS
+`5069c35f1e96`. Its source bundle changes ten files from r47;
+package dependency versions, resolved graph and locks remain unchanged. Both
+customer billing modes, mixed UDP/TCP exhaustion and restart, and explicitly
+configured self-signed WebSocket pass using the extracted optimized executable
+on isolated ARM64 Linux. The internal reclaim regression passes with identical
+CDK source and its recorded standalone wallet-test lock, separate from the
+package dependency graph. The relay harnesses use the package's default features.
+
+All eleven payload files and static ARM64 executables pass inspection. Source
+and executable hashes stay unchanged across the accepted checks; all owned
+containers are confirmed absent. Two earlier outer-workspace test-build failures
+are retained; CDK's own workspace supplies the required test helpers.
+Evidence is indexed under `work/paid-relay-verification/2026-10-01-arm64-r48`.
+Prior native and r47 evidence remains unchanged. Remaining wallet
+queries/workflows, aggregate resource pressure, current devices and physical
+power loss remain open. No deployment, publication or real-money operation was
+performed.
 
 SDK `8266ebb1865f` and CDK `0defd5206d02` close an
 ordinary exact receipt-read bypass of the service's existing 4 MiB budget.
