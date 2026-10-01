@@ -14,28 +14,17 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r51 package includes the final session and adjacent-link handshake reply-window
-fixes, the UDP receive-error fix, refund recovery and the original-debit check
-before funding retries. It uses FIPS core 0.4.88, TCP endpoint 0.2.21,
+The r52 package includes bounded session retries after local send errors or
+cancellation, final handshake reply windows, the UDP receive-error fix and the
+verified wallet-recovery fixes. It uses FIPS core 0.4.88, TCP endpoint 0.2.21,
 SDK `0879189adab1` and CDK `7c250132ae57`.
-Its customer and mixed-link checks supplement the r49 refund, r48 internal
-reclaim, r47 ordinary receipt-read, r46 control and broader r45 results below.
-The r46 CPU-pressure results retain their prior wallet sources.
-The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
-Earlier package suites and cadence measurements retain their recorded revisions
-and workloads; they do not establish current-device or general production readiness.
-The handshake fixes also have separate core and optimized controller acceptance.
-The later session-retry fix has fully paid and bounded-free controller acceptance
-at two and quarter CPU, as recorded below. Earlier controller results retain
-their recorded source scope. Current-device acceptance remains pending.
 
-The funding-retry regression has native SDK acceptance. The r51 package adds
-four integration checks using that SDK source; it does not rerun the native
-fault regression or the earlier controller-pressure workloads on Linux.
-
-A later core fix bounds scheduled session-handshake retries after local send
-errors and cancellation. Its focused and controller acceptance is recorded below;
-the r51 package does not include this later fix.
+Its customer and mixed-link checks supplement the earlier wallet-recovery results
+below. The session retry fix also has twelve focused Linux checks and fully paid
+and bounded-free controller acceptance at two and quarter CPU. The SDK funding
+retry fault regression retains its native macOS ARM64 scope. Earlier package
+suites, controller runs and cadence measurements retain their recorded revisions
+and workloads. Current-device acceptance remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -48,6 +37,25 @@ the r51 package does not include this later fix.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+The unsigned r52 OpenWrt package at FIPS `725d73d7b138` passes both customer
+billing modes, mixed UDP/TCP exhaustion and restart, and explicitly configured
+self-signed WebSocket using its extracted optimized executable on isolated ARM64
+Linux. All eleven payload files and static ARM64 executables pass inspection.
+All eight build/runtime gates retain matching source fingerprints; saved
+executable hashes are unchanged and all owned containers are absent.
+
+The frozen bundle changes six files from r51: the two retry implementations,
+three regression files including one new module, and this readiness document.
+All dependency sources, the resolved graph and lockfiles are unchanged. Source
+files match the accepted session-retry and controller checks below, apart from
+the subsequent readiness update. The 53-file evidence index is under
+`work/paid-relay-verification/2026-10-01-arm64-r52`.
+
+The r51 package, saved executables and prior evidence remain unchanged. These
+checks do not attribute the historical 33-second delay or establish device
+performance, physical power-loss recovery or production readiness. No hardware,
+deployment or real-money operation was performed.
 
 Scheduled session-handshake retries now count each due attempt before awaiting
 local send completion. Previously, a failed or canceled send left the retry count
@@ -70,7 +78,8 @@ deadlines and financial limits are unchanged. All twenty-one accepted gates reta
 matching source fingerprints. The 674-file evidence index is under
 `work/paid-relay-verification/2026-10-01-session-resend-budget`.
 
-The r51 package remains unchanged; package acceptance for this fix is pending.
+The r52 package acceptance is recorded above. The r51 package and earlier
+evidence remain unchanged.
 These results do not attribute the historical 33-second delay or establish device
 performance or physical power-loss recovery. All owned test containers are absent;
 no hardware, deployment or real-money operation was performed.
