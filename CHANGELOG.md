@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.89] - 2026-10-01
+
+### Fixed
+
+- Bound WebSocket reads to 16 KiB, including after a large frame, by adopting
+  the decoder's enforced read-buffer limit. Preserve message and frame limits,
+  fragmentation handling and TLS behavior.
+- Hash each lookup target once when checking peer Bloom filters, preserving
+  each filter's parameters, candidate order and routing policy.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.89. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.88] - 2026-09-30
 
 ### Fixed
