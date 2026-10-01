@@ -7,6 +7,13 @@ use tokio::time::{Duration, timeout};
 async fn udp_receive_error_backoff_yields_caps_and_recovers() {
     let mut retry = UdpReceiveErrorBackoff::default();
     let started = tokio::time::Instant::now();
+    {
+        let first_error = retry.wait_after_error();
+        tokio::pin!(first_error);
+        assert!(futures::poll!(first_error.as_mut()).is_pending());
+        assert!(futures::poll!(first_error.as_mut()).is_ready());
+    }
+    assert_eq!(started.elapsed(), Duration::ZERO);
     for expected_delay_ms in [100, 200, 400, 800, 1_000, 1_000] {
         let attempt_started = tokio::time::Instant::now();
         let wait = retry.wait_after_error();
@@ -25,16 +32,118 @@ async fn udp_receive_error_backoff_yields_caps_and_recovers() {
 
     retry.received_packet();
     let recovered = tokio::time::Instant::now();
+    {
+        let first_error = retry.wait_after_error();
+        tokio::pin!(first_error);
+        assert!(futures::poll!(first_error.as_mut()).is_pending());
+        assert!(futures::poll!(first_error.as_mut()).is_ready());
+    }
+    assert_eq!(recovered.elapsed(), Duration::ZERO);
     retry.wait_after_error().await;
     assert_eq!(recovered.elapsed(), Duration::from_millis(100));
 }
 
 #[tokio::test(start_paused = true)]
 async fn udp_receive_error_backoff_can_be_cancelled_during_shutdown() {
+    let (sleeping_tx, sleeping_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async {
-        UdpReceiveErrorBackoff::default().wait_after_error().await;
+        let mut retry = UdpReceiveErrorBackoff::default();
+        retry.wait_after_error().await;
+        let wait = retry.wait_after_error();
+        tokio::pin!(wait);
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        sleeping_tx.send(()).unwrap();
+        wait.await;
     });
-    tokio::task::yield_now().await;
+    sleeping_rx.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test(start_paused = true)]
+async fn udp_receive_loop_retries_errors_without_starving_shutdown() {
+    use std::net::{TcpListener, TcpStream, UdpSocket};
+    use std::os::fd::OwnedFd;
+
+    const CHILD: &str = "FIPS_TEST_UDP_RECV_LOOP_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // A busy-loop regression also starves async timeouts, so bound it
+        // from outside the executor and verify the exact test ran.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "transport::udp::tests::udp_receive_loop_retries_errors_without_starving_shutdown",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("receive loop starved the executor");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child did not run the receive-loop regression: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        return;
+    }
+
+    // A pending TCP connection stays readable but fails every datagram read.
+    // Drive the production receive loop without invalidating an owned fd.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let socket = UdpRawSocket::adopt_on_interface(
+        UdpSocket::from(OwnedFd::from(listener)),
+        65536,
+        65536,
+        None,
+    )
+    .unwrap()
+    .into_async()
+    .unwrap();
+    let stats = Arc::new(UdpStats::new());
+    let (tx, _rx) = packet_channel(1);
+    let task = tokio::spawn(udp_receive_loop(
+        socket,
+        TransportId::new(1),
+        tx,
+        1280,
+        stats.clone(),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while stats.snapshot().recv_errors < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "first error did not retry without sleeping"
+        );
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(stats.snapshot().recv_errors, 2);
+    for (index, delay_ms) in [100, 200, 400, 800, 1000, 1000].into_iter().enumerate() {
+        tokio::time::advance(Duration::from_millis(delay_ms - 1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(stats.snapshot().recv_errors, index as u64 + 2);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(stats.snapshot().recv_errors, index as u64 + 3);
+    }
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 }

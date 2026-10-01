@@ -244,6 +244,11 @@ For internet-connected nodes, UDP/IP is the recommended transport:
 Raw IP with a custom protocol number would be simpler but is blocked by most
 NAT devices and firewalls, limiting deployment to networks without NAT.
 
+The UDP receive task yields after an isolated socket error and retries without
+sleeping. Consecutive errors use an exponential delay starting at 100 ms on
+the second error and capped at one second. A successful receive resets the
+delay, so an ICMP error from an offline peer does not stall incoming traffic.
+
 ### Socket Buffer Sizing
 
 The default Linux UDP receive buffer (`net.core.rmem_default`, typically

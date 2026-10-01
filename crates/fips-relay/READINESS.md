@@ -77,6 +77,16 @@ Discarded attempts are retained. The r49 package and its evidence are unchanged,
 all owned test containers are absent, and no hardware, deployment or real-money
 operation was performed.
 
+Integration also preserves the concurrent UDP receive-error fix at `ac72b4d19555`.
+Eight focused ARM64 Linux checks pass on the combined source: both final-reply
+regressions, zero retries, failed-send and packet-loss cleanup, and UDP error
+delay, reset and cancellation behavior through the production receive loop.
+Strict core library/test lint, formatting and source-size checks pass. All twelve
+gates retain identical source fingerprints; the 134-file evidence index is under
+`work/paid-relay-verification/2026-10-01-fmp-udp-integration`.
+The earlier four controller results retain their source scope before this UDP
+integration. Updated package and current-device acceptance remain pending.
+
 Established end-to-end session handshakes now retain their state through the final
 attempt's existing reply window. Previously, maintenance discarded rekey state as
 soon as the retry count reached its limit, potentially before the last encrypted
