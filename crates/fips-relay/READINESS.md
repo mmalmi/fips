@@ -35,6 +35,30 @@ and workloads; they do not establish current-device or general production readin
 
 ## Verified implementation and test history
 
+Five-node controller pressure checks against the r48 runtime reproduce delivery
+and startup timeouts in an unoptimized ARM64 Linux harness. All five nodes and
+their disposable mint share a single CPU quota. Renewal and route change pass
+with two CPUs. With a quarter CPU, renewal exceeds its 30-second delivery budget;
+separate route-change runs time out during initial acceptance or lose an ordinary
+packet before the topology change. In the captured startup failure, all six
+neighbor purchases are accepted and funding is complete by the later diagnostic
+snapshot. In the ordinary-delivery failure, the first forwarding relay refuses
+the packet; the precise admission condition is not yet established. These are
+stress counterexamples, not device throughput measurements or attribution of
+every historical timeout.
+
+The existing controller tests now record bounded session and funding snapshots
+after initial acceptance failure, each observed session's initial key/drain state,
+and the final epochs on a failed rotation assertion. Final two-CPU renewal and
+route-change checks, strict all-feature controller lint, formatting and source
+limits pass. A proposed wait for simultaneous drain completion failed under CPU
+pressure and was discarded. Original deadlines, traffic, financial limits and
+rotation assertions remain unchanged; the earlier missing-rotation observation
+also remains unresolved. Evidence, including failed attempts, is retained under
+`work/paid-relay-verification/2026-10-01-controller-rekey-observation` and the
+original `2026-10-01-controller-pressure-r48` directory. Production sources and
+the r48 package are unchanged; no hardware or real-money operation was performed.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.

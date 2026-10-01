@@ -24,6 +24,31 @@ pub(super) fn require_paid(access: RouteAccess) -> Purchase {
     purchase
 }
 
+pub(super) async fn accepted_routes(
+    root: &std::path::Path,
+    peers: &[PeerIdentity],
+    controllers: &[Arc<Controller>],
+    forward: Result<Purchase, String>,
+    reverse: Result<Purchase, String>,
+) -> (Purchase, Purchase) {
+    if forward.is_err() || reverse.is_err() {
+        #[cfg(unix)]
+        delivery_snapshot(root, peers).await;
+        eprintln!(
+            "route acceptance recovery stages={}",
+            serde_json::json!(recovery_stages(root))
+        );
+    }
+    (
+        forward.unwrap_or_else(|e| {
+            panic!("forward acceptance: {e}; errors={:?}", errors(controllers))
+        }),
+        reverse.unwrap_or_else(|e| {
+            panic!("reverse acceptance: {e}; errors={:?}", errors(controllers))
+        }),
+    )
+}
+
 pub(super) fn policy(mint_url: &str, automatic_renewal: bool, capacity: u64) -> ControllerPolicy {
     ControllerPolicy {
         mint_url: mint_url.to_string(),

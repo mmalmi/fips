@@ -126,11 +126,15 @@ impl RekeyObservation {
                 if session["is_draining"] == false {
                     ready.insert((node, remote));
                 }
-                if let Some(previous) = self.epochs.insert((node, remote), epoch)
-                    && epoch.0 > previous.0
-                    && epoch.1 != previous.1
-                {
-                    self.rotated.insert((node, remote));
+                match self.epochs.insert((node, remote), epoch) {
+                    Some(previous) if epoch.0 > previous.0 && epoch.1 != previous.1 => {
+                        self.rotated.insert((node, remote));
+                    }
+                    None => eprintln!(
+                        "rekey baseline node={node} remote={remote} epoch={epoch:?} draining={}",
+                        session["is_draining"]
+                    ),
+                    _ => {}
                 }
             }
         }
@@ -162,7 +166,8 @@ impl RekeyObservation {
         }
         assert_eq!(
             self.rotated, self.expected,
-            "every payment and routed data session must change its authenticated key epoch"
+            "every payment and routed data session must change its authenticated key epoch; final epochs={:?}",
+            self.epochs
         );
         let adjacent = self
             .rotated

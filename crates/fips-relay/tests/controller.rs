@@ -308,10 +308,7 @@ async fn controller_scenario(
             async { if automatic_routes { controllers[4].watch_route(peers[0], 3072).await.map(require_paid) }
                 else { controllers[4].buy_route(peers[0]).await } }
         );
-        let (a, b) = (
-            a.unwrap_or_else(|e| panic!("forward acceptance: {e}; errors={:?}", errors(&controllers))),
-            b.unwrap_or_else(|e| panic!("reverse acceptance: {e}; errors={:?}", errors(&controllers))),
-        );
+        let (a, b) = controller_support::accepted_routes(root.path(), &peers, &controllers, a, b).await;
         assert_eq!(a.contract.price.msat, 3_072);
         assert_eq!(b.contract.price.msat, 3_072);
         assert_eq!(
