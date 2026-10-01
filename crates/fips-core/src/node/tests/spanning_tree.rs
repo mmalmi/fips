@@ -46,7 +46,7 @@ pub(super) use topology::{
 };
 
 use drain::drain_initial_handshake_burst;
-use fixture::complete_direct_handshake;
+pub(super) use fixture::complete_direct_handshake;
 use repair::repair_missing_edge_handshakes;
 use snapshot::print_tree_snapshot;
 use synthetic::{drain_synthetic_packets_until_idle, has_synthetic_pending_work};
