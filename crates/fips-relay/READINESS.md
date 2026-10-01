@@ -14,17 +14,19 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r49 package includes the refund-recovery fix with FIPS core 0.4.88,
-TCP endpoint 0.2.21, SDK `832e48c639f7` and CDK `7c250132ae57`.
-Its customer, mixed-link and refund checks supplement the earlier r48 internal
+The r50 package includes the final session and adjacent-link handshake reply-window
+fixes, the UDP receive-error fix and the prior refund-recovery fix. It uses FIPS
+core 0.4.88, TCP endpoint 0.2.21, SDK `832e48c639f7` and CDK `7c250132ae57`.
+Its customer and mixed-link checks supplement the r49 refund, r48 internal
 reclaim, r47 ordinary receipt-read, r46 control and broader r45 results below.
 The r46 CPU-pressure results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
-The final session and adjacent-link handshake reply-window fixes below have
-separate core and optimized controller acceptance. They are not yet included in
-r49; updated packaged-daemon and current-device acceptance remain pending.
+The handshake fixes also have separate core and optimized controller acceptance.
+Those controller checks retain their source scope before the concurrent UDP fix;
+r50's packaged-daemon checks cover the integrated source. Current-device acceptance
+remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -37,6 +39,22 @@ r49; updated packaged-daemon and current-device acceptance remain pending.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+The unsigned r50 OpenWrt package at FIPS `1f53191a6a22` passes both customer billing
+modes, mixed UDP/TCP exhaustion and restart, and explicitly configured self-signed
+WebSocket using its extracted optimized executable on isolated ARM64 Linux.
+All eleven package payload files and the static ARM64 executables pass inspection.
+All eight build/runtime gates retain matching source fingerprints, executable
+hashes remain unchanged, and all owned containers are absent.
+
+The bundle changes thirteen files from r49. Dependency sources, resolved graph and
+locks are unchanged; the prior native and embedded refund acceptance retains its
+original source scope. Only the customer and service test executables were built.
+The 52-file evidence index is under `work/paid-relay-verification/2026-10-01-arm64-r50`.
+Prior package and handshake evidence remains unchanged. This does not attribute
+the historical 33-second delay or establish hardware performance, physical
+power-loss recovery or production readiness. No hardware, deployment or real-money
+operation was performed.
 
 Adjacent-link (FMP) rekey now retains its final reply window during both retry
 cleanup and heartbeat liveness checks. Previously, either path could discard the
@@ -85,7 +103,8 @@ Strict core library/test lint, formatting and source-size checks pass. All twelv
 gates retain identical source fingerprints; the 134-file evidence index is under
 `work/paid-relay-verification/2026-10-01-fmp-udp-integration`.
 The earlier four controller results retain their source scope before this UDP
-integration. Updated package and current-device acceptance remain pending.
+integration. The r50 package checks above cover the combined source; current-device
+acceptance remains pending.
 
 Established end-to-end session handshakes now retain their state through the final
 attempt's existing reply window. Previously, maintenance discarded rekey state as
