@@ -15,8 +15,13 @@ mod preparation;
 const FLOWS: [(usize, usize); 6] = [(0, 2), (0, 1), (1, 0), (1, 2), (2, 1), (2, 0)];
 
 #[test]
-fn source_fmp_rekey_preserves_direct_and_routed_fsp_payloads() {
+fn final_fmp_rekey_retry_preserves_direct_and_routed_fsp_payloads() {
     run(Scenario::Rekey);
+}
+
+#[test]
+fn final_fmp_rekey_reply_survives_link_dead_heartbeat() {
+    run(Scenario::FinalReplyHeartbeat);
 }
 
 #[test]
@@ -43,6 +48,7 @@ fn cutover_defers_refresh_until_reciprocal_new_epoch_authentication() {
 enum Scenario {
     Control,
     Rekey,
+    FinalReplyHeartbeat,
     Overlap,
     Dns,
     Cutover,
@@ -390,7 +396,18 @@ async fn exercise(nodes: &mut [TestNode], scenario: Scenario) {
         if dns {
             preparation::queue_hostname_refresh(nodes, &identities).await;
         }
+        let final_retry = matches!(scenario, Scenario::Rekey | Scenario::FinalReplyHeartbeat);
+        if final_retry {
+            let rate_limit = &mut nodes[0].node.config.node.rate_limit;
+            rate_limit.handshake_max_resends = 1;
+            rate_limit.handshake_resend_interval_ms = 1_000;
+            rate_limit.handshake_resend_backoff = 2.0;
+        }
         assert!(nodes[0].node.initiate_rekey(&addresses[1]).await);
+        if final_retry {
+            preparation::hold_final_retry_reply(nodes, scenario == Scenario::FinalReplyHeartbeat)
+                .await;
+        }
         if dns {
             preparation::resolve_during_rekey(nodes, &identities).await;
         }

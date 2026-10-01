@@ -38,16 +38,17 @@ struct LinkDeadPeerPlan {
 }
 
 impl crate::node::PeerLifecycleRegistry {
-    fn plan_link_heartbeat_tick<D, F, G>(
+    fn plan_link_heartbeat_tick<R, D, F, G>(
         &self,
         now: Instant,
         heartbeat_interval: Duration,
-        max_rekey_resends: u32,
+        mut rekey_active_for: R,
         mut defer_dead_peer_removal_for: D,
         mut effective_dead_timeout_for: F,
         mut quiet_for: G,
     ) -> LinkHeartbeatPlan
     where
+        R: FnMut(&ActivePeer) -> bool,
         D: FnMut(&NodeAddr, &ActivePeer) -> bool,
         F: FnMut(&NodeAddr) -> Duration,
         G: FnMut(&NodeAddr, &ActivePeer) -> Duration,
@@ -65,10 +66,7 @@ impl crate::node::PeerLifecycleRegistry {
             } else {
                 false
             };
-            let rekey_active = peer.rekey_in_progress()
-                && peer.rekey_msg1().is_some()
-                && peer.rekey_msg1_resend_count() < max_rekey_resends;
-            let is_dead = peer.is_healthy() && time_dead && !rekey_active;
+            let is_dead = peer.is_healthy() && time_dead && !rekey_active_for(peer);
             if is_dead {
                 let dead_peer = LinkDeadPeerPlan {
                     node_addr: *node_addr,
@@ -619,7 +617,13 @@ impl Node {
         let heartbeat_plan = self.peers.plan_link_heartbeat_tick(
             now,
             heartbeat_interval,
-            max_rekey_resends,
+            |peer| {
+                peer.rekey_in_progress()
+                    && peer.rekey_msg1().is_some()
+                    // The final attempt retains its existing reply window.
+                    && (peer.rekey_msg1_resend_count() < max_rekey_resends
+                        || !peer.needs_msg1_resend(now_ms))
+            },
             |node_addr, _| {
                 defer_dead_peer_removal && !definitively_closed_paths.contains(node_addr)
             },

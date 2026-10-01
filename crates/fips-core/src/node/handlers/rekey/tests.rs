@@ -588,7 +588,9 @@ fn peer_lifecycle_registry_owns_exhausted_fmp_rekey_msg1_cleanup() {
     peers.insert(*missing_target_peer.node_addr(), missing_target);
     peers.insert(*idle_peer.node_addr(), idle);
 
-    let mut exhausted = peers.exhaust_fmp_rekey_msg1_resend_budgets(1);
+    let early = peers.exhaust_fmp_rekey_msg1_resend_budgets(8_999, 1);
+    assert!(early.is_empty());
+    let mut exhausted = peers.exhaust_fmp_rekey_msg1_resend_budgets(9_000, 1);
     exhausted.sort_by_key(|item| item.node_addr);
     let mut expected = vec![
         ExhaustedFmpRekeyMsg1 {
@@ -609,9 +611,7 @@ fn peer_lifecycle_registry_owns_exhausted_fmp_rekey_msg1_cleanup() {
     expected.sort_by_key(|item| item.node_addr);
     assert_eq!(exhausted, expected);
 
-    let exhausted = peers
-        .get(exhausted_peer.node_addr())
-        .expect("exhausted peer should remain");
+    let exhausted = peers.get(exhausted_peer.node_addr()).unwrap();
     assert!(!exhausted.rekey_in_progress());
     assert!(exhausted.rekey_msg1().is_none());
     assert_eq!(exhausted.rekey_our_index(), None);

@@ -22,9 +22,9 @@ The r46 CPU-pressure results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
-The final session-handshake reply-window fix below has separate core and optimized
-controller acceptance. It is not yet included in r49; updated packaged-daemon and
-current-device acceptance remain pending.
+The final session and adjacent-link handshake reply-window fixes below have
+separate core and optimized controller acceptance. They are not yet included in
+r49; updated packaged-daemon and current-device acceptance remain pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -37,6 +37,45 @@ current-device acceptance remain pending.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Adjacent-link (FMP) rekey now retains its final reply window during both retry
+cleanup and heartbeat liveness checks. Previously, either path could discard the
+handshake or remove the peer immediately after the final allowed resend. Both now
+honor the existing resend deadline. No retries, configuration options, protocol
+messages or financial limits are added.
+
+Two real UDP regressions drop the first Msg1 and hold the final retry's encrypted
+Msg2 across maintenance. Both corrected fixtures fail on the original runtime and
+pass unchanged with the fix. After releasing the reply, key cutover and all six
+direct/routed application directions succeed. The heartbeat fixture consumes its
+ordinary old-key heartbeat before observing the first new-key application frame;
+the earlier observation failure remains in the evidence.
+
+Fifteen focused ARM64 Linux core cases pass, including zero retries, backoff,
+failed sends, packet loss, exact cleanup deadlines, crossed connections and
+overlapping refreshes. With the default backoff and a controlled retry clock,
+five resends occur at 1, 3, 7, 15 and 31 seconds; the final reply window ends at
+63 seconds. Expiry releases pending dispatch, indexes, links and forwarding state
+without another resend. Strict core library/test lint with simulated transport,
+workspace formatting and the existing source-size limits pass.
+
+Four optimized five-node controller checks pass: fully paid and bounded-free
+handshakes at both two CPUs and a quarter CPU, shared with their test mint.
+All ten session directions rotate; forced handshake loss recovers; fresh delivery,
+automatic payments, renewal, settlement, lifetime limits and final balances pass.
+The traffic, deadlines and financial limits are unchanged. These results do not
+attribute the historical 33-second delay or establish hardware performance.
+
+All 24 accepted gates retain identical candidate fingerprints. The 827-file
+evidence index is under `work/paid-relay-verification/2026-10-01-fmp-final-reply`.
+A cached baseline executable was excluded before runtime acceptance. Disk
+exhaustion interrupted a build-result write after compilation succeeded; removing
+inactive build caches allowed a successful check with unchanged executables.
+A subsequent launch failed before creating a container while the local engine's
+socket was unavailable; the four checks passed after it became available.
+Discarded attempts are retained. The r49 package and its evidence are unchanged,
+all owned test containers are absent, and no hardware, deployment or real-money
+operation was performed.
 
 Established end-to-end session handshakes now retain their state through the final
 attempt's existing reply window. Previously, maintenance discarded rekey state as
@@ -57,7 +96,8 @@ All ten session directions rotate; forced handshake loss recovers; fresh deliver
 automatic payments, renewal, settlement, lifetime limits and final balances pass.
 Traffic, deadlines and financial limits are unchanged. These checks do not measure
 hardware throughput or attribute the historical 33-second delay below.
-Adjacent-link (FMP) retry cleanup is unchanged and needs its own review/regression.
+That acceptance did not cover adjacent-link (FMP) retry cleanup; the later
+acceptance above covers it.
 All fifteen accepted gates preserve matching candidate fingerprints. The 185-file
 evidence index is under
 `work/paid-relay-verification/2026-10-01-handshake-final-retry`.

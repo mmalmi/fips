@@ -65,7 +65,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
     let initial = peers.plan_link_heartbeat_tick(
         now,
         Duration::from_secs(10),
-        3,
+        |_| false,
         |_, _| false,
         |_| Duration::from_secs(30),
         |_, peer| link_mmp_quiet_for(now, peer),
@@ -78,7 +78,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
     let quiet = peers.plan_link_heartbeat_tick(
         now + Duration::from_secs(5),
         Duration::from_secs(10),
-        3,
+        |_| false,
         |_, _| false,
         |_| Duration::from_secs(30),
         |_, peer| link_mmp_quiet_for(now + Duration::from_secs(5), peer),
@@ -89,7 +89,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
     let due = peers.plan_link_heartbeat_tick(
         now + Duration::from_secs(10),
         Duration::from_secs(10),
-        3,
+        |_| false,
         |_, _| false,
         |_| Duration::from_secs(30),
         |_, peer| link_mmp_quiet_for(now + Duration::from_secs(10), peer),
@@ -111,7 +111,7 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
     let dead = peers.plan_link_heartbeat_tick(
         now,
         Duration::from_secs(10),
-        3,
+        |_| false,
         |_, _| false,
         |_| Duration::from_secs(30),
         |_, _| Duration::from_secs(31),
@@ -129,7 +129,7 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
     let deferred = peers.plan_link_heartbeat_tick(
         now,
         Duration::from_secs(10),
-        3,
+        |_| false,
         |_, _| true,
         |_| Duration::from_secs(30),
         |_, _| Duration::from_secs(31),
@@ -147,7 +147,7 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
     let transport_closed = peers.plan_link_heartbeat_tick(
         now,
         Duration::from_secs(10),
-        3,
+        |_| false,
         |_, _| false,
         |_| Duration::from_secs(30),
         |_, _| Duration::from_secs(31),

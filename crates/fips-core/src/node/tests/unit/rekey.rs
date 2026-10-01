@@ -117,7 +117,7 @@ async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
 }
 
 #[tokio::test]
-async fn fmp_rekey_msg1_resend_budget_zero_abandons_immediately() {
+async fn fmp_rekey_msg1_zero_retries_retains_initial_reply_window() {
     let mut node = make_node();
     node.config.node.rate_limit.handshake_max_resends = 0;
 
@@ -141,11 +141,18 @@ async fn fmp_rekey_msg1_resend_budget_zero_abandons_immediately() {
         old_their_index,
     );
     arm_test_fmp_rekey(&mut active_peer, rekey_our_index);
+    active_peer.set_msg1_next_resend(1_000);
     node.pending_outbound
         .insert((transport_id, rekey_our_index.as_u32()), link_id);
     node.peers.insert(peer_node_addr, active_peer);
 
-    node.resend_pending_rekeys(0).await;
+    node.resend_pending_rekeys(999).await;
+    assert!(node.get_peer(&peer_node_addr).unwrap().rekey_in_progress());
+    assert!(
+        node.pending_outbound
+            .contains_key(&(transport_id, rekey_our_index.as_u32()))
+    );
+    node.resend_pending_rekeys(1_000).await;
 
     let active_peer = node.get_peer(&peer_node_addr).unwrap();
     assert!(!active_peer.rekey_in_progress());
@@ -375,7 +382,8 @@ async fn assert_fmp_rekey_retry_budget(stop_before_retry: bool) {
     let rekey_index = peer.rekey_our_index().unwrap();
     let msg1_bytes = peer.rekey_msg1().unwrap().len() as u64;
     // Only the retry clock is controlled; handshake and sends use production code.
-    peer.set_msg1_next_resend(1_000);
+    let retry_start = Node::now_ms();
+    peer.set_msg1_next_resend(retry_start + 1_000);
     assert!(
         node.pending_outbound
             .contains_key(&(transport_id, rekey_index.as_u32()))
@@ -393,6 +401,7 @@ async fn assert_fmp_rekey_retry_budget(stop_before_retry: bool) {
         .into_iter()
         .enumerate()
     {
+        let due_ms = retry_start + due_ms;
         // Expired liveness still permits the original, finite rekey grace.
         node.check_link_heartbeats().await;
         assert!(node.get_peer(&peer_addr).unwrap().is_healthy());
@@ -412,9 +421,32 @@ async fn assert_fmp_rekey_retry_budget(stop_before_retry: bool) {
         assert_eq!(after.bytes_sent - before.bytes_sent, sent * msg1_bytes);
     }
 
-    // Production checks liveness before retransmissions on the next tick.
+    // Production checks liveness before retransmissions. The final attempt
+    // still owns its reply window even if the local transport has failed.
+    node.check_link_heartbeats().await;
+    assert!(node.get_peer(&peer_addr).unwrap().is_healthy());
+    let before_cleanup = stats.snapshot();
+    node.resend_pending_rekeys(retry_start + 62_999).await;
+    let peer = node.get_peer(&peer_addr).unwrap();
+    assert!(peer.rekey_in_progress());
+    assert_eq!(peer.rekey_msg1_resend_count(), 5);
+    assert_eq!(node.index_allocator.count(), 2);
+    assert!(!peer.needs_msg1_resend(retry_start + 62_999));
+    assert!(peer.needs_msg1_resend(retry_start + 63_000));
+    if stop_before_retry {
+        // Expire the controlled retry clock before the heartbeat tick.
+        node.get_peer_mut(&peer_addr)
+            .unwrap()
+            .set_msg1_next_resend(Node::now_ms());
+    } else {
+        node.resend_pending_rekeys(retry_start + 63_000).await;
+        assert!(!node.get_peer(&peer_addr).unwrap().rekey_in_progress());
+        assert!(node.pending_outbound.is_empty());
+        assert_eq!(node.index_allocator.count(), 1);
+    }
     node.check_link_heartbeats().await;
     assert!(node.get_peer(&peer_addr).is_none());
+    assert_eq!(stats.snapshot().packets_sent, before_cleanup.packets_sent);
     assert!(node.pending_outbound.is_empty());
     assert_eq!(node.index_allocator.count(), 0);
     assert!(
@@ -429,7 +461,7 @@ async fn assert_fmp_rekey_retry_budget(stop_before_retry: bool) {
     );
     assert!(!node.links.contains_key(&link_id));
     assert!(!node.dataplane_has_fmp_owner(&peer_addr));
-    node.resend_pending_rekeys(63_000).await;
+    node.resend_pending_rekeys(retry_start + 63_000).await;
     if !stop_before_retry {
         node.transports
             .get_mut(&transport_id)

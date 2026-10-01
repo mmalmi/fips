@@ -478,3 +478,116 @@ pub(super) async fn refresh_after_confirmation(
         "direct cutover refresh: pre-confirmation suppressed; authenticated drain Msg1/Msg2 dispatched; six fresh payloads delivered exactly once"
     );
 }
+
+// Drop the actual first Msg1, then hold the final retry's real encrypted reply
+// while maintenance runs. The subsequent fixture verifies all six data flows.
+pub(super) async fn hold_final_retry_reply(nodes: &mut [TestNode], heartbeat: bool) {
+    let peer_addr = *nodes[1].node.node_addr();
+    let rekey_index = nodes[0]
+        .node
+        .get_peer(&peer_addr)
+        .unwrap()
+        .rekey_our_index()
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let packet = nodes[1].packet_rx.recv().await.unwrap();
+            if Msg1Header::parse(packet.data.as_slice())
+                .is_some_and(|header| header.sender_idx == rekey_index)
+            {
+                break packet;
+            }
+            process_dataplane_packet(&mut nodes[1], packet).await;
+        }
+    })
+    .await
+    .expect("initial rekey Msg1 must reach the UDP receiver before being dropped");
+    let retry_at = Node::now_ms() + 1_000;
+    nodes[0].node.resend_pending_rekeys(retry_at).await;
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_peer(&peer_addr)
+            .unwrap()
+            .rekey_msg1_resend_count(),
+        1
+    );
+    let retry = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let packet = nodes[1].packet_rx.recv().await.unwrap();
+            if Msg1Header::parse(packet.data.as_slice())
+                .is_some_and(|header| header.sender_idx == rekey_index)
+            {
+                break packet;
+            }
+            process_dataplane_packet(&mut nodes[1], packet).await;
+        }
+    })
+    .await
+    .expect("final rekey Msg1 must be sent through the UDP transport");
+    assert_eq!(retry.data.as_slice(), first.data.as_slice());
+    process_dataplane_packet(&mut nodes[1], retry).await;
+    let reply = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let packet = nodes[0].packet_rx.recv().await.unwrap();
+            if Msg2Header::parse(packet.data.as_slice())
+                .is_some_and(|header| header.receiver_idx == rekey_index)
+            {
+                break packet;
+            }
+            process_dataplane_packet(&mut nodes[0], packet).await;
+        }
+    })
+    .await
+    .expect("final rekey retry must produce an actual encrypted reply");
+    if heartbeat {
+        let dead_timeout = nodes[0].node.config.node.link_dead_timeout_secs;
+        nodes[0].node.config.node.link_dead_timeout_secs = 0;
+        nodes[0].node.check_link_heartbeats().await;
+        nodes[0].node.config.node.link_dead_timeout_secs = dead_timeout;
+    } else {
+        nodes[0].node.resend_pending_rekeys(retry_at + 1_999).await;
+    }
+    assert!(
+        nodes[0]
+            .node
+            .get_peer(&peer_addr)
+            .is_some_and(|peer| { peer.is_healthy() && peer.rekey_in_progress() }),
+        "final FMP retry must retain the peer and handshake through its reply window"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .pending_outbound
+            .contains_key(&(nodes[0].transport_id, rekey_index.as_u32(),))
+    );
+    if heartbeat {
+        // Consume the timer's actual old-key heartbeat before observing the
+        // first new-key application frame later in the shared fixture.
+        let heartbeat = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let packet = nodes[1].packet_rx.recv().await.unwrap();
+                if packet.remote_addr == nodes[0].addr {
+                    break packet;
+                }
+                process_dataplane_packet(&mut nodes[1], packet).await;
+            }
+        })
+        .await
+        .expect("heartbeat maintenance must emit its ordinary old-key carrier");
+        let header = FmpWireHeader::parse_encrypted(heartbeat.data.as_slice()).unwrap();
+        let peer = nodes[1].node.get_peer(nodes[0].node.node_addr()).unwrap();
+        assert_eq!(header.receiver_idx(), peer.our_index().unwrap().as_u32());
+        assert_eq!(header.flags() & FLAG_KEY_EPOCH != 0, peer.current_k_bit());
+        process_dataplane_packet(&mut nodes[1], heartbeat).await;
+    }
+    process_dataplane_packet(&mut nodes[0], reply).await;
+    assert!(
+        nodes[0]
+            .node
+            .get_peer(&peer_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_some()
+    );
+}
