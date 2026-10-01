@@ -2754,28 +2754,29 @@ The original failed comparison and exact repair evidence are preserved in
 is unchanged. This fixes the reproduced fixture race without attributing the
 historical delivery, payment or renewal stalls.
 
-A diagnostic build from the r35 source bundle also passes all three existing
-cases at two CPUs and a quarter CPU, with payment-stage measurements enabled.
-The same static ARM64 executable and harness run in six fresh, unprivileged,
-network-isolated Linux containers with local test money. Workloads, deadlines,
-funding and settlement assertions are unchanged. Container elapsed times are:
+A diagnostic build from the r46 source bundle passes the three existing
+TLS recovery, seeded reconnect and repeated bidirectional renewal cases at
+two CPUs and a quarter CPU, with payment-stage measurements enabled. The same
+optimized static ARM64 executable and matching harness run in six fresh,
+unprivileged, network-isolated Linux containers with local test money. Workloads,
+deadlines, funding and settlement assertions are unchanged. Elapsed times are:
 
 | Case | Two CPUs | Quarter CPU |
 | --- | --- | --- |
-| TLS interruption and recovery | 64.958 s | 69.646 s |
-| Seeded connection break, silent loss and restart | 110.701 s | 120.877 s |
-| Repeated bidirectional channel renewal | 42.462 s | 49.025 s |
+| TLS interruption and recovery | 65.122 s | 68.651 s |
+| Seeded connection break, silent loss and restart | 116.996 s | 121.879 s |
+| Repeated bidirectional channel renewal | 42.489 s | 48.567 s |
 
-The quarter-CPU cases record 150, 212 and 189 throttled periods respectively;
-none records a memory-limit event. These limits and counters cover the entire
-test network, mint and harness, not an individual router or payment cost per byte.
-All 36,083 source files, both diagnostic executables, the r35 package and its 88
-indexed evidence files remain unchanged. No watchdog expires and all owned
-containers are removed. Exact inputs, results and cgroup observations are retained
-in `work/paid-relay-verification/2026-09-30-payment-pressure-r35`.
-No historical stall reproduces in this finite comparison, so their causes remain
-unattributed. This does not replace current-device, physical power-loss or sustained
-performance acceptance, and introduces no production code or policy change.
+The quarter-CPU cases record 62, 152, 137 throttled periods respectively;
+none records a memory-limit event. These counters cover the whole test
+network, including mint and harness; they are not per-byte router costs.
+All source and executable hashes remain unchanged, and all owned containers
+are absent. Exact inputs, results and cgroup observations are retained in
+`work/paid-relay-verification/2026-10-01-payment-pressure-r46`.
+The earlier r35 comparison remains preserved in its original evidence directory.
+No historical stall reproduces in this finite comparison, so its cause remains
+unattributed. Current-device, physical power-loss and sustained performance
+acceptance remain outstanding. Runtime code and payment policies are unchanged.
 
 The shared slow-renewal mesh fixture now also holds the renewing buyer's wallet-send
 reply before channel funding exists. The fixture rotates zero-fee mint keys and
