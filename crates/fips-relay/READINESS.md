@@ -14,6 +14,7 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+The newer receipt-read fix below has native acceptance only.
 The r46 package verifies the latest outgoing-control fix with FIPS core 0.4.88,
 TCP endpoint 0.2.21, SDK `948a93782f9b` and CDK `738e08534ce6`. Its focused
 customer, mixed-link and control checks supplement the broader r45 suite below.
@@ -32,6 +33,33 @@ and workloads; they do not establish current-device or general production readin
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+SDK `8266ebb1865f` and CDK `0defd5206d02` close an
+ordinary exact receipt-read bypass of the service's existing 4 MiB budget.
+Every wallet open enables the shared indexed reader, covering native completion
+and terminal reclaim lookups before SQL projection or decoding. Oversized evidence is
+retained, and restoring its original fields permits the same receipt to be read.
+Unconfigured native databases retain their prior behavior. The change adds no
+peer message, database schema or smaller admission limit.
+
+The SDK regression fails on the original runtime and passes with the fix;
+its only intervening test change is formatting. Native coverage includes reopened
+readers, absent IDs, unrelated oversized rows and readable restored receipts.
+All 186 SQLite wallet tests, 435 SDK workspace tests, 307 relay library tests and
+seven routine wallet/customer cases pass. The existing opt-in storage test and
+131-export soak remain excluded. Strict native SQL, SDK and relay lint, formatting
+and source-size checks pass. All nine final gates preserve identical sources and
+dependency fingerprints; standalone SQLite retains its separate native lock.
+
+Evidence is indexed under
+`work/paid-relay-verification/2026-10-01-receipt-read-bounds`.
+This is native macOS ARM64 acceptance with core 0.4.88 and TCP endpoint 0.2.21.
+The r46 package and CPU-pressure results retain their prior wallet sources and
+unchanged evidence. A matching Linux package, remaining wallet queries/workflows,
+aggregate resource pressure, current devices and physical power loss remain open.
+In particular, the internal original-receipt reload during reclaim storage
+reservation is separate from these ordinary exact lookups and remains unbounded.
+No deployment, publication or real-money operation was performed.
 
 Outgoing control now limits one neighbor to eight of the existing sixteen
 queued/active request slots. Previously, one neighbor could occupy its four TCP

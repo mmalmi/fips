@@ -401,15 +401,22 @@ Initial swap admission and native send/receive/reclaim completion admission also
 reuse the bounded proof comparator. Completion sizing uses the verified originals
 already held by the caller instead of another decoded batch. Duplicate identities,
 operation ownership, full typed equality and atomic storage claims remain checked.
-This does not bound the initial operation or receipt reads used during admission.
+Ordinary service limits also cover initial exact operation and receipt lookups;
+the comparator alone does not bound other admission queries.
 
 Ordinary exact wallet invoice reads and atomic quote comparisons share a 4 MiB
 stored-payload limit before SQL projection and decoding. New quote writes and
 atomic issue/melt admission reserve later scalar/owner growth and the existing
 64 KiB payment-proof maximum within that limit. Refusal preserves original quotes
 and recovery owners; restoring the original evidence permits retry. Unconfigured
-native stores keep their previous behavior. Legacy bulk quote APIs, other receipt
-reads, aggregate memory and physical storage remain separate bounds.
+native stores keep their previous behavior. Ordinary exact receipt reads also
+use the existing 4 MiB indexed batch query on every service open, including native
+completion and reclaim recovery. Oversized stored fields fail before projection
+or decoding and retain the original evidence. This closes a read-policy bypass
+without adding a smaller admission limit. Legacy bulk quote APIs, remaining wallet
+queries, aggregate memory and physical storage remain separate bounds. The internal
+original-receipt reload during reclaim storage reservation is not covered by this
+ordinary exact-read policy.
 
 Output preparation also bounds cached mint-key comparison before SQL driver
 projection and decoding. The ceiling is 4 MiB or the larger caller-owned original,
