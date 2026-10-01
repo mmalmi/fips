@@ -1,6 +1,9 @@
 //! One lost child update must not leave its parent on an obsolete root.
 use super::*;
 
+#[path = "stale_child_completion.rs"]
+mod completion;
+
 // Observe a copy of the real encrypted frame to select the one loss. The live
 // Noise session, replay window, and counters are not advanced by this observer.
 fn announced_tree(
@@ -251,6 +254,7 @@ async fn first_rtt_preserves_pending_and_later_reports_repair_without_periodic_r
         let mut subsequent_report_rearmed = false;
         let mut repeated_child_declaration = false;
         let started = Instant::now();
+        let deadline = started + Duration::from_secs(3);
         let mut next_tick = started + Duration::from_secs(1);
 
         // The root retains the child's real original self-root declaration.
@@ -285,7 +289,9 @@ async fn first_rtt_preserves_pending_and_later_reports_repair_without_periodic_r
                     let was_pending = nodes[1].node.get_peer(&root).unwrap().has_pending_tree_announce();
                     let child_sent_before = nodes[1].node.stats().tree.sent;
                     let stale_before = nodes[0].node.stats().tree.stale;
-                    process_dataplane_packet(&mut nodes[index], packet).await;
+                    assert!(completion::process_frame(
+                        &mut nodes[index].node, remote, packet, deadline,
+                    ).await, "selected encrypted frame must finish its ordinary handler before the repair deadline");
                     if index == 1 && !was_measured && nodes[1].node.dataplane_fmp_has_srtt(&root) {
                         assert!(nodes[1].node.tree_state().peer_declaration(&root).is_none());
                         assert_eq!(*nodes[1].node.tree_state().root(), child);
