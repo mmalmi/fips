@@ -26,7 +26,7 @@ and workloads; they do not establish current-device or general production readin
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, the intermittent delivery and renewal/payment timeouts described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -34,6 +34,28 @@ and workloads; they do not establish current-device or general production readin
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+The renewal test now covers an observer starting during a setup rotation's
+old-key drain. With the original observer, all eight adjacent directions already
+had authenticated replacement keys, but none was counted because its first
+snapshot arrived after cutover. The corrected observer recognizes that drain
+state. Arming routed handshake loss still clears prior observations and requires
+a subsequent rotation and fresh delivery; all ten directions remain required.
+The same regression workload passes with the correction in both optimized and
+development ARM64 Linux builds at two CPUs. Strict all-feature controller lint,
+formatting and source limits pass. Production code and financial limits are
+unchanged.
+
+A corrected optimized quarter-CPU run completes delivery but fails the routed
+handshake-loss assertion: setup is dropped at 6.779 seconds and acknowledgement
+at 39.780 seconds, with no finish phase observed by the assertion. Final financial
+collection is not reached. This separate delay remains open; the prior quarter-CPU
+pass does not establish acceptance of this timing case. The original missing-key
+failure lacked initial snapshots, so the controlled regression establishes the
+observation gap without retroactively attributing every earlier failure.
+Evidence, including an initial executable-permission failure, is retained under
+`work/paid-relay-verification/2026-10-01-controller-rekey-boundary`.
+All owned containers are absent. No hardware or real-money operation was performed.
 
 Five-node controller pressure checks against the r48 runtime reproduce delivery
 and startup timeouts in an unoptimized ARM64 Linux harness. All five nodes and
@@ -66,9 +88,9 @@ and the final epochs on a failed rotation assertion. Final two-CPU renewal and
 route-change checks, strict all-feature controller lint, formatting and source
 limits pass. A proposed wait for simultaneous drain completion failed under CPU
 pressure and was discarded. Original deadlines, traffic, financial limits and
-rotation assertions remain unchanged; the earlier missing-rotation observation
-and other historical timeouts remain unresolved despite the clean optimized
-passes above. Earlier evidence, including failed attempts, is retained under
+rotation assertions remained unchanged in that investigation; the observation
+gap is addressed above, while other historical timeouts remain unresolved.
+Earlier evidence, including failed attempts, is retained under
 `work/paid-relay-verification/2026-10-01-controller-rekey-observation` and the
 original `2026-10-01-controller-pressure-r48` directory. Production sources and
 the r48 package are unchanged; no hardware or real-money operation was performed.

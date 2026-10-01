@@ -34,6 +34,32 @@ impl RekeyObservation {
             return None;
         }
         let last = peers.len() - 1;
+        // Begin during a setup rotation's drain window, covering an observer
+        // that arrives after cutover. Routed fault recovery still starts below.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let reply =
+                    native_query(root, last, serde_json::json!({"command": "show_sessions"}))
+                        .await
+                        .expect("setup session snapshot");
+                assert_eq!(reply["status"], "ok");
+                if reply["data"]["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|session| {
+                        session["npub"] == peers[last - 1].npub()
+                            && session["state"] == "established"
+                            && session["is_draining"] == true
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("setup payment session must rotate before late observation");
         let expected = (0..last)
             .flat_map(|node| [(node, node + 1), (node + 1, node)])
             .chain([(0, last), (last, 0)])
@@ -130,10 +156,17 @@ impl RekeyObservation {
                     Some(previous) if epoch.0 > previous.0 && epoch.1 != previous.1 => {
                         self.rotated.insert((node, remote));
                     }
-                    None => eprintln!(
-                        "rekey baseline node={node} remote={remote} epoch={epoch:?} draining={}",
-                        session["is_draining"]
-                    ),
+                    None => {
+                        // Fresh fixture nodes retain an old key only after an
+                        // authenticated cutover, even if setup preceded us.
+                        if session["is_draining"] == true {
+                            self.rotated.insert((node, remote));
+                        }
+                        eprintln!(
+                            "rekey baseline node={node} remote={remote} epoch={epoch:?} draining={}",
+                            session["is_draining"]
+                        );
+                    }
                     _ => {}
                 }
             }
