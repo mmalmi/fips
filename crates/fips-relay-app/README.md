@@ -54,12 +54,13 @@ ambiguous Wi-Fi selection. Losing that network retains the failed binding; it
 does not deliberately fall back to cellular. Verify this on the actual customer
 subnet and with packet captures; merely launching the app is not a network test.
 
-The destination must explicitly fund and authorize its **return direction** to
-the customer's identity. FIPS session replies also traverse the paid path, so a
-forward purchase alone does not establish an end-to-end session. This follows
-sender-pays: the destination authorizes its own spending. A customer profile does
-not authorize spending by another endpoint. In the bench, the operator adds a
-bounded destination route watch after reading the new customer's public identity.
+For the bidirectional bench workload, the destination explicitly funds and
+authorizes its **return direction** to the customer's identity. The operator adds
+a bounded destination route watch after reading the customer's public identity;
+a customer profile cannot authorize another endpoint's spending.
+With `forwarding_data`, [bounded session establishment](../fips-relay/BOOTSTRAP.md)
+can succeed without that reverse purchase. The purchase is still needed for the
+bench's paid return payloads; see [customer admission and return policies](../fips-relay/CUSTOMER-ENTRY.md#admission-and-financial-boundaries).
 
 ## Immutable setup profile
 
