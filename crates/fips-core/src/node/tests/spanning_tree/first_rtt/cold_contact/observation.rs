@@ -1,29 +1,39 @@
 //! Control-reply timing only; packet arrival is never a readiness observation.
-use super::{Bench, Duration, Instant, Value};
+use super::{AtomicBool, Bench, Duration, Instant, Ordering, Value};
 use std::future::Future;
 
 pub(super) struct Sample {
     pub started: Instant,
     pub completed: Instant,
+    contact_up: bool,
     pub states: [Value; 2],
 }
 
 impl Sample {
-    pub async fn read(
+    pub async fn read<M: Future<Output = [Value; 2]>>(
         left: impl Future<Output = Value>,
         right: impl Future<Output = Value>,
+        contact: &AtomicBool,
+        metadata: impl FnOnce([Value; 2]) -> M,
     ) -> Self {
         let started = Instant::now();
         let (left, right) = tokio::join!(left, right);
+        let completed = Instant::now();
+        let contact_up = contact.load(Ordering::Acquire);
+        // Metadata still validates every observation, but its later reply is
+        // not the time at which both actual tree snapshots were received.
+        let states = metadata([left, right]).await;
         Self {
             started,
-            completed: Instant::now(),
-            states: [left, right],
+            completed,
+            contact_up,
+            states,
         }
     }
 
     pub fn learned_before(&self, root: &str, deadline: Instant) -> bool {
-        self.completed < deadline
+        self.contact_up
+            && self.completed < deadline
             && self.states[1]["root"] == root
             && Bench::learned(&self.states[0], &self.states[1])
             && Bench::learned(&self.states[1], &self.states[0])
@@ -66,15 +76,24 @@ async fn stale_left_slow_right_requeries_before_contact_deadline() {
     let open = Instant::now();
     let deadline = open + Duration::from_millis(400);
     let states = learned_states();
+    let contact = AtomicBool::new(true);
     let mut stale = states[0].clone();
     stale["remote_sequence"] = Value::Null;
     tokio::time::advance(Duration::from_millis(377)).await;
-    let first = Sample::read(reply_after(stale, 1), reply_after(states[1].clone(), 15)).await;
+    let first = Sample::read(
+        reply_after(stale, 1),
+        reply_after(states[1].clone(), 15),
+        &contact,
+        std::future::ready,
+    )
+    .await;
     assert!(!first.learned_before("root", deadline));
     first.wait_next(deadline).await;
     let second = Sample::read(
         reply_after(states[0].clone(), 2),
         reply_after(states[1].clone(), 2),
+        &contact,
+        std::future::ready,
     )
     .await;
     assert!(
@@ -89,9 +108,73 @@ async fn matching_reply_completed_at_contact_deadline_is_rejected() {
     let open = Instant::now();
     let deadline = open + Duration::from_millis(400);
     let [left, right] = learned_states();
+    let contact = AtomicBool::new(true);
     tokio::time::advance(Duration::from_millis(400)).await;
-    let sample = Sample::read(std::future::ready(left), std::future::ready(right)).await;
+    let sample = Sample::read(
+        std::future::ready(left),
+        std::future::ready(right),
+        &contact,
+        std::future::ready,
+    )
+    .await;
     assert_eq!(sample.completed, deadline);
     assert!(!sample.learned_before("root", deadline));
     assert!(sample.learned_before("root", deadline + Duration::from_millis(1)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn learned_tree_replies_before_cut_survive_later_peer_metadata() {
+    let open = Instant::now();
+    let deadline = open + Duration::from_millis(400);
+    let contact = AtomicBool::new(true);
+    let [left, right] = learned_states();
+    tokio::time::advance(Duration::from_millis(390)).await;
+    let sample = Sample::read(
+        reply_after(left, 2),
+        reply_after(right, 2),
+        &contact,
+        |states| async {
+            tokio::time::sleep_until(deadline).await;
+            contact.store(false, Ordering::Release);
+            tokio::time::sleep(Duration::from_millis(12)).await;
+            states
+        },
+    )
+    .await;
+    assert!(Instant::now() > deadline);
+    assert!(!contact.load(Ordering::Acquire));
+    assert!(
+        sample.learned_before("root", deadline),
+        "metadata delayed a learned tree observation"
+    );
+    assert_eq!(
+        sample.completed.duration_since(open),
+        Duration::from_millis(392)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn matching_tree_replies_after_cut_or_with_closed_contact_are_rejected() {
+    let open = Instant::now();
+    let deadline = open + Duration::from_millis(400);
+    let contact = AtomicBool::new(false);
+    let [left, right] = learned_states();
+    let sample = Sample::read(
+        std::future::ready(left.clone()),
+        std::future::ready(right.clone()),
+        &contact,
+        std::future::ready,
+    )
+    .await;
+    assert!(!sample.learned_before("root", deadline));
+    contact.store(true, Ordering::Release);
+    tokio::time::advance(Duration::from_millis(401)).await;
+    let sample = Sample::read(
+        std::future::ready(left),
+        std::future::ready(right),
+        &contact,
+        std::future::ready,
+    )
+    .await;
+    assert!(!sample.learned_before("root", deadline));
 }

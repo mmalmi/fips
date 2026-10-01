@@ -657,6 +657,8 @@ fn test_endpoint_data_batch_flushes_after_session_establishment() {
                 observed.push(message.payload.as_slice().to_vec());
             }
         }
+        // Native FSP datagrams may arrive out of order.
+        observed.sort_unstable();
         assert_eq!(observed, vec![b"ping-1".to_vec(), b"ping-2".to_vec()]);
 
         cleanup_nodes(&mut nodes).await;

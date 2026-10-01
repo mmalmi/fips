@@ -291,8 +291,20 @@ async fn observe_contact(bench: &mut Bench, trace: &Arc<Mutex<Trace>>, phase_ms:
     // Observe the deferred flight after the cut too, without reopening it or
     // counting post-cut repair as short-contact success.
     while open.elapsed() < Duration::from_millis(950) {
-        // Query both nodes together; each state() still reads tree before peers.
-        let sample = Sample::read(bench.state(0, 2), bench.state(2, 0)).await;
+        let sample = Sample::read(
+            bench.tree_snapshot(0, 2),
+            bench.tree_snapshot(2, 0),
+            &bench.contact.up,
+            |[left, right]| async {
+                let (left, right) = tokio::join!(
+                    bench.with_peer_metadata(0, 2, left),
+                    bench.with_peer_metadata(2, 0, right),
+                );
+                [left, right]
+            },
+        )
+        .await;
+        let metadata_completed_us = open.elapsed().as_micros() as u64;
         let before = sample.started.duration_since(open).as_micros() as u64;
         let after = sample.completed.duration_since(open).as_micros() as u64;
         let states = &sample.states;
@@ -313,12 +325,13 @@ async fn observe_contact(bench: &mut Bench, trace: &Arc<Mutex<Trace>>, phase_ms:
         if state != previous {
             let mut trace = trace.lock().unwrap();
             let absolute_us = trace.start.elapsed().as_micros() as u64;
-            trace.state(
-                json!({"at_us": absolute_us, "contact_query_us": [before, after], "peers": state}),
-            );
+            // The query interval ends with both tree replies, before metadata.
+            trace.state(json!({"at_us": absolute_us, "contact_query_us": [before, after],
+                "contact_query_kind": "tree_replies", "metadata_completed_us": metadata_completed_us,
+                "peers": state}));
             previous = state;
         }
-        if bench.contact.up.load(Ordering::Acquire) && sample.learned_before(&root, deadline) {
+        if sample.learned_before(&root, deadline) {
             ready_at.get_or_insert(after);
         }
         sample.wait_next(deadline).await;

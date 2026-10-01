@@ -255,7 +255,13 @@ pub(super) async fn observe(
                     .await;
                 next_round = tokio::time::Instant::now() + Duration::from_millis(500);
             } else {
-                observation.turn(nodes, ids).await;
+                observation
+                    .turn_with_endpoint_observer(nodes, ids, |observation| {
+                        if let Some(payloads) = &mut observation.brief_payloads {
+                            payloads.drain(endpoints, ids, observation.started);
+                        }
+                    })
+                    .await;
                 if let Some(payloads) = &mut observation.brief_payloads {
                     payloads.drain(endpoints, ids, observation.started);
                 }

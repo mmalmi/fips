@@ -22,6 +22,8 @@ mod brief;
 mod live;
 #[path = "responsive_brief_ready.rs"]
 mod ready;
+#[path = "responsive_round.rs"]
+mod rounds;
 #[path = "responsive_setup.rs"]
 mod setup;
 
@@ -253,6 +255,15 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
+        self.turn_with_endpoint_observer(nodes, ids, |_| {}).await;
+    }
+
+    async fn turn_with_endpoint_observer(
+        &mut self,
+        nodes: &mut [TestNode],
+        ids: &[PeerIdentity],
+        mut observe: impl FnMut(&mut Self),
+    ) {
         if let Some(setup) = &mut self.initial_handshake {
             setup.drive(nodes).await;
         }
@@ -430,6 +441,7 @@ impl Observation {
                     packet,
                 )
                 .await;
+                ready::observe_completed_turn(|| observe(self));
                 if let Some(response) = bridge_msg2.as_ref() {
                     let (before_ms, before) = msg2_before.unwrap();
                     let after = response_owner(&nodes[destination].node);
@@ -473,6 +485,7 @@ impl Observation {
                 &mut nodes[destination].node,
             )
             .await;
+            ready::observe_completed_turn(|| observe(self));
             self.incumbents(nodes, ids, None);
         }
         caps_with_limits(nodes, self.capacity);
@@ -484,46 +497,6 @@ impl Observation {
         }
         if let Some(setup) = &mut self.initial_handshake {
             setup.observe(nodes);
-        }
-    }
-
-    async fn round(
-        &mut self,
-        nodes: &mut [TestNode],
-        endpoints: &mut [EndpointDataIo],
-        ids: &[PeerIdentity],
-        sequence: &mut u16,
-        flows: &[(usize, usize)],
-    ) {
-        let current = *sequence;
-        *sequence = sequence.checked_add(1).expect("bounded unique payloads");
-        send_round_with_tag(nodes, ids, &current.to_le_bytes(), flows).await;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let mut received = Vec::new();
-        loop {
-            self.turn(nodes, ids).await;
-            receive_round_with_tag_and_observer(
-                endpoints,
-                ids,
-                &current.to_le_bytes(),
-                flows,
-                &mut received,
-                |destination, source, payload| {
-                    self.brief_payloads.as_mut().is_some_and(|originals| {
-                        originals.receive(destination, source, payload, ids, self.started)
-                    }) || self.queued_originals.iter_mut().any(|original| {
-                        original.receive(destination, source, payload, ids, self.started)
-                    })
-                },
-            );
-            if received.len() == flows.len() {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "exact direct payloads must continue while candidates compete"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 }
