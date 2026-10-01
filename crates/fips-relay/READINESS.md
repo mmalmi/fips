@@ -22,6 +22,9 @@ The r46 CPU-pressure results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
+The final session-handshake reply-window fix below has separate core and optimized
+controller acceptance. It is not yet included in r49; updated packaged-daemon and
+current-device acceptance remain pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -34,6 +37,32 @@ and workloads; they do not establish current-device or general production readin
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Established end-to-end session handshakes now retain their state through the final
+attempt's existing reply window. Previously, maintenance discarded rekey state as
+soon as the retry count reached its limit, potentially before the last encrypted
+reply arrived. Cleanup now also requires the recorded retry deadline to expire.
+This adds no retries, timeout setting, wire message or financial limit. A zero-retry
+configuration still allows the initial attempt's reply window.
+
+The same regression body fails before the fix and passes afterward. Six focused
+ARM64 Linux core cases pass, covering the last reply, exact cleanup deadline,
+zero retries, late initial acknowledgement, final-message retransmission and a
+peer with proactive rekey disabled. Strict core library/test lint with simulated
+transport, workspace formatting and source-size checks pass.
+
+Four optimized five-node controller checks pass: fully paid and bounded-free
+handshakes at both two CPUs and a quarter CPU, shared with their test mint.
+All ten session directions rotate; forced handshake loss recovers; fresh delivery,
+automatic payments, renewal, settlement, lifetime limits and final balances pass.
+Traffic, deadlines and financial limits are unchanged. These checks do not measure
+hardware throughput or attribute the historical 33-second delay below.
+Adjacent-link (FMP) retry cleanup is unchanged and needs its own review/regression.
+All fifteen accepted gates preserve matching candidate fingerprints. The 185-file
+evidence index is under
+`work/paid-relay-verification/2026-10-01-handshake-final-retry`.
+The r49 package and its evidence remain unchanged; all owned test containers are
+absent. No hardware, deployment or real-money operation was performed.
 
 SDK `832e48c639f7` prevents refund recovery from creating a replacement
 for a missing original file-backed wallet. Wallet-funded openings, token openings

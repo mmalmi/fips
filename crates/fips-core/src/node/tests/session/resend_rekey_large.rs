@@ -607,13 +607,13 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
 }
 
 #[test]
-fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
+fn test_rekey_initiator_accepts_ack_after_final_setup_retry() {
     run_large_stack_async_test("fips-rekey-msg1-resend", || async {
-        rekey_initiator_resends_msg1_when_first_setup_lost().await;
+        rekey_initiator_accepts_ack_after_final_setup_retry().await;
     });
 }
 
-async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
+async fn rekey_initiator_accepts_ack_after_final_setup_retry() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -624,8 +624,8 @@ async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
         .config
         .node
         .rate_limit
-        .handshake_resend_interval_ms = 5;
-    nodes[0].node.config.node.rate_limit.handshake_max_resends = 3;
+        .handshake_resend_interval_ms = 1_000;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 1;
 
     let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
@@ -672,11 +672,31 @@ async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
     let dropped = wait_drop_queued_packets_for_node(&mut nodes[1]).await;
     assert!(dropped > 0, "fixture should drop the first rekey msg1");
 
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    let retry_at = nodes[0]
+        .node
+        .get_session(&node1_addr)
+        .unwrap()
+        .next_resend_at_ms();
     nodes[0]
         .node
-        .resend_pending_session_handshakes(Node::now_ms())
+        .resend_pending_session_handshakes(retry_at)
         .await;
+    let entry = nodes[0].node.get_session(&node1_addr).unwrap();
+    assert_eq!(entry.resend_count(), 1);
+    let reply_deadline = entry.next_resend_at_ms();
+    // Maintenance can run while the final retry's encrypted reply is in flight.
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(reply_deadline - 1)
+        .await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .has_rekey_in_progress(),
+        "final rekey retry must retain its handshake through the reply window"
+    );
 
     wait_for_session_state_for_node(
         &mut nodes,
@@ -798,9 +818,26 @@ async fn rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
     let dropped = wait_drop_queued_packets_for_node(&mut nodes[larger]).await;
     assert!(dropped > 0, "fixture should drop smaller side's rekey msg1");
 
+    let reply_deadline = nodes[smaller]
+        .node
+        .get_session(&larger_addr)
+        .unwrap()
+        .next_resend_at_ms();
     nodes[smaller]
         .node
-        .resend_pending_session_handshakes(Node::now_ms())
+        .resend_pending_session_handshakes(reply_deadline - 1)
+        .await;
+    assert!(
+        nodes[smaller]
+            .node
+            .get_session(&larger_addr)
+            .unwrap()
+            .has_rekey_in_progress(),
+        "zero retries still permits the initial handshake's reply window"
+    );
+    nodes[smaller]
+        .node
+        .resend_pending_session_handshakes(reply_deadline)
         .await;
     let entry = nodes[smaller].node.get_session(&larger_addr).unwrap();
     assert!(
