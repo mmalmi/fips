@@ -94,6 +94,7 @@ async fn endpoint_reports_bound_udp_listener_without_nostr_discovery() {
 }
 
 mod control_progress;
+mod shutdown;
 #[tokio::test(start_paused = true)]
 async fn endpoint_control_times_out_for_wedged_node() {
     let mut endpoint = FipsEndpoint::builder()
@@ -147,7 +148,7 @@ async fn endpoint_shutdown_aborts_wedged_node_after_graceful_budget() {
     let node_task = endpoint
         .task
         .lock()
-        .expect("endpoint task lock")
+        .await
         .replace(wedged_task)
         .expect("running node task");
     node_task.abort();
@@ -183,7 +184,7 @@ async fn endpoint_drop_detaches_its_task_after_signaling_graceful_shutdown() {
     let original = endpoint
         .task
         .lock()
-        .expect("endpoint task lock")
+        .await
         .take()
         .expect("running node task");
     original.abort();
@@ -199,7 +200,7 @@ async fn endpoint_drop_detaches_its_task_after_signaling_graceful_shutdown() {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (stopped_tx, stopped_rx) = oneshot::channel();
     *endpoint.shutdown_tx.lock().expect("endpoint shutdown lock") = Some(shutdown_tx);
-    *endpoint.task.lock().expect("endpoint task lock") = Some(tokio::spawn(async move {
+    *endpoint.task.lock().await = Some(tokio::spawn(async move {
         let _ = shutdown_rx.await;
         let _ = stopped_tx.send(());
         Ok(())

@@ -327,8 +327,14 @@ async fn endpoint_control_and_shutdown_progress_under_payload_and_ready_nostr_ev
     .expect("authenticated payload delivery must continue after the control turn");
 
     shutdown_started.store(true, Ordering::Relaxed);
-    tokio::time::timeout(SHUTDOWN_BUDGET, server.shutdown())
-        .await
+    let shutdown = tokio::time::timeout(SHUTDOWN_BUDGET, server.shutdown()).await;
+    if shutdown.is_err() {
+        eprintln!(
+            "endpoint-shutdown-phase {}",
+            server.shutdown_trace.snapshot()
+        );
+    }
+    shutdown
         .expect("graceful shutdown must finish comfortably below the endpoint API timeout")
         .expect("server graceful shutdown");
     payload_stop_tx.send(true).expect("stop payload pressure");

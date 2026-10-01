@@ -266,6 +266,11 @@ impl FipsEndpointBuilder {
         let local_capability_directory = node.local_capability_directory();
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        #[cfg(test)]
+        let shutdown_trace = Arc::new(super::lifecycle::ShutdownTrace::new());
+        #[cfg(test)]
+        let task = spawn_node_task(node, shutdown_rx, Arc::clone(&shutdown_trace));
+        #[cfg(not(test))]
         let task = spawn_node_task(node, shutdown_rx);
         let endpoint_control_tx = endpoint_data_io.control_tx;
         let endpoint_data_batches = endpoint_data_io.data_batch_tx;
@@ -294,7 +299,9 @@ impl FipsEndpointBuilder {
             service_carrier: Default::default(),
             service_channel_capacity: self.packet_channel_capacity,
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
-            task: std::sync::Mutex::new(Some(task)),
+            task: Mutex::new(Some(task)),
+            #[cfg(test)]
+            shutdown_trace,
         })
     }
 }

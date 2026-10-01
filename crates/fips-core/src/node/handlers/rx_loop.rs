@@ -527,6 +527,9 @@ impl Node {
                     let _ = response_tx.send(response);
                 }
             }
+            // Ready raw-packet drains can bypass Tokio's cooperative resources.
+            // Charge each completed turn so outer shutdown can be polled too.
+            tokio::task::consume_budget().await;
         }
 
         info!("RX event loop stopped (channel closed)");

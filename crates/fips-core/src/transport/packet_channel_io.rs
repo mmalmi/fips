@@ -1,4 +1,11 @@
 impl PacketTx {
+    #[cfg(test)]
+    pub(crate) fn reserved_packets_for_test(&self) -> usize {
+        self.priority_reserved_packets
+            .load(Relaxed)
+            .saturating_add(self.bulk_reserved_packets.load(Relaxed))
+    }
+
     pub(crate) fn set_fast_ingress_sink(&mut self, sink: Arc<dyn PacketFastIngressSink>) {
         self.fast_ingress = Some(sink);
     }
