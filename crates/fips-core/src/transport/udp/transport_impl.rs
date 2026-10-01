@@ -111,23 +111,29 @@ fn debug_udp_fmp_batch(
 /// A socket can remain readable while every read fails (for example after an
 /// iOS network restriction). Such errors do not clear AsyncFd readiness, so
 /// immediately retrying can occupy an executor thread indefinitely.
+/// Retry isolated errors after yielding, since Windows may report an ICMP
+/// port-unreachable from an earlier send on an otherwise healthy socket.
 #[derive(Default)]
 struct UdpReceiveErrorBackoff {
-    delay: std::time::Duration,
+    next_delay: Option<Duration>,
 }
 
 impl UdpReceiveErrorBackoff {
     fn received_packet(&mut self) {
-        self.delay = std::time::Duration::ZERO;
+        self.next_delay = None;
     }
 
     async fn wait_after_error(&mut self) {
-        self.delay = if self.delay.is_zero() {
-            std::time::Duration::from_millis(100)
-        } else {
-            (self.delay * 2).min(std::time::Duration::from_secs(1))
-        };
-        tokio::time::sleep(self.delay).await;
+        match self.next_delay {
+            None => {
+                self.next_delay = Some(Duration::from_millis(100));
+                tokio::task::yield_now().await;
+            }
+            Some(delay) => {
+                self.next_delay = Some((delay * 2).min(Duration::from_secs(1)));
+                tokio::time::sleep(delay).await;
+            }
+        }
     }
 }
 
