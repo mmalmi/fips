@@ -30,6 +30,7 @@ impl crate::node::SessionRegistry {
 
     fn exhaust_established_handshake_resend_budgets(
         &mut self,
+        now_ms: u64,
         max_resends: u32,
     ) -> Vec<ExhaustedEstablishedSessionHandshake> {
         let exhausted: Vec<crate::NodeAddr> = self
@@ -38,6 +39,7 @@ impl crate::node::SessionRegistry {
                 entry.is_established()
                     && entry.handshake_payload().is_some()
                     && entry.next_resend_at_ms() > 0
+                    && now_ms >= entry.next_resend_at_ms()
                     && entry.resend_count() >= max_resends
             })
             .map(|(addr, _)| *addr)
@@ -429,14 +431,14 @@ impl Node {
 
         // Established sessions can temporarily retain a session-layer
         // handshake payload: the initial final msg3, an FSP rekey msg1, or a
-        // responder ack. Once a rekey resend budget is exhausted, abandon only
-        // that handshake so the peer's next msg1 can converge; a completed
+        // responder ack. After the final attempt's reply window expires,
+        // abandon only that handshake so the peer's next msg1 can converge; a completed
         // pending epoch may already be in use and must survive. Retain an
         // initial final msg3 after its proactive budget ends: a late duplicate
         // SessionAck explicitly proves that the responder still needs it.
         for exhausted in self
             .sessions
-            .exhaust_established_handshake_resend_budgets(max_resends)
+            .exhaust_established_handshake_resend_budgets(now_ms, max_resends)
         {
             let name = self.peer_display_name(&exhausted.dest_addr);
             debug!(
@@ -728,7 +730,13 @@ mod tests {
         sessions.insert(*rekey_peer.node_addr(), rekey);
         sessions.insert(*under_budget_peer.node_addr(), under_budget);
 
-        let mut exhausted = sessions.exhaust_established_handshake_resend_budgets(1);
+        assert!(
+            sessions
+                .exhaust_established_handshake_resend_budgets(1_999, 1)
+                .is_empty(),
+            "the final transmitted handshake still has time for its reply"
+        );
+        let mut exhausted = sessions.exhaust_established_handshake_resend_budgets(2_000, 1);
         exhausted.sort_by_key(|item| item.dest_addr);
         let mut expected = vec![
             ExhaustedEstablishedSessionHandshake {

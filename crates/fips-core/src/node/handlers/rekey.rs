@@ -133,6 +133,7 @@ impl crate::node::PeerLifecycleRegistry {
 
     fn exhaust_fmp_rekey_msg1_resend_budgets(
         &mut self,
+        now_ms: u64,
         max_resends: u32,
     ) -> Vec<ExhaustedFmpRekeyMsg1> {
         let exhausted: Vec<NodeAddr> = self
@@ -142,6 +143,7 @@ impl crate::node::PeerLifecycleRegistry {
                 peer.rekey_in_progress()
                     && peer.rekey_msg1().is_some()
                     && peer.rekey_msg1_resend_count() >= max_resends
+                    && peer.needs_msg1_resend(now_ms)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -693,7 +695,7 @@ impl Node {
 
         for exhausted in self
             .peers
-            .exhaust_fmp_rekey_msg1_resend_budgets(max_resends)
+            .exhaust_fmp_rekey_msg1_resend_budgets(now_ms, max_resends)
         {
             if let Some(cleanup) = exhausted.cleanup {
                 if let Some(transport_id) = cleanup.transport_id {
