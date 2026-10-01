@@ -769,33 +769,30 @@ impl Node {
         }
 
         for candidate in self.sessions.due_rekey_msg3_resends(now_ms, max_resends) {
+            // Reserve the retry before I/O, including errors and cancellation.
+            let Some(count) = self.sessions.record_scheduled_rekey_msg3_resend(
+                &candidate.dest_addr,
+                now_ms,
+                interval_ms,
+                backoff,
+            ) else {
+                continue;
+            };
             let mut datagram =
                 SessionDatagram::new(my_addr, candidate.dest_addr, candidate.payload).with_ttl(ttl);
-            let sent = match self.send_session_datagram(&mut datagram).await {
-                Ok(_) => true,
+            match self.send_session_datagram(&mut datagram).await {
+                Ok(_) => trace!(
+                    peer = %self.peer_display_name(&candidate.dest_addr),
+                    resend = count,
+                    "Resent FSP rekey msg3"
+                ),
                 Err(error) => {
                     debug!(
                         peer = %self.peer_display_name(&candidate.dest_addr),
                         error = %error,
                         "FSP rekey msg3 retransmission failed"
                     );
-                    false
                 }
-            };
-
-            if sent
-                && let Some(count) = self.sessions.record_scheduled_rekey_msg3_resend(
-                    &candidate.dest_addr,
-                    now_ms,
-                    interval_ms,
-                    backoff,
-                )
-            {
-                trace!(
-                    peer = %self.peer_display_name(&candidate.dest_addr),
-                    resend = count,
-                    "Resent FSP rekey msg3"
-                );
             }
         }
     }

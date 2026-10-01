@@ -456,33 +456,30 @@ impl Node {
         for candidate in candidates {
             use crate::protocol::SessionDatagram;
 
+            // Failed or canceled local sends still consume this due attempt.
+            let Some(count) = self.sessions.record_scheduled_session_handshake_resend(
+                &candidate.dest_addr,
+                now_ms,
+                interval_ms,
+                backoff,
+            ) else {
+                continue;
+            };
             let mut datagram =
                 SessionDatagram::new(my_addr, candidate.dest_addr, candidate.payload).with_ttl(ttl);
-            let sent = match self.send_session_datagram(&mut datagram).await {
-                Ok(_) => true,
+            match self.send_session_datagram(&mut datagram).await {
+                Ok(_) => debug!(
+                    dest = %self.peer_display_name(&candidate.dest_addr),
+                    resend = count,
+                    "Resent session handshake"
+                ),
                 Err(e) => {
                     debug!(
                         dest = %self.peer_display_name(&candidate.dest_addr),
                         error = %e,
                         "Session handshake resend failed"
                     );
-                    false
                 }
-            };
-
-            if sent
-                && let Some(count) = self.sessions.record_scheduled_session_handshake_resend(
-                    &candidate.dest_addr,
-                    now_ms,
-                    interval_ms,
-                    backoff,
-                )
-            {
-                debug!(
-                    dest = %self.peer_display_name(&candidate.dest_addr),
-                    resend = count,
-                    "Resent session handshake"
-                );
             }
         }
     }

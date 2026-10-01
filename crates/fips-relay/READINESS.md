@@ -33,6 +33,10 @@ The funding-retry regression has native SDK acceptance. The r51 package adds
 four integration checks using that SDK source; it does not rerun the native
 fault regression or the earlier controller-pressure workloads on Linux.
 
+A later core fix bounds scheduled session-handshake retries after local send
+errors and cancellation. Its focused and controller acceptance is recorded below;
+the r51 package does not include this later fix.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
@@ -44,6 +48,32 @@ fault regression or the earlier controller-pressure workloads on Linux.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+Scheduled session-handshake retries now count each due attempt before awaiting
+local send completion. Previously, a failed or canceled send left the retry count
+unchanged, allowing an established session's rekey to remain pending indefinitely.
+Both ordinary handshake resends and the final rekey message use the existing
+budget and backoff. The final reply window, current key and any completed pending
+key remain intact; no retry, timeout or financial limit is increased.
+
+Four regressions fail on the original runtime and pass unchanged with the fix.
+They exercise stopped UDP and canceled completion after simulated delivery,
+including five attempts, the final reply window, cleanup and subsequent
+key cutover and fresh traffic. All twelve focused ARM64 Linux session cases pass,
+as do strict core library/test lint, workspace formatting and source-size limits.
+
+Four optimized five-node checks also pass: fully paid and bounded-free handshake
+renewal at two CPUs and a quarter CPU, shared with the disposable mint. All ten
+session directions rotate, forced handshake loss recovers, and existing delivery,
+renewal, settlement, lifetime spending and balance assertions pass. Their workload,
+deadlines and financial limits are unchanged. All twenty-one accepted gates retain
+matching source fingerprints. The 674-file evidence index is under
+`work/paid-relay-verification/2026-10-01-session-resend-budget`.
+
+The r51 package remains unchanged; package acceptance for this fix is pending.
+These results do not attribute the historical 33-second delay or establish device
+performance or physical power-loss recovery. All owned test containers are absent;
+no hardware, deployment or real-money operation was performed.
 
 The unsigned r51 OpenWrt package at FIPS `2265c1077500` and SDK `0879189adab1`
 passes both customer billing modes, mixed UDP/TCP exhaustion and restart, and

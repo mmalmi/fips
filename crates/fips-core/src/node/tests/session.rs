@@ -37,6 +37,8 @@ mod purge_idle;
 mod rekey_coordinate_recovery;
 mod rekey_routed;
 mod remote_restart;
+#[cfg(feature = "sim-transport")]
+mod resend_budget;
 mod resend_rekey_large;
 mod retransmit_harness;
 mod rotation_restart;

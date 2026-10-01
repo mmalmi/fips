@@ -10,7 +10,7 @@ enum Stage {
     DuplicateAck,
 }
 
-async fn cancel_after_delivery<F: Future>(network: &crate::SimNetwork, operation: F) {
+pub(super) async fn cancel_after_delivery<F: Future>(network: &crate::SimNetwork, operation: F) {
     let before = network.stats().packets_sent;
     tokio::pin!(operation);
     tokio::time::timeout(Duration::from_secs(5), async {
