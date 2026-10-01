@@ -191,6 +191,7 @@ async fn exercise(installed: bool, lost_completion: bool) {
             assert!(!recovery.refunded && !recovery.released);
             assert!(recovery.wallet_refund_sat.is_none() && recovery.report.is_none());
             assert_eq!(controller.funding_budget().await.unwrap().locked_sat, 32);
+            reject_uncertain_refund(&controller, &channel.id).await;
         }
         controller.resume_pending().await.unwrap();
         let after = controller.funding_budget().await.unwrap();
@@ -238,4 +239,50 @@ async fn exercise(installed: bool, lost_completion: bool) {
     })
     .await
     .expect("bounded real-mint withdrawn-funding expiry");
+}
+
+async fn reject_uncertain_refund(controller: &Controller, channel: &str) {
+    let wallet = &controller.services.wallet_directory;
+    let path = cashu_service::spilman_client_store_path(wallet);
+    let original = std::fs::read(&path).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    let journal = serde_json::to_value(controller.snapshot().await.unwrap()).unwrap();
+    for fault in ["missing-completion", "missing-proofs", "conflicting-amount"] {
+        let mut changed = state.clone();
+        let refund = &mut changed["expiry_refunds"][channel];
+        match fault {
+            "missing-completion" => refund["completed"] = serde_json::Value::Null,
+            "missing-proofs" => {
+                refund["completed"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("proofs_json");
+            }
+            _ => refund["completed"]["amount_sat"] = 31.into(),
+        }
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(controller.resume_pending().await.is_err(), "{fault}");
+        assert!(std::fs::read(&path).unwrap() == bytes, "retain {fault}");
+        assert!(
+            serde_json::to_value(controller.snapshot().await.unwrap()).unwrap() == journal,
+            "{fault} must retain the original capital reservation and refund intent"
+        );
+        std::fs::write(&path, &original).unwrap();
+    }
+    // A completed SDK refund is not permission to replace a lost native wallet.
+    let native = cashu_service::cashu_wallet_dir(wallet);
+    let retained = wallet.join("retained-native-wallet");
+    std::fs::rename(&native, &retained).unwrap();
+    assert!(controller.resume_pending().await.is_err());
+    assert!(
+        !native.exists(),
+        "recovery must not initialize a replacement wallet"
+    );
+    assert!(std::fs::read(&path).unwrap() == original);
+    assert!(
+        serde_json::to_value(controller.snapshot().await.unwrap()).unwrap() == journal,
+        "missing native wallet must retain the original capital reservation and refund intent"
+    );
+    std::fs::rename(retained, native).unwrap();
 }

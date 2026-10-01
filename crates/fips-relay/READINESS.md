@@ -22,18 +22,47 @@ results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
+The subsequent native refund-recovery fix in SDK `832e48c639f7` still needs
+updated ARM64 Linux package acceptance.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, and full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes. | Reconciliation when original native wallet evidence is missing or conflicting; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, and refusal/retry of missing wallet files or missing/conflicting refund completion evidence. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+SDK `832e48c639f7` prevents refund recovery from creating a replacement
+for a missing original file-backed wallet. Wallet-funded openings, token openings
+with a wallet admission, and completed refund records require the existing database
+and seed. Funding restore and abandoned-funding recovery share that check. A first
+refund of token-only funding without prior wallet ownership can still create a wallet.
+
+The existing real-mint controller regression now removes completion/proof evidence,
+contradicts its recorded amount, and removes the native wallet after an unrecorded
+refund whose coins have already been spent. Each failure preserves the controller's
+exact financial reservation and refund intent. Restoring the original evidence
+allows one completion without reviving spent coins. The same regression fails on
+the prior SDK because it creates a replacement native wallet before returning an
+error. The SDK's existing settlement test also covers missing directory, seed and
+database before the first refund and after completion, with no additional mint swap.
+
+Native macOS ARM64 acceptance passes all 435 SDK workspace tests, 307 relay library
+tests and seven routine wallet/customer cases. Strict SDK/relay lint, changed SDK
+file formatting, relay formatting and source-size checks pass. Two existing opt-in
+soaks remain excluded. The first customer run encountered SQLite I/O errors while
+the shared filesystem had about 243 MiB free; after removing an unused build cache,
+all three customer cases pass with unchanged sources. Failed runs are retained.
+Eight final gates retain the same SDK source fingerprint. Evidence is indexed under
+`work/paid-relay-verification/2026-10-01-refund-evidence-recovery`.
+The r48 package retains its previous SDK and does not include this fix; updated
+ARM64 Linux package acceptance remains pending. No hardware or real-money operation
+was performed. Other native-evidence recovery cases remain open in the acceptance table.
 
 The existing five-node controller fixture now covers automatic renewal with the
 `forwarding_data` tariff as well as `forwarding_attempt`. The bounded-handshake

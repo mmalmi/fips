@@ -580,6 +580,13 @@ conflicting original evidence retains the financial reservation. Report release
 remains part of cooperative cleanup, while verified expiry recovery does not
 require a peer acknowledgment. Neither path may fabricate one.
 
+Refund recovery with retained wallet ownership requires the original file-backed
+wallet database and seed before opening the wallet. A missing profile cannot become
+a fresh empty wallet or release the controller's financial reservation. The same
+file check serves funding restore and abandoned-funding recovery. Restoring original
+files allows the retained operation to resume; it does not authorize replacement
+funding or revive spent refund outputs.
+
 ## Journal compatibility and checks
 
 Buyer journals start at version 3 and advance to version 4 on channel retirement;
