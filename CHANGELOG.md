@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.90] - 2026-10-01
+
+### Fixed
+
+- Allow the final handshake transmission its full reply window before exhausting
+  retry budgets, including link rekeys and established session handshakes.
+- Protect admitted lookup return paths and deferred waiters from rejected request
+  churn while retaining existing cache quotas, expiration and duplicate checks.
+- Report persistent identity directory creation errors instead of generating an
+  identity that cannot be saved.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.90. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+- Correct test isolation and completion fences for multi-node rendezvous and
+  Bloom cancellation checks. Keep zero-loss rekey fixtures on stable routes;
+  routing-churn scenarios and existing test budgets remain unchanged.
+
 ## [0.4.89] - 2026-10-01
 
 ### Fixed
