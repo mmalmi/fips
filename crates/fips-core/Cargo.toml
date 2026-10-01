@@ -41,7 +41,7 @@ simple-dns = "0.11.2"
 mdns-sd = "0.19"
 socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
-tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 portable-atomic = { version = "1", features = ["std"] }
 bytes = { version = "1", optional = true }

@@ -5,6 +5,7 @@
 //! bloom filter contains the target. TTL and request_id dedup provide
 //! safety bounds.
 
+use crate::bloom::BloomFilter;
 use crate::config::RoutingMode;
 use crate::node::{Node, PathMtuUpdate, RecentResponseForward};
 use crate::proto::lookup::{
@@ -28,6 +29,8 @@ pub(in crate::node) enum LookupForwardOutcome {
 
 mod deferred_forward;
 mod pending_lookup;
+#[cfg(test)]
+mod query_tests;
 
 pub(in crate::node) use deferred_forward::DeferredDiscoveryForwards;
 
@@ -794,6 +797,7 @@ impl Node {
     }
 
     fn lookup_peer_candidates(&self, target: &NodeAddr) -> Vec<LookupPeerCandidate> {
+        let target_hash = BloomFilter::hash_pair(target.as_bytes());
         self.peers
             .iter()
             .map(|(addr, peer)| LookupPeerCandidate {
@@ -801,7 +805,9 @@ impl Node {
                 can_send: peer.can_send(),
                 is_healthy: peer.is_healthy(),
                 is_tree_peer: self.is_tree_peer(addr),
-                may_reach_target: peer.may_reach(target),
+                may_reach_target: peer
+                    .inbound_filter()
+                    .is_some_and(|filter| filter.contains_hash_pair(target_hash)),
                 reply_learned_fallback_allowed: self
                     .should_use_reply_learned_lookup_fallback_peer(addr, peer, target),
                 configured_reply_learned_fallback_transit: self

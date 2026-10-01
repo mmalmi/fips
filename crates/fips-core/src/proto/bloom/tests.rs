@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 mod deadlines;
 mod fanout;
+mod query;
 
 fn make_node_addr(val: u8) -> NodeAddr {
     let mut bytes = [0u8; 16];

@@ -69,7 +69,7 @@ impl BloomFilter {
 
     /// Insert a NodeAddr into the filter.
     pub fn insert(&mut self, node_addr: &NodeAddr) {
-        let (h1, h2) = self.hash_pair(node_addr.as_bytes());
+        let (h1, h2) = Self::hash_pair(node_addr.as_bytes());
         for i in 0..self.hash_count {
             let bit_index = self.hash_from_pair(h1, h2, i);
             self.set_bit(bit_index);
@@ -78,7 +78,7 @@ impl BloomFilter {
 
     /// Insert raw bytes into the filter.
     pub fn insert_bytes(&mut self, data: &[u8]) {
-        let (h1, h2) = self.hash_pair(data);
+        let (h1, h2) = Self::hash_pair(data);
         for i in 0..self.hash_count {
             let bit_index = self.hash_from_pair(h1, h2, i);
             self.set_bit(bit_index);
@@ -95,7 +95,11 @@ impl BloomFilter {
 
     /// Check if the filter might contain raw bytes.
     pub fn contains_bytes(&self, data: &[u8]) -> bool {
-        let (h1, h2) = self.hash_pair(data);
+        self.contains_hash_pair(Self::hash_pair(data))
+    }
+
+    /// Reuse a target hash across filters, applying this filter's parameters.
+    pub(crate) fn contains_hash_pair(&self, (h1, h2): (u64, u64)) -> bool {
         for i in 0..self.hash_count {
             let bit_index = self.hash_from_pair(h1, h2, i);
             if !self.get_bit(bit_index) {
@@ -202,7 +206,7 @@ impl BloomFilter {
     /// Compute a hash index for the given data and hash function number.
     ///
     /// Uses double hashing: h(x,i) = (h1(x) + i*h2(x)) mod m
-    fn hash_pair(&self, data: &[u8]) -> (u64, u64) {
+    pub(crate) fn hash_pair(data: &[u8]) -> (u64, u64) {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();

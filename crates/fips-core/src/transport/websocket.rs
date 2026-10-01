@@ -149,6 +149,8 @@ impl Runtime {
 
     fn websocket_config(&self) -> TungsteniteConfig {
         let mut config = TungsteniteConfig::default();
+        // Keep each read (including WouldBlock) bounded after a large frame.
+        config.read_buffer_size = 16 * 1024;
         config.max_message_size = Some(self.config.max_frame_bytes());
         config.max_frame_size = Some(self.config.max_frame_bytes());
         config.max_write_buffer_size = self.config.max_frame_bytes().saturating_mul(2);
