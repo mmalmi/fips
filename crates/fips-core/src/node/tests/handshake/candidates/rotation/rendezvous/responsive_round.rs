@@ -58,11 +58,9 @@ impl Observation {
                 tokio::time::Instant::now() < deadline,
                 "exact direct payloads must continue while candidates compete"
             );
-            let idle = tokio::time::sleep(Duration::from_millis(5));
-            if let Some(phase) = &mut self.contact_phase {
-                phase.before_sleep(nodes, "local-round");
-            }
-            idle.await;
+            self.contact_idle
+                .wait(nodes, self.contact_phase.as_mut(), "local-round")
+                .await;
         }
     }
 }

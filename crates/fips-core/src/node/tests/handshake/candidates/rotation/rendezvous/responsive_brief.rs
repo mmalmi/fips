@@ -272,11 +272,10 @@ pub(super) async fn observe(
                 if let Some(payloads) = &mut observation.brief_payloads {
                     payloads.drain(endpoints, ids, observation.started);
                 }
-                let idle = tokio::time::sleep(Duration::from_millis(5));
-                if let Some(phase) = &mut observation.contact_phase {
-                    phase.before_sleep(nodes, "brief-loop");
-                }
-                idle.await;
+                observation
+                    .contact_idle
+                    .wait(nodes, observation.contact_phase.as_mut(), "brief-loop")
+                    .await;
             }
             useful_retained(nodes, ids, &useful);
             evidence.observe(nodes, ids, observation.started);

@@ -17,6 +17,8 @@ mod late;
 
 #[path = "responsive_brief.rs"]
 mod brief;
+#[path = "responsive_idle.rs"]
+mod idle;
 #[path = "responsive_live.rs"]
 #[cfg(unix)]
 mod live;
@@ -170,6 +172,7 @@ struct Observation {
     brief_payloads: Option<ready::Payloads>,
     initial_handshake: Option<setup::ScheduledHandshake>,
     contact_phase: Option<phase::Capture>,
+    contact_idle: idle::Wait,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -215,6 +218,7 @@ impl Observation {
             brief_payloads: None,
             initial_handshake: None,
             contact_phase: None,
+            contact_idle: idle::Wait::default(),
         }
     }
 
