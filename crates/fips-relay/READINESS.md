@@ -28,17 +28,39 @@ Fully paid controller renewal at two and quarter CPU now covers r50's integrated
 source. The bounded-free controller checks retain their source scope before the
 concurrent UDP fix. Current-device acceptance remains pending.
 
+SDK `0879189adab1` additionally checks original debit evidence before resuming an
+ordinary funding retry. Its native acceptance is recorded below; the r50 package
+still uses SDK `832e48c639f7` and does not include this later fix.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, and refusal/retry of missing wallet files or missing/conflicting refund completion evidence. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, and refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+SDK `0879189adab1` requires the original wallet debit before ordinary opening
+retries resume mint funding. Previously, a retry could complete funding with no
+recorded cost or change funding state before detecting a conflicting operation.
+The regression removes the saved send entry or changes its operation identity;
+both retries now preserve the opening and wallet journal without a mint swap or
+restore request. Restoring the original journal permits one completion and
+repeatable original cost. The unchanged regression fails on the prior source.
+
+All 436 native macOS ARM64 SDK workspace tests pass, with one existing opt-in soak
+excluded. Strict all-target SDK lint and changed-file formatting pass; all three
+final gates retain identical source fingerprints. The published lockfile is
+restored for the commit, and the exact private dependency inputs remain in the
+51-file evidence index under
+`work/paid-relay-verification/2026-10-01-funding-retry-evidence`.
+The r50 package and its evidence remain unchanged; matching package acceptance
+for this SDK fix is pending. No hardware, deployment or real-money operation was
+performed.
 
 The unsigned r50 OpenWrt package at FIPS `1f53191a6a22` passes both customer billing
 modes, mixed UDP/TCP exhaustion and restart, and explicitly configured self-signed
