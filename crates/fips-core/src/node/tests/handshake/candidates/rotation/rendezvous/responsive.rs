@@ -22,6 +22,8 @@ mod brief;
 mod live;
 #[path = "responsive_brief_ready.rs"]
 mod ready;
+#[path = "responsive_setup.rs"]
+mod setup;
 
 const IDLE_SECS: u64 = 10;
 const INTERVAL_SECS: u64 = 2;
@@ -162,6 +164,7 @@ struct Observation {
     timing: timing::Ledger,
     queued_originals: Vec<queued::Original>,
     brief_payloads: Option<ready::Payloads>,
+    initial_handshake: Option<setup::ScheduledHandshake>,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -205,6 +208,7 @@ impl Observation {
             ),
             queued_originals: Vec::new(),
             brief_payloads: None,
+            initial_handshake: None,
         }
     }
 
@@ -249,6 +253,9 @@ impl Observation {
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], ids: &[PeerIdentity]) {
+        if let Some(setup) = &mut self.initial_handshake {
+            setup.drive(nodes).await;
+        }
         if let Some(payloads) = &mut self.brief_payloads {
             payloads.observe(nodes, ids, self.started);
         }
@@ -475,6 +482,9 @@ impl Observation {
         for original in &mut self.queued_originals {
             original.observe(nodes, ids, self.started);
         }
+        if let Some(setup) = &mut self.initial_handshake {
+            setup.observe(nodes);
+        }
     }
 
     async fn round(
@@ -612,14 +622,24 @@ async fn exercise(
         .get_peer(ids[4].node_addr())
         .unwrap()
         .authenticated_at();
-    while Node::now_ms().saturating_sub(first) < 5_000 {
+    observation.initial_handshake = Some(setup::ScheduledHandshake::new(first, network.clone()));
+    while !observation
+        .initial_handshake
+        .as_ref()
+        .unwrap()
+        .complete(nodes)
+    {
         observation
             .round(nodes, &mut endpoints, &ids, &mut sequence, &LOCAL_FLOWS)
             .await;
         useful_retained(nodes, &ids, &original);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    connect(&mut observation, nodes, &ids, network, addresses, 1, 5).await;
+    observation
+        .initial_handshake
+        .take()
+        .unwrap()
+        .assert_finished(nodes);
     let second = nodes[1]
         .node
         .get_peer(ids[5].node_addr())
