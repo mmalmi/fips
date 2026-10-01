@@ -24,9 +24,9 @@ The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
 The handshake fixes also have separate core and optimized controller acceptance.
-Those controller checks retain their source scope before the concurrent UDP fix;
-r50's packaged-daemon checks cover the integrated source. Current-device acceptance
-remains pending.
+Fully paid controller renewal at two and quarter CPU now covers r50's integrated
+source. The bounded-free controller checks retain their source scope before the
+concurrent UDP fix. Current-device acceptance remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -55,6 +55,25 @@ Prior package and handshake evidence remains unchanged. This does not attribute
 the historical 33-second delay or establish hardware performance, physical
 power-loss recovery or production readiness. No hardware, deployment or real-money
 operation was performed.
+
+The same r50 source also passes optimized five-node fully paid renewal at two and
+quarter CPU. All ten controller fixture files match the prior FMP acceptance;
+traffic, deadlines, fault injection and financial limits are unchanged. All ten
+session directions rotate, forced handshake loss recovers, fresh traffic succeeds,
+and renewal, settlement, lifetime limits and final balances pass.
+
+| Shared CPU quota | Elapsed seconds | CPU seconds | Peak memory, MiB |
+| --- | ---: | ---: | ---: |
+| 2 cores | 45.117 | 10.553 | 97.3 |
+| 0.25 core | 66.958 | 14.595 | 57.9 |
+
+These measurements cover the whole harness and its test mint, not payment-only
+overhead or router performance. The quarter-core run records 486 throttled periods;
+neither run records a memory-limit event. All three build/runtime gates preserve
+matching source fingerprints. The 25-file evidence index is under
+`work/paid-relay-verification/2026-10-01-controller-pressure-r50`.
+The r50 package and earlier evidence remain unchanged, and all owned containers
+are absent. These passes do not attribute the historical 33-second delay.
 
 Adjacent-link (FMP) rekey now retains its final reply window during both retry
 cleanup and heartbeat liveness checks. Previously, either path could discard the
