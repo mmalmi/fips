@@ -13,7 +13,7 @@ STATIC = Path(__file__).resolve().parents[2]
 
 
 class RekeyConfigTests(unittest.TestCase):
-    def inject(self, scenario):
+    def inject(self, scenario, topology="rekey-outbound-only", accept_off="", outbound_only="b"):
         with tempfile.TemporaryDirectory() as tmp:
             static = Path(tmp) / "static"
             scripts = static / "scripts"
@@ -23,7 +23,7 @@ class RekeyConfigTests(unittest.TestCase):
             lib = static.parent / "lib"
             lib.mkdir()
             shutil.copyfile(STATIC.parent / "lib/wait-converge.sh", lib / "wait-converge.sh")
-            configs = static / "generated-configs/rekey-outbound-only"
+            configs = static / "generated-configs" / topology
             configs.mkdir(parents=True)
             template = (STATIC / "configs/node.template.yaml").read_text()
             for node in "abcde":
@@ -33,8 +33,8 @@ class RekeyConfigTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", str(script), "inject-config"],
                 env=dict(os.environ, REKEY_SCENARIO=scenario,
-                         REKEY_TOPOLOGY="rekey-outbound-only",
-                         REKEY_ACCEPT_OFF_NODES="", REKEY_OUTBOUND_ONLY_NODES="b"),
+                         REKEY_TOPOLOGY=topology,
+                         REKEY_ACCEPT_OFF_NODES=accept_off, REKEY_OUTBOUND_ONLY_NODES=outbound_only),
                 capture_output=True, text=True, timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -52,11 +52,22 @@ class RekeyConfigTests(unittest.TestCase):
         self.assertIn("addr: node-c:2121", configs["b"])
         self.assertIn("addr: 172.20.0.12:2121", configs["a"])
 
-    def test_standard_rekey_keeps_default_tree_maintenance(self):
-        configs = self.inject("standard")
-        for config in configs.values():
-            self.assertNotIn("  tree:\n", config)
-            self.assertIn("    after_secs: 75\n    after_messages: 65536\n", config)
+    def test_standard_rekey_isolates_periodic_tree_changes_and_preserves_variants(self):
+        for topology, accept_off, outbound_only in [
+            ("rekey", "", ""),
+            ("rekey-accept-off", "b", ""),
+            ("rekey-outbound-only", "", "b"),
+        ]:
+            with self.subTest(topology=topology):
+                configs = self.inject("standard", topology, accept_off, outbound_only)
+                for config in configs.values():
+                    self.assertIn("node:\n  tree:\n    reeval_interval_secs: 0\n  rekey:\n", config)
+                    self.assertEqual(config.count("  tree:\n"), 1)
+                    self.assertIn("    enabled: true\n    after_secs: 75\n    after_messages: 65536\n", config)
+                self.assertEqual("    accept_connections: false\n" in configs["b"], bool(accept_off))
+                self.assertEqual("    outbound_only: true\n" in configs["b"], bool(outbound_only))
+                self.assertEqual("addr: node-c:2121" in configs["b"], bool(outbound_only))
+                self.assertIn("addr: 172.20.0.12:2121", configs["a"])
 
 
 if __name__ == "__main__":
