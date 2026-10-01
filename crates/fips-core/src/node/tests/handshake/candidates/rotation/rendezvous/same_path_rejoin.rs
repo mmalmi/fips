@@ -145,7 +145,11 @@ impl Pump {
                         self.flights.response = Some(reply.sender_idx);
                     }
                 }
-                process_dataplane_packet(&mut nodes[destination], packet).await;
+                crate::node::tests::spanning_tree::process_dataplane_packet_once(
+                    &mut nodes[destination].node,
+                    packet,
+                )
+                .await;
             }
             crate::node::tests::spanning_tree::process_dataplane_completions(
                 &mut nodes[destination].node,
@@ -241,6 +245,10 @@ fn delivery_snapshot(nodes: &[TestNode], ids: &[PeerIdentity], phase: &str) {
                 "active_previous_session":peer.previous_session().is_some(),
                 "current_k":peer.current_k_bit(),"rekey":peer.rekey_in_progress(),
                 "generation":peer.session_generation(),"can_send":peer.can_send(),
+                "authenticated_age_ms":now.saturating_sub(peer.authenticated_at()),
+                "application_demand":node.config.node.neighbor_rotation.as_ref().map(|config|
+                    node.peer_has_application_demand(remote,now,config.idle_secs.saturating_mul(1000))),
+                "session_activity_age_ms":node.session_dataplane_activity_ms(remote).map(|at|now.saturating_sub(at)),
                 "decrypt_failures":peer.consecutive_decrypt_failures(),
                 "replay_suppressed":peer.replay_suppressed_count(),
                 "metrics":metrics.map(|m|json!({"current_authenticated":m.current_epoch_authenticated,
@@ -359,10 +367,11 @@ async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario) {
         sequence += 1;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(
-        nodes[0].node.discovery_rotation_victim(Node::now_ms()),
-        Some(*ids[1].node_addr())
-    );
+    let victim = nodes[0].node.discovery_rotation_victim(Node::now_ms());
+    if victim != Some(*ids[1].node_addr()) {
+        delivery_snapshot(nodes, &ids, "unexpected-rotation-victim");
+    }
+    assert_eq!(victim, Some(*ids[1].node_addr()));
     dial(nodes, 3, 0).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while !reciprocal(nodes, &ids, 0, 3) {
