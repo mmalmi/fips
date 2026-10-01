@@ -14,6 +14,7 @@ use spanning_tree::{
     run_tree_test, verify_tree_convergence,
 };
 
+mod admission_churn;
 mod convergent_paths_large;
 mod foreign_root_controls;
 mod foreign_root_origin;
