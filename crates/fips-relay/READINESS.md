@@ -42,10 +42,23 @@ with two CPUs. With a quarter CPU, renewal exceeds its 30-second delivery budget
 separate route-change runs time out during initial acceptance or lose an ordinary
 packet before the topology change. In the captured startup failure, all six
 neighbor purchases are accepted and funding is complete by the later diagnostic
-snapshot. In the ordinary-delivery failure, the first forwarding relay refuses
-the packet; the precise admission condition is not yet established. These are
-stress counterexamples, not device throughput measurements or attribution of
-every historical timeout.
+snapshot. Two new half-CPU diagnostic runs match the lost packet to a first-hop
+credit refusal: its proposed reservation exceeds paid credit plus grace while
+payments are still progressing. The refused packet is not admitted or billed.
+These traces identify those refusals, not every historical timeout. Temporary
+payment-stage tracing shows signing and reply delays under this unoptimized,
+shared CPU quota; it does not establish a matched performance ratio.
+
+With the actual OpenWrt optimization profile, both instrumented route-change
+checks pass at half and quarter CPU. After removing all temporary runtime tracing,
+clean route-change checks pass at both quotas and automatic renewal passes at
+quarter CPU. These three clean runs retain the original traffic, deadlines,
+financial limits, reconciliation and rotation assertions. Source and executable
+hashes remain unchanged across the checks, and owned containers are absent.
+Evidence is indexed under
+`work/paid-relay-verification/2026-10-01-controller-admission-observation`.
+This is isolated ARM64 Linux acceptance with five nodes and a test mint sharing
+the quota, not router throughput or physical-radio acceptance.
 
 The existing controller tests now record bounded session and funding snapshots
 after initial acceptance failure, each observed session's initial key/drain state,
@@ -54,7 +67,8 @@ route-change checks, strict all-feature controller lint, formatting and source
 limits pass. A proposed wait for simultaneous drain completion failed under CPU
 pressure and was discarded. Original deadlines, traffic, financial limits and
 rotation assertions remain unchanged; the earlier missing-rotation observation
-also remains unresolved. Evidence, including failed attempts, is retained under
+and other historical timeouts remain unresolved despite the clean optimized
+passes above. Earlier evidence, including failed attempts, is retained under
 `work/paid-relay-verification/2026-10-01-controller-rekey-observation` and the
 original `2026-10-01-controller-pressure-r48` directory. Production sources and
 the r48 package are unchanged; no hardware or real-money operation was performed.
