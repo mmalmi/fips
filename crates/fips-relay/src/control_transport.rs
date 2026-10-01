@@ -13,7 +13,7 @@ pub(crate) use admission::AdmissionBudget;
 pub use admission::{ControlAdmission, NeighborAdmission};
 use check::AdmissionCheck;
 
-use fips_core::{FipsEndpoint, PeerIdentity};
+use fips_core::{FipsEndpoint, NodeAddr, PeerIdentity};
 use fips_tcp::{Config, ConnectionId, StackError, State};
 use fips_tcp_endpoint::{AdapterError, FipsTcpEndpoint};
 use ipnet::IpNet;
@@ -21,7 +21,7 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        Arc,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -60,6 +60,7 @@ pub struct ControlTransport {
     task: JoinHandle<()>,
     statistics: Arc<ControlStatistics>,
     outbound_slots: Semaphore,
+    outbound_peers: Mutex<HashMap<NodeAddr, Weak<Semaphore>>>,
 }
 
 /// Volatile measurement counters. Bytes include application record framing;
@@ -164,6 +165,7 @@ impl ControlTransport {
                 task,
                 statistics,
                 outbound_slots: Semaphore::new(QUEUE_SIZE),
+                outbound_peers: Mutex::new(HashMap::new()),
             },
             receive_incoming,
         ))
@@ -177,6 +179,23 @@ impl ControlTransport {
         &self.admission
     }
 
+    fn peer_request_slots(&self, peer: PeerIdentity) -> Result<Arc<Semaphore>, String> {
+        let mut peers = self
+            .outbound_peers
+            .lock()
+            .map_err(|_| "control outgoing peer slots poisoned")?;
+        peers.retain(|_, slots| slots.strong_count() > 0);
+        if let Some(slots) = peers.get(peer.node_addr()).and_then(Weak::upgrade) {
+            return Ok(slots);
+        }
+        // A global slot is already held, so this registry remains bounded.
+        // One slow peer may queue beyond its TCP limit without owning every
+        // request slot needed by other neighbors' funding or payment exchanges.
+        let slots = Arc::new(Semaphore::new(QUEUE_SIZE / 2));
+        peers.insert(*peer.node_addr(), Arc::downgrade(&slots));
+        Ok(slots)
+    }
+
     pub async fn request(&self, peer: PeerIdentity, body: Vec<u8>) -> Result<Vec<u8>, String> {
         if body.len() > MAX_RECORD_BYTES {
             return Err("control record exceeds size limit".into());
@@ -186,6 +205,10 @@ impl ControlTransport {
             .outbound_slots
             .try_acquire()
             .map_err(|_| "control outgoing request capacity exhausted".to_string())?;
+        let _peer_slot = self
+            .peer_request_slots(peer)?
+            .try_acquire_owned()
+            .map_err(|_| "control peer request capacity exhausted".to_string())?;
         let (response, receive) = oneshot::channel();
         self.commands
             .try_send(Command {

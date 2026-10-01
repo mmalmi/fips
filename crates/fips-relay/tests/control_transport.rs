@@ -3,7 +3,7 @@ use fips_core::{
     config::{PeerConfig, TransportInstances, UdpConfig},
 };
 use fips_relay::control_transport::ControlTransport;
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, task::Poll, time::Duration};
 
 fn config() -> Config {
     let mut config = Config::new();
@@ -101,14 +101,35 @@ async fn full_neighbor_slots_do_not_block_other_peers_or_fail_queued_control() {
         );
         canceled.abort();
         assert!(canceled.await.unwrap_err().is_cancelled());
-        let queued = request(bob, 5);
+        // Poll each request through admission to keep one neighbor's entire
+        // pending burst live while its four TCP connections remain occupied.
+        let mut pressure = Vec::new();
+        for _ in 0..16 {
+            let mut pending = Box::pin(first.request(bob, vec![7]));
+            match std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx))).await {
+                Poll::Pending => pressure.push(pending),
+                Poll::Ready(result) => assert!(result.is_err(), "held peer cannot have replied"),
+            }
+        }
+        assert!(
+            !pressure.is_empty(),
+            "exercise queued requests behind a full peer"
+        );
         let healthy = request(charlie, 6);
-        let answer = tokio::time::timeout(Duration::from_secs(2), c_requests.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let answer = match tokio::time::timeout(Duration::from_secs(2), c_requests.recv()).await {
+            Ok(Some(request)) => request,
+            _ if healthy.is_finished() => {
+                panic!(
+                    "healthy neighbor request failed: {:?}",
+                    healthy.await.unwrap()
+                )
+            }
+            _ => panic!("healthy neighbor request stayed pending behind one full peer"),
+        };
         answer.respond.send(answer.body).unwrap();
         assert_eq!(healthy.await.unwrap().unwrap(), vec![6]);
+        drop(pressure);
+        let queued = request(bob, 5);
         assert_eq!(second.statistics().snapshot().requests_received, 4);
         let released = held.remove(0);
         released.respond.send(released.body).unwrap();

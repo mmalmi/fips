@@ -32,6 +32,28 @@ and workloads; they do not establish current-device or general production readin
 
 ## Verified implementation and test history
 
+Outgoing control now limits one neighbor to eight of the existing sixteen
+queued/active request slots. Previously, one neighbor could occupy its four TCP
+connections and fill the remaining outgoing allowance with queued requests;
+another neighbor then failed immediately with outgoing capacity exhausted.
+The existing real TCP/FIPS regression reproduces that failure and passes unchanged
+with the per-neighbor bound. It retains pending-request cancellation, subsequent
+queue recovery and exact request-count checks. Owned permits release on completion,
+cancellation or timeout; the weak per-peer registry stays within the global bound.
+No wire message, payment policy or request deadline changes.
+
+All twelve control-transport integration tests pass in both feature modes on
+isolated ARM64 Linux, along with 307 relay unit tests and the existing test-money
+case that holds one neighbor's payment while healthy channels keep paying and
+settling. Strict all-target relay lint with all features passes on native macOS;
+changed-file formatting and the workspace source-size gate also pass. The same
+regression source is retained for the failing and passing runs, and all final
+gates use identical source/dependency fingerprints. Evidence is indexed under
+`work/paid-relay-verification/2026-10-01-control-outbound-isolation`.
+This fixes the reproduced outgoing-capacity starvation case without attributing
+the older intermittent delivery/payment timeouts. The change postdates r45;
+matching package and current-device acceptance remain outstanding.
+
 SDK `948a93782f9b` and CDK `738e08534ce6` apply a
 4 MiB stored-payload limit to ordinary exact wallet invoice reads and atomic
 quote comparisons. Conditional SQL projection rejects oversized fields before
