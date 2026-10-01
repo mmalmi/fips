@@ -14,16 +14,14 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r48 package verifies the internal reclaim receipt-read fix with FIPS core
-0.4.88, TCP endpoint 0.2.21, SDK `8266ebb1865f` and CDK `7c250132ae57`.
-Its customer, mixed-link and reclaim checks supplement the earlier r47 ordinary
-receipt-read, r46 control and broader r45 results below. The r46 CPU-pressure
-results retain their prior wallet sources.
+The r49 package includes the refund-recovery fix with FIPS core 0.4.88,
+TCP endpoint 0.2.21, SDK `832e48c639f7` and CDK `7c250132ae57`.
+Its customer, mixed-link and refund checks supplement the earlier r48 internal
+reclaim, r47 ordinary receipt-read, r46 control and broader r45 results below.
+The r46 CPU-pressure results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
-The subsequent native refund-recovery fix in SDK `832e48c639f7` still needs
-updated ARM64 Linux package acceptance.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -60,9 +58,24 @@ the shared filesystem had about 243 MiB free; after removing an unused build cac
 all three customer cases pass with unchanged sources. Failed runs are retained.
 Eight final gates retain the same SDK source fingerprint. Evidence is indexed under
 `work/paid-relay-verification/2026-10-01-refund-evidence-recovery`.
-The r48 package retains its previous SDK and does not include this fix; updated
-ARM64 Linux package acceptance remains pending. No hardware or real-money operation
-was performed. Other native-evidence recovery cases remain open in the acceptance table.
+
+The unsigned r49 OpenWrt package includes the fix at FIPS `b33482cde416`.
+Both customer billing modes, mixed UDP/TCP exhaustion and restart, and explicitly
+configured self-signed WebSocket pass using the extracted optimized executable
+on isolated ARM64 Linux. The refund-evidence regression passes in an embedded
+relay test executable built from the same package source. Its native wallet
+sources match the acceptance above.
+
+The source bundle changes twelve files from r48; dependency versions, resolved
+graph and locks remain unchanged. All eleven package payload files and static
+ARM64 executables pass inspection. All nine build/runtime gates preserve matching
+source fingerprints. Package and test executable hashes remain unchanged across
+the runtime checks, and all owned containers are absent.
+The 58-file evidence index is under
+`work/paid-relay-verification/2026-10-01-arm64-r49`; prior native and r48 evidence
+and package artifacts remain unchanged. No hardware, deployment or real-money
+operation was performed. Other native-evidence recovery cases, timing failures
+and current-device acceptance remain open in the table above.
 
 The existing five-node controller fixture now covers automatic renewal with the
 `forwarding_data` tariff as well as `forwarding_attempt`. The bounded-handshake
