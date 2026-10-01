@@ -51,8 +51,6 @@ impl Node {
         peer_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
-        #[cfg(test)]
-        let trace_due_before = self.bloom_state.pending_peer_deadline_ms(peer_addr);
 
         // Check debounce
         if !self.bloom_state.should_send_update(peer_addr, now_ms) {
@@ -134,9 +132,6 @@ impl Node {
         self.bloom_state
             .record_update_sent(*peer_addr, Self::now_ms());
         self.bloom_state.record_sent_filter(*peer_addr, sent_filter);
-        #[cfg(test)]
-        self.bloom_state
-            .trace_filter_send(peer_addr, announce.sequence, trace_due_before);
         if let Some(peer) = self.peers.get_mut(peer_addr) {
             peer.clear_filter_update_needed();
         }
@@ -299,13 +294,6 @@ impl Node {
         if let Some(peer) = self.peers.get_mut(from) {
             peer.update_filter(announce.filter, announce.sequence, now_ms);
         }
-        #[cfg(test)]
-        self.bloom_state.trace_filter_received(
-            from,
-            announce.sequence,
-            self.is_tree_peer(from),
-            self.peers.get(from).and_then(|peer| peer.inbound_filter()),
-        );
 
         // Check which peers' outgoing filters actually changed.
         // All peers receive filters, but only tree peers' inbound filters

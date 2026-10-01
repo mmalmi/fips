@@ -233,53 +233,6 @@ fn endpoint_ages(node: &mut Node, dest: &NodeAddr) -> Vec<u64> {
     ages
 }
 
-// Diagnostic-only snapshot: no queue removal, dispatch, clock or route mutation.
-fn flush_snapshot(node: &Node, destination: &NodeAddr) -> String {
-    let front = node
-        .pending_session_traffic
-        .tun_packets_for(destination)
-        .and_then(|queue| queue.front())
-        .map(|packet| {
-            node.prepare_dataplane_cached_tun_packet(destination, packet.packet())
-                .map(|_| ())
-        });
-    let deferred = node
-        .deferred_dataplane_control_turns
-        .iter()
-        .take(8)
-        .map(|turn| {
-            format!(
-                "{:?}/drops={:?}/output_drops={:?}",
-                turn.summary(),
-                turn.drops()
-                    .iter()
-                    .take(8)
-                    .map(|drop| drop.reason())
-                    .collect::<Vec<_>>(),
-                turn.output_drops()
-                    .iter()
-                    .take(8)
-                    .map(|drop| drop.reason())
-                    .collect::<Vec<_>>()
-            )
-        })
-        .collect::<Vec<_>>();
-    format!(
-        "owner={} route={} next={:?} tun={} endpoint={} front={front:?} runnable={} deferred_count={} deferred={deferred:?}",
-        node.dataplane_has_fsp_owner(destination),
-        node.dataplane_application_route_ready(destination),
-        node.dataplane.fsp_owner_next_hop(destination),
-        node.pending_session_traffic
-            .tun_packets_for(destination)
-            .map_or(0, |queue| queue.len()),
-        node.pending_session_traffic
-            .endpoint_data_for(destination)
-            .map_or(0, |queue| queue.len()),
-        node.dataplane.has_runnable_work(),
-        node.deferred_dataplane_control_turns.len(),
-    )
-}
-
 async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     for node in nodes.iter() {
         assert_eq!(node.node.config.node.session.pending_packets_per_dest, 16);
@@ -455,16 +408,14 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     let delivered_before = network.stats().packets_delivered;
     let source_address = nodes[0].addr.clone();
     let mut held = Vec::new();
-    let before_flush = flush_snapshot(&nodes[0].node, &destination);
-    let flush_started = tokio::time::Instant::now();
-    let returned_early = {
+    {
         let (source_nodes, others) = nodes.split_at_mut(1);
         let receiver = &mut others[0];
         let flush = source_nodes[0].node.flush_pending_packets(&destination);
         tokio::pin!(flush);
         tokio::time::timeout(Duration::from_secs(1), async {
             tokio::select! {
-                _ = &mut flush => true,
+                _ = &mut flush => panic!("flush must still await actual Sim send completion"),
                 _ = async {
                     loop {
                         while let Ok(packet) = receiver.packet_rx.try_recv() {
@@ -476,22 +427,12 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
                         }
                         tokio::time::sleep(Duration::from_millis(1)).await;
                     }
-                } => false
+                } => {}
             }
-        }).await.expect("first encrypted application send reaches the carrier")
+        }).await.expect("first encrypted application send reaches the carrier");
         // Drop only the production flush, never the fixture's ingress wrapper.
-    };
+    }
     network.set_node_send_completion_delay(&sender_address, 0);
-    assert!(
-        !returned_early,
-        "flush must still await actual Sim send completion: case={case:?}, elapsed={:?}, queued_age_ms={}, before={before_flush}, after={}, observed={}, held={}, sim={:?}",
-        flush_started.elapsed(),
-        Node::now_ms().saturating_sub(queued_from),
-        flush_snapshot(&nodes[0].node, &destination),
-        observed.application.lock().unwrap().len(),
-        held.len(),
-        network.stats(),
-    );
     assert!(
         network.stats().packets_delivered > delivered_before,
         "the exact selected encrypted envelope reached its actual carrier"

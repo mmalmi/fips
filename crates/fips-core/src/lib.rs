@@ -24,8 +24,6 @@ pub mod peer_rating;
 pub(crate) mod perf_profile;
 pub(crate) mod proto;
 pub mod protocol;
-#[cfg(test)]
-pub(crate) mod test_trace;
 pub(crate) mod time;
 pub mod transport;
 pub mod tree;

@@ -5,10 +5,6 @@ use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use super::BloomFilter;
 use crate::NodeAddr;
 
-#[cfg(test)]
-#[path = "state/trace.rs"]
-mod trace;
-
 /// State for managing Bloom filter announcements.
 ///
 /// Tracks local filter state and what needs to be sent to peers.
@@ -35,8 +31,6 @@ pub struct BloomState {
     sequence: u64,
     /// Last outgoing filter sent to each peer (for change detection).
     last_sent_filters: HashMap<NodeAddr, BloomFilter>,
-    #[cfg(test)]
-    diagnostic_trace: Option<crate::test_trace::Trace>,
 }
 
 impl BloomState {
@@ -53,8 +47,6 @@ impl BloomState {
             pending_update_deadline_ms: None,
             sequence: 0,
             last_sent_filters: HashMap::new(),
-            #[cfg(test)]
-            diagnostic_trace: None,
         }
     }
 

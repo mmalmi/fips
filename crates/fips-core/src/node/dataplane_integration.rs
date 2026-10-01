@@ -762,11 +762,16 @@ impl Node {
 
     pub(in crate::node) async fn wait_for_dataplane_completion(&self) {
         let notify = self.dataplane.readiness_notify();
-        let _ = tokio::time::timeout(
-            DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT,
-            notify.notified(),
-        )
-        .await;
+        let deadline = tokio::time::Instant::now() + DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT;
+        while !self.dataplane.has_runnable_work() {
+            if tokio::time::Instant::now() >= deadline
+                || tokio::time::timeout_at(deadline, notify.notified())
+                    .await
+                    .is_err()
+            {
+                break;
+            }
+        }
     }
 
     fn dataplane_pending_outbound_failure(label: &str, turn: &DataplaneLiveNodeTurn) -> String {
