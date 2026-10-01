@@ -83,6 +83,26 @@ Channel lifecycle changes use the controller's immutable agreements,
 channel-wide limits and durable finalization.
 Private operator commands are separate from this peer API.
 
+### Wire format and compatibility
+
+Each TCP exchange carries one JSON request and one JSON response, each prefixed
+by its four-byte big-endian body length. Controller and payment records use a
+snake-case `type` tag; quote requests are plain objects. Amounts, byte counts and
+Unix-second deadlines are integers. Clients must preserve their exact values,
+including unsigned 64-bit values that exceed floating-point integer precision.
+
+These three services do not negotiate a wire version or capabilities. Acceptance
+uses matching software builds; independent clients and mixed-version upgrades
+remain unverified. Top-level request and response schemas reject unknown fields
+and operation tags. This is not a general compatibility guarantee: nested records
+have their own decoding rules, and omitted optional fields use their documented
+defaults, including legacy billing. Review schema and billing changes together.
+
+A timeout or disconnected stream does not prove rejection or roll back a
+committed operation. Financial recovery must resume the retained intent and its
+original offer, channel and payment evidence; transport acknowledgments alone
+do not certify durable application completion.
+
 ### Price cache and request bounds
 
 Complete validated offers are cached locally for at most 30 seconds and never
