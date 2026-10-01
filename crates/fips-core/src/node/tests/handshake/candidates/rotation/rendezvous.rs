@@ -3,7 +3,10 @@ use super::*;
 use crate::config::{SimTransportConfig, TransportInstances};
 use crate::node::EndpointDataIo;
 use crate::node::tests::session::{run_large_stack_async_test, send_endpoint_data_via_dataplane};
-use crate::node::tests::spanning_tree::{lock_large_network_test, process_dataplane_packet};
+use crate::node::tests::spanning_tree::{
+    lock_large_network_test, process_dataplane_completions, process_dataplane_packet,
+    process_dataplane_packet_once,
+};
 use crate::node::wire::Msg1Header;
 use crate::{SimLink, SimNetwork, register_sim_network, unregister_sim_network};
 use futures::FutureExt;
@@ -246,7 +249,15 @@ async fn turn(nodes: &mut [TestNode]) {
             .await;
         n.node.resend_pending_session_msg3(Node::now_ms()).await;
     }
-    process_available_packets(&mut nodes[..6]).await;
+    for n in &mut nodes[..6] {
+        for _ in 0..256 {
+            let Ok(packet) = n.packet_rx.try_recv() else {
+                break;
+            };
+            process_dataplane_packet_once(&mut n.node, packet).await;
+        }
+        process_dataplane_completions(&mut n.node).await;
+    }
     caps(nodes);
 }
 
