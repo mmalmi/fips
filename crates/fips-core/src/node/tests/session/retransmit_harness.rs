@@ -40,6 +40,9 @@ async fn session_wait_drains_ack_before_due_setup_resend() {
         wait_process_packets_for_node(&mut nodes, 1).await > 0,
         "responder should queue SessionAck for the initiator"
     );
+    // A nonwaiting turn may only dispatch Ack decryption. Stage its genuine
+    // authenticated result so this checks ready-control ordering, not worker speed.
+    stage_ready_session_ack(&mut nodes, &node1_addr).await;
     let sent_before_wait = peer_packets_sent(&nodes);
     tokio::time::sleep(Duration::from_millis(2)).await;
 
@@ -59,6 +62,59 @@ async fn session_wait_drains_ack_before_due_setup_resend() {
     );
 
     cleanup_nodes(&mut nodes).await;
+}
+
+async fn stage_ready_session_ack(nodes: &mut [TestNode], remote: &NodeAddr) {
+    use crate::node::session_wire::{FSP_PHASE_MSG2, FspCommonPrefix};
+
+    let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (event_tx, _event_rx) = crate::node::EndpointEventSender::channel(1);
+    tokio::time::timeout(SESSION_FIXTURE_TIMEOUT, async {
+        loop {
+            poll_available_packets(&mut nodes[1..]).await;
+            let source = &mut nodes[0];
+            let mut io = crate::node::handlers::rx_loop_dataplane_io(
+                &mut source.packet_rx,
+                &mut fast_rx,
+                &mut endpoint_rx,
+                &mut tun_rx,
+                &event_tx,
+            );
+            let mut turn = Box::pin(source.node.drain_dataplane_turn_with_firsts(
+                &mut io,
+                crate::dataplane::DataplaneLiveTurnFirsts::default(),
+                crate::node::handlers::RxLoopDataplaneTurnLimits::new(64, 0, 0, 64),
+            ))
+            .await;
+            if !turn.fsp_local_session_ingress().is_empty() {
+                assert_eq!(turn.fsp_local_session_ingress().len(), 1);
+                // Inspect a copy; retain the original authenticated control turn.
+                let (sender, previous, _, _, payload) =
+                    turn.fsp_local_session_ingress()[0].clone().into_parts();
+                assert_eq!(sender, *remote);
+                assert_eq!(previous, *remote);
+                assert_eq!(
+                    FspCommonPrefix::parse(payload.as_slice()).unwrap().phase,
+                    FSP_PHASE_MSG2
+                );
+                assert!(source.node.get_session(remote).unwrap().is_initiating());
+                assert!(source.node.deferred_dataplane_control_turns.is_empty());
+                source.node.defer_dataplane_control_turn(turn);
+                assert_eq!(source.node.deferred_dataplane_control_turns.len(), 1);
+                return;
+            }
+            source
+                .node
+                .process_dataplane_control_ingress(&mut turn)
+                .await;
+            source.node.drain_deferred_dataplane_control_turns().await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("genuine authenticated Ack ready before the due resend turn");
 }
 
 #[test]
