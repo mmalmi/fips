@@ -1,4 +1,4 @@
-use super::super::spanning_tree::{cleanup_nodes, process_available_packets, run_tree_test};
+use super::super::spanning_tree::{cleanup_nodes, poll_available_packets, run_tree_test};
 use super::*;
 
 #[test]
@@ -51,7 +51,7 @@ async fn complete_rekey(nodes: &mut [super::super::spanning_tree::TestNode]) {
     ];
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             if (0..2).all(|i| {
                 nodes[i]
                     .node
@@ -92,7 +92,7 @@ async fn complete_rekey(nodes: &mut [super::super::spanning_tree::TestNode]) {
                     .await
                     .unwrap();
             }
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             if (0..2).all(|i| {
                 nodes[i]
                     .node
@@ -172,7 +172,7 @@ async fn degraded_late_msg1_keeps_complementary_cross_connection_owner() {
     // crossed Msg1. Retain complementary ownership in this ordering too.
     timeout(Duration::from_secs(1), async {
         loop {
-            crate::node::tests::spanning_tree::process_available_packets(&mut nodes).await;
+            crate::node::tests::spanning_tree::poll_available_packets(&mut nodes).await;
             if nodes.iter().all(|node| {
                 let remote = if node.node.node_addr() == &smaller_addr {
                     larger_addr

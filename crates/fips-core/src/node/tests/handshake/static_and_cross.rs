@@ -9,8 +9,8 @@ async fn confirm_cross_connection_packets(
     let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            super::super::spanning_tree::process_node_packets(a, a_rx).await;
-            super::super::spanning_tree::process_node_packets(b, b_rx).await;
+            super::super::spanning_tree::poll_node_packets(a, a_rx).await;
+            super::super::spanning_tree::poll_node_packets(b, b_rx).await;
             let a_peer = a.get_peer(b.node_addr()).unwrap();
             let b_peer = b.get_peer(a.node_addr()).unwrap();
             if a_peer.their_index() == b_peer.our_index()
@@ -741,8 +741,17 @@ async fn test_late_static_outbound_resend_completes_after_opposite_direction_pro
 /// sessions, so the direct FSP SessionAck can never return.
 #[tokio::test]
 async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack() {
+    duplicate_same_tuple_outbound_dials(false).await;
+}
+
+#[tokio::test]
+async fn duplicate_same_tuple_outbound_dials_progress_with_retained_crypto_wakeup() {
+    duplicate_same_tuple_outbound_dials(true).await;
+}
+
+async fn duplicate_same_tuple_outbound_dials(retain_crypto_wakeup: bool) {
     use crate::node::tests::spanning_tree::{
-        cleanup_nodes, initiate_handshake, make_test_node, process_available_packets,
+        cleanup_nodes, initiate_handshake, make_test_node, poll_available_packets,
     };
     use crate::node::wire::{Msg1Header, Msg2Header};
     use tokio::time::{Duration, timeout};
@@ -832,6 +841,16 @@ async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack(
     }
     populate_all_coord_caches(&mut nodes);
 
+    // A registered observer can retain an advisory crypto wake. Ready work
+    // must still advance on both nodes inside the original session deadline.
+    let notify = nodes[1].node.dataplane.readiness_notify();
+    let mut retained_wakeup = retain_crypto_wakeup.then(|| Box::pin(notify.notified()));
+    if let Some(wakeup) = &mut retained_wakeup {
+        while wakeup.as_mut().enable() {
+            *wakeup = Box::pin(notify.notified());
+        }
+    }
+
     // Exercise the actual encrypted production path. With split FMP owners,
     // the responder cannot decrypt SessionSetup and no SessionAck arrives.
     nodes[0]
@@ -849,12 +868,13 @@ async fn duplicate_same_tuple_outbound_dials_preserve_fmp_owner_and_session_ack(
                 .get_session(&initiator_addr)
                 .is_some_and(|s| s.is_established())
         {
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("matching FMP owners must complete the direct FSP handshake");
+    drop(retained_wakeup);
 
     let initiator_peer = nodes[0]
         .node

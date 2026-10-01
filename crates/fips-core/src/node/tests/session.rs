@@ -187,7 +187,7 @@ async fn wait_for_session_rekey_complete(
             }
 
             run_session_retransmit_work(nodes).await;
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -332,7 +332,7 @@ pub(super) async fn recv_endpoint_event_while_draining(
             panic!("{context}: endpoint data should not time out: {snapshots:#?}");
         }
         run_session_retransmit_work(nodes).await;
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -358,7 +358,7 @@ async fn recv_service_event_while_draining(
             "{context}: service datagram should not time out"
         );
         run_session_retransmit_work(nodes).await;
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -483,7 +483,7 @@ async fn try_recv_tun_packet_while_draining(
             return None;
         }
         run_session_retransmit_work(nodes).await;
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

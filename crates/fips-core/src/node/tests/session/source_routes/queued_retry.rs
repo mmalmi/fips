@@ -113,7 +113,7 @@ fn queued_endpoint_and_tun_retry_obey_rebound_source_carrier() {
             .unwrap();
         tokio::time::timeout(Duration::from_secs(3), async {
             while nodes[0].node.get_peer(peers[2].node_addr()).is_some() {
-                process_available_packets(&mut nodes).await;
+                poll_available_packets(&mut nodes).await;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
@@ -214,7 +214,7 @@ fn queued_endpoint_and_tun_retry_obey_rebound_source_carrier() {
         tokio::time::timeout(Duration::from_secs(3), async {
             while !endpoint_received || !tun_received {
                 nodes[0].node.retry_pending_session_traffic().await;
-                process_available_packets(&mut nodes).await;
+                poll_available_packets(&mut nodes).await;
                 if let Ok(event) = endpoint.event_rx.try_recv() {
                     endpoint.event_rx.release_messages(event.messages.len());
                     assert!(!endpoint_received, "queued endpoint delivered only once");

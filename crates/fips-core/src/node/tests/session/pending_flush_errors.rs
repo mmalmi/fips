@@ -157,7 +157,7 @@ async fn exercise(nodes: &mut [TestNode], case: Case) {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while nodes[0].node.get_peer(peers[2].node_addr()).is_some() {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
@@ -268,7 +268,7 @@ async fn exercise(nodes: &mut [TestNode], case: Case) {
     let mut received = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), async {
         while received.len() < expected.len() {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             while let Ok(event) = endpoint.event_rx.try_recv() {
                 endpoint.event_rx.release_messages(event.messages.len());
                 for data in event.messages {

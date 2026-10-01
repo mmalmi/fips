@@ -4,6 +4,9 @@ use crate::node::wire::{CommonPrefix, PHASE_ESTABLISHED};
 use crate::protocol::LinkMessageType;
 use std::sync::Mutex;
 
+mod observation;
+use observation::Sample;
+
 #[test]
 fn live_udp_authenticated_cold_contact_learns_current_declarations_in_400ms() {
     super::super::super::session::run_large_stack_async_test("cold-tree-contact", || async {
@@ -268,12 +271,13 @@ async fn observe_contact(bench: &mut Bench, trace: &Arc<Mutex<Trace>>, phase_ms:
     let scheduled = bench.started[2] + Duration::from_secs(1) + Duration::from_millis(phase_ms);
     tokio::time::sleep_until(scheduled).await;
     let open = Instant::now();
+    let deadline = open + Duration::from_millis(400);
     let open_ms = Node::now_ms();
     assert!(open.duration_since(scheduled) < Duration::from_millis(50));
     bench.contact.up.store(true, Ordering::Release);
     let contact = bench.contact.clone();
     bench.tasks.spawn(async move {
-        tokio::time::sleep_until(open + Duration::from_millis(400)).await;
+        tokio::time::sleep_until(deadline).await;
         contact
             .cut_us
             .store(open.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -287,9 +291,11 @@ async fn observe_contact(bench: &mut Bench, trace: &Arc<Mutex<Trace>>, phase_ms:
     // Observe the deferred flight after the cut too, without reopening it or
     // counting post-cut repair as short-contact success.
     while open.elapsed() < Duration::from_millis(950) {
-        let before = open.elapsed().as_micros() as u64;
-        let states = [bench.state(0, 2).await, bench.state(2, 0).await];
-        let after = open.elapsed().as_micros() as u64;
+        // Query both nodes together; each state() still reads tree before peers.
+        let sample = Sample::read(bench.state(0, 2), bench.state(2, 0)).await;
+        let before = sample.started.duration_since(open).as_micros() as u64;
+        let after = sample.completed.duration_since(open).as_micros() as u64;
+        let states = &sample.states;
         for (index, state) in states.iter().enumerate() {
             assert_eq!(
                 owner(state),
@@ -312,15 +318,10 @@ async fn observe_contact(bench: &mut Bench, trace: &Arc<Mutex<Trace>>, phase_ms:
             );
             previous = state;
         }
-        if after < 400_000
-            && bench.contact.up.load(Ordering::Acquire)
-            && states[1]["root"] == root
-            && Bench::learned(&states[0], &states[1])
-            && Bench::learned(&states[1], &states[0])
-        {
+        if bench.contact.up.load(Ordering::Acquire) && sample.learned_before(&root, deadline) {
             ready_at.get_or_insert(after);
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sample.wait_next(deadline).await;
     }
     let cut_us = bench.checked_cut_us(400);
     let retained = bench.state(2, 1).await;

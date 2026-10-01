@@ -1,6 +1,7 @@
 //! A genuine pending filter must use its debounce deadline between slow ticks.
 use super::wire_tap::WireTap;
 use super::*;
+use crate::node::tests::spanning_tree::poll_available_packets;
 use crate::protocol::{FilterAnnounce, LinkMessageType};
 use std::sync::{Arc, Mutex};
 
@@ -98,7 +99,7 @@ async fn setup(nodes: &mut [TestNode]) {
     loop {
         // Setup alone pumps real UDP/Noise/tree traffic. Initial filters stay
         // pending so their first genuine announcements provide the time anchor.
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         for test in nodes.iter_mut() {
             test.node.poll_pending_connects().await;
             test.node.resend_pending_handshakes(Node::now_ms()).await;
@@ -157,7 +158,7 @@ async fn exercise(nodes: &mut [TestNode]) {
         nodes[TARGET].node.send_pending_filter_announces().await;
         let setup_until = Instant::now() + Duration::from_millis(200);
         loop {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             if nodes[PARENT].node.get_peer(&target).unwrap().may_reach(&target)
                 && witness.lock().unwrap().negative_received_ms.is_some()
             {

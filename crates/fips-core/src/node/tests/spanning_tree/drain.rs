@@ -10,21 +10,23 @@ use super::*;
 pub(in crate::node::tests) async fn poll_available_packets(nodes: &mut [TestNode]) -> usize {
     let mut count = 0;
     for node in nodes {
-        for _ in 0..64 {
-            let Ok(packet) = node.packet_rx.try_recv() else {
-                break;
-            };
-            count += Box::pin(process_dataplane_turn(
-                &mut node.node,
-                Some(packet),
-                64,
-                false,
-            ))
-            .await;
-        }
-        count += Box::pin(process_dataplane_turn(&mut node.node, None, 64, false)).await;
+        count += poll_node_packets(&mut node.node, &mut node.packet_rx).await;
     }
     count
+}
+
+pub(in crate::node::tests) async fn poll_node_packets(
+    node: &mut Node,
+    packet_rx: &mut PacketRx,
+) -> usize {
+    let mut count = 0;
+    for _ in 0..64 {
+        let Ok(packet) = packet_rx.try_recv() else {
+            break;
+        };
+        count += Box::pin(process_dataplane_turn(node, Some(packet), 64, false)).await;
+    }
+    count + Box::pin(process_dataplane_turn(node, None, 64, false)).await
 }
 
 /// Await crypto work in the selected order for ordered fixture steps.

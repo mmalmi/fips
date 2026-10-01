@@ -141,7 +141,7 @@ async fn exercise(nodes: &mut [TestNode]) {
             .filter_sequence()
             != filter_sequence
         {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::task::yield_now().await;
         }
     })
@@ -207,7 +207,7 @@ async fn exercise(nodes: &mut [TestNode]) {
         .unwrap();
     tokio::time::timeout(Duration::from_millis(250), async {
         while !nodes[source].node.is_tree_peer(&sender_addr) {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::task::yield_now().await;
         }
     })
@@ -234,7 +234,7 @@ async fn exercise(nodes: &mut [TestNode]) {
         .expect("first request must have an actual origin ID");
     tokio::time::timeout(Duration::from_millis(250), async {
         while nodes[sender].node.stats().discovery.req_received == received_before {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::task::yield_now().await;
         }
     })
@@ -258,7 +258,7 @@ async fn exercise(nodes: &mut [TestNode]) {
     }
     tokio::time::timeout(Duration::from_millis(250), async {
         while nodes[source].node.stats().tree.stale < stale_before + 2 {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::task::yield_now().await;
         }
     })
