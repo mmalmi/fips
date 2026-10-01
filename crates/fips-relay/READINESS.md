@@ -14,9 +14,10 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r50 package includes the final session and adjacent-link handshake reply-window
-fixes, the UDP receive-error fix and the prior refund-recovery fix. It uses FIPS
-core 0.4.88, TCP endpoint 0.2.21, SDK `832e48c639f7` and CDK `7c250132ae57`.
+The r51 package includes the final session and adjacent-link handshake reply-window
+fixes, the UDP receive-error fix, refund recovery and the original-debit check
+before funding retries. It uses FIPS core 0.4.88, TCP endpoint 0.2.21,
+SDK `0879189adab1` and CDK `7c250132ae57`.
 Its customer and mixed-link checks supplement the r49 refund, r48 internal
 reclaim, r47 ordinary receipt-read, r46 control and broader r45 results below.
 The r46 CPU-pressure results retain their prior wallet sources.
@@ -28,9 +29,9 @@ Fully paid controller renewal at two and quarter CPU now covers r50's integrated
 source. The bounded-free controller checks retain their source scope before the
 concurrent UDP fix. Current-device acceptance remains pending.
 
-SDK `0879189adab1` additionally checks original debit evidence before resuming an
-ordinary funding retry. Its native acceptance is recorded below; the r50 package
-still uses SDK `832e48c639f7` and does not include this later fix.
+The funding-retry regression has native SDK acceptance. The r51 package adds
+four integration checks using that SDK source; it does not rerun the native
+fault regression or the earlier controller-pressure workloads on Linux.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
@@ -43,6 +44,27 @@ still uses SDK `832e48c639f7` and does not include this later fix.
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+The unsigned r51 OpenWrt package at FIPS `2265c1077500` and SDK `0879189adab1`
+passes both customer billing modes, mixed UDP/TCP exhaustion and restart, and
+explicitly configured self-signed WebSocket using its extracted optimized
+executable on isolated ARM64 Linux. All eleven payload files and the static ARM64
+executables pass inspection. All eight build/runtime gates retain matching source
+fingerprints; saved executable hashes are unchanged and all owned containers
+are absent.
+
+The frozen bundle differs from r50 in four files: this readiness document and
+the SDK funding-retry implementation, regression and guide. FIPS runtime sources,
+other dependency sources, the resolved graph and lockfiles are unchanged. SDK
+sources match every file in the native acceptance below. Only the customer and
+service test executables were built; earlier controller-pressure and embedded
+refund checks retain their recorded source scope. The 55-file evidence index is
+under `work/paid-relay-verification/2026-10-01-arm64-r51`.
+
+The r50 package, saved executables and earlier evidence remain unchanged.
+These checks do not establish current-device performance, physical power-loss
+recovery or production readiness. No hardware, deployment or real-money operation
+was performed.
 
 SDK `0879189adab1` requires the original wallet debit before ordinary opening
 retries resume mint funding. Previously, a retry could complete funding with no
@@ -58,8 +80,8 @@ final gates retain identical source fingerprints. The published lockfile is
 restored for the commit, and the exact private dependency inputs remain in the
 51-file evidence index under
 `work/paid-relay-verification/2026-10-01-funding-retry-evidence`.
-The r50 package and its evidence remain unchanged; matching package acceptance
-for this SDK fix is pending. No hardware, deployment or real-money operation was
+The matching r51 package acceptance is recorded above. The r50 package and its
+evidence remain unchanged. No hardware, deployment or real-money operation was
 performed.
 
 The unsigned r50 OpenWrt package at FIPS `1f53191a6a22` passes both customer billing
