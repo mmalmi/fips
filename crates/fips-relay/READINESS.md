@@ -14,7 +14,8 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r47 package verifies the ordinary receipt-read fix with FIPS core 0.4.88,
+The internal reclaim receipt-read fix below has native acceptance only.
+The r47 package verifies the earlier ordinary receipt-read fix with FIPS core 0.4.88,
 TCP endpoint 0.2.21, SDK `8266ebb1865f` and CDK `0defd5206d02`.
 Its customer, mixed-link and wallet checks supplement the r46 control checks
 and broader r45 suite below. The r46 CPU-pressure results retain their prior wallet sources.
@@ -33,6 +34,32 @@ and workloads; they do not establish current-device or general production readin
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional TollGate adapter remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 ## Verified implementation and test history
+
+CDK `7c250132ae57` closes the internal original-receipt read during
+reclaim storage reservation. Both ordinary saga updates and atomic output
+preparation apply the configured 4 MiB budget through the same receipt reader.
+Oversized memo or metadata fields fail before projection and decoding, preserving
+the original receipt, saga, coins, storage allowance, output keys and derivation
+counter. Restoring the original receipt permits reclaim completion at the existing
+capacity. Unconfigured native stores retain their prior behavior. No peer message,
+database schema, dependency, wallet API or smaller admission limit is added.
+
+The existing reclaim fixture fails on the prior runtime and passes unchanged with
+the fix. All 186 SQLite wallet tests, 15 focused SDK reclaim/capacity/read checks,
+307 relay library tests and seven routine wallet/customer cases pass. The existing
+131-export soak is excluded. Native SQL, SDK and relay strict lint, formatting and
+source-size checks pass; all eleven final gates preserve identical sources and
+dependency fingerprints. SDK `8266ebb1865f` and FIPS runtime sources are unchanged;
+the previous full SDK workspace suite retains its recorded scope.
+
+Evidence is indexed under
+`work/paid-relay-verification/2026-10-01-reclaim-read-bounds`.
+This is native macOS ARM64 acceptance with core 0.4.88 and TCP endpoint 0.2.21.
+The r47 package retains the preceding CDK revision and does not contain this fix.
+Matching Linux package acceptance, remaining wallet queries/workflows, aggregate
+resource pressure, current devices and physical power loss remain open. Prior
+native, r47 and r46 evidence remains unchanged. No deployment, publication or
+real-money operation was performed.
 
 SDK `8266ebb1865f` and CDK `0defd5206d02` close an
 ordinary exact receipt-read bypass of the service's existing 4 MiB budget.
@@ -58,8 +85,8 @@ The r47 result below adds matching Linux package acceptance. The r46 package and
 CPU-pressure evidence remains unchanged with its prior wallet sources. Remaining
 wallet queries/workflows, aggregate resource pressure, current devices and physical
 power loss remain open.
-In particular, the internal original-receipt reload during reclaim storage
-reservation is separate from these ordinary exact lookups and remains unbounded.
+These earlier sources leave the internal reclaim storage-reservation receipt
+read unbounded; the later native fix above closes that separate path.
 No deployment, publication or real-money operation was performed.
 
 The unsigned r47 OpenWrt package combines FIPS `43206ca4b7e1` with the

@@ -413,10 +413,13 @@ native stores keep their previous behavior. Ordinary exact receipt reads also
 use the existing 4 MiB indexed batch query on every service open, including native
 completion and reclaim recovery. Oversized stored fields fail before projection
 or decoding and retain the original evidence. This closes a read-policy bypass
-without adding a smaller admission limit. Legacy bulk quote APIs, remaining wallet
-queries, aggregate memory and physical storage remain separate bounds. The internal
-original-receipt reload during reclaim storage reservation is not covered by this
-ordinary exact-read policy.
+without adding a smaller admission limit. The internal original-receipt reload
+during reclaim storage reservation uses the same bounded reader, through both
+ordinary saga updates and atomic output preparation. Rejection preserves the
+original receipt, saga, coins, allowance, output keys and derivation counter;
+restoring the original fields allows reclaim completion. Legacy bulk quote APIs,
+remaining wallet queries, aggregate memory and physical storage remain separate
+bounds.
 
 Output preparation also bounds cached mint-key comparison before SQL driver
 projection and decoding. The ceiling is 4 MiB or the larger caller-owned original,
