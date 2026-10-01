@@ -14,10 +14,10 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The newer receipt-read fix below has native acceptance only.
-The r46 package verifies the latest outgoing-control fix with FIPS core 0.4.88,
-TCP endpoint 0.2.21, SDK `948a93782f9b` and CDK `738e08534ce6`. Its focused
-customer, mixed-link and control checks supplement the broader r45 suite below.
+The r47 package verifies the ordinary receipt-read fix with FIPS core 0.4.88,
+TCP endpoint 0.2.21, SDK `8266ebb1865f` and CDK `0defd5206d02`.
+Its customer, mixed-link and wallet checks supplement the r46 control checks
+and broader r45 suite below. The r46 CPU-pressure results retain their prior wallet sources.
 The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
@@ -54,12 +54,27 @@ dependency fingerprints; standalone SQLite retains its separate native lock.
 Evidence is indexed under
 `work/paid-relay-verification/2026-10-01-receipt-read-bounds`.
 This is native macOS ARM64 acceptance with core 0.4.88 and TCP endpoint 0.2.21.
-The r46 package and CPU-pressure results retain their prior wallet sources and
-unchanged evidence. A matching Linux package, remaining wallet queries/workflows,
-aggregate resource pressure, current devices and physical power loss remain open.
+The r47 result below adds matching Linux package acceptance. The r46 package and
+CPU-pressure evidence remains unchanged with its prior wallet sources. Remaining
+wallet queries/workflows, aggregate resource pressure, current devices and physical
+power loss remain open.
 In particular, the internal original-receipt reload during reclaim storage
 reservation is separate from these ordinary exact lookups and remains unbounded.
 No deployment, publication or real-money operation was performed.
+
+The unsigned r47 OpenWrt package combines FIPS `43206ca4b7e1` with the
+accepted wallet changes above. Its source bundle changes exactly eight files from
+r46; dependency versions, resolved graph and locks remain unchanged. Both customer
+billing flows, mixed UDP/TCP exhaustion and restart, and explicitly configured
+self-signed WebSocket pass using the extracted optimized package on isolated
+ARM64 Linux. The ordinary receipt-read regression also passes using matching SDK
+sources with all features. The relay harnesses use the package's default features.
+
+All eleven payload files and the static ARM64 executable pass inspection. Source
+and executable hashes remain unchanged across the checks, and all owned containers
+are absent. Prior native and r46 evidence is unchanged. Evidence is indexed under
+`work/paid-relay-verification/2026-10-01-arm64-r47`. This is local test-money
+acceptance; no installation, physical-device or production-readiness claim follows.
 
 Outgoing control now limits one neighbor to eight of the existing sixteen
 queued/active request slots. Previously, one neighbor could occupy its four TCP
