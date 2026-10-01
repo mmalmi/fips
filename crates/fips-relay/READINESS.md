@@ -35,6 +35,29 @@ and workloads; they do not establish current-device or general production readin
 
 ## Verified implementation and test history
 
+The existing five-node controller fixture now covers automatic renewal with the
+`forwarding_data` tariff as well as `forwarding_attempt`. The bounded-handshake
+case passes at two and quarter CPU using a clean OpenWrt-profile ARM64 Linux
+harness. All three relays use their unpaid handshake allowance, all ten session
+directions rotate, each forced routed handshake loss recovers, and fresh delivery,
+renewal, settlement, lifetime spending bounds and final wallet reconciliation pass.
+The fully paid renewal case also passes at two CPUs. Both cases share the same
+traffic, deadlines and financial limits; wallet collection remains one shared
+check. Strict all-feature controller lint, formatting and source limits pass.
+
+Two preceding instrumented quarter-CPU runs of the fully paid tariff pass.
+The detailed trace matches a Setup refusal to the credit bound (12,342 proposed
+versus 12,000 permitted msat) and a Finish refusal to an absent active contract
+during renewal. Identical retries are admitted by the same relay 2.001 and 2.918
+seconds later. Later refusals during another rotation and shutdown are retained
+separately. No maintenance timeout is recorded in these traces. This establishes
+those admission decisions and recoveries, not the cause of the earlier
+uninstrumented 33-second gap or a matched performance comparison. That failure
+remains open. Temporary runtime and test tracing was removed before the final
+checks; production sources and the r48 package are unchanged. Evidence is indexed
+under `work/paid-relay-verification/2026-10-01-controller-rekey-delay`.
+All owned containers are absent; no hardware or real-money operation was performed.
+
 The renewal test now covers an observer starting during a setup rotation's
 old-key drain. With the original observer, all eight adjacent directions already
 had authenticated replacement keys, but none was counted because its first

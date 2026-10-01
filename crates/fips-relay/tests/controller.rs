@@ -22,6 +22,7 @@ use fips_core::{
     config::{PeerConfig, TransportInstances, UdpConfig},
     node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
+use fips_relay::ledger::BillingBasis::{ForwardingAttempt, ForwardingData};
 use fips_relay::{
     buyer::{BuyerAuthorizer, PaidForwarder},
     control_transport::ControlTransport,
@@ -41,34 +42,39 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authenticated_adjacent_routers_fund_accept_and_pay_without_a_control_roster() {
-    controller_scenario(false, false, false, false, false).await;
+    controller_scenario(None, false, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(true, false, false, false, false).await;
+    controller_scenario(Some(ForwardingAttempt), false, false, false, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bounded_handshakes_survive_paid_channel_renewal() {
+    controller_scenario(Some(ForwardingData), false, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
-    controller_scenario(false, true, false, false, false).await;
+    controller_scenario(None, true, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn changed_native_paths_reprice_routes_and_reuse_unchanged_neighbor_channels() {
-    controller_scenario(false, false, true, false, false).await;
+    controller_scenario(None, false, true, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn source_authorized_routes_refresh_automatically_within_price_and_spending_caps() {
-    controller_scenario(false, false, true, true, false).await;
+    controller_scenario(None, false, true, true, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels() {
-    controller_scenario(false, false, false, false, true).await;
+    controller_scenario(None, false, false, false, true).await;
 }
 
 // Each scenario owns five live nodes and several signing workers. Keep the
@@ -77,12 +83,13 @@ async fn slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels() {
 static NETWORK_SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn controller_scenario(
-    automatic_renewal: bool,
+    renewal_billing: Option<BillingBasis>,
     evidence_gap: bool,
     route_change: bool,
     automatic_routes: bool,
     slow_neighbor: bool,
 ) {
+    let automatic_renewal = renewal_billing.is_some();
     let _network = NETWORK_SCENARIO.lock().await;
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
@@ -107,7 +114,7 @@ async fn controller_scenario(
         let mut data = Vec::new();
         let mut forwarding = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
-        let billing = if automatic_renewal { BillingBasis::ForwardingAttempt } else { BillingBasis::default() };
+        let billing = renewal_billing.unwrap_or_default();
         let paid_quote_traffic = !automatic_renewal && !evidence_gap && !route_change && !slow_neighbor;
         // Keep route-change and slow-neighbor scenarios below exhaustion, which the
         // separate renewal scenario deliberately exercises with small channels.
@@ -465,6 +472,9 @@ async fn controller_scenario(
         }
         #[cfg(unix)]
         if let Some(rekey) = rekey { rekey.assert_rotated("paid renewal"); }
+        if billing.has_free_handshakes() {
+            for relay in &forwarding[1..4] { relay.assert_handshake_allowance_used(); }
+        }
         // Delivery and the periodic payment worker are independent. Observe
         // the verified balance transition instead of assuming the final 600ms
         // sleep has also completed every neighbor's signature and response.
@@ -944,21 +954,7 @@ async fn controller_scenario(
         for node in &nodes {
             node.shutdown().await.unwrap();
         }
-        for (wallet, balance) in wallets.iter().zip(expected) {
-            assert_eq!(
-                load_mint_balance(wallet, mint.url())
-                    .await
-                    .unwrap()
-                    .balance_sat,
-                balance as u64
-            );
-            let token = send_payment_token(wallet, mint.url(), balance as u64)
-                .await
-                .unwrap();
-            receive_payment_token(&root.path().join("collector"), &token.token)
-                .await
-                .unwrap();
-        }
+        controller_support::collect_wallets(root.path(), &wallets, mint.url(), expected).await;
         for controller in &controllers {
             controller.settle_all().await.unwrap();
         }

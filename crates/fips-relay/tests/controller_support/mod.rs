@@ -216,3 +216,26 @@ pub(super) async fn verify_reloaded_wallets(
         tasks.push(ControllerTasks::start(controller.clone(), incoming));
     }
 }
+
+pub(super) async fn collect_wallets(
+    root: &std::path::Path,
+    wallets: &[std::path::PathBuf],
+    mint_url: &str,
+    expected: [i64; 5],
+) {
+    for (wallet, balance) in wallets.iter().zip(expected) {
+        assert_eq!(
+            load_mint_balance(wallet, mint_url)
+                .await
+                .unwrap()
+                .balance_sat,
+            balance as u64
+        );
+        let token = send_payment_token(wallet, mint_url, balance as u64)
+            .await
+            .unwrap();
+        receive_payment_token(&root.join("collector"), &token.token)
+            .await
+            .unwrap();
+    }
+}

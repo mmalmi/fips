@@ -73,6 +73,11 @@ impl DeliveryTrace {
         }
     }
 
+    pub(crate) fn assert_handshake_allowance_used(&self) {
+        let stats = self.inner.bootstrap_stats().expect("free handshake tariff");
+        assert!(stats.admitted_packets > 0 && stats.admitted_session_bytes > 0);
+    }
+
     pub(crate) fn lose_rekey_handshakes(&self, peers: [NodeAddr; 2]) {
         let mut loss = self.handshake_loss.lock().unwrap();
         assert!(loss.is_none(), "each finite loss window is armed once");
