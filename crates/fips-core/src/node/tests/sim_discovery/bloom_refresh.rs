@@ -25,12 +25,18 @@ fn canceled_tree_turn_leaves_unvisited_bloom_immediately_due() {
     run(Case::TreeCancellation);
 }
 
+#[test]
+fn anchor_filter_waits_for_delayed_recipient_acceptance() {
+    run(Case::DelayedAnchor);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Case {
     Refresh,
     Cancellation,
     FastCancellation,
     TreeCancellation,
+    DelayedAnchor,
 }
 
 fn run(case: Case) {
@@ -66,6 +72,7 @@ fn run(case: Case) {
                 Case::Cancellation => cancellation(&mut nodes, &network).await,
                 Case::FastCancellation => fast_cancellation(&mut nodes, &network, false).await,
                 Case::TreeCancellation => fast_cancellation(&mut nodes, &network, true).await,
+                Case::DelayedAnchor => delayed_anchor(&mut nodes, &network).await,
             }
             assert_eq!(
                 self::owners(&nodes),
@@ -159,20 +166,55 @@ async fn setup(nodes: &mut [TestNode]) {
 
 async fn anchor_filter(nodes: &mut [TestNode], sender: usize, remotes: &[usize]) {
     let before = nodes[sender].node.stats().bloom.sent;
+    let sender_id = *nodes[sender].node.node_addr();
+    let watermark = nodes[sender].node.bloom_state.sequence();
     for &remote in remotes {
         let peer = *nodes[remote].node.node_addr();
         nodes[sender].node.bloom_state.mark_update_needed(peer);
     }
     let until = tokio::time::Instant::now() + Duration::from_secs(2);
-    while nodes[sender].node.stats().bloom.sent < before + remotes.len() as u64 {
+    while nodes[sender].node.stats().bloom.sent < before + remotes.len() as u64
+        || remotes.iter().any(|&remote| {
+            nodes[remote]
+                .node
+                .get_peer(&sender_id)
+                .unwrap()
+                .filter_sequence()
+                <= watermark
+        })
+    {
         turn(nodes).await;
         assert!(
             tokio::time::Instant::now() < until,
-            "paced real anchor send"
+            "paced real anchor send and recipient acceptance"
         );
     }
-    // Anchor to an actual successful send, never a fabricated history timestamp.
-    turn(nodes).await;
+}
+
+async fn delayed_anchor(nodes: &mut [TestNode], network: &SimNetwork) {
+    let sender = *nodes[0].node.node_addr();
+    let watermark = nodes[0].node.bloom_state.sequence();
+    for remote in [1, 2] {
+        network.set_directed_link(
+            nodes[0].addr.as_str().unwrap(),
+            nodes[remote].addr.as_str().unwrap(),
+            Some(SimLink {
+                latency_ms: 400,
+                ..SimLink::default()
+            }),
+        );
+    }
+    anchor_filter(nodes, 0, &[1, 2]).await;
+    let received: Vec<_> = nodes[1..]
+        .iter()
+        .map(|node| node.node.get_peer(&sender).unwrap().filter_sequence())
+        .collect();
+    assert!(
+        received.iter().all(|sequence| *sequence > watermark),
+        "anchor baseline requires accepted delivery: watermark={watermark}, received={received:?}, sent={}, wire={:?}",
+        nodes[0].node.stats().bloom.sent,
+        network.stats(),
+    );
 }
 
 async fn unchanged(nodes: &mut [TestNode]) {
