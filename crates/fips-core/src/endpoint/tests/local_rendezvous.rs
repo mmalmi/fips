@@ -475,7 +475,7 @@ async fn fixed_loopback_rendezvous_survives_abrupt_anchor_task_abort() {
     let anchor_task = anchor
         .task
         .lock()
-        .expect("anchor task lock")
+        .await
         .take()
         .expect("running anchor task");
     anchor_task.abort();
