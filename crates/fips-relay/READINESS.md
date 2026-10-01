@@ -25,9 +25,9 @@ The r44 long export-custody run retains its core 0.4.87/endpoint 0.2.20 scope.
 Earlier package suites and cadence measurements retain their recorded revisions
 and workloads; they do not establish current-device or general production readiness.
 The handshake fixes also have separate core and optimized controller acceptance.
-Fully paid controller renewal at two and quarter CPU now covers r50's integrated
-source. The bounded-free controller checks retain their source scope before the
-concurrent UDP fix. Current-device acceptance remains pending.
+The later session-retry fix has fully paid and bounded-free controller acceptance
+at two and quarter CPU, as recorded below. Earlier controller results retain
+their recorded source scope. Current-device acceptance remains pending.
 
 The funding-retry regression has native SDK acceptance. The r51 package adds
 four integration checks using that SDK source; it does not rerun the native
