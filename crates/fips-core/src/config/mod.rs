@@ -358,6 +358,15 @@ pub fn resolve_identity(
             });
         }
 
+        // Windows can report NotFound when an ancestor is a file. Confirm the
+        // directory is usable before treating a missing key as a new identity.
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ConfigError::WriteKeyFile {
+                path: key_path.clone(),
+                source,
+            })?;
+        }
+
         // No key file yet — generate and persist
         let identity = Identity::generate();
         let mut our_keypair = identity.keypair();
@@ -366,10 +375,6 @@ pub fn resolve_identity(
         secret_key.non_secure_erase();
         our_keypair.non_secure_erase();
         let npub = identity.npub();
-
-        if let Some(parent) = key_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
 
         match write_key_file(&key_path, &nsec) {
             Ok(()) => {

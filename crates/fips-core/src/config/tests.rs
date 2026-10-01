@@ -513,6 +513,20 @@ fn test_resolve_identity_persistent_rejects_uninspectable_path() {
 }
 
 #[test]
+fn test_resolve_identity_persistent_creates_missing_directory() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("new").join("nested").join("fips.yaml");
+    let mut config = Config::new();
+    config.node.identity.persistent = true;
+
+    let generated = resolve_identity(&config, std::slice::from_ref(&config_path)).unwrap();
+    assert!(matches!(generated.source, IdentitySource::Generated(_)));
+    let restored = resolve_identity(&config, &[config_path]).unwrap();
+    assert!(matches!(restored.source, IdentitySource::KeyFile(_)));
+    assert_eq!(generated.nsec, restored.nsec);
+}
+
+#[test]
 #[cfg(unix)]
 fn test_resolve_identity_preserves_dangling_key_symlink() {
     let dir = TempDir::new().unwrap();
