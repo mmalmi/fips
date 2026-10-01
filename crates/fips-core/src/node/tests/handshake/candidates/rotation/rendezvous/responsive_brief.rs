@@ -236,6 +236,13 @@ pub(super) async fn observe(
         closed
     });
     let opened = opened_rx.await.unwrap();
+    if kind == Kind::Mature {
+        observation.contact_phase = Some(phase::Capture::new(
+            observation.started,
+            observation.next_tick,
+            opened.observed_ms,
+        ));
+    }
     let result = AssertUnwindSafe(async {
         if kind == Kind::Mature {
             let mut payloads = ready::Payloads::default();
@@ -265,7 +272,11 @@ pub(super) async fn observe(
                 if let Some(payloads) = &mut observation.brief_payloads {
                     payloads.drain(endpoints, ids, observation.started);
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                let idle = tokio::time::sleep(Duration::from_millis(5));
+                if let Some(phase) = &mut observation.contact_phase {
+                    phase.before_sleep(nodes, "brief-loop");
+                }
+                idle.await;
             }
             useful_retained(nodes, ids, &useful);
             evidence.observe(nodes, ids, observation.started);
@@ -296,6 +307,11 @@ pub(super) async fn observe(
         .brief_payloads
         .as_ref()
         .is_some_and(|payloads| payloads.accepted(closed.observed_ms[0]));
+    if let Some(phase) = observation.contact_phase.take()
+        && (result.is_err() || !reciprocal_in_contact || !payloads_in_contact)
+    {
+        phase.report(closed.observed_ms);
+    }
     // An unchanged full roster with actual demand on its mature useful owner
     // and an idle owner immature through the cut proves this exclusion. Slot
     // counts and victim_selection_ready never establish full admissibility.

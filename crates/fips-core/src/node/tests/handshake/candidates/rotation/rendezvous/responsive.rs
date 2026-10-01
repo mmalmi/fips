@@ -20,6 +20,8 @@ mod brief;
 #[path = "responsive_live.rs"]
 #[cfg(unix)]
 mod live;
+#[path = "responsive_phase.rs"]
+mod phase;
 #[path = "responsive_brief_ready.rs"]
 mod ready;
 #[path = "responsive_round.rs"]
@@ -167,6 +169,7 @@ struct Observation {
     queued_originals: Vec<queued::Original>,
     brief_payloads: Option<ready::Payloads>,
     initial_handshake: Option<setup::ScheduledHandshake>,
+    contact_phase: Option<phase::Capture>,
 }
 
 fn pending_attempts(node: &Node, ids: &[PeerIdentity]) -> Value {
@@ -211,6 +214,7 @@ impl Observation {
             queued_originals: Vec::new(),
             brief_payloads: None,
             initial_handshake: None,
+            contact_phase: None,
         }
     }
 
@@ -274,6 +278,7 @@ impl Observation {
             original.observe(nodes, ids, self.started);
         }
         self.timing.observe(nodes, ids, self.started, "turn-entry");
+        let scheduled = self.next_tick;
         let due = if self.component_phase.is_zero() {
             // Preserve the original cold and repeated-control schedule/order.
             let due = tokio::time::Instant::now() >= self.next_tick[0];
@@ -295,6 +300,9 @@ impl Observation {
             })
         };
         if due.into_iter().any(|due| due) {
+            if let Some(phase) = &mut self.contact_phase {
+                phase.due(scheduled, self.next_tick, due);
+            }
             // Each node still performs one real maintenance turn per second.
             // All endpoints respond; no native request is held or lost.
             self.ticks += 1;
@@ -320,7 +328,14 @@ impl Observation {
                 n.node.check_discovery_work(now).await;
                 n.node.poll_pending_connects().await;
                 n.node.process_pending_retries(now).await;
+                let phase_poll = self
+                    .contact_phase
+                    .as_mut()
+                    .and_then(|phase| phase.before_poll(i, &n.node, ids));
                 n.node.poll_transport_discovery().await;
+                if let (Some(phase), Some(before)) = (&mut self.contact_phase, phase_poll) {
+                    phase.after_poll(before, &n.node, ids);
+                }
                 n.node.check_tree_state().await;
                 n.node.check_bloom_state().await;
                 n.node.send_pending_tree_announces().await;
