@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ignore stale dataplane wake notifications until work is runnable, preserving
+  the original completion wait deadline.
 - Allow the final handshake transmission its full reply window before exhausting
   retry budgets, including link rekeys and established session handshakes.
 - Protect admitted lookup return paths and deferred waiters from rejected request
