@@ -28,7 +28,7 @@ async fn wait_for_peer(nodes: &mut [TestNode], remote: usize) {
     let remote_addr = *nodes[remote].node.node_addr();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         check_caps(nodes);
         if nodes[0].node.get_peer(&remote_addr).is_some()
             && nodes[remote].node.get_peer(&local_addr).is_some()

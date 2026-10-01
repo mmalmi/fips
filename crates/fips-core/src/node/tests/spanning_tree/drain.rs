@@ -1,8 +1,34 @@
 use super::*;
 
-/// Process all currently available packets across all nodes.
+/// Poll one bounded, nonwaiting dataplane turn for every supplied node.
 ///
-/// Returns the number of packets processed.
+/// Readiness is advisory: a timed multi-node fixture must revisit ready work
+/// without spending another node's deadline waiting for one crypto wakeup.
+/// Real endpoint and TUN queues participate in the same production turn.
+///
+/// Returns the number of active turns, not a completion fence.
+pub(in crate::node::tests) async fn poll_available_packets(nodes: &mut [TestNode]) -> usize {
+    let mut count = 0;
+    for node in nodes {
+        for _ in 0..64 {
+            let Ok(packet) = node.packet_rx.try_recv() else {
+                break;
+            };
+            count += Box::pin(process_dataplane_turn(
+                &mut node.node,
+                Some(packet),
+                64,
+                false,
+            ))
+            .await;
+        }
+        count += Box::pin(process_dataplane_turn(&mut node.node, None, 64, false)).await;
+    }
+    count
+}
+
+/// Await crypto work in the selected order for ordered fixture steps.
+/// Timed polling loops should use `poll_available_packets` instead.
 pub(in crate::node::tests) async fn process_available_packets(nodes: &mut [TestNode]) -> usize {
     let mut count = 0;
     for node in nodes.iter_mut() {
@@ -17,11 +43,11 @@ pub(in crate::node::tests) async fn process_node_packets(
 ) -> usize {
     let mut count = 0;
     while let Ok(packet) = packet_rx.try_recv() {
-        count += Box::pin(process_dataplane_turn(node, Some(packet), 64)).await;
+        count += Box::pin(process_dataplane_turn(node, Some(packet), 64, true)).await;
     }
     // A control turn may promote a handshake and defer its original frame.
     // Use the ordinary ingress budget to drain that node-owned queue too.
-    count + Box::pin(process_dataplane_turn(node, None, 64)).await
+    count + Box::pin(process_dataplane_turn(node, None, 64, true)).await
 }
 
 pub(in crate::node::tests) async fn process_dataplane_packet(
@@ -31,7 +57,13 @@ pub(in crate::node::tests) async fn process_dataplane_packet(
     // Keep the synthetic topology harness from embedding the complete live
     // dataplane future in every caller. In unoptimized test builds that
     // future's nested poll frames can exhaust libtest's 2 MiB thread stack.
-    Box::pin(process_dataplane_turn(&mut node.node, Some(packet), 64)).await
+    Box::pin(process_dataplane_turn(
+        &mut node.node,
+        Some(packet),
+        64,
+        true,
+    ))
+    .await
 }
 
 /// Drain one ordinary completion turn without receiving another raw packet.
@@ -86,6 +118,7 @@ async fn process_dataplane_turn(
     node: &mut Node,
     first_packet: Option<ReceivedPacket>,
     packet_limit: usize,
+    wait_for_readiness: bool,
 ) -> usize {
     let (_packet_tx, mut empty_packet_rx) = crate::transport::packet_channel(1);
     let (_endpoint_tx, mut dummy_endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
@@ -133,7 +166,7 @@ async fn process_dataplane_turn(
     }
 
     for _ in 0..4 {
-        if dispatched == 0 {
+        if !wait_for_readiness || dispatched == 0 {
             break;
         }
         let notify = node.dataplane.readiness_notify();

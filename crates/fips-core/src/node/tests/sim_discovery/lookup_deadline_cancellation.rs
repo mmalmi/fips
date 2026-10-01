@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::node::tests::session::run_large_stack_async_test;
-use crate::node::tests::spanning_tree::process_available_packets;
+use crate::node::tests::spanning_tree::poll_available_packets;
 use futures::FutureExt;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -51,14 +51,14 @@ fn canceled_lookup_batch_keeps_unreserved_target_due() {
 }
 
 async fn turn(nodes: &mut [TestNode]) {
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
     for node in nodes.iter_mut() {
         node.node.check_mmp_reports().await;
         node.node.check_tree_state().await;
         node.node.send_pending_tree_announces().await;
         node.node.check_bloom_state().await;
     }
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
 }
 
 async fn delivered(network: &SimNetwork) {
@@ -228,7 +228,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
 
     let until = tokio::time::Instant::now() + Duration::from_secs(3);
     while nodes[0].node.pending_lookups.len() != 0 {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         assert!(
             tokio::time::Instant::now() < until,
             "real signed replies complete both lookups"

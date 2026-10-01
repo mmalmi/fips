@@ -194,7 +194,7 @@ fn caps(nodes: &[TestNode]) {
 async fn authenticate(nodes: &mut [TestNode], remote: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         caps(nodes);
         if reciprocal(nodes, A, remote) && nodes[A].node.connection_count() == 0 {
             return;
@@ -295,7 +295,7 @@ impl Traffic {
                 node.node.check_bloom_state().await;
             }
         }
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         caps(nodes);
         assert_eq!(owner(nodes, S, A), self.local_owner[0]);
         assert_eq!(owner(nodes, A, S), self.local_owner[1]);

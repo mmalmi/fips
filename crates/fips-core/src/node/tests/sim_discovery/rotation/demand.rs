@@ -67,7 +67,7 @@ fn authenticated_direct_tun_delivers_without_periodic_maintenance() {
 /// Real ingress and queued crypto/control completions only. In particular no
 /// Bloom, lookup, session retry, tree or discovery timer rescues the original.
 async fn events_only(nodes: &mut [TestNode], ledger: Option<&mut timing::Ledger>) {
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
     if let Some(ledger) = ledger {
         ledger.observe(nodes, "packet_completion_events_only");
     }
@@ -192,7 +192,7 @@ async fn turn(
             }
         }
     }
-    process_available_packets(&mut nodes[..live]).await;
+    poll_available_packets(&mut nodes[..live]).await;
     if let Some(ledger) = ledger {
         ledger.observe(nodes, "after_packet_completion_turn");
     }

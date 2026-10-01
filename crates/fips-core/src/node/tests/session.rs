@@ -5,8 +5,8 @@ use crate::config::RoutingMode;
 use crate::node::session::EndToEndState;
 use crate::node::session_wire::FSP_COMMON_PREFIX_SIZE;
 use crate::node::tests::spanning_tree::{
-    TestNode, cleanup_nodes, lock_large_network_test, process_available_packets, run_tree_test,
-    run_tree_test_with_mtus, verify_tree_convergence,
+    TestNode, cleanup_nodes, lock_large_network_test, poll_available_packets,
+    process_available_packets, run_tree_test, run_tree_test_with_mtus, verify_tree_convergence,
 };
 use crate::protocol::{
     SessionAck, SessionDatagram, SessionMsg3, SessionReceiverReport, SessionSetup,
@@ -120,21 +120,6 @@ fn session_wait_snapshot(nodes: &[TestNode], index: usize, peer: &NodeAddr) -> S
     )
 }
 
-async fn process_session_establishment_packets(nodes: &mut [TestNode]) {
-    // A crypto notification is advisory. Keep all synthetic nodes moving while
-    // ready completions arrive, rather than spending a peer's handshake budget
-    // waiting for another wake from a single node.
-    for node in nodes {
-        for _ in 0..64 {
-            let Ok(packet) = node.packet_rx.try_recv() else {
-                break;
-            };
-            super::spanning_tree::process_dataplane_packet_once(&mut node.node, packet).await;
-        }
-        super::spanning_tree::process_dataplane_completions(&mut node.node).await;
-    }
-}
-
 async fn wait_for_session_established(
     nodes: &mut [TestNode],
     index: usize,
@@ -157,7 +142,7 @@ async fn wait_for_session_established(
                 checkpoint = Some(session_wait_snapshot(nodes, index, peer));
             }
 
-            process_session_establishment_packets(nodes).await;
+            poll_available_packets(nodes).await;
             if nodes[index]
                 .node
                 .get_session(peer)
@@ -167,7 +152,7 @@ async fn wait_for_session_established(
             }
 
             run_session_retransmit_work(nodes).await;
-            process_session_establishment_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

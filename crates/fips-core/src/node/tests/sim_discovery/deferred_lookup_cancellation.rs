@@ -1,7 +1,7 @@
 //! Cancellation after real wire delivery preserves discovery work ownership.
 use super::*;
 use crate::node::tests::session::run_large_stack_async_test;
-use crate::node::tests::spanning_tree::process_available_packets;
+use crate::node::tests::spanning_tree::{poll_available_packets, process_available_packets};
 use crate::protocol::LookupRequest;
 use futures::FutureExt;
 use std::future::Future;
@@ -9,8 +9,20 @@ use std::panic::AssertUnwindSafe;
 
 #[test]
 fn canceled_deferred_send_preserves_local_retry_and_untouched_waiter() {
-    run_large_stack_async_test("deferred-lookup-cancel", || async {
-        let name = format!("deferred-lookup-cancel-{}", std::process::id());
+    run_cancellation(false);
+}
+
+#[test]
+fn deferred_competition_drains_ready_work_without_a_new_wakeup() {
+    run_cancellation(true);
+}
+
+fn run_cancellation(retain_competing_wakeup: bool) {
+    run_large_stack_async_test("deferred-lookup-cancel", move || async move {
+        let name = format!(
+            "deferred-lookup-cancel-{}-{retain_competing_wakeup}",
+            std::process::id()
+        );
         let network = SimNetwork::new(272);
         network.set_default_link(SimLink {
             up: false,
@@ -36,7 +48,7 @@ fn canceled_deferred_send_preserves_local_retry_and_untouched_waiter() {
             nodes.push(configured_discovering_node(config, address).await);
         }
         nodes.sort_by_key(|node| *node.node.node_addr());
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network))
+        let result = AssertUnwindSafe(exercise(&mut nodes, &network, retain_competing_wakeup))
             .catch_unwind()
             .await;
         for node in &nodes {
@@ -51,14 +63,14 @@ fn canceled_deferred_send_preserves_local_retry_and_untouched_waiter() {
 }
 
 async fn turn(nodes: &mut [TestNode]) {
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
     for node in nodes.iter_mut() {
         node.node.check_mmp_reports().await;
         node.node.check_tree_state().await;
         node.node.send_pending_tree_announces().await;
         node.node.check_bloom_state().await;
     }
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
 }
 
 async fn delivered(network: &SimNetwork) {
@@ -194,7 +206,7 @@ async fn cancel_second_delivery<F: Future<Output = ()>>(
     // Drop the still-pending send future, as a maintenance timebox does.
 }
 
-async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
+async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, retain_competing_wakeup: bool) {
     setup(nodes, network).await;
     let ids: Vec<_> = nodes.iter().map(|node| *node.node.node_addr()).collect();
     let before_owners = owners(nodes);
@@ -218,25 +230,38 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
     }
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
     while nodes[0].node.stats().discovery.req_forwarded < 2 {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         assert!(
             tokio::time::Instant::now() < until,
             "both real global slots are consumed"
         );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+    // A registered observer may retain a coalesced crypto wake. The fixture
+    // still has to drain ready requests within the original competing window.
+    let notify = nodes[0].node.dataplane.readiness_notify();
+    let mut retained_wakeup = retain_competing_wakeup.then(|| Box::pin(notify.notified()));
+    if let Some(wakeup) = &mut retained_wakeup {
+        while wakeup.as_mut().enable() {
+            *wakeup = Box::pin(notify.notified());
+        }
+    }
     for target in [3, 4] {
         send_request(nodes, 2, target, 200 + target as u64).await;
     }
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
     while nodes[0].node.stats().discovery.req_forward_rate_limited < 2 {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         assert!(
             tokio::time::Instant::now() < until,
-            "both competing requests wait"
+            "both competing requests wait: forwarded={}, limited={}, received={}",
+            nodes[0].node.stats().discovery.req_forwarded,
+            nodes[0].node.stats().discovery.req_forward_rate_limited,
+            nodes[0].node.stats().discovery.req_received,
         );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+    drop(retained_wakeup);
     let received: Vec<_> = [3, 4]
         .into_iter()
         .map(|target| {
@@ -326,7 +351,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
     // Relay and ingress queues remain untouched, preserving reverse-path proof.
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
     let selected = loop {
-        process_available_packets(&mut nodes[3..]).await;
+        poll_available_packets(&mut nodes[3..]).await;
         let seen: Vec<_> = [3, 4]
             .into_iter()
             .filter(|target| {
@@ -387,7 +412,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
     send_request(nodes, 2, selected, 900).await;
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
     while nodes[0].node.stats().discovery.req_forward_rate_limited == limited {
-        process_available_packets(&mut nodes[..1]).await;
+        poll_available_packets(&mut nodes[..1]).await;
         assert!(
             tokio::time::Instant::now() < until,
             "normal target spacing remains charged"
@@ -399,7 +424,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
 
     let until = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         if nodes[0].node.pending_lookups.get(&ids[1]).is_none()
             && [3, 4].into_iter().all(|target| {
                 nodes[0]
@@ -443,7 +468,7 @@ async fn finish_fresh_waiter(nodes: &mut [TestNode], selected: usize, forwarded:
     send_request(nodes, 2, selected, 901).await;
     let until = tokio::time::Instant::now() + Duration::from_millis(500);
     loop {
-        process_available_packets(&mut nodes[..1]).await;
+        poll_available_packets(&mut nodes[..1]).await;
         let stats = &nodes[0].node.stats().discovery;
         if stats.req_duplicate == duplicates + 1 && stats.req_forward_rate_limited == limited + 1 {
             break;
@@ -481,7 +506,7 @@ async fn finish_fresh_waiter(nodes: &mut [TestNode], selected: usize, forwarded:
         // Service actual production deadlines. No limiter, timer or queue
         // state is advanced to make the reserved slot artificially available.
         nodes[0].node.check_discovery_work(Node::now_ms()).await;
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         if nodes[0]
             .node
             .recent_requests
