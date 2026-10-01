@@ -165,7 +165,7 @@ impl Controller {
             // loop free and retaining the idempotent intent if its reply is lost.
             let (opened, _wallet) = blocking(move || {
                 let opened = runtime.block_on(async move {
-                    let wallet = CashuWalletService::open_file_backed(&directory)
+                    let wallet = CashuWalletService::open_existing_file_backed(&directory)
                         .await
                         .map_err(|e| e.to_string())?;
                     if let Some(budget) = budget {
