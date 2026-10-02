@@ -86,7 +86,7 @@ impl Node {
         // One step shares the existing fast-maintenance time limit; failure
         // leaves ordinary maintenance responsible instead of spinning Notify.
         let result = tokio::time::timeout(
-            super::budget::RX_LOOP_FAST_MAINTENANCE_TIMEOUT,
+            self.fast_maintenance_budget(),
             self.flush_one_pending_packet(&root),
         )
         .await;

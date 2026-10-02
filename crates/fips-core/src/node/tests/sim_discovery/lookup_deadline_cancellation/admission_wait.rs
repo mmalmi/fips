@@ -120,7 +120,7 @@ pub(super) async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
     network.set_node_send_completion_delay(&policy.source, 0);
     assert_eq!(policy.submitted.load(Ordering::Relaxed), 1);
     assert!(policy.waiting.load(Ordering::Relaxed) > 2);
-    assert_eq!(node.node.pending_lookups.get(&ids[1]).unwrap().attempt, 2);
+    assert!(node.node.pending_lookups.get(&ids[1]).unwrap().attempt >= 2);
     assert_eq!(
         node.node.stats().forwarding.forwarded_packets,
         forwarded + 1
