@@ -74,6 +74,9 @@ fips-relay wallet /absolute/path/relay.json
 The request shape is `{"type":"import","token":"ENCODED_TOKEN"}`. This command
 accepts only sat tokens from the relay's saved mint. It acquires the same
 exclusive state lock as the service, so it refuses to race a running relay.
+While the original receive receipt is retained, retrying the same token returns
+the original result without redeeming it again. Its returned amount is not new
+wallet credit.
 Adding wallet funds does not change the lifetime spending budget, signed
 evidence, existing channel limits or seller credit. Never initialize a new
 relay directory as a substitute for reconciling an existing account.
@@ -157,7 +160,7 @@ cargo test -p fips-relay --all-features --test bench \
 cargo test -p fips-relay --features testbench --test bench
 ```
 
-Tests exercise real mint funding, wallet import/replay rejection, an active
+Tests exercise real mint funding, wallet import retries without double credit, an active
 relay's exclusive lock, retained spending state, private idempotent export and
 redemption, lost-file recovery without another debit, issuance bounds, refused
 public binds, and both command-line tools through the private mint control socket.

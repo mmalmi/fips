@@ -367,7 +367,8 @@ sources; the published versions do not provide this storage contract.
 
 The TCP stack and endpoint override must include `set_connection_reservation`.
 Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace pins
-stack 0.2.2 and endpoint 0.2.20, aligned with FIPS core 0.4.87. The published TCP
+their versions in `Cargo.toml`. Use a matching development checkout whose
+endpoint requires this workspace's FIPS core version. The published TCP
 packages do not yet include the reservation API, so a matching development
 checkout is still required. Shared Rust/TypeScript admission vectors and live
 interoperability checks cover this local policy; the wire encoding is unchanged.

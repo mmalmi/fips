@@ -103,10 +103,11 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
     .unwrap();
     assert_eq!(received["amount_sat"], 256);
     assert!(!received.to_string().contains("cashuB"));
-    assert!(
+    assert_eq!(
         offline_wallet(&cfg, WalletRequest::Import { token })
             .await
-            .is_err()
+            .unwrap(),
+        received
     );
     assert_eq!(
         offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"],

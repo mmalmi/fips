@@ -40,6 +40,23 @@ rebuilding and exercising a package containing it remains pending.
 
 ## Verified implementation and test history
 
+Wallet imports with SDK `ff1678c2b6ca` and CDK `8de95a89c9e0` can recover a
+completed receive whose display-activity write failed. Retrying returns the
+retained original result without redeeming again or adding balance. Native CDK
+receive calls still reject duplicates unless the caller opts into this recovery.
+All 437 standard SDK tests pass across source-identical Linux runs, with one
+pre-existing storage soak ignored; the single full run reached its time limit,
+so this is combined test coverage rather than a successful full command.
+
+The saved-relay funding/export test passes on native x86-64 Linux with core
+0.4.88 and private TCP checkout `6fe9fe951ca8`. It verifies that import retry
+preserves the balance and buyer authorization before export, recovery and
+redemption. The first build failed because its published TCP dependency lacked
+the reservation API; adding the matching private stack and endpoint overrides
+resolved that build error. Evidence is retained under
+`work/paid-relay-verification/2026-10-02-import-recovery`. This source acceptance
+does not update the r53 package or establish current-device acceptance.
+
 Outgoing channel funding at `603db7280dd8`, integrated by `23f316590a8f`,
 requires the original wallet database and seed. Previously, losing either during
 live operation could initialize a replacement wallet and lose its saved capacity
