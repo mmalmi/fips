@@ -159,8 +159,9 @@ fn free_bandwidth_is_opt_in_and_rejects_invalid_or_legacy_configuration() {
 }
 
 #[test]
-fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
+fn service_forwarder_preserves_readiness_and_temporary_admission() {
     use crate::ledger::{BytePrice, ChannelTerms, Contract};
+    use fips_core::node::ForwardingDecision;
     let directory = tempfile::tempdir().unwrap();
     let ingress = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let destination = *Identity::generate().node_addr();
@@ -201,7 +202,7 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
                 msat: 1,
                 per_bytes: 1,
             },
-            max_units: 100,
+            max_units: 500,
             expires_unix: expires,
         })
         .unwrap();
@@ -221,6 +222,10 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     };
     assert!(forwarding.admit(&request).is_none());
     assert!(forwarding.admit_classified(&request).is_none());
+    assert!(matches!(
+        forwarding.decide(&request),
+        ForwardingDecision::Reject
+    ));
     assert_eq!(
         forwarding.relay.bootstrap_stats().unwrap().admitted_packets,
         0
@@ -242,6 +247,41 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 0);
     forwarding.complete(token.token, ForwardingOutcome::Submitted);
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 4);
+
+    let policy: &dyn ForwardingPolicy = &forwarding;
+    request.session_payload = &[1; 97];
+    assert!(matches!(policy.decide(&request), ForwardingDecision::Retry));
+    assert_eq!(seller.channel_usage("channel").unwrap().reserved_msat, 4);
+    seller.apply_verified_balance("channel", 1_000).unwrap();
+    let ForwardingDecision::Admit(admission) = policy.decide(&request) else {
+        panic!("accepted payment must replenish the waiting packet's allowance");
+    };
+    assert_eq!(admission.class, fips_core::node::ForwardingClass::Normal);
+    forwarding.ready.store(false, Ordering::Release);
+    assert!(matches!(
+        policy.decide(&request),
+        ForwardingDecision::Reject
+    ));
+    policy.complete(admission.token, ForwardingOutcome::Submitted);
+    assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 101);
+    forwarding.ready.store(true, Ordering::Release);
+
+    request.session_payload = &[1; 101];
+    assert!(matches!(
+        policy.decide(&request),
+        ForwardingDecision::Reject
+    ));
+    request.session_payload = &[1; 4];
+    assert!(matches!(policy.decide(&request), ForwardingDecision::Retry));
+    assert_eq!(seller.channel_usage("channel").unwrap().reserved_msat, 101);
+    seller.checkpoint().unwrap();
+    let ForwardingDecision::Admit(admission) = policy.decide(&request) else {
+        panic!("a durable checkpoint must reopen the consumed window");
+    };
+    policy.complete(admission.token, ForwardingOutcome::Unconfirmed);
+    let usage = seller.channel_usage("channel").unwrap();
+    assert_eq!(usage.reserved_msat, 105);
+    assert_eq!(usage.submitted_msat, 101);
 }
 
 #[test]
