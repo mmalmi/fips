@@ -69,7 +69,8 @@ fn seal(seller: &DurableRelay, terms: &ChannelTerms) -> Plan {
 fn retired_debt_can_make_a_credit_shortage_permanent() {
     use fips_core::node::ForwardingDecision;
     let root = tempfile::tempdir().unwrap();
-    let seller = DurableRelay::create(root.path(), Limits::default(), 1_000).unwrap();
+    let seller =
+        DurableRelay::create(&root.path().join("seller"), Limits::default(), 1_000).unwrap();
     let mut old = terms(1, 1);
     old.capacity_sat = 1;
     old.grace_msat = 30;

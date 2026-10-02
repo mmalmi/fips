@@ -59,7 +59,7 @@ fn start(path: &std::path::Path) -> DurableRelay {
 fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
     use fips_core::node::ForwardingDecision;
     let root = tempfile::tempdir().unwrap();
-    let relay = start(root.path());
+    let relay = start(&root.path().join("relay"));
     for value in 1..=3 {
         let bytes = [value; 8];
         if value > 1 {
