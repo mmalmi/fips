@@ -14,36 +14,49 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r56 package contains the current receiver-wallet and outgoing-wallet recovery
-changes, built from private FIPS integration `83cb4d7815db`, SDK `ff1678c2b6ca`,
-CDK `8de95a89c9e0` and the isolated bitreq cancellation commit `f59be760bcc5`.
-The complete portable source bundle includes six clean Git inputs and the
-vendored registry sources. Its 36,132 files were verified before and after
-relocation. Offline all-feature metadata resolves 697 packages, including 676
-registry packages; this is dependency resolution, not all-feature compilation.
+The current r57 package contains the receiver-wallet and outgoing-wallet recovery
+changes. It uses the identical accepted r56 ARM64 executable, built from private
+FIPS integration `83cb4d7815db`, SDK `ff1678c2b6ca`, CDK `8de95a89c9e0` and
+isolated bitreq cancellation commit `f59be760bcc5`. The complete portable source
+bundle retains six clean Git inputs and vendored registry sources. Offline
+all-feature metadata resolves 697 packages, including 676 registry packages;
+this is dependency resolution, not all-feature compilation.
 
-An optimized static ARM64 executable was built offline from that relocated
-bundle with an empty Cargo home and target directory. Its bytes differ from the
-earlier minimal-workspace r55 build, so it is packaged separately as r56.
-Fresh extraction and integrity checks pass for all eleven payload files and
-fifteen directory records, including root ownership and a disabled service by
-default. The parent-directory metadata fix at `83cb4d781` remains included.
+The r56 optimized static ARM64 executable was built offline after relocation
+with an empty Cargo home and target directory. The r57 source bundle differs
+only in packaging, tests and documentation and contains 36,133 files; Rust
+sources, dependencies, lock and profile are unchanged. Fresh r57 extraction and
+integrity checks pass for all eleven payload files and fifteen directory records,
+including root ownership and a disabled service by default.
 
 Using the actual extracted ARM64 daemon and CLI under QEMU, four unchanged cases
-pass: initialization safety; four-relay wallet fees, refunds, restart and lifetime
+passed on r56: initialization safety; four-relay wallet fees, refunds, restart and lifetime
 bounds; mixed UDP/TCP exhaustion, renewal and restart; and self-signed WebSocket
 FIPS authentication, reconnect and restart. The native test harness and local
-test mint are separate from the emulated executable. All 68,414 recorded inputs
-remained unchanged; process groups, cgroups and target locks were verified closed.
-The consolidated receipt is `work/portable-r55/acceptance.json` in the local
-recovery bundle, with build and runtime evidence in
+test mint are separate from the emulated executable. Two additional customer
+cases pass against those packaged daemons, covering both billing modes, automatic
+payment after an entry crash, immutable account terms across reopen, and
+settlement/export that reconciles all 384 test sats per case. The customer client
+is native Linux, not an Android/Pixel build. Recorded source inputs remained
+unchanged; process groups, cgroups and target locks were verified closed.
+Build and daemon evidence is retained in
 `work/portable-r55/evidence/portable-r55` and
-`work/portable-r55/evidence/arm-runtime-r56`.
+`work/portable-r55/evidence/arm-runtime-r56`, with customer evidence in
+`work/customer-r56/evidence/customer-r56-r2` in the local recovery bundle.
 
-This accepts those four packaged-executable cases and the portable offline build,
+The r57 wrapper removes the extra mint HTTP startup prerequisite and its unused
+package dependency. Storage, account, clock and native-link guards remain.
+Two shell regressions reproduce the old wrapper's outage block and pass on the
+extracted r57 wrapper while retaining the clock control. These checks substitute
+OpenWrt commands and the clock marker; actual device startup/outage recovery
+remains pending. The consolidated current receipt is
+`work/openwrt-offline-start/acceptance.json`. The six daemon/customer cases retain
+their r56 execution provenance and apply to the identical binary in r57.
+
+This accepts those six daemon/customer cases, two shell checks and the portable offline build,
 not the whole ARM suite, hardware, physical power-loss, performance or a
 bit-identical rebuild. External Rust, Zig, cargo-zigbuild and APK tools remain
-required. Earlier r53–r55 results retain their original source and workload
+required. Earlier package results retain their original source and workload
 scope. No hardware installation, publication or real-money operation was
 performed; current-device acceptance remains pending.
 
@@ -4914,8 +4927,9 @@ IP range or interface.
 This is explicit route opening, not automatic free-route refresh. Permissions must be reopened after restart, expiry or path
 change. Active paid agreements must close before the same relationship becomes
 free. Radio/mixed-transport acceptance and broader concurrent transition/failure
-coverage remain work. The existing OpenWrt readiness wrapper still requires a
-reachable mint; the no-mint startup evidence is for the service directly.
+coverage remain work. The earlier no-mint startup evidence exercised the service directly. The r57
+wrapper removes its separate mint probe and passes focused shell checks with
+platform doubles; actual OpenWrt startup during a mint outage remains pending.
 
 ## Cheapest routes that work
 
