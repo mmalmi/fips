@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Correct test isolation and completion fences for multi-node rendezvous and
   Bloom cancellation checks. Keep zero-loss rekey fixtures on stable routes;
   routing-churn scenarios and existing test budgets remain unchanged.
+- Wait for the selected late-Ack handshake outcome in session tests, and include
+  per-flow state when responsive-roster payload checks time out. Preserve their
+  existing deadlines and exact payload checks.
 
 ## [0.4.89] - 2026-10-01
 
