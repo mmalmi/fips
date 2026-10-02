@@ -12,7 +12,7 @@ The package is named `nvpn-fips-core`; its Rust library and import name remains
 
 ```toml
 [dependencies]
-fips-core = { package = "nvpn-fips-core", version = "0.4.65" }
+nvpn-fips-core = { version = "0.4.65" }
 ```
 
 FIPS is under active development. APIs and wire behavior are not yet stable.
