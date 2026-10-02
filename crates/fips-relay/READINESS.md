@@ -53,7 +53,19 @@ remains pending. The consolidated current receipt is
 `work/openwrt-offline-start/acceptance.json`. The six daemon/customer cases retain
 their r56 execution provenance and apply to the identical binary in r57.
 
-This accepts those six daemon/customer cases, two shell checks and the portable offline build,
+Two further existing test methods pass with the complete static ARM64
+`priced_paths` executable and a local test mint under QEMU, built offline from
+the unchanged r57 portable source. Their three simulated deployments cover
+forward loss, forward delay, and loss with an alternative neighbor departing
+and returning. Automatic selection moves to working alternatives and reuses
+original channels after recovery, with the original delivery assertions,
+deadlines and spending limits intact. All 36,133 source files remain unchanged;
+owned processes and target locks are closed. The consolidated receipt is
+`work/priced-r57/acceptance.json`. This is bounded local selection on simulated
+links, not global route optimality, arbitrary churn or physical radio acceptance.
+
+This accepts those six daemon/customer cases, two shell checks, two ARM64 price/quality
+test methods and the portable offline build,
 not the whole ARM suite, hardware, physical power-loss, performance or a
 bit-identical rebuild. External Rust, Zig, cargo-zigbuild and APK tools remain
 required. Earlier package results retain their original source and workload
