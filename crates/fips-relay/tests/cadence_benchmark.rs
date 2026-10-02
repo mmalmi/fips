@@ -1,6 +1,8 @@
 //! Opt-in experiment over real service processes and isolated simulated money.
 #![cfg(all(unix, feature = "measurements"))]
 
+#[path = "cadence_benchmark/forwarding.rs"]
+mod forwarding;
 #[path = "cadence_benchmark/idle.rs"]
 mod idle;
 mod process_support;
@@ -31,6 +33,7 @@ const FUNDING: u64 = 1_024;
 enum TrialMode {
     Matrix,
     IdleControl,
+    ForwardingDrops,
 }
 
 async fn sample(configs: &[ServiceConfig]) -> Vec<Value> {
@@ -265,7 +268,17 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
             .into_iter()
             .enumerate()
         {
-            let data = workload(&configs, &npubs, name, (index as u64 + 1) * 100).await;
+            let forwarding_before = if mode == TrialMode::ForwardingDrops {
+                Some(forwarding::snapshot(&configs).await)
+            } else {
+                None
+            };
+            let mut data = workload(&configs, &npubs, name, (index as u64 + 1) * 100).await;
+            if let Some(before) = forwarding_before {
+                data["forwarding"] = json!({
+                    "before": before, "after": forwarding::snapshot(&configs).await,
+                });
+            }
             writeln!(
                 output,
                 "{}",
