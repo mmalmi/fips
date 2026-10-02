@@ -1,4 +1,4 @@
-//! A selected late Ack, rather than unrelated activity, must complete the exchange.
+//! A selected Ack, rather than unrelated activity, must complete the exchange.
 use super::*;
 use crate::dataplane::FmpWireHeader;
 use crate::node::tests::spanning_tree::process_dataplane_packet_once;
@@ -13,20 +13,26 @@ fn unrelated_activity_cannot_complete_a_withheld_late_ack() {
     run_large_stack_async_test("fips-held-late-ack", || exercise(true));
 }
 
-async fn wait_state(node: &mut TestNode, remote: &NodeAddr, established: bool) {
+async fn state_turn(node: &mut TestNode, remote: &NodeAddr, established: bool) -> (usize, bool) {
+    let activity = poll_available_packets(std::slice::from_mut(node)).await;
+    let ready = node.node.get_session(remote).is_some_and(|entry| {
+        if established {
+            entry.is_established()
+        } else {
+            entry.is_awaiting_msg3()
+        }
+    });
+    (activity, ready)
+}
+
+pub(super) async fn wait_state(node: &mut TestNode, remote: &NodeAddr, established: bool) {
     let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
     tokio::time::timeout_at(deadline, async {
         loop {
             assert!(tokio::time::Instant::now() < deadline);
-            poll_available_packets(std::slice::from_mut(node)).await;
+            let ready = state_turn(node, remote, established).await.1;
             assert!(tokio::time::Instant::now() < deadline);
-            if node.node.get_session(remote).is_some_and(|entry| {
-                if established {
-                    entry.is_established()
-                } else {
-                    entry.is_awaiting_msg3()
-                }
-            }) {
+            if ready {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -89,6 +95,112 @@ fn selected_payload(bytes: &[u8], source: NodeAddr, dest: NodeAddr, payload: &[u
         })
 }
 
+pub(super) async fn drop_msg3(receiver: &mut TestNode, sender: &NodeAddr, payload: &[u8]) {
+    let destination = *receiver.node.node_addr();
+    // The loss is the exact retained encrypted Msg3, within the original 200 ms.
+    drop(
+        capture(receiver, sender, Duration::from_millis(200), |bytes| {
+            selected_payload(bytes, *sender, destination, payload)
+        })
+        .await,
+    );
+}
+
+#[test]
+fn unrelated_activity_cannot_complete_a_withheld_initial_ack() {
+    run_large_stack_async_test("fips-held-initial-ack", || async {
+        let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+        let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            held_initial_ack(&mut nodes),
+        ))
+        .await;
+        cleanup_nodes(&mut nodes).await;
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    });
+}
+
+async fn held_initial_ack(nodes: &mut [TestNode]) {
+    populate_all_coord_caches(nodes);
+    let initiator = *nodes[0].node.node_addr();
+    let responder = *nodes[1].node.node_addr();
+    let pubkey = nodes[1].node.identity().pubkey_full();
+    nodes[0]
+        .node
+        .initiate_session(responder, pubkey)
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        TURN_TIMEOUT,
+        wait_for_session_state_for_node(
+            nodes,
+            1,
+            &initiator,
+            "held initial Ack fixture",
+            |entry| entry.is_awaiting_msg3(),
+        ),
+    )
+    .await
+    .expect("held initial Ack fixture must reach the responder state within two seconds");
+    let ack = nodes[1]
+        .node
+        .get_session(&initiator)
+        .unwrap()
+        .handshake_payload()
+        .unwrap()
+        .to_vec();
+    let held = capture(&mut nodes[0], &responder, TURN_TIMEOUT, |bytes| {
+        selected_payload(bytes, responder, initiator, &ack)
+    })
+    .await;
+    assert!(
+        !nodes[0]
+            .node
+            .get_session(&responder)
+            .unwrap()
+            .is_established()
+    );
+    let heartbeat = [LinkMessageType::Heartbeat.to_byte()];
+    nodes[1]
+        .node
+        .send_dataplane_fmp_link_plaintext(&initiator, &heartbeat, false)
+        .await
+        .unwrap();
+    let unrelated = capture(&mut nodes[0], &responder, TURN_TIMEOUT, |bytes| {
+        bytes == heartbeat
+    })
+    .await;
+    let (tx, rx) = packet_channel(2);
+    tx.send(unrelated).unwrap();
+    let original_rx = std::mem::replace(&mut nodes[0].packet_rx, rx);
+    let (activity, ready) =
+        tokio::time::timeout(TURN_TIMEOUT, state_turn(&mut nodes[0], &responder, true))
+            .await
+            .unwrap();
+    assert!(
+        activity > 0,
+        "the real unrelated heartbeat must be processed"
+    );
+    assert_eq!(tx.reserved_packets_for_test(), 0);
+    assert!(
+        !ready,
+        "unrelated activity must not complete the withheld initial Ack"
+    );
+    tx.send(held).unwrap();
+    wait_state(&mut nodes[0], &responder, true).await;
+    nodes[0].packet_rx = original_rx;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&responder)
+            .unwrap()
+            .handshake_payload()
+            .is_some()
+    );
+    wait_state(&mut nodes[1], &initiator, true).await;
+}
+
 async fn exchange_turn(nodes: &mut [TestNode], initiator: &NodeAddr) -> (usize, bool) {
     let activity = poll_available_packets(nodes).await;
     let ready = nodes[1]
@@ -140,16 +252,7 @@ async fn prepare_retained_msg3(nodes: &mut [TestNode]) -> (NodeAddr, NodeAddr) {
         .handshake_payload()
         .unwrap()
         .to_vec();
-    // Drop this exact original Msg3, within the original twenty 10 ms waits.
-    drop(
-        capture(
-            &mut nodes[1],
-            &initiator,
-            Duration::from_millis(200),
-            |bytes| selected_payload(bytes, initiator, responder, &msg3),
-        )
-        .await,
-    );
+    drop_msg3(&mut nodes[1], &initiator, &msg3).await;
     assert!(
         nodes[1]
             .node

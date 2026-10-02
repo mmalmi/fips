@@ -130,8 +130,7 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
         .await
         .expect("session initiation should start");
 
-    let count = wait_process_packets_for_node(&mut nodes, 1).await;
-    assert!(count > 0, "SessionSetup should reach responder");
+    late_ack_completion::wait_state(&mut nodes[1], &node0_addr, false).await;
     assert!(
         nodes[1]
             .node
@@ -140,8 +139,7 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
             .is_awaiting_msg3()
     );
 
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "SessionAck should reach initiator");
+    late_ack_completion::wait_state(&mut nodes[0], &node1_addr, true).await;
     let initiator_entry = nodes[0].node.get_session(&node1_addr).unwrap();
     assert!(initiator_entry.is_established());
     assert!(
@@ -149,16 +147,9 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
         "initiator should retain final msg3 for loss recovery"
     );
 
+    let msg3 = initiator_entry.handshake_payload().unwrap().to_vec();
     tokio::time::sleep(Duration::from_millis(10)).await;
-    let mut dropped = 0;
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        dropped += drop_queued_packets_for_node(&mut nodes[1]);
-        if dropped > 0 {
-            break;
-        }
-    }
-    assert!(dropped > 0, "fixture should drop the first SessionMsg3");
+    late_ack_completion::drop_msg3(&mut nodes[1], &node0_addr, &msg3).await;
     assert!(
         nodes[1]
             .node
@@ -175,11 +166,7 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
         .resend_pending_session_handshakes(now_ms)
         .await;
 
-    let count = wait_process_packets_for_node(&mut nodes, 1).await;
-    assert!(
-        count > 0,
-        "resender should deliver a replacement SessionMsg3"
-    );
+    late_ack_completion::wait_state(&mut nodes[1], &node0_addr, true).await;
     assert!(
         nodes[1]
             .node
@@ -328,12 +315,14 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "initiator must retain rekey msg3 for resend"
     );
 
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        if drop_queued_packets_for_node(&mut nodes[1]) > 0 {
-            break;
-        }
-    }
+    let msg3 = nodes[0]
+        .node
+        .get_session(&node1_addr)
+        .unwrap()
+        .rekey_msg3_payload()
+        .unwrap()
+        .to_vec();
+    late_ack_completion::drop_msg3(&mut nodes[1], &node0_addr, &msg3).await;
     assert!(
         nodes[1]
             .node
