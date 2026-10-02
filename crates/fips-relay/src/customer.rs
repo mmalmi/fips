@@ -96,7 +96,7 @@ impl CustomerClient {
             use CustomerCommand::*;
             match command {
                 Preview { profile } => {
-                    profile.validate()?;
+                    self.validate_profile(&profile)?;
                     Ok(json!({"entry_ip":profile.entry_address.ip(),"profile":profile}))
                 }
                 Setup { profile } => self.setup(profile).await,
@@ -151,8 +151,15 @@ impl CustomerClient {
         })
     }
 
-    async fn setup(&mut self, profile: CustomerProfile) -> Result<Value, String> {
+    fn validate_profile(&self, profile: &CustomerProfile) -> Result<ServiceConfig, String> {
         profile.validate()?;
+        let config = profile.config(&self.root);
+        config.validate()?;
+        Ok(config)
+    }
+
+    async fn setup(&mut self, profile: CustomerProfile) -> Result<Value, String> {
+        let config = self.validate_profile(&profile)?;
         if let Some(saved) = &self.profile {
             if saved != &profile {
                 return Err("saved test profile and spending limits cannot be replaced".into());
@@ -164,7 +171,7 @@ impl CustomerClient {
             &serde_json::to_vec(&profile).map_err(|e| e.to_string())?,
         )?;
         self.profile = Some(profile);
-        RelayService::initialize(self.config()?).await?;
+        RelayService::initialize(config).await?;
         self.status().await
     }
 

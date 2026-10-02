@@ -110,7 +110,7 @@ impl ServiceConfig {
         self.state_directory.join("control.sock")
     }
 
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if let Some(policy) = &self.price_selection {
             policy.validate()?;
             if !self.terms.billing.has_free_handshakes() {

@@ -95,7 +95,9 @@ choices are immutable after setup; the legacy unique-envelope tariff is rejected
 
 Provide the JSON through the `setup_profile` intent string extra or through
 `fipsbench://setup?profile=<base64url-encoded-JSON>`. An intent only previews a
-profile. **Set up test account** is an explicit UI action. Once initialized, the
+profile. Preview and setup validate the resulting service configuration before
+saving the immutable profile; rejected input leaves the customer unconfigured.
+**Set up test account** is an explicit UI action. Once initialized, the
 profile and identity cannot be silently replaced; missing or partial state fails
 closed and requires operator recovery.
 
