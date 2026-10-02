@@ -16,7 +16,7 @@ path = "src/bin/fips-relay-test-mint.rs"
 required-features = ["testbench"]
 
 [dependencies]
-fips-core = { package = "nvpn-fips-core", version = "=0.4.83", path = "../fips-core" }
+nvpn-fips-core = { version = "=0.4.83", path = "../fips-core" }
 # Funding-cost development requires local cashu-service/CDK/Spilman corrections;
 # see FUNDING-COSTS.md. Update the pin when those APIs are released.
 cashu-service = { version = "=0.4.8", default-features = false, features = ["wallet", "spilman-wallet-http", "spilman-configurable-host-reqwest"] }
@@ -28,8 +28,8 @@ fs2 = "0.4"
 sha2 = "0.10"
 thiserror = "2"
 tempfile = "3"
-fips-tcp = { package = "nvpn-fips-tcp", version = "=0.2.2" }
-fips-tcp-endpoint = { package = "nvpn-fips-tcp-endpoint", version = "=0.2.16" }
+nvpn-fips-tcp = { version = "=0.2.2" }
+nvpn-fips-tcp-endpoint = { version = "=0.2.16" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "signal"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cashu = { version = "=0.18.0", default-features = false }
@@ -38,7 +38,7 @@ libc = { version = "0.2", optional = true }
 [dev-dependencies]
 cdk-common = { version = "=0.18.0", default-features = false, features = ["wallet"] }
 cdk-sqlite = { version = "=0.18.0", default-features = false, features = ["wallet"] }
-fips-core = { package = "nvpn-fips-core", version = "=0.4.83", path = "../fips-core", features = ["sim-transport"] }
+nvpn-fips-core = { version = "=0.4.83", path = "../fips-core", features = ["sim-transport"] }
 cashu-service = { version = "=0.4.8", default-features = false, features = ["simulation", "spilman-wallet-http", "spilman-configurable-host-reqwest"] }
 rcgen = "0.13.2"
 tokio = { version = "1", features = ["process"] }

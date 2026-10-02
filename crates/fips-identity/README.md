@@ -12,7 +12,7 @@ remains `fips_identity` for source compatibility.
 
 ```toml
 [dependencies]
-fips-identity = { package = "nvpn-fips-identity", version = "0.3.3" }
+nvpn-fips-identity = { version = "0.3.3" }
 ```
 
 FIPS is under active development. APIs and wire behavior are not yet stable.

@@ -18,7 +18,7 @@ webrtc-transport = ["dep:bytes", "dep:if-addrs", "dep:webrtc"]
 host-ble-transport = []
 
 [dependencies]
-fips-identity = { package = "nvpn-fips-identity", version = "=0.3.3", path = "../fips-identity" }
+nvpn-fips-identity = { version = "=0.3.3", path = "../fips-identity" }
 
 secp256k1 = { version = "0.30", features = ["rand", "global-context"] }
 sha2 = "0.10"

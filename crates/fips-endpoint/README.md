@@ -12,7 +12,7 @@ remains `fips_endpoint` for source compatibility.
 
 ```toml
 [dependencies]
-fips-endpoint = { package = "nvpn-fips-endpoint", version = "0.4.65" }
+nvpn-fips-endpoint = { version = "0.4.65" }
 ```
 
 FIPS is under active development. APIs and wire behavior are not yet stable.
