@@ -137,25 +137,29 @@ the recorded safety checks, not a throughput improvement, delivery fix or device
 acceptance. See [checkpoint results](CADENCE-RESULTS.md#superseded-window-checkpoints--2-october-2026)
 and `work/window-recheck/acceptance.json` in the local recovery bundle.
 
-The subsequent unchanged slow-neighbor network test fails on both the payment
-reply-cache candidate and its pre-cache baseline. Failure-time counters identify
-a credit refusal while a signed payment has not yet been accepted: the first
-seller has 4,722 msat submitted and zero paid, while the buyer has authorized
-5 sat. This is a delivery failure; it does not establish a cache regression.
-A pending core/relay correction lets an explicitly temporary policy refusal
-wait without a reservation: at most 512 packets/1 MiB globally, 128 packets/256 KiB
-per ingress neighbor, and a two-second lifetime. Retries recheck the current
-route, authenticated peer epoch and financial policy. Expiry and retry service
-are independent of discovery backoff; each retry turn is capped at 32 packets
-and 50 ms. Maintenance yields at a pending retry deadline, and expired packets
-are released between RX turns. Permanent window/capacity limits, including
-retired debt, still reject. Six core checks passed the second draft, but a real
-Sim/Noise regression reproduced discovery occupying the whole first-retry
-interval before that draft's dedicated admission branch could run. The first
-two verification runs also exposed new-test compilation and directory-permission
-fixture errors, now corrected. The candidate remains unaccepted pending Linux
-regressions, independent review and a valid performance comparison. No current
-device, throughput or production-readiness claim follows from this draft.
+Native admission waiting at `c3ebe10ce63c` repairs the ordinary delivery failure
+seen on the pre-cache baseline: a packet exceeded the unchanged credit limit
+while a signed payment awaited acceptance. Explicitly temporary refusals now
+wait without an accounting reservation, bounded to 512 packets/1 MiB globally,
+128 packets/256 KiB per ingress neighbor, and a two-second lifetime. Retries
+recheck the current route, peer authentication epoch and financial policy;
+permanent window/capacity limits, including retired debt, still reject. Each
+retry turn is capped at 32 packets and 50 ms. Maintenance and pending-root sends
+yield at a waiting packet's retry deadline; expiry runs between RX turns.
+
+All 25 focused Linux checks pass: six core admission checks, two real Sim/Noise
+lookup cases, the unchanged no-waiter maintenance budget, retired-debt denial,
+13 durable-accounting tests, and the unchanged slow-neighbor/lost-payment and
+restored-buyer evidence-gap scenarios. The Sim regression first reproduces a
+stalled lookup preventing the initial retry; the corrected run records actual
+forwarding completion and expiry of the other waiting packet. Strict core/Sim
+and relay all-feature/default lint, formatting and source-size checks pass.
+Independent source review is clear, all 36,140 source inputs remain unchanged,
+and owned processes and build locks close. Evidence is
+`work/admission-wait/r4-green/acceptance.json` in the local recovery bundle.
+The payment-reply cache candidate is excluded. This establishes scoped
+functional correctness; high-rate delivery, cadence overhead and current-device
+acceptance still require measurement and testing. The r57 package is unchanged.
 
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
