@@ -4,6 +4,8 @@ use crate::dataplane::FmpWireHeader;
 
 #[path = "same_path_rejoin/lifecycle.rs"]
 mod lifecycle;
+#[path = "same_path_rejoin/replacement.rs"]
+mod replacement;
 use lifecycle::{QueuedPayload, Scenario, assert_fsp_history, fsp_history};
 
 const PATHS: [&str; 4] = ["boundary", "returning", "useful", "replacement"];
@@ -20,6 +22,10 @@ fn idle_same_path_rejoin_confirms_and_delivers_without_prior_fsp_owner() {
 }
 
 fn run(scenario: Scenario) {
+    run_with_delayed_dial(scenario, false);
+}
+
+fn run_with_delayed_dial(scenario: Scenario, delay_dial: bool) {
     run_large_stack_async_test("rotation-same-path-rejoin", move || async move {
         let _guard = lock_large_network_test().await;
         let name = format!("rotation-same-path-rejoin-{}", std::process::id());
@@ -58,7 +64,7 @@ fn run(scenario: Scenario) {
                 .await,
             );
         }
-        let result = AssertUnwindSafe(exercise_rejoin(&mut nodes, scenario))
+        let result = AssertUnwindSafe(exercise_rejoin(&mut nodes, scenario, delay_dial))
             .catch_unwind()
             .await;
         cleanup_nodes(&mut nodes).await;
@@ -82,6 +88,7 @@ struct Pump {
     next_tick: tokio::time::Instant,
     flights: Flights,
     queued: Option<QueuedPayload>,
+    replacement_hold: Option<replacement::HeldDial>,
 }
 
 impl Pump {
@@ -90,10 +97,14 @@ impl Pump {
             next_tick: tokio::time::Instant::now(),
             flights: Flights::default(),
             queued: None,
+            replacement_hold: None,
         }
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode]) {
+        if let Some(hold) = &mut self.replacement_hold {
+            hold.release(nodes).await;
+        }
         if tokio::time::Instant::now() >= self.next_tick {
             self.next_tick = tokio::time::Instant::now() + Duration::from_secs(1);
             for n in nodes.iter_mut() {
@@ -122,6 +133,14 @@ impl Pump {
             for _ in 0..256 {
                 let Ok(packet) = nodes[destination].packet_rx.try_recv() else {
                     break;
+                };
+                let packet = if let Some(hold) = &mut self.replacement_hold {
+                    let Some(packet) = hold.capture(destination, &nodes[3].addr, packet) else {
+                        continue;
+                    };
+                    packet
+                } else {
+                    packet
                 };
                 if let Some(request) = self.flights.request {
                     if destination == 0 && packet.remote_addr == nodes[1].addr {
@@ -301,7 +320,7 @@ fn assert_no_returning_fsp(nodes: &[TestNode], ids: &[PeerIdentity]) {
     }
 }
 
-async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario) {
+async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario, delay_dial: bool) {
     let with_prior_payload = scenario != Scenario::RejoinIdle;
     let ids = identities(nodes);
     let mut pump = Pump::new();
@@ -374,15 +393,24 @@ async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario) {
     assert_eq!(victim, Some(*ids[1].node_addr()));
     dial(nodes, 3, 0).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while !reciprocal(nodes, &ids, 0, 3) {
-        pump.turn(nodes).await;
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "replacement must really confirm"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
+    if delay_dial {
+        pump.replacement_hold = Some(replacement::HeldDial::new());
     }
-    let evicted = tokio::time::Instant::now();
+    let evicted = replacement::admit(
+        &mut pump,
+        nodes,
+        &mut endpoints,
+        &ids,
+        &mut sequence,
+        deadline,
+    )
+    .await;
+    if let Some(hold) = pump.replacement_hold.take() {
+        hold.assert_released();
+    }
+    if nodes[0].node.get_peer(ids[1].node_addr()).is_some() {
+        delivery_snapshot(nodes, &ids, "unexpected-admitted-rotation-victim");
+    }
     assert!(nodes[0].node.get_peer(ids[1].node_addr()).is_none());
     assert!(!nodes[0].node.index_allocator.is_allocated(retired_index));
     assert_eq!(owner(nodes, &ids, 1, 0), retained_remote);
