@@ -43,7 +43,7 @@ Use the target's `/etc/apk/arch` value. Keep the binary, its source revision and
 the package checksum together. `/usr/share/fips-relay/build.json` records the
 binary hash, size, architecture and supplied source revision. The package contains
 no private identities, wallet state or active service JSON. It declares `procd`,
-`jsonfilter`, `iw`, `uclient-fetch` and `ca-bundle` dependencies.
+`jsonfilter`, `iw` and `ca-bundle` dependencies.
 
 On a Linux build host, a dynamically linked APK tool can also run under
 `fakeroot --` with the same builder command. This records root ownership in the
@@ -330,8 +330,11 @@ The supervisor waits for all of these before executing the relay:
 - Every configured native interface exists, has carrier, and is neither a bridge
   nor a bridge member. An 802.11s interface must report `mesh_fwding=0` so native
   FIPS performs forwarding. The wrapper changes no radio or bridge settings.
-- The configured mint answers its information endpoint. The relay subsequently
-  performs its own keyset, financial-state and configuration validation.
+
+The wrapper does not probe the mint before launching the relay. The relay owns
+keyset, financial-state and configuration validation, including any recovery or
+purchase that requires a reachable mint. This lets it attempt saved-account
+recovery during a mint outage without an extra HTTP readiness gate.
 
 Waiting consumes no channel funds and does not exhaust procd's crash restart
 counter. A changing wait reason is logged; identical reasons are not repeatedly
@@ -359,10 +362,15 @@ validation work.
 ## Device acceptance checks
 
 Verify the installed package version and executable checksum, preserved account
-identity/limits, and mint/network readiness. Exercise a missing clock marker and
-an unreachable mint: the wrapper must wait without starting the daemon. Exercise
+identity/limits, and network readiness. A missing clock marker must block startup.
+An unreachable mint must not block the wrapper from launching the daemon; verify
+the service preserves its financial limits during recovery. Exercise
 a bridged native interface without changing the live radio configuration.
 Check an upgrade of a running instance preserves its account and budget.
+
+Run the host-side wrapper checks with
+`python3 -m unittest discover -s testing/openwrt`. They substitute the clock marker
+and OpenWrt commands; device startup and outage recovery need separate acceptance.
 
 Reboot one test router at a time. Compare boot IDs to prove an actual reboot,
 then verify that NTP, native interface isolation, the relay control socket and

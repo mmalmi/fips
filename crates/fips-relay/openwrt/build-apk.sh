@@ -59,7 +59,7 @@ mv "$build_root/files" "$data/lib/apk/packages/fips-relay.list"
 "$apk_tool" mkpkg --compat 3.0.0_pre3 \
 	--info name:fips-relay --info "version:$version" --info "arch:$architecture" \
 	--info license:MIT --info 'description:Sender-funded native FIPS forwarding' \
-	--info 'depends:procd jsonfilter iw uclient-fetch ca-bundle' \
+	--info 'depends:procd jsonfilter iw ca-bundle' \
 	--script "pre-upgrade:$source_dir/pre-upgrade" \
 	--script "post-upgrade:$source_dir/post-upgrade" \
 	--script "pre-deinstall:$source_dir/pre-deinstall" \
