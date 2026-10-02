@@ -56,6 +56,46 @@ fn start(path: &std::path::Path) -> DurableRelay {
 }
 
 #[test]
+fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
+    use fips_core::node::ForwardingDecision;
+    let root = tempfile::tempdir().unwrap();
+    let relay = start(root.path());
+    for value in 1..=3 {
+        let bytes = [value; 8];
+        if value > 1 {
+            let before = relay.channel_usage("neighbor").unwrap();
+            assert_eq!(relay.decide(&request(&bytes)), ForwardingDecision::Retry);
+            assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
+            assert!(relay.checkpoint_if_due().unwrap());
+        }
+        let token = relay.decide(&request(&bytes)).admission().unwrap().token;
+        relay.complete(token, ForwardingOutcome::Submitted);
+    }
+    let before = relay.channel_usage("neighbor").unwrap();
+    assert_eq!(before.submitted_msat, 24);
+    assert_eq!(relay.decide(&request(&[4; 8])), ForwardingDecision::Retry);
+    assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
+    // A checkpoint alone cannot replenish unpaid credit.
+    relay.checkpoint().unwrap();
+    assert_eq!(relay.decide(&request(&[4; 8])), ForwardingDecision::Retry);
+    relay.apply_verified_balance("neighbor", 1_000).unwrap();
+    let token = relay.decide(&request(&[4; 8])).admission().unwrap().token;
+    relay.complete(token, ForwardingOutcome::Submitted);
+    assert_eq!(relay.channel_usage("neighbor").unwrap().submitted_msat, 32);
+    assert_eq!(
+        relay.decide(&request(&[5; 11])),
+        ForwardingDecision::Reject,
+        "a packet larger than the durable window cannot wait for that window"
+    );
+    relay.seal_channel("neighbor").unwrap();
+    assert_eq!(
+        relay.decide(&request(&[5; 8])),
+        ForwardingDecision::Reject,
+        "previously waiting packets cannot reopen a sealed agreement"
+    );
+}
+
+#[test]
 fn session_setup_and_first_data_share_the_same_durable_window() {
     use fips_relay::ledger::BillingBasis;
     let root = tempfile::tempdir().unwrap();

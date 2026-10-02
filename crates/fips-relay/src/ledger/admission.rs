@@ -3,6 +3,7 @@ use super::*;
 
 pub(crate) enum Admission {
     Granted(u64),
+    CreditExhausted,
     WindowExhausted { cost_msat: u64 },
 }
 
@@ -10,7 +11,7 @@ impl RelayLedger {
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
         match self.admit_with_windows(request, now_unix, None)? {
             Admission::Granted(token) => Some(token),
-            Admission::WindowExhausted { .. } => None,
+            Admission::CreditExhausted | Admission::WindowExhausted { .. } => None,
         }
     }
 
@@ -93,7 +94,8 @@ impl RelayLedger {
             crate::measurements::admission_denied(
                 crate::measurements::AdmissionDenial::CreditLimit,
             );
-            return None;
+            return (channel_reserved <= channel.terms.capacity_sat.checked_mul(1_000)?)
+                .then_some(Admission::CreditExhausted);
         }
         if channel_reserved > windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0))
         {

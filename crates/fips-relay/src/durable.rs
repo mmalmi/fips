@@ -5,6 +5,7 @@
 //! Recovery consumes the entire unrecorded remainder without billing it.
 
 mod channel_history;
+mod forwarding;
 
 use crate::ledger::{
     Admission, ChannelTerms, ChannelUsage, Contract, LedgerError, Limits, RelayLedger, Snapshot,
@@ -418,38 +419,6 @@ impl DurableRelay {
         published.ceilings = ceilings;
         published.ready = allow_next_window;
         Ok(usage)
-    }
-}
-
-impl ForwardingPolicy for DurableRelay {
-    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
-        // Never wait for the disk-writing controller on the native node loop.
-        let windows = self.windows.read().ok()?;
-        if !windows.ready {
-            return None;
-        }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-        match self
-            .ledger
-            .admit_with_windows(request, now, Some(&windows.ceilings))?
-        {
-            Admission::Granted(token) => Some(token),
-            Admission::WindowExhausted { cost_msat } => {
-                crate::measurements::admission_denied(
-                    crate::measurements::AdmissionDenial::DurableWindow,
-                );
-                if cost_msat <= self.window_msat {
-                    self.window_blocked.store(true, Ordering::Relaxed);
-                }
-                None
-            }
-        }
-    }
-
-    fn complete(&self, token: u64, outcome: ForwardingOutcome) {
-        // Completion never needs the controller gate. A pending outcome captured
-        // before this completion remains conservatively unconfirmed on recovery.
-        self.ledger.complete(token, outcome);
     }
 }
 

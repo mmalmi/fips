@@ -121,6 +121,10 @@ impl ForwardingPolicy for DeliveryTrace {
     }
 
     fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        self.decide(request).admission()
+    }
+
+    fn decide(&self, request: &ForwardingRequest<'_>) -> fips_core::node::ForwardingDecision {
         let mut loss = self.handshake_loss.lock().unwrap();
         let phase = loss.as_ref().and_then(|loss| loss.phase(request));
         if let (Some(loss), Some(phase)) = (loss.as_mut(), phase)
@@ -131,9 +135,10 @@ impl ForwardingPolicy for DeliveryTrace {
                 "routed rekey dropping native handshake phase={phase} elapsed_ms={}",
                 self.started.elapsed().as_millis()
             );
-            return None;
+            return fips_core::node::ForwardingDecision::Reject;
         }
-        let admission = self.inner.admit_classified(request);
+        let decision = self.inner.decide(request);
+        let admission = decision.admission();
         if admission.is_some()
             && let (Some(loss), Some(phase)) = (loss.as_mut(), phase)
         {
@@ -165,7 +170,7 @@ impl ForwardingPolicy for DeliveryTrace {
             }
             records.push_back(row);
         }
-        admission
+        decision
     }
 
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {

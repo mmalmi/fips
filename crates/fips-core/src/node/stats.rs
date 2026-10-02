@@ -29,6 +29,8 @@ pub struct ForwardingStats {
     /// Subset of send errors rejected by the background forwarding window.
     pub drop_background_full_packets: u64,
     pub drop_background_full_bytes: u64,
+    pub deferred_policy_packets: u64,
+    pub deferred_policy_bytes: u64,
     pub drop_policy_denied_packets: u64,
     pub drop_policy_denied_bytes: u64,
     pub originated_packets: u64,
@@ -76,6 +78,11 @@ impl ForwardingStats {
         self.drop_send_error_bytes += bytes as u64;
     }
 
+    pub fn record_deferred_policy(&mut self, bytes: usize) {
+        self.deferred_policy_packets += 1;
+        self.deferred_policy_bytes += bytes as u64;
+    }
+
     pub fn record_drop_policy_denied(&mut self, bytes: usize) {
         self.drop_policy_denied_packets += 1;
         self.drop_policy_denied_bytes += bytes as u64;
@@ -111,6 +118,8 @@ impl ForwardingStats {
             drop_send_error_bytes: self.drop_send_error_bytes,
             drop_background_full_packets: self.drop_background_full_packets,
             drop_background_full_bytes: self.drop_background_full_bytes,
+            deferred_policy_packets: self.deferred_policy_packets,
+            deferred_policy_bytes: self.deferred_policy_bytes,
             drop_policy_denied_packets: self.drop_policy_denied_packets,
             drop_policy_denied_bytes: self.drop_policy_denied_bytes,
             originated_packets: self.originated_packets,
@@ -417,6 +426,8 @@ pub struct ForwardingStatsSnapshot {
     pub drop_send_error_bytes: u64,
     pub drop_background_full_packets: u64,
     pub drop_background_full_bytes: u64,
+    pub deferred_policy_packets: u64,
+    pub deferred_policy_bytes: u64,
     pub drop_policy_denied_packets: u64,
     pub drop_policy_denied_bytes: u64,
     pub originated_packets: u64,

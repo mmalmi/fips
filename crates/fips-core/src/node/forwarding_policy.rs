@@ -55,6 +55,24 @@ pub struct ForwardingAdmission {
     pub class: ForwardingClass,
 }
 
+/// A retry grants no forwarding or accounting authority. The node may retain
+/// the packet within its bounded wait queue and ask the current policy again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardingDecision {
+    Admit(ForwardingAdmission),
+    Reject,
+    Retry,
+}
+
+impl ForwardingDecision {
+    pub fn admission(self) -> Option<ForwardingAdmission> {
+        match self {
+            Self::Admit(admission) => Some(admission),
+            Self::Reject | Self::Retry => None,
+        }
+    }
+}
+
 /// Application-owned transit admission. No policy preserves normal forwarding.
 ///
 /// Calls run synchronously on the node loop: do not block on disk, networking or
@@ -71,6 +89,12 @@ pub trait ForwardingPolicy: Debug + Send + Sync + 'static {
             class: ForwardingClass::Unspecified,
         })
     }
+    /// Opt in to bounded waiting for a temporary allowance shortage. Existing
+    /// policies retain immediate rejection; retries have no completion token.
+    fn decide(&self, request: &ForwardingRequest<'_>) -> ForwardingDecision {
+        self.admit_classified(request)
+            .map_or(ForwardingDecision::Reject, ForwardingDecision::Admit)
+    }
     fn complete(&self, token: u64, outcome: ForwardingOutcome);
 }
 
@@ -83,15 +107,23 @@ pub(super) struct ForwardingPermit {
 }
 
 impl ForwardingPermit {
+    #[cfg(test)]
     pub(super) fn admit(
         policy: &Arc<dyn ForwardingPolicy>,
         request: &ForwardingRequest<'_>,
     ) -> Option<Self> {
-        policy.admit_classified(request).map(|admission| Self {
+        policy
+            .decide(request)
+            .admission()
+            .map(|admission| Self::new(policy, admission))
+    }
+
+    pub(super) fn new(policy: &Arc<dyn ForwardingPolicy>, admission: ForwardingAdmission) -> Self {
+        Self {
             policy: Arc::clone(policy),
             token: Some(admission.token),
             class: admission.class,
-        })
+        }
     }
 
     pub(super) fn packet_class(&self) -> Option<crate::dataplane::PacketClass> {
@@ -124,6 +156,7 @@ impl super::Node {
     /// reservations complete against the policy that admitted them. Direct
     /// local services and locally originated packets do not use this hook.
     pub fn set_forwarding_policy(&mut self, policy: Option<Arc<dyn ForwardingPolicy>>) {
+        self.cancel_waiting_admissions();
         self.forwarding_policy = policy;
     }
 }

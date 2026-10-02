@@ -109,15 +109,19 @@ impl PaidForwarder {
             returns.lock().unwrap().earn(request);
         }
     }
-}
 
-impl ForwardingPolicy for PaidForwarder {
-    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
-        self.admit_classified(request)
-            .map(|admission| admission.token)
-    }
-
-    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+    fn admit_with_seller(
+        &self,
+        request: &ForwardingRequest<'_>,
+        refusal: &mut fips_core::node::ForwardingDecision,
+    ) -> Option<ForwardingAdmission> {
+        let mut admit_seller = || match self.seller.decide(request) {
+            fips_core::node::ForwardingDecision::Admit(admission) => Some(admission.token),
+            decision => {
+                *refusal = decision;
+                None
+            }
+        };
         let handshake = crate::bootstrap::is_handshake(
             request.session_payload,
             request.source,
@@ -164,12 +168,12 @@ impl ForwardingPolicy for PaidForwarder {
             });
         }
         let (seller_token, buyer_token) = if request.next_hop == request.destination {
-            (self.seller.admit(request)?, None)
+            (admit_seller()?, None)
         } else if let Some(token) = self.free.onward(
             request.next_hop,
             request.destination,
             request.session_payload.len(),
-            || self.seller.admit(request),
+            &mut admit_seller,
         ) {
             (token, None)
         } else {
@@ -181,7 +185,7 @@ impl ForwardingPolicy for PaidForwarder {
                     session_payload: request.session_payload,
                 },
                 false,
-                || self.seller.admit(request),
+                admit_seller,
             )?;
             (seller_token, Some(buyer_token))
         };
@@ -199,6 +203,25 @@ impl ForwardingPolicy for PaidForwarder {
             },
         })
     }
+}
+
+impl ForwardingPolicy for PaidForwarder {
+    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        self.admit_classified(request)
+            .map(|admission| admission.token)
+    }
+
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        self.decide(request).admission()
+    }
+
+    fn decide(&self, request: &ForwardingRequest<'_>) -> fips_core::node::ForwardingDecision {
+        use fips_core::node::ForwardingDecision;
+        let mut refusal = ForwardingDecision::Reject;
+        self.admit_with_seller(request, &mut refusal)
+            .map_or(refusal, ForwardingDecision::Admit)
+    }
+
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
         if token == 0 {
             return;

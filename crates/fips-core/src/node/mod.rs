@@ -50,7 +50,8 @@ pub(crate) mod wire;
 pub use endpoint_event::ExternalPacketIo;
 pub use error::NodeError;
 pub use forwarding_policy::{
-    ForwardingAdmission, ForwardingClass, ForwardingOutcome, ForwardingPolicy, ForwardingRequest,
+    ForwardingAdmission, ForwardingClass, ForwardingDecision, ForwardingOutcome, ForwardingPolicy,
+    ForwardingRequest,
 };
 pub use identity_cache::NodeDeliveredPacket;
 pub use originated_observer::{
@@ -265,6 +266,7 @@ pub struct Node {
     /// Transit sends admitted to dataplane whose terminal receipts may arrive
     /// on a later receive-loop turn.
     deferred_session_forwards: handlers::forwarding::DeferredSessionForwards,
+    waiting_admissions: handlers::forwarding::WaitingAdmissions,
     /// Optional application admission for native FMP transit.
     forwarding_policy: Option<std::sync::Arc<dyn ForwardingPolicy>>,
     source_routes: HashMap<NodeAddr, NodeAddr>,
