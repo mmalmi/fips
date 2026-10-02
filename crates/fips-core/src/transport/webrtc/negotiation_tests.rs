@@ -449,7 +449,7 @@ async fn expired_answer_after_connect_timer_counts_one_phase_timeout() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
     let local = crate::Identity::generate();
     let remote = crate::Identity::generate();
@@ -519,18 +519,21 @@ async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
         },
     };
     let runtime = transport.runtime();
-    let handler = tokio::spawn(async move {
-        runtime
-            .handle_offer(
-                signal,
-                PublicKey::from_slice(&remote_xonly.serialize()).expect("Nostr key"),
-                hex::encode(remote_full_key.serialize()),
-                deadline,
-            )
-            .await
-    });
+    let handler = runtime.handle_offer(
+        signal,
+        PublicKey::from_slice(&remote_xonly.serialize()).expect("Nostr key"),
+        hex::encode(remote_full_key.serialize()),
+        deadline,
+    );
+    tokio::pin!(handler);
     let pending_guard = tokio::time::timeout(Duration::from_millis(150), async {
         loop {
+            // Inspect between polls on this thread: the handler cannot finish
+            // gathering and queue its answer before we acquire the pending lock.
+            assert!(
+                futures::poll!(&mut handler).is_pending(),
+                "the answer must still be negotiating before the lock is held"
+            );
             let pending = transport.pending.lock().await;
             if pending
                 .get(&remote_addr)
@@ -544,10 +547,14 @@ async fn locked_answer_queue_deadline_records_exactly_one_timeout() {
     })
     .await
     .expect("handler inserts pending before gathering answer");
-    tokio::time::sleep_until(deadline + Duration::from_millis(10)).await;
+    assert_eq!(transport.negotiation.snapshot().answers_queued, 0);
+    tokio::select! {
+        result = &mut handler => panic!("held pending lock must prevent answer completion: {result:?}"),
+        _ = tokio::time::sleep_until(deadline + Duration::from_millis(10)) => {}
+    }
     drop(pending_guard);
 
-    let result = handler.await.expect("offer handler task");
+    let result = handler.await;
     assert!(
         matches!(result, Err(TransportError::Timeout)),
         "unexpected locked-answer result: {result:?}"
