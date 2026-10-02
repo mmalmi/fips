@@ -114,6 +114,30 @@ Periodic native upkeep is billable session traffic under the negotiated tariff,
 even when it creates no new payment. Do not alter its timers to obtain a quiet
 benchmark boundary.
 
+### Native forwarding-drop diagnostic
+
+The existing native `show_status` API distinguishes forwarding-policy refusals
+from route, MTU and send errors. This ignored diagnostic records those counters
+before and after each unchanged workload in two 500-ms trials:
+
+```sh
+FIPS_CADENCE_REPORT=/absolute/new-forwarding-drops.jsonl \
+  cargo test -p fips-relay --release --features measurements \
+  --test cadence_benchmark forwarding::observe_forwarding_drops \
+  -- --ignored --exact --test-threads=1 --nocapture
+```
+
+The report must not already exist. Funding, workload rates, durable windows,
+spending limits, tails and settlement use the normal trial implementation.
+Each workload's `forwarding.before` and `forwarding.after` arrays contain the
+process identity and cumulative native counters for all five nodes. Compare
+only matching processes without counter resets. Their sampling interval also
+includes the existing service snapshots and can contain protocol traffic;
+these are not application-only packet counts. The extra observations make this
+a diagnostic, not a matched cadence-cost comparison. Its metadata explicitly
+sets `comparison_complete: false`; the cadence analyzer must not accept it as
+a complete matrix.
+
 ## Hardware report contract (schema 3)
 
 The hardware runner uses three router service processes, one paid relay, two
