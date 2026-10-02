@@ -7,6 +7,11 @@ use futures::FutureExt;
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 
+#[path = "reconnection_diagnostics.rs"]
+mod diagnostics;
+#[path = "reconnection_expiry.rs"]
+mod expiry;
+
 const S: usize = 0;
 const A: usize = 1;
 const I: usize = 2;
@@ -78,26 +83,7 @@ fn run_with_return_delay(
             "discovered-neighbor-reconnection-{}-{before:?}-{replace_before_timeout}",
             std::process::id()
         );
-        let network = SimNetwork::new(107);
-        network.set_default_link(SimLink {
-            up: false,
-            ..Default::default()
-        });
-        register_sim_network(name.clone(), network.clone());
-        let mut identities: Vec<_> = (1..=5)
-            .map(|byte| Identity::from_secret_bytes(&[byte; 32]).unwrap())
-            .collect();
-        // Fixed public test scalars, sorted only to make D precede R in A's
-        // discovery order. No seed search, outcome-dependent choice, or cursor mutation.
-        let mut nodes = Vec::new();
-        for (index, identity) in identities.iter().enumerate().take(I) {
-            nodes.push(make_node(&name, index, identity).await);
-        }
-        identities[I..=R]
-            .sort_by_key(|identity| nodes[A].node.neighbor_rotation_order(*identity.node_addr()));
-        for (index, identity) in identities.iter().enumerate().skip(I) {
-            nodes.push(make_node(&name, index, identity).await);
-        }
+        let (network, mut nodes) = topology(&name).await;
         let result = AssertUnwindSafe(exercise(
             &mut nodes,
             &network,
@@ -113,6 +99,30 @@ fn run_with_return_delay(
             std::panic::resume_unwind(panic);
         }
     });
+}
+
+async fn topology(name: &str) -> (SimNetwork, Vec<TestNode>) {
+    let network = SimNetwork::new(107);
+    network.set_default_link(SimLink {
+        up: false,
+        ..Default::default()
+    });
+    register_sim_network(name.to_string(), network.clone());
+    let mut identities: Vec<_> = (1..=5)
+        .map(|byte| Identity::from_secret_bytes(&[byte; 32]).unwrap())
+        .collect();
+    // Fixed public test scalars, sorted only to make D precede R in A's
+    // discovery order. No seed search, outcome-dependent choice, or cursor mutation.
+    let mut nodes = Vec::new();
+    for (index, identity) in identities.iter().enumerate().take(I) {
+        nodes.push(make_node(name, index, identity).await);
+    }
+    identities[I..=R]
+        .sort_by_key(|identity| nodes[A].node.neighbor_rotation_order(*identity.node_addr()));
+    for (index, identity) in identities.iter().enumerate().skip(I) {
+        nodes.push(make_node(name, index, identity).await);
+    }
+    (network, nodes)
 }
 
 async fn make_node(network: &str, index: usize, identity: &Identity) -> TestNode {
@@ -214,6 +224,7 @@ struct Traffic {
     after_peer: Option<usize>,
     after_received: bool,
     replacement_guard: Option<(NodeAddr, Owner)>,
+    cut_at: Option<Instant>,
     next_payload: Instant,
     next_tick: Instant,
 }
@@ -235,9 +246,15 @@ impl Traffic {
             after_peer: None,
             after_received: false,
             replacement_guard: None,
+            cut_at: None,
             next_payload: Instant::now(),
             next_tick: Instant::now(),
         }
+    }
+
+    fn cut_returning_link(&mut self, network: &SimNetwork) {
+        self.cut_at = Some(Instant::now());
+        network.set_link_up(NAMES[A], NAMES[R], false);
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], offer_local: bool) {
@@ -259,23 +276,34 @@ impl Traffic {
             let guarded = self
                 .replacement_guard
                 .filter(|_| nodes[A].node.get_peer(nodes[I].node.node_addr()).is_none());
-            let check = |node: &Node| {
+            let candidate = *nodes[I].node.node_addr();
+            let before = guarded.map(|(peer, _)| {
+                diagnostics::maintenance_snapshot(&nodes[A].node, &peer, &candidate, self.cut_at)
+            });
+            let check = |node: &Node, phase| {
                 if let Some((peer, expected)) = guarded {
-                    assert_eq!(
-                        node_owner(node, &peer),
+                    diagnostics::assert_owner(
+                        node,
+                        &peer,
                         expected,
-                        "timeout maintenance must retain the original replacement victim"
+                        &candidate,
+                        self.cut_at,
+                        phase,
+                        before.as_ref().unwrap(),
                     );
                 }
             };
             for (index, node) in nodes.iter_mut().enumerate() {
                 if index == A {
-                    check(&node.node);
+                    check(&node.node, "before maintenance");
                 }
                 node.node.check_timeouts().await;
+                if index == A {
+                    check(&node.node, "after candidate timeouts");
+                }
                 node.node.check_link_heartbeats().await;
                 if index == A {
-                    check(&node.node);
+                    check(&node.node, "after link heartbeats");
                 }
                 let now = Node::now_ms();
                 node.node.resend_pending_handshakes(now).await;
@@ -431,7 +459,6 @@ async fn exercise(
 
     // No explicit Disconnect or direct peer removal. In the replacement case,
     // a real candidate commits before the remote's native link-death cleanup.
-    network.set_link_up(NAMES[A], NAMES[R], false);
     if replace_before_timeout {
         traffic.replacement_guard = Some((returning, original));
         wait_for(
@@ -446,6 +473,9 @@ async fn exercise(
             },
         )
         .await;
+        // Heartbeats keep the incumbent live without renewing application
+        // demand. Spend the link-death window only on actual replacement.
+        traffic.cut_returning_link(network);
         network.set_link(NAMES[A], NAMES[I], SimLink::default());
         nodes[A].node.poll_transport_discovery().await;
         wait_for(
@@ -463,6 +493,8 @@ async fn exercise(
             "the remote still owns its original adjacency before heartbeat expiry"
         );
         traffic.replacement_guard = None;
+    } else {
+        traffic.cut_returning_link(network);
     }
     wait_for(
         nodes,
