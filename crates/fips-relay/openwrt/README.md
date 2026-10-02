@@ -45,6 +45,13 @@ binary hash, size, architecture and supplied source revision. The package contai
 no private identities, wallet state or active service JSON. It declares `procd`,
 `jsonfilter`, `iw`, `uclient-fetch` and `ca-bundle` dependencies.
 
+On a Linux build host, a dynamically linked APK tool can also run under
+`fakeroot --` with the same builder command. This records root ownership in the
+archive without granting host privileges. Inspect the resulting package with
+`apk --allow-untrusted adbdump --format=json PACKAGE.apk` and require every file
+and directory ACL to name `root` as both user and group. A statically linked APK
+tool cannot use fakeroot's library interception.
+
 ## Linux paid-routing check
 
 The existing automatic quality test runs real controllers, native FIPS feedback
@@ -89,6 +96,30 @@ checksum again afterward. This checks Linux execution and simulated routing;
 OpenWrt services, physical links and router performance require separate acceptance.
 
 ### Production executable and storage recovery
+
+The process-based service, customer and funding-cost tests accept
+`FIPS_RELAY_TEST_PROGRAM` as the executable to launch. Without it, they use the
+binary built by Cargo. This lets a native Linux harness exercise a separately
+built candidate, including an ARM64 binary through an explicit QEMU launcher:
+
+```sh
+cat > run-relay-arm64 <<'SH'
+#!/bin/sh
+exec /path/to/qemu-aarch64 /absolute/path/to/fips-relay "$@"
+SH
+chmod 0755 run-relay-arm64
+FIPS_RELAY_TEST_PROGRAM="$PWD/run-relay-arm64" \
+  cargo test --offline --locked -p fips-relay --test service \
+  explicit_initialization_cannot_reset_missing_state_or_raise_saved_limits \
+  -- --exact --test-threads=1
+```
+
+Replace both launcher paths with the verified artifacts. Keep `exec` so shutdown
+signals reach the candidate. Build the native harness from the same source bundle
+and retain the candidate's hash; the override does not select a harness version.
+Only the launched daemon and CLI execute under emulation. In-process checks stay
+native, and emulated timings do not establish router performance. The existing
+container recipes below also support running the harness itself on ARM64.
 
 Build `--test funding_costs` with the same all-features Linux test command above.
 Its fixture initializes a local test mint and wallets; the four child relays can

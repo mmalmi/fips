@@ -76,7 +76,7 @@ pub(super) async fn reject_damaged_state(
     }
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+        tokio::process::Command::new(relay_program())
             .arg("run")
             .arg(config_path)
             .kill_on_drop(true)

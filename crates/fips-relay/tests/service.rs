@@ -526,7 +526,7 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
     .await
     .unwrap();
     private_native_control(&cfg).await;
-    let mut native_cli = Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+    let mut native_cli = Command::new(relay_program())
         .args(["native", path.to_str().unwrap()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

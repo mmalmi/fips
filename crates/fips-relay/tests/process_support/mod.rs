@@ -53,9 +53,14 @@ pub async fn start(path: &Path) -> Child {
     start_with_env(path, &[]).await
 }
 
+pub fn relay_program() -> std::ffi::OsString {
+    std::env::var_os("FIPS_RELAY_TEST_PROGRAM")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_fips-relay").into())
+}
+
 pub async fn start_with_env(path: &Path, environment: &[(&str, &OsStr)]) -> Child {
     let log = std::fs::File::create(path.with_extension("log")).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+    Command::new(relay_program())
         .arg("run")
         .arg(path)
         .stdout(Stdio::null())
@@ -140,7 +145,7 @@ pub async fn ready(
 }
 
 pub async fn command(path: &Path, action: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+    Command::new(relay_program())
         .arg(action)
         .arg(path)
         .output()
