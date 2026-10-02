@@ -96,6 +96,17 @@ is `work/atomic-setup/acceptance.json` in the local recovery bundle. The accepte
 r57 package is unchanged. Multi-file interrupted initialization remains
 fail-closed with manual recovery; no hardware or power-loss acceptance is added.
 
+Customer preview and setup now share validation of the generated service
+configuration before saving the immutable profile. A rejected mint URL previously
+left a saved profile that prevented correction; the regression reproduces that
+failure and verifies corrected setup, reopen with the same identity and budget,
+and no mint connection. Four profile cases and both existing customer payment
+lifecycle cases pass on native Linux, with strict all-feature relay library/test
+lint, formatting and source-size checks. All 1,077 committed Rust/build inputs
+match the tested snapshot. Evidence is `work/customer-preflight/acceptance.json`
+in the local recovery bundle. This is source acceptance only; r57 is unchanged,
+and partial accounts still require manual recovery.
+
 Wallet imports with SDK `ff1678c2b6ca` and CDK `8de95a89c9e0` can recover a
 completed receive whose display-activity write failed. Retrying returns the
 retained original result without redeeming again or adding balance. Native CDK
