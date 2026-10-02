@@ -123,6 +123,20 @@ owned processes and locks close. See [admission attribution](CADENCE-RESULTS.md#
 and `work/admission-bounds/acceptance.json`. This adds diagnostic evidence only;
 there is no new forwarding fix, accepted cadence comparison or device result.
 
+Window checkpoint jobs at `6d678ea9923b` recheck their scheduling hint under the
+writer lock, so an intervening usage/payment checkpoint can make the job a no-op.
+The existing regression reproduces the old journal replacement and verifies its
+absence after the fix; all 12 durable tests, strict all-feature/default lint,
+formatting and source-size checks pass. In the unchanged two-trial traffic
+diagnostic, 139 completed window operations contain 110 journal commits, with
+stable guard counters and no controller error. All 12 channels settle and all
+10,240 test sats reconcile, but 24,056 packets are missing from the high-rate
+workloads and both financial refusal branches remain active. Background compiler
+activity is recorded in 21 of 36 host samples. This verifies skipped writes and
+the recorded safety checks, not a throughput improvement, delivery fix or device
+acceptance. See [checkpoint results](CADENCE-RESULTS.md#superseded-window-checkpoints--2-october-2026)
+and `work/window-recheck/acceptance.json` in the local recovery bundle.
+
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
 The existing mixed UDP/TCP service regression reproduces four ledger commits

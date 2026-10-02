@@ -1,5 +1,53 @@
 # Paid-relay cadence measurements
 
+## Superseded window checkpoints — 2 October 2026
+
+At `6d678ea9923b`, a scheduled window checkpoint rechecks whether it is due after
+acquiring the existing writer lock. A payment or usage checkpoint can have
+advanced the window while that job was waiting. The cheap scheduling hint still
+avoids starting idle jobs; explicit usage/payment checkpoints remain durable.
+
+The existing durable integration test models this ordering sequentially. With a
+helper retaining the old unconditional behavior, it fails because the superseded
+job replaces the journal. The fixed method skips that replacement. All 12 durable
+tests pass, including crash exposure and failed-writer suspension, as do strict
+all-feature/default relay lint, formatting and source-size checks. This regression
+does not itself exercise a contended writer lock.
+
+The unchanged two-trial diagnostic uses the same harness executable and the
+original 500-ms cadence, rates, allowances and tails. Across its high-rate
+workloads, 139 completed window-checkpoint spans contain 110 journal commits
+and 220 syncs: 29 operations finish without another journal commit. Counts are
+stable across the surrounding service guards, with no recorded controller error.
+Idle, bursty and steady workloads record no window-checkpoint spans.
+
+| High-rate trial | Missing application packets | Native policy refusals | Credit-limit refusal attempts | Durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 8,718 | 8,718 | 5,169 | 3,549 |
+| 1 | 15,338 | 15,340 | 7,374 | 7,966 |
+
+Refusals occur at the first two relays. Their financial counters sum to native
+policy refusals; native counts also include protocol traffic, so the second
+trial has two more refusals than missing application packets. The attempt and
+predicate-order caveats below still apply. Bursty and steady traffic deliver
+fully, other recorded native forwarding-drop/error counters remain zero, and all
+12 channels settle with all 10,240 test sats reconciled. Overall delivery is
+47,368 of 71,424 packets; the high-rate failure remains unresolved.
+
+The test takes 176.04 seconds and the guarded runner 182.84 seconds. An independent
+build starts after the compiler-free preflight and appears in 21 of 36 host
+samples. Ordinary applications and VMs stay running. This run measures skipped
+journal commits, not a throughput/CPU improvement or regression against the
+earlier runs. The full cadence comparison remains rejected; the default stays
+500 ms and hardware acceptance is unchanged.
+
+All 36,136 source inputs and selected executables retain their hashes; owned
+process groups, cgroup and target locks close. Before/after regression, build,
+local-gate and runtime evidence is retained in `work/window-recheck/acceptance.json`
+in the local recovery bundle; derived checkpoint counts are in `io-summary.json`.
+The raw report SHA-256 is
+`695a045f013eb5e6fcf3266fc66a864d43e7fd4bb42182210544523253f2d041`.
+
 ## Credit and durable-window attribution — 2 October 2026
 
 The follow-on diagnostic uses `29ded47759ea`, which adds optional process-local
