@@ -73,3 +73,84 @@ fn legacy_and_malformed_billing_never_fall_back_to_another_tariff() {
         assert!(serde_json::from_value::<CustomerProfile>(saved.clone()).is_err());
     }
 }
+
+#[tokio::test]
+async fn rejected_service_configuration_does_not_save_or_lock_customer_profile() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let root = tempfile::tempdir().unwrap();
+        let mint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        mint.set_nonblocking(true).unwrap();
+        let mut profile: CustomerProfile = serde_json::from_value(saved_original()).unwrap();
+        profile.mint_url = format!("http://{}/", mint.local_addr().unwrap());
+        profile.validate().unwrap();
+        let mut client = CustomerClient::open(root.path()).unwrap();
+        let preview = client
+            .execute(CustomerCommand::Preview {
+                profile: profile.clone(),
+            })
+            .await;
+        let error = client
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("invalid controller capital policy"),
+            "{error}"
+        );
+        assert!(
+            !root.path().join("profile.json").exists(),
+            "rejected setup saved its profile"
+        );
+        assert!(!root.path().join("state").exists());
+        assert!(
+            preview.is_err(),
+            "preview must check the same service configuration"
+        );
+        assert_eq!(
+            client.execute(CustomerCommand::Status).await.unwrap()["configured"],
+            false
+        );
+
+        profile.mint_url.pop();
+        profile.budget_sat = 96;
+        client
+            .execute(CustomerCommand::Preview {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        let ready = client
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ready["configured"], true);
+        assert_eq!(ready["profile"]["budget_sat"], 96);
+        drop(client);
+        let mut reopened = CustomerClient::open(root.path()).unwrap();
+        let after = reopened
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ready["npub"], after["npub"]);
+        assert_eq!(ready["profile"], after["profile"]);
+        profile.budget_sat += 1;
+        assert!(
+            reopened
+                .execute(CustomerCommand::Setup { profile })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            mint.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    })
+    .await
+    .expect("local customer setup deadline");
+}
