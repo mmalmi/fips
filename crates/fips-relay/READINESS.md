@@ -84,6 +84,18 @@ performed; current-device acceptance remains pending.
 
 ## Verified implementation and test history
 
+The later source-only setup correction publishes complete, synced customer
+profiles and service manifests through the existing no-clobber temporary-file
+helper. A real OS write-size failure reproduces the old truncated final file;
+the fix leaves no final file and allows retry, while preserving existing regular
+files, symlinks and private permissions. Five native Linux checks pass, including
+the initialization guard and both customer payment/reopen/crash/settlement cases.
+Strict all-feature relay library/test lint, formatting and source-size checks
+pass; all 1,077 committed Rust/build inputs match the tested snapshot. Evidence
+is `work/atomic-setup/acceptance.json` in the local recovery bundle. The accepted
+r57 package is unchanged. Multi-file interrupted initialization remains
+fail-closed with manual recovery; no hardware or power-loss acceptance is added.
+
 Wallet imports with SDK `ff1678c2b6ca` and CDK `8de95a89c9e0` can recover a
 completed receive whose display-activity write failed. Retrying returns the
 retained original result without redeeming again or adding balance. Native CDK
