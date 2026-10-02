@@ -45,7 +45,10 @@ fn private_new_failed_write_is_retryable() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("profile.json");
     assert!(private_new(&path, &[b'x'; 4096]).is_err());
-    assert!(!path.exists(), "failed write published a partial configuration");
+    assert!(
+        !path.exists(),
+        "failed write published a partial configuration"
+    );
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     private_new(&path, b"complete").unwrap();
     assert_eq!(std::fs::read(path).unwrap(), b"complete");

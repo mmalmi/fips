@@ -15,9 +15,9 @@ use cashu_service::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -48,16 +48,14 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 pub(crate) fn private_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| e.to_string())?;
+    let directory = path.parent().ok_or("missing parent")?;
+    let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
     file.write_all(bytes)
-        .and_then(|_| file.sync_all())
+        .and_then(|_| file.as_file().sync_all())
         .map_err(|e| e.to_string())?;
-    File::open(path.parent().ok_or("missing parent")?)
+    // Publish only complete, durable bytes; never replace a saved account.
+    file.persist_noclobber(path).map_err(|e| e.to_string())?;
+    File::open(directory)
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())
 }

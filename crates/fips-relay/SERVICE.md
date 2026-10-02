@@ -68,6 +68,10 @@ for defaults, watch authority, peer compatibility and current limitations.
 Run `fips-relay init /absolute/path/config.json` once. It prints the new public
 FIPS identity. Init creates private keys and empty accounts; it never overwrites
 existing or partially initialized state. Run never performs initialization.
+The customer profile and final service manifest are published only after their
+complete contents are synced, without replacing existing files. This prevents
+failed writes from publishing truncated configuration; it does not make the
+whole multi-file initialization resumable. Preserve partial accounts for recovery.
 Keep the whole state directory together when backing up or restoring it.
 On OpenWrt, use persistent storage; `/tmp` and `/var` may disappear on reboot.
 Restored forwarding remains gated until all service components have loaded and

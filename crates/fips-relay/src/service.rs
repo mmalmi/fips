@@ -38,9 +38,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt},
+    fs::File,
+    io::Read,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -145,18 +145,10 @@ impl RelayService {
                 .map_err(|e| e.to_string())?;
         }
         check_state(&config.state_directory)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(config.state_directory.join("service.json"))
-            .map_err(|e| e.to_string())?;
-        file.write_all(&serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        File::open(&config.state_directory)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+        crate::wallet_tools::private_new(
+            &config.state_directory.join("service.json"),
+            &serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
+        )?;
         Ok(manifest.npub)
     }
 
