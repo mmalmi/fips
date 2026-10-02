@@ -147,9 +147,13 @@ wait without a reservation: at most 512 packets/1 MiB globally, 128 packets/256 
 per ingress neighbor, and a two-second lifetime. Retries recheck the current
 route, authenticated peer epoch and financial policy. Expiry and retry service
 are independent of discovery backoff; each retry turn is capped at 32 packets
-and 50 ms. Permanent window/capacity limits, including retired debt, still reject.
-The first verification run stopped at a new test's compilation error before
-runtime checks. The corrected candidate remains unaccepted pending Linux
+and 50 ms. Maintenance yields at a pending retry deadline, and expired packets
+are released between RX turns. Permanent window/capacity limits, including
+retired debt, still reject. Six core checks passed the second draft, but a real
+Sim/Noise regression reproduced discovery occupying the whole first-retry
+interval before that draft's dedicated admission branch could run. The first
+two verification runs also exposed new-test compilation and directory-permission
+fixture errors, now corrected. The candidate remains unaccepted pending Linux
 regressions, independent review and a valid performance comparison. No current
 device, throughput or production-readiness claim follows from this draft.
 

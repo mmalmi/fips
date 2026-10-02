@@ -183,12 +183,25 @@ impl Node {
     }
 
     pub(in crate::node) fn admission_work_deadline_ms(&self) -> Option<u64> {
+        self.admission_work_delay()
+            .map(|delay| Self::now_ms().saturating_add(delay.as_nanos().div_ceil(1_000_000) as u64))
+    }
+
+    pub(in crate::node) fn admission_work_delay(&self) -> Option<Duration> {
         self.waiting_admissions.packets.front().map(|packet| {
-            let delay = packet
+            packet
                 .due
-                .saturating_duration_since(tokio::time::Instant::now());
-            Self::now_ms().saturating_add(delay.as_nanos().div_ceil(1_000_000) as u64)
+                .saturating_duration_since(tokio::time::Instant::now())
         })
+    }
+
+    pub(in crate::node) fn expire_waiting_admissions(&mut self) {
+        if self
+            .admission_work_delay()
+            .is_some_and(|delay| delay.is_zero())
+        {
+            self.waiting_admissions.expire(&mut self.stats.forwarding);
+        }
     }
 
     pub(in crate::node) fn cancel_waiting_admissions(&mut self) {
@@ -200,14 +213,14 @@ impl Node {
     }
 
     pub(in crate::node) async fn service_waiting_admissions(&mut self) {
-        self.waiting_admissions.expire(&mut self.stats.forwarding);
+        self.expire_waiting_admissions();
         if tokio::time::timeout(ADMISSION_RETRY_DELAY, self.retry_forwarding_admissions())
             .await
             .is_err()
         {
             warn!("Forwarding admission retry timed out; continuing packet processing");
         }
-        self.waiting_admissions.expire(&mut self.stats.forwarding);
+        self.expire_waiting_admissions();
     }
 
     pub(in crate::node) async fn retry_forwarding_admissions(&mut self) {

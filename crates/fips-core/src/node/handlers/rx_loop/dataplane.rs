@@ -8,11 +8,38 @@ use crate::transport::ReceivedPacket;
 use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, trace, warn};
 
-use super::budget::PACKET_DRAIN_BUDGET;
+use super::budget::{PACKET_DRAIN_BUDGET, RX_LOOP_FAST_MAINTENANCE_TIMEOUT};
 use super::drain::RxLoopDataDrainStats;
 use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits, rx_loop_fast_maintenance_within_budget};
+use std::time::Duration;
 
 impl Node {
+    pub(super) async fn run_rx_loop_link_report_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed = rx_loop_fast_maintenance_within_budget(
+            self.fast_maintenance_budget(),
+            self.check_mmp_reports(),
+        )
+        .await;
+        // A successful slow batch can leave the next report already overdue.
+        // Give queued data a bounded turn before another reserved report turn.
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
+    }
+
+    pub(super) fn fast_maintenance_budget(&self) -> Duration {
+        // A lookup or heartbeat send can start before the first retry is due.
+        // Yield at that deadline instead of consuming the packet's lifetime.
+        self.admission_work_delay()
+            .map_or(RX_LOOP_FAST_MAINTENANCE_TIMEOUT, |delay| {
+                delay.clamp(Duration::from_millis(1), RX_LOOP_FAST_MAINTENANCE_TIMEOUT)
+            })
+    }
+
     pub(super) async fn run_rx_loop_admission_turn(
         &mut self,
         io: &mut RxLoopDataplaneIo<'_>,
@@ -28,8 +55,11 @@ impl Node {
         &mut self,
         io: &mut RxLoopDataplaneIo<'_>,
     ) -> (bool, RxLoopDataDrainStats) {
-        let completed =
-            rx_loop_fast_maintenance_within_budget(self.check_discovery_work(Self::now_ms())).await;
+        let completed = rx_loop_fast_maintenance_within_budget(
+            self.fast_maintenance_budget(),
+            self.check_discovery_work(Self::now_ms()),
+        )
+        .await;
         // A cancelled batch leaves unprocessed retries due. Let queued data
         // make bounded progress before another reserved lookup turn.
         let drained = self

@@ -224,6 +224,7 @@ impl Node {
         let mut admission_not_before_ms = 0;
 
         loop {
+            self.expire_waiting_admissions();
             tokio::select! {
                 biased;
                 // Timer-driven liveness is a reserved-progress branch. It
@@ -550,30 +551,18 @@ impl Node {
         Ok(())
     }
 
-    async fn run_rx_loop_link_report_turn(
-        &mut self,
-        io: &mut RxLoopDataplaneIo<'_>,
-    ) -> (bool, RxLoopDataDrainStats) {
-        let completed = rx_loop_fast_maintenance_within_budget(self.check_mmp_reports()).await;
-        // A successful slow batch can leave the next report already overdue.
-        // Give queued data a bounded turn before another reserved report turn.
-        let drained = self
-            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
-            .await;
-        (completed, drained)
-    }
-
     async fn run_rx_loop_routing_announce_turn(
         &mut self,
         io: &mut RxLoopDataplaneIo<'_>,
     ) -> (bool, RxLoopDataDrainStats) {
         let mut sending_filters = false;
-        let completed = rx_loop_fast_maintenance_within_budget(async {
-            self.send_pending_tree_announces().await;
-            sending_filters = true;
-            self.send_due_filter_announces().await;
-        })
-        .await;
+        let completed =
+            rx_loop_fast_maintenance_within_budget(self.fast_maintenance_budget(), async {
+                self.send_pending_tree_announces().await;
+                sending_filters = true;
+                self.send_due_filter_announces().await;
+            })
+            .await;
         if !completed {
             // Cancellation leaves the original pending flags intact. A due
             // hint must not cause repeated slow sends ahead of packet work,
@@ -842,13 +831,19 @@ impl Node {
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {
-        if !rx_loop_fast_maintenance_within_budget(self.run_rx_loop_fast_maintenance_tick()).await {
+        let fast_timeout = self.fast_maintenance_budget();
+        if !rx_loop_fast_maintenance_within_budget(
+            fast_timeout,
+            self.run_rx_loop_fast_maintenance_tick(),
+        )
+        .await
+        {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
             );
             self.mark_rx_loop_maintenance_timeout();
             warn!(
-                timeout_ms = RX_LOOP_FAST_MAINTENANCE_TIMEOUT.as_millis() as u64,
+                timeout_ms = fast_timeout.as_millis() as u64,
                 data_pressure = plan.data_pressure(),
                 "RX loop liveness maintenance timed out; continuing packet processing"
             );
@@ -862,6 +857,7 @@ impl Node {
             return false;
         };
 
+        let slow_timeout = slow_timeout.min(self.fast_maintenance_budget());
         if tokio::time::timeout(slow_timeout, self.run_rx_loop_slow_maintenance_tick())
             .await
             .is_err()
@@ -964,13 +960,11 @@ async fn wait_for_optional_notify_after(notify: Option<&Arc<Notify>>, not_before
     wait_for_optional_notify(notify).await;
 }
 
-async fn rx_loop_fast_maintenance_within_budget<F>(maintenance: F) -> bool
+async fn rx_loop_fast_maintenance_within_budget<F>(budget: Duration, maintenance: F) -> bool
 where
     F: std::future::Future<Output = ()>,
 {
-    tokio::time::timeout(RX_LOOP_FAST_MAINTENANCE_TIMEOUT, maintenance)
-        .await
-        .is_ok()
+    tokio::time::timeout(budget, maintenance).await.is_ok()
 }
 
 fn bulk_admission_pressure_relief_due(
