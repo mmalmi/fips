@@ -8,9 +8,36 @@ use crate::transport::ReceivedPacket;
 use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, trace, warn};
 
-use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits};
+use super::budget::PACKET_DRAIN_BUDGET;
+use super::drain::RxLoopDataDrainStats;
+use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits, rx_loop_fast_maintenance_within_budget};
 
 impl Node {
+    pub(super) async fn run_rx_loop_admission_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> RxLoopDataDrainStats {
+        // Admission has its own deadline and budget, independent of discovery
+        // timeouts/backoff. Each retry turn still services queued packet work.
+        self.service_waiting_admissions().await;
+        self.drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await
+    }
+
+    pub(super) async fn run_rx_loop_lookup_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed =
+            rx_loop_fast_maintenance_within_budget(self.check_discovery_work(Self::now_ms())).await;
+        // A cancelled batch leaves unprocessed retries due. Let queued data
+        // make bounded progress before another reserved lookup turn.
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
+    }
+
     pub(in crate::node) async fn flush_pending_root_traffic(&mut self) -> bool {
         let Some(root) = self.pending_root_traffic else {
             return false;

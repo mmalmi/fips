@@ -4,14 +4,14 @@ use super::*;
 pub(crate) enum Admission {
     Granted(u64),
     CreditExhausted,
-    WindowExhausted { cost_msat: u64 },
+    WindowExhausted,
 }
 
 impl RelayLedger {
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
         match self.admit_with_windows(request, now_unix, None)? {
             Admission::Granted(token) => Some(token),
-            Admission::CreditExhausted | Admission::WindowExhausted { .. } => None,
+            Admission::CreditExhausted | Admission::WindowExhausted => None,
         }
     }
 
@@ -19,7 +19,7 @@ impl RelayLedger {
         &self,
         request: &ForwardingRequest<'_>,
         now_unix: u64,
-        windows: Option<&BTreeMap<String, u64>>,
+        windows: Option<(&BTreeMap<String, u64>, u64)>,
     ) -> Option<Admission> {
         let units = u64::try_from(request.session_payload.len()).ok()?;
         if units == 0 {
@@ -78,6 +78,9 @@ impl RelayLedger {
             .price
             .amount_due_msat(prospective)?
             .checked_sub(a.contract.price.amount_due_msat(a.usage.reserved_units)?)?;
+        if windows.is_some_and(|(_, max)| incremental_cost > max) {
+            return None;
+        }
         let channel_id = a.contract.channel_id.clone();
         let channel = &state.channels[&channel_id];
         if !channel.active || now_unix >= channel.terms.expires_unix {
@@ -94,14 +97,20 @@ impl RelayLedger {
             crate::measurements::admission_denied(
                 crate::measurements::AdmissionDenial::CreditLimit,
             );
-            return (channel_reserved <= channel.terms.capacity_sat.checked_mul(1_000)?)
-                .then_some(Admission::CreditExhausted);
+            // Other retained channels can still be paid. Retired debt cannot;
+            // it reduces the ceiling even after this channel is fully funded.
+            let replenished = relationship_reservation_limit(
+                &channel.terms,
+                channel.terms.capacity_sat.checked_mul(1_000)?,
+                std::iter::empty(),
+                state.history.as_ref(),
+            )?;
+            return (channel_reserved <= replenished).then_some(Admission::CreditExhausted);
         }
-        if channel_reserved > windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0))
+        if channel_reserved
+            > windows.map_or(u64::MAX, |(w, _)| w.get(&channel_id).copied().unwrap_or(0))
         {
-            return Some(Admission::WindowExhausted {
-                cost_msat: incremental_cost,
-            });
+            return Some(Admission::WindowExhausted);
         }
         let a = state.accounts.get_mut(&id)?;
         a.usage.reserved_units = prospective;

@@ -73,6 +73,11 @@ fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
     }
     let before = relay.channel_usage("neighbor").unwrap();
     assert_eq!(before.submitted_msat, 24);
+    assert_eq!(
+        relay.decide(&request(&[5; 11])),
+        ForwardingDecision::Reject,
+        "insufficient credit must not hide a permanently oversized packet"
+    );
     assert_eq!(relay.decide(&request(&[4; 8])), ForwardingDecision::Retry);
     assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
     // A checkpoint alone cannot replenish unpaid credit.

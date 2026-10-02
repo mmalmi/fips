@@ -20,10 +20,11 @@ impl ForwardingPolicy for DurableRelay {
         let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
             return ForwardingDecision::Reject;
         };
-        let Some(admission) =
-            self.ledger
-                .admit_with_windows(request, now.as_secs(), Some(&windows.ceilings))
-        else {
+        let Some(admission) = self.ledger.admit_with_windows(
+            request,
+            now.as_secs(),
+            Some((&windows.ceilings, self.window_msat)),
+        ) else {
             return ForwardingDecision::Reject;
         };
         match admission {
@@ -32,16 +33,12 @@ impl ForwardingPolicy for DurableRelay {
                 class: ForwardingClass::Unspecified,
             }),
             Admission::CreditExhausted => ForwardingDecision::Retry,
-            Admission::WindowExhausted { cost_msat } => {
+            Admission::WindowExhausted => {
                 crate::measurements::admission_denied(
                     crate::measurements::AdmissionDenial::DurableWindow,
                 );
-                if cost_msat <= self.window_msat {
-                    self.window_blocked.store(true, Ordering::Relaxed);
-                    ForwardingDecision::Retry
-                } else {
-                    ForwardingDecision::Reject
-                }
+                self.window_blocked.store(true, Ordering::Relaxed);
+                ForwardingDecision::Retry
             }
         }
     }

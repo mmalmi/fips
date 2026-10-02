@@ -221,6 +221,7 @@ impl Node {
         let mut nostr_event_turn_not_before = Instant::now();
         let mut mmp_report_not_before = Instant::now();
         let mut lookup_not_before_ms = 0;
+        let mut admission_not_before_ms = 0;
 
         loop {
             tokio::select! {
@@ -290,9 +291,20 @@ impl Node {
                     }
                 }
                 _ = wait_for_optional_epoch_deadline(
-                    self.discovery_work_deadline_ms().into_iter()
-                        .chain(self.admission_work_deadline_ms()).min()
-                        .map(|due| due.max(lookup_not_before_ms)),
+                    self.admission_work_deadline_ms().map(|due| due.max(admission_not_before_ms)),
+                ) => {
+                    let drained = self.run_rx_loop_admission_turn(&mut dataplane_runtime.io()).await;
+                    // Leave a turn for other ready work even after a stalled retry.
+                    admission_not_before_ms = Self::now_ms().saturating_add(1);
+                    if drained.has_data_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                    self.drain_control_queries(
+                        &mut control_query_rx, None, CONTROL_QUERY_INTERLEAVE_BUDGET,
+                    ).await;
+                }
+                _ = wait_for_optional_epoch_deadline(
+                    self.discovery_work_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
                 ) => {
                     let (completed, drained) = self.run_rx_loop_lookup_turn(
                         &mut dataplane_runtime.io(),
@@ -311,7 +323,7 @@ impl Node {
                         lookup_not_before_ms = Self::now_ms().saturating_add(
                             self.config.node.tick_interval_secs.saturating_mul(1000).max(1),
                         );
-                        warn!("Pending discovery/admission work timed out; continuing packet processing");
+                        warn!("Pending discovery work timed out; continuing packet processing");
                     }
                 }
                 Some(message) = control_query_rx.recv() => {
@@ -572,23 +584,6 @@ impl Node {
                 self.defer_tree_announce_retry();
             }
         }
-        let drained = self
-            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
-            .await;
-        (completed, drained)
-    }
-
-    async fn run_rx_loop_lookup_turn(
-        &mut self,
-        io: &mut RxLoopDataplaneIo<'_>,
-    ) -> (bool, RxLoopDataDrainStats) {
-        let completed = rx_loop_fast_maintenance_within_budget(async {
-            self.check_discovery_work(Self::now_ms()).await;
-            self.retry_forwarding_admissions().await;
-        })
-        .await;
-        // A cancelled batch leaves unprocessed retries due. Let queued data
-        // make bounded progress before another reserved lookup turn.
         let drained = self
             .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
             .await;

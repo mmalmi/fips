@@ -137,6 +137,22 @@ the recorded safety checks, not a throughput improvement, delivery fix or device
 acceptance. See [checkpoint results](CADENCE-RESULTS.md#superseded-window-checkpoints--2-october-2026)
 and `work/window-recheck/acceptance.json` in the local recovery bundle.
 
+The subsequent unchanged slow-neighbor network test fails on both the payment
+reply-cache candidate and its pre-cache baseline. Failure-time counters identify
+a credit refusal while a signed payment has not yet been accepted: the first
+seller has 4,722 msat submitted and zero paid, while the buyer has authorized
+5 sat. This is a delivery failure; it does not establish a cache regression.
+A pending core/relay correction lets an explicitly temporary policy refusal
+wait without a reservation: at most 512 packets/1 MiB globally, 128 packets/256 KiB
+per ingress neighbor, and a two-second lifetime. Retries recheck the current
+route, authenticated peer epoch and financial policy. Expiry and retry service
+are independent of discovery backoff; each retry turn is capped at 32 packets
+and 50 ms. Permanent window/capacity limits, including retired debt, still reject.
+The first verification run stopped at a new test's compilation error before
+runtime checks. The corrected candidate remains unaccepted pending Linux
+regressions, independent review and a valid performance comparison. No current
+device, throughput or production-readiness claim follows from this draft.
+
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
 The existing mixed UDP/TCP service regression reproduces four ledger commits

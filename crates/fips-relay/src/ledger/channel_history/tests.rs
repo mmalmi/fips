@@ -41,14 +41,18 @@ fn open(seller: &DurableRelay, terms: &ChannelTerms, paid: u64) {
         .unwrap();
 }
 
-fn send(seller: &DurableRelay, buyer: u8) -> Option<u64> {
-    seller.admit(&ForwardingRequest {
+fn request(buyer: u8, bytes: &[u8]) -> ForwardingRequest<'_> {
+    ForwardingRequest {
         ingress: peer(buyer),
         source: *peer(buyer).node_addr(),
         destination: *peer(9).node_addr(),
         next_hop: *peer(8).node_addr(),
-        session_payload: &[1; 1000],
-    })
+        session_payload: bytes,
+    }
+}
+
+fn send(seller: &DurableRelay, buyer: u8) -> Option<u64> {
+    seller.admit(&request(buyer, &[1; 1000]))
 }
 
 fn seal(seller: &DurableRelay, terms: &ChannelTerms) -> Plan {
@@ -59,6 +63,33 @@ fn seal(seller: &DurableRelay, terms: &ChannelTerms) -> Plan {
     seller
         .channel_retirement_plan(std::slice::from_ref(&terms.id), terms.expires_unix + 1)
         .unwrap()
+}
+
+#[test]
+fn retired_debt_can_make_a_credit_shortage_permanent() {
+    use fips_core::node::ForwardingDecision;
+    let root = tempfile::tempdir().unwrap();
+    let seller = DurableRelay::create(root.path(), Limits::default(), 1_000).unwrap();
+    let mut old = terms(1, 1);
+    old.capacity_sat = 1;
+    old.grace_msat = 30;
+    open(&seller, &old, 0);
+    let token = seller.admit(&request(1, &[1; 20])).unwrap();
+    seller.complete(token, ForwardingOutcome::Submitted);
+    seller.retire_channels(&seal(&seller, &old)).unwrap();
+    let mut next = terms(2, 1);
+    next.capacity_sat = 1;
+    next.grace_msat = 10;
+    open(&seller, &next, 1_000);
+    let token = seller.admit(&request(1, &[2; 985])).unwrap();
+    seller.complete(token, ForwardingOutcome::Submitted);
+    let before = seller.channel_usage(&next.id).unwrap();
+    assert_eq!(
+        seller.decide(&request(1, &[3; 10])),
+        ForwardingDecision::Reject
+    );
+    assert_eq!(seller.channel_usage(&next.id).unwrap(), before);
+    assert!(seller.apply_verified_balance(&next.id, 1_001).is_err());
 }
 
 #[test]
