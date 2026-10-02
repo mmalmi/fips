@@ -3,7 +3,8 @@ use super::*;
 use crate::dataplane::FmpWireHeader;
 use crate::node::EndpointDataIo;
 use crate::node::tests::spanning_tree::{
-    initiate_handshake, make_test_node, process_dataplane_packet, process_node_packets,
+    initiate_handshake, make_test_node, poll_available_packets, poll_node_packets,
+    process_dataplane_packet, process_dataplane_packet_once,
 };
 use crate::node::wire::{FLAG_KEY_EPOCH, Msg1Header, Msg2Header};
 use futures::FutureExt;
@@ -91,7 +92,9 @@ async fn maintenance(nodes: &mut [TestNode]) {
             .await;
         node.node.resend_pending_session_msg3(Node::now_ms()).await;
     }
-    process_available_packets(nodes).await;
+    // Timed multi-node waits must revisit each node without serially waiting
+    // for advisory crypto notifications; the delivery predicate is the fence.
+    poll_available_packets(nodes).await;
 }
 
 async fn setup(nodes: &mut [TestNode]) {
@@ -419,7 +422,7 @@ async fn exercise(nodes: &mut [TestNode], scenario: Scenario) {
             // No synthetic crypto/session changes: receive the real Msg1 and Msg2.
             // Do not run a report/heartbeat timer that could confirm the new epoch
             // before the routed application packet below.
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             if (0..2).all(|local| {
                 nodes[local]
                     .node
@@ -490,12 +493,12 @@ async fn exercise(nodes: &mut [TestNode], scenario: Scenario) {
         let flight = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let source = &mut nodes[0];
-                process_node_packets(&mut source.node, &mut source.packet_rx).await;
+                poll_node_packets(&mut source.node, &mut source.packet_rx).await;
                 while let Ok(packet) = nodes[1].packet_rx.try_recv() {
                     if packet.remote_addr == nodes[0].addr {
                         return packet;
                     }
-                    process_dataplane_packet(&mut nodes[1], packet).await;
+                    process_dataplane_packet_once(&mut nodes[1].node, packet).await;
                 }
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
