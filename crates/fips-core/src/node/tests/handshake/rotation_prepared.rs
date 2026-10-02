@@ -212,17 +212,22 @@ fn incomplete_or_wrong_identity_preparation_preserves_real_tcp_incumbent() {
                 .unwrap()
                 .unwrap();
             assert_eq!(received.remote_addr, old_owner.source);
-            super::super::super::super::spanning_tree::process_dataplane_packet(
-                &mut node, received,
+            // A real frame has arrived, but no crypto operation owns it yet.
+            // Completion readiness alone must not satisfy the exact RX proof.
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    await_heartbeat(&mut node, &old, 1),
+                )
+                .await
+                .is_err()
+            );
+            super::super::super::super::spanning_tree::process_dataplane_packet_once(
+                &mut node.node,
+                received,
             )
             .await;
-            assert_eq!(
-                node.node
-                    .dataplane_fmp_link_metrics(old.node_addr(), Instant::now())
-                    .unwrap()
-                    .rx_packets,
-                1
-            );
+            assert_eq!(await_heartbeat(&mut node, &old, 1).await, 1);
             assert_eq!(stats.snapshot().pool_inbound, 2);
             cleanup_nodes(std::slice::from_mut(&mut node)).await;
         },

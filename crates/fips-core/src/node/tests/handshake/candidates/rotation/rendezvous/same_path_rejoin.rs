@@ -26,6 +26,15 @@ fn run(scenario: Scenario) {
 }
 
 fn run_with_delayed_dial(scenario: Scenario, delay_dial: bool) {
+    run_with_delays(scenario, delay_dial, false);
+}
+
+#[test]
+fn useful_peer_is_refreshed_after_a_real_idle_gap_before_rejoin() {
+    run_with_delays(Scenario::RejoinWithHistory, false, true);
+}
+
+fn run_with_delays(scenario: Scenario, delay_dial: bool, delay_rejoin: bool) {
     run_large_stack_async_test("rotation-same-path-rejoin", move || async move {
         let _guard = lock_large_network_test().await;
         let name = format!("rotation-same-path-rejoin-{}", std::process::id());
@@ -64,9 +73,14 @@ fn run_with_delayed_dial(scenario: Scenario, delay_dial: bool) {
                 .await,
             );
         }
-        let result = AssertUnwindSafe(exercise_rejoin(&mut nodes, scenario, delay_dial))
-            .catch_unwind()
-            .await;
+        let result = AssertUnwindSafe(exercise_rejoin(
+            &mut nodes,
+            scenario,
+            delay_dial,
+            delay_rejoin,
+        ))
+        .catch_unwind()
+        .await;
         cleanup_nodes(&mut nodes).await;
         unregister_sim_network(&name);
         if let Err(panic) = result {
@@ -320,7 +334,12 @@ fn assert_no_returning_fsp(nodes: &[TestNode], ids: &[PeerIdentity]) {
     }
 }
 
-async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario, delay_dial: bool) {
+async fn exercise_rejoin(
+    nodes: &mut [TestNode],
+    scenario: Scenario,
+    delay_dial: bool,
+    delay_rejoin: bool,
+) {
     let with_prior_payload = scenario != Scenario::RejoinIdle;
     let ids = identities(nodes);
     let mut pump = Pump::new();
@@ -460,6 +479,37 @@ async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario, delay_dial:
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    if delay_rejoin {
+        // A scheduler gap may outlive the useful peer's one-second demand
+        // window. Prove that an old successful round is not a freshness fence.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let now = Node::now_ms();
+        assert!(
+            !nodes[0]
+                .node
+                .peer_has_application_demand(ids[2].node_addr(), now, 1000,)
+        );
+        assert_eq!(
+            nodes[0].node.discovery_rotation_victim(now),
+            Some(*ids[2].node_addr()),
+            "without fresh application use the older peer is legitimately idle"
+        );
+    }
+    // The wait above ends with a sleep, which need not resume within 100 ms.
+    // Renew protection through exact real payload delivery before selecting a
+    // victim; neither peer timestamps nor the rotation policy are changed.
+    round(&mut pump, nodes, &mut endpoints, &ids, sequence, &USEFUL).await;
+    sequence += 1;
+    let selection_at = Node::now_ms();
+    let victim = nodes[0].node.discovery_rotation_victim(selection_at);
+    if victim != Some(*ids[3].node_addr()) {
+        delivery_snapshot(nodes, &ids, "unexpected-rejoin-rotation-victim");
+    }
+    assert!(
+        nodes[0]
+            .node
+            .peer_has_application_demand(ids[2].node_addr(), selection_at, 1000,)
+    );
     assert!(
         nodes[1]
             .node
@@ -475,10 +525,7 @@ async fn exercise_rejoin(nodes: &mut [TestNode], scenario: Scenario, delay_dial:
             .node
             .can_receive_neighbor_rotation(ids[1].node_addr(), Node::now_ms())
     );
-    assert_eq!(
-        nodes[0].node.discovery_rotation_victim(Node::now_ms()),
-        Some(*ids[3].node_addr())
-    );
+    assert_eq!(victim, Some(*ids[3].node_addr()));
     if !with_prior_payload {
         assert_no_returning_fsp(nodes, &ids);
     }
