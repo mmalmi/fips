@@ -55,7 +55,8 @@ printf '{"source_revision":"%s","architecture":"%s","binary_sha256":"%s","binary
 (cd "$data" && find . -type f | sed 's|^\.|/|; s|^//|/|' | sort) > "$build_root/files"
 mv "$build_root/files" "$data/lib/apk/packages/fips-relay.list"
 
-"$apk_tool" mkpkg --compat 3.0.0 \
+# Keep parent directories so apk extract can unpack into an empty staging root.
+"$apk_tool" mkpkg --compat 3.0.0_pre3 \
 	--info name:fips-relay --info "version:$version" --info "arch:$architecture" \
 	--info license:MIT --info 'description:Sender-funded native FIPS forwarding' \
 	--info 'depends:procd jsonfilter iw uclient-fetch ca-bundle' \
