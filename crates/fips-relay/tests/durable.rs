@@ -351,6 +351,7 @@ fn exclusive_owner_corruption_and_failed_persistence_fail_closed() {
         relay.checkpoint().is_err(),
         "a failed writer requires restart/recovery"
     );
+    assert!(relay.checkpoint_if_due().is_err());
     drop(relay);
     assert!(DurableRelay::load(&path).is_err());
     std::fs::remove_dir(path.join("ledger.json")).unwrap();
@@ -428,7 +429,8 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
     );
     assert!(relay.admit(&request(b"abcdefghij")).is_none());
     assert!(relay.checkpoint_due().unwrap());
-    let usage = relay.checkpoint().unwrap()["neighbor"];
+    assert!(relay.checkpoint_if_due().unwrap());
+    let usage = relay.channel_usage("neighbor").unwrap();
     assert_eq!(usage.submitted_msat, 3);
     assert_eq!(usage.paid_msat, 0);
     assert!(!relay.checkpoint_due().unwrap());
@@ -436,7 +438,29 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
     let second = relay.admit(&request(b"abcdefghij")).unwrap();
     relay.complete(second, ForwardingOutcome::Submitted);
     assert!(relay.checkpoint_due().unwrap());
+    // A usage/payment checkpoint can finish after the scheduler's hint but
+    // before its window job acquires the writer. That job must not write again.
     relay.checkpoint().unwrap();
+    #[cfg(unix)]
+    let journal_inode = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(directory.join("ledger.json"))
+            .unwrap()
+            .ino()
+    };
+    let checkpointed = relay.checkpoint_if_due().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(directory.join("ledger.json"))
+                .unwrap()
+                .ino(),
+            journal_inode,
+            "a superseded window job must not replace the durable journal"
+        );
+    }
+    assert!(!checkpointed);
     assert!(!relay.checkpoint_due().unwrap());
     drop(relay);
     let restored = DurableRelay::load(&directory).unwrap();

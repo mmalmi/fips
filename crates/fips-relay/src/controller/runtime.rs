@@ -220,7 +220,7 @@ impl ControllerTasks {
                             Ok(true) => {
                                 let seller = checkpoint_controller.services.seller.clone();
                                 blocking(move || measure(Operation::WindowCheckpoint, || {
-                                    seller.checkpoint().map(|_| ()).map_err(|e| e.to_string())
+                                    seller.checkpoint_if_due().map(|_| ()).map_err(|e| e.to_string())
                                 })).await
                             },
                             Ok(false) => Ok(()),

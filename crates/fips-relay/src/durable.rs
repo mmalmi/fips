@@ -137,10 +137,21 @@ impl DurableRelay {
         self.mutate(|_| Ok(())).map(|(_, usage)| usage)
     }
 
+    /// Advance a consumed window if it still needs a checkpoint when the
+    /// writer becomes available. Return whether a journal was committed.
+    pub fn checkpoint_if_due(&self) -> Result<bool, DurableError> {
+        let _writer = self.writer.lock().map_err(|_| DurableError::Suspended)?;
+        if !self.checkpoint_due()? {
+            return Ok(false);
+        }
+        self.persist(true)?;
+        Ok(true)
+    }
+
     /// A local checkpoint can advance a consumed durable window independently
     /// of payment cadence, including a packet blocked before the half-window
     /// threshold. Unchanged windows do not cause idle writes. This is only a
-    /// scheduling hint; `checkpoint` revalidates bounds.
+    /// scheduling hint; `checkpoint_if_due` rechecks it under the writer lock.
     pub fn checkpoint_due(&self) -> Result<bool, DurableError> {
         let windows = self.windows.read().map_err(|_| DurableError::Suspended)?;
         if !windows.ready {
