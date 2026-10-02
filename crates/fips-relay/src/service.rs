@@ -31,7 +31,10 @@ use fips_core::{
     FipsEndpoint, Identity, PeerIdentity,
     config::PeerConfig,
     endpoint::ServiceCarrierDiagnostics,
-    node::{ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
+    node::{
+        ForwardingAdmission, ForwardingDecision, ForwardingOutcome, ForwardingPolicy,
+        ForwardingRequest,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -78,10 +81,14 @@ impl ForwardingPolicy for ServiceForwarder {
     }
 
     fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        self.decide(request).admission()
+    }
+
+    fn decide(&self, request: &ForwardingRequest<'_>) -> ForwardingDecision {
         if !self.ready.load(Ordering::Acquire) {
-            return None;
+            return ForwardingDecision::Reject;
         }
-        self.relay.admit_classified(request)
+        self.relay.decide(request)
     }
 
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
