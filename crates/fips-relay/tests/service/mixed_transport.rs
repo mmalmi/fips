@@ -22,6 +22,8 @@ use bench::{MixedBench, SecondHop};
 #[cfg(feature = "testbench")]
 #[path = "mixed_transport/accept_barrier.rs"]
 mod accept_barrier;
+#[path = "mixed_transport/admission_wait.rs"]
+mod admission_wait;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
