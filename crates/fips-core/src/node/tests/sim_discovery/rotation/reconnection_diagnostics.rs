@@ -60,3 +60,51 @@ pub(super) fn assert_owner(
         );
     }
 }
+
+// These are observations of existing state, not a claim that empty raw queues
+// or no runnable shards mean every async operation has completed.
+pub(super) fn demand_snapshot(nodes: &[TestNode]) -> serde_json::Value {
+    let now_ms = Node::now_ms();
+    let boundary = &nodes[A].node;
+    let peers: Vec<_> = [S, R].into_iter().map(|index| {
+        let addr = nodes[index].node.node_addr();
+        serde_json::json!({
+            "peer": NAMES[index],
+            "recent_transit": boundary.get_peer(addr)
+                .map(|peer| peer.has_recent_transit_demand(now_ms, 1_000)),
+            "deferred_transit": boundary.deferred_session_forwards.has_demand_for(addr),
+            "recent_local_data": boundary.peer_has_recent_local_application_data(addr, now_ms, 1_000),
+            "queued_local_data": boundary.peer_has_queued_application_demand(addr),
+            "application_demand": boundary.peer_has_application_demand(addr, now_ms, 1_000)
+        })
+    }).collect();
+    let sessions: Vec<_> = [(S, R), (R, S)].into_iter().map(|(local, remote)| {
+        let node = &nodes[local].node;
+        let target = nodes[remote].node.node_addr();
+        let entry = node.get_session(target);
+        let activity = node.dataplane.fsp_owner_activity(target);
+        serde_json::json!({
+            "node": NAMES[local], "target": NAMES[remote],
+            "raw_queued": nodes[local].packet_rx.queued_packets_for_test(),
+            "runnable": node.dataplane.has_runnable_work(),
+            "established": entry.map(|e| e.is_established()),
+            "handshake_payload": entry.map(|e| e.handshake_payload().is_some()),
+            "handshake_resends": entry.map(|e| e.resend_count()),
+            "handshake_next_ms": entry.map(|e| e.next_resend_at_ms()),
+            "rekey": entry.map(|e| e.has_rekey_in_progress()),
+            "epoch_confirmed": activity.map(|a| a.current_epoch_confirmed()),
+            "send_counter": activity.map(|a| a.send_counter()),
+            "last_rx_age_ms": activity.and_then(|a| a.last_rx_age_ms(now_ms)),
+            "data_counters": activity.map(|a| a.traffic_counters()),
+            "mmp": node.dataplane.fsp_mmp_snapshot(target).map(|m| serde_json::json!({
+                "mode": format!("{:?}", m.mode), "tx_packets": m.tx_packets,
+                "rx_packets": m.rx_packets, "send_mtu": m.send_mtu, "observed_mtu": m.observed_mtu
+            }))
+        })
+    }).collect();
+    serde_json::json!({
+        "observed_ms": now_ms,
+        "preparation_opportunity": boundary.has_neighbor_preparation_opportunity(now_ms),
+        "peers": peers, "sessions": sessions
+    })
+}

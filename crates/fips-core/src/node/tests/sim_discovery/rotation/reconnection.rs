@@ -225,6 +225,10 @@ struct Traffic {
     after_received: bool,
     replacement_guard: Option<(NodeAddr, Owner)>,
     cut_at: Option<Instant>,
+    preparation_observations: Vec<serde_json::Value>,
+    setup_confirmed_ms: Option<u64>,
+    aging_started_ms: Option<u64>,
+    first_eligible_observed_ms: Option<u64>,
     next_payload: Instant,
     next_tick: Instant,
 }
@@ -247,6 +251,10 @@ impl Traffic {
             after_received: false,
             replacement_guard: None,
             cut_at: None,
+            preparation_observations: Vec::new(),
+            setup_confirmed_ms: None,
+            aging_started_ms: None,
+            first_eligible_observed_ms: None,
             next_payload: Instant::now(),
             next_tick: Instant::now(),
         }
@@ -271,7 +279,8 @@ impl Traffic {
         // Existing native maintenance, once per second. Discovery is polled at
         // each real topology exposure below so the selected pending owner can
         // be inspected before its remote processes Msg1.
-        if Instant::now() >= self.next_tick {
+        let maintenance_due = Instant::now() >= self.next_tick;
+        if maintenance_due {
             self.next_tick = Instant::now() + Duration::from_secs(1);
             let guarded = self
                 .replacement_guard
@@ -324,6 +333,14 @@ impl Traffic {
             }
         }
         poll_available_packets(nodes).await;
+        if maintenance_due
+            && self.replacement_guard.is_some()
+            && self.cut_at.is_none()
+            && self.preparation_observations.len() < 4
+        {
+            self.preparation_observations
+                .push(diagnostics::demand_snapshot(nodes));
+        }
         caps(nodes);
         assert_eq!(owner(nodes, S, A), self.local_owner[0]);
         assert_eq!(owner(nodes, A, S), self.local_owner[1]);
@@ -388,6 +405,47 @@ async fn wait_for(
     }
 }
 
+async fn confirm_application_setup(
+    nodes: &mut [TestNode],
+    traffic: &mut Traffic,
+    source: usize,
+    destination: usize,
+    deadline: tokio::time::Instant,
+) {
+    let confirmed = tokio::time::timeout_at(deadline, async {
+        loop {
+            traffic.turn(nodes, true).await;
+            let ready = [(source, destination), (destination, source)]
+                .into_iter()
+                .all(|(local, remote)| {
+                    let node = &nodes[local].node;
+                    let target = nodes[remote].node.node_addr();
+                    node.get_session(target).is_some_and(|entry| {
+                        entry.is_established() && entry.handshake_payload().is_none()
+                    }) && node
+                        .dataplane
+                        .fsp_owner_activity(target)
+                        .is_some_and(|activity| activity.current_epoch_confirmed())
+                });
+            if ready {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    if confirmed.is_err() {
+        snapshot(
+            nodes,
+            traffic,
+            "original setup must confirm both FSP epochs",
+        );
+    }
+    confirmed.expect("both FSP epochs confirmed within original setup deadline");
+    assert!(tokio::time::Instant::now() < deadline);
+    traffic.setup_confirmed_ms = Some(Node::now_ms());
+}
+
 async fn exercise(
     nodes: &mut [TestNode],
     network: &SimNetwork,
@@ -423,11 +481,13 @@ async fn exercise(
             .unwrap()
             .current_epoch_authenticated
     );
+    let mut setup_deadline = None;
     if let Some((source, destination)) = before {
         let target = identity(nodes, destination);
         send_endpoint_data_via_dataplane(&mut nodes[source].node, target, BEFORE.to_vec())
             .await
             .unwrap();
+        setup_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(15));
         wait_for(
             nodes,
             &mut traffic,
@@ -460,7 +520,21 @@ async fn exercise(
     // No explicit Disconnect or direct peer removal. In the replacement case,
     // a real candidate commits before the remote's native link-death cleanup.
     if replace_before_timeout {
+        if let Some((source, destination)) = before {
+            // Delivery alone does not confirm the initiator's reverse epoch.
+            // Keep setup reports and retained Msg3 under the original 15 s
+            // setup budget, before testing whether application demand ages.
+            confirm_application_setup(
+                nodes,
+                &mut traffic,
+                source,
+                destination,
+                setup_deadline.unwrap(),
+            )
+            .await;
+        }
         traffic.replacement_guard = Some((returning, original));
+        traffic.aging_started_ms = Some(Node::now_ms());
         wait_for(
             nodes,
             &mut traffic,
@@ -473,6 +547,10 @@ async fn exercise(
             },
         )
         .await;
+        traffic.first_eligible_observed_ms = Some(Node::now_ms());
+        if std::env::var_os("FIPS_RECONNECTION_DIAGNOSTICS").is_some() {
+            snapshot(nodes, &traffic, "replacement preparation completed");
+        }
         // Heartbeats keep the incumbent live without renewing application
         // demand. Spend the link-death window only on actual replacement.
         traffic.cut_returning_link(network);
@@ -713,7 +791,12 @@ fn snapshot(nodes: &[TestNode], traffic: &Traffic, phase: &str) {
         "reconnection state: {}",
         serde_json::json!({
             "phase":phase,"local_offered":traffic.offered,"local_received":traffic.received.len(),
-            "before_received":traffic.before_received,"after_received":traffic.after_received,"nodes":records
+            "before_received":traffic.before_received,"after_received":traffic.after_received,"nodes":records,
+            "preparation_observations":traffic.preparation_observations,
+            "current_demand":diagnostics::demand_snapshot(nodes),
+            "setup_confirmed_ms":traffic.setup_confirmed_ms,
+            "aging_started_ms":traffic.aging_started_ms,
+            "first_eligible_observed_ms":traffic.first_eligible_observed_ms
         })
     );
 }
