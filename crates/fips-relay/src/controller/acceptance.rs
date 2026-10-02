@@ -234,6 +234,7 @@ impl Controller {
                     .paid_msat;
                 seller
                     .apply_verified_balance(&terms.id, paid.max(previous))
+                    .map(|_| ())
                     .map_err(|e| e.to_string())
             } else {
                 seller

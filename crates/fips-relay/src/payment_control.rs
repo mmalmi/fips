@@ -132,7 +132,7 @@ impl PaymentControl {
         if peer.node_addr() != &terms.buyer {
             return Err("buyer");
         }
-        match &request {
+        let usage = match &request {
             PaymentRequest::Update { payment, .. } => {
                 if self.ledger.channel_usage(id).is_none() {
                     return Err("agreement");
@@ -142,17 +142,16 @@ impl PaymentControl {
                     .map_err(|_| "verification")?;
                 self.ledger
                     .apply_verified_balance(id, credit.paid_msat)
-                    .map_err(|_| "credit")?;
+                    .map_err(|_| "credit")?
             }
-            PaymentRequest::Usage { .. } => {}
-        }
-        let usage = self
-            .ledger
-            .checkpoint()
-            .map_err(|_| "checkpoint")?
-            .get(id)
-            .copied()
-            .ok_or("agreement")?;
+            PaymentRequest::Usage { .. } => self
+                .ledger
+                .checkpoint()
+                .map_err(|_| "checkpoint")?
+                .get(id)
+                .copied()
+                .ok_or("agreement")?,
+        };
         Ok(PaymentResponse::Status {
             channel_id: id.clone(),
             usage,

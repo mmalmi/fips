@@ -14,7 +14,8 @@ pub(super) async fn assert_reconciled(bench: &MixedBench, channels: &[String]) {
         loop {
             let mut observed = BTreeSet::new();
             let mut reconciled = true;
-            for state in bench.states().await {
+            let states = bench.states().await;
+            for state in &states {
                 let progress = state["payment_progress"].as_object().unwrap();
                 for (id, channel) in progress {
                     assert!(observed.insert(id.clone()), "channel belongs to one payer");
@@ -38,6 +39,19 @@ pub(super) async fn assert_reconciled(bench: &MixedBench, channels: &[String]) {
                 "progress reports the active funded channels"
             );
             if reconciled {
+                let mut updates = 0;
+                for state in &states {
+                    let cost = &state["measurements"]["operations"]["payment_update"];
+                    let completed = cost["spans"].as_u64().unwrap();
+                    // The durable credit checkpoint also supplies the reply;
+                    // acknowledging it must not write the ledger a second time.
+                    assert!(
+                        cost["journal_commits"].as_u64().unwrap() <= completed,
+                        "payment updates must use their existing durable checkpoint: {cost}"
+                    );
+                    updates += completed;
+                }
+                assert!(updates > 0, "the service processed real payment updates");
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

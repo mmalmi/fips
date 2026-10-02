@@ -187,9 +187,14 @@ impl DurableRelay {
         self.mutate(|l| l.add_contract(contract)).map(|_| ())
     }
 
-    pub fn apply_verified_balance(&self, id: &str, paid_msat: u64) -> Result<(), DurableError> {
+    /// Return the usage captured in the same durable checkpoint as this credit.
+    pub fn apply_verified_balance(
+        &self,
+        id: &str,
+        paid_msat: u64,
+    ) -> Result<ChannelUsage, DurableError> {
         self.mutate(|l| l.apply_verified_balance(id, paid_msat))
-            .map(|_| ())
+            .and_then(|(_, usage)| usage.get(id).copied().ok_or(DurableError::Format))
     }
 
     pub fn close_contract(&self, id: &str) -> Result<Usage, DurableError> {
