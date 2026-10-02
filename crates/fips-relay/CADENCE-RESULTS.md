@@ -1,5 +1,36 @@
 # Paid-relay cadence measurements
 
+## Rejected current native Linux comparison — 2 October 2026
+
+The unchanged eight-trial matrix completed on FIPS `8b4a9b4a7272`, using the
+current private dependency bundle and the OpenWrt optimization profile on native
+x86-64 Linux. All 48 channels settled and all 40,960 test sats reconciled. The
+strict analyzer rejected delivery loss: 261,557 of 285,696 submitted packets
+arrived. All 24,139 missing packets belong to the high-rate workloads; bursty and
+steady workloads delivered all their packets. There were no duplicates, invalid
+packets or invalid timestamps, and four packets arrived out of order.
+
+The existing loss diagnostic also rejected 14 channel/boundary observations
+where local send evidence exceeded acknowledged payment. This does not establish
+an independent payment defect: dropped sends can legitimately exceed a provider's
+admitted usage. In trial 2, the first forwarding relay received 32,057 link packets
+and sent 22,878 onward during the high-rate workload; the endpoint received 22,820
+application packets. Downstream link counts closely matched. Storage-bound work
+is a lead for investigation: that relay's 47 window-checkpoint spans accumulated
+4.43 seconds of wall time and 11.47 ms of CPU time, while 14 payment-update spans
+accumulated 4.22 seconds and 48.40 ms of CPU time. These spans can overlap and are
+not an accepted cost comparison or a proven cause of the loss.
+
+The matrix took 622.35 seconds under a four-CPU quota and 3 GiB memory limit. No
+host compiler appeared in 124 samples, but a background VM averaged 188.54% CPU
+and host I/O pressure remained present. Sources and both executables retained
+their verified hashes; process groups, cgroup and target lock closed. The raw
+report hash is `a6b0b4147afd1364d61122d1ce31a60ad580f410fd6e87b26dbe4ff91c5359ea`.
+The receipt and complete evidence are retained under `work/cadence-current` in
+the local recovery bundle. The failed matrix is preserved without retries,
+relaxed delivery checks or extra payment flushes. No performance result or policy
+change is accepted from this run; the default remains 500 ms.
+
 ## Accepted ARM64 Linux comparison — 30 September 2026
 
 The r37 source bundle uses FIPS `6b367afc9878`, Cashu SDK `c3fd5b2f8c1b`

@@ -84,6 +84,16 @@ performed; current-device acceptance remains pending.
 
 ## Verified implementation and test history
 
+The current native x86-64 cadence matrix on `8b4a9b4a7272` completed settlement in
+all eight trials and reconciled 40,960 test sats, but failed strict delivery acceptance:
+24,139 of 285,696 submitted packets were missing, all at high rate. The existing
+diagnostic also rejected local-evidence/payment boundary mismatches. The worst
+inspected trial localizes loss to the first forwarding relay; slow durable
+accounting is under investigation, not an established cause. Sources and frozen
+executables remained unchanged, and all owned processes and locks closed. See
+[the rejected comparison](CADENCE-RESULTS.md#rejected-current-native-linux-comparison--2-october-2026).
+This result adds no performance or current-device acceptance.
+
 The later source-only setup correction publishes complete, synced customer
 profiles and service manifests through the existing no-clobber temporary-file
 helper. A real OS write-size failure reproduces the old truncated final file;
