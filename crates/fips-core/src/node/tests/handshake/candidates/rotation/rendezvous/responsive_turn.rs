@@ -26,30 +26,11 @@ impl Observation {
             original.observe(nodes, ids, self.started);
         }
         self.timing.observe(nodes, ids, self.started, "turn-entry");
-        let scheduled = self.next_tick;
-        let due = if self.component_phase.is_zero() {
-            // Preserve the original cold and repeated-control schedule/order.
-            let due = tokio::time::Instant::now() >= self.next_tick[0];
-            if due {
-                self.next_tick = [tokio::time::Instant::now() + Duration::from_secs(1); 2];
-            }
-            [due; 2]
-        } else {
-            // The actual fixture numbering alternates complete components:
-            // boundary, useful peer, and every responsive candidate. Offset
-            // only their initial timers; ordinary late ticks never catch up.
-            let now = tokio::time::Instant::now();
-            std::array::from_fn(|cohort| {
-                let due = now >= self.next_tick[cohort];
-                if due {
-                    self.next_tick[cohort] = now + Duration::from_secs(1);
-                }
-                due
-            })
-        };
+        let scheduled = self.maintenance.next();
+        let due = self.maintenance.poll();
         if due.into_iter().any(|due| due) {
             if let Some(phase) = &mut self.contact_phase {
-                phase.due(scheduled, self.next_tick, due);
+                phase.due(scheduled, self.maintenance.next(), due);
             }
             // Each node still performs one real maintenance turn per second.
             // All endpoints respond; no native request is held or lost.

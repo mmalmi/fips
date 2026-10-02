@@ -2,6 +2,9 @@
 use super::*;
 use std::future::Future;
 
+#[path = "handshake_retention_ready.rs"]
+mod ready;
+
 #[derive(Clone, Copy, Debug)]
 enum Stage {
     Setup,
@@ -10,21 +13,21 @@ enum Stage {
     DuplicateAck,
 }
 
-async fn cancel_after_delivery<F: Future>(network: &crate::SimNetwork, operation: F) {
-    let before = network.stats().packets_sent;
+async fn cancel_after_delivery<F: Future>(
+    receiver: &mut TestNode,
+    source: &NodeAddr,
+    stage: Stage,
+    operation: F,
+) -> ready::Delivery {
     tokio::pin!(operation);
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::select! {
             _ = &mut operation => panic!("send must still await its delayed completion"),
-            _ = async {
-                while network.stats().packets_delivered <= before {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            } => {}
+            delivered = ready::capture(receiver, source, stage) => delivered,
         }
     })
     .await
-    .expect("handshake must reach the real simulated transport");
+    .expect("selected handshake must reach the real simulated transport")
     // Dropping the incomplete operation models the RX maintenance deadline.
 }
 
@@ -67,7 +70,7 @@ async fn run_case(stage: Stage, rekey: bool, cancel: bool) {
         begin(&mut nodes[0].node, identity, rekey).await;
     }
     if matches!(stage, Stage::Msg3 | Stage::DuplicateAck) {
-        assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
+        ready::wait_for_sent(&mut nodes[1], &local, Stage::Ack, rekey).await;
     }
     let duplicate_ack = if matches!(stage, Stage::DuplicateAck) {
         assert!(!rekey);
@@ -79,7 +82,7 @@ async fn run_case(stage: Stage, rekey: bool, cancel: bool) {
             .handshake_payload()
             .unwrap()
             .to_vec();
-        assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
+        ready::wait_for_sent(&mut nodes[0], &remote, Stage::Msg3, false).await;
         Some(payload)
     } else {
         None
@@ -88,18 +91,39 @@ async fn run_case(stage: Stage, rekey: bool, cancel: bool) {
     let source = nodes[sender].addr.as_str().unwrap().to_string();
     if cancel {
         network.set_node_send_completion_delay(&source, 60_000);
-        match stage {
+        let (left, right) = nodes.split_at_mut(1);
+        let (source_node, receiver) = if sender == 0 {
+            (&mut left[0], &mut right[0])
+        } else {
+            (&mut right[0], &mut left[0])
+        };
+        let source_id = *source_node.node.node_addr();
+        let destination = *receiver.node.node_addr();
+        let delivered = match stage {
             Stage::Setup => {
-                cancel_after_delivery(&network, begin(&mut nodes[0].node, identity, rekey)).await
+                cancel_after_delivery(
+                    receiver,
+                    &source_id,
+                    stage,
+                    begin(&mut source_node.node, identity, rekey),
+                )
+                .await
             }
             Stage::Ack | Stage::Msg3 => {
-                cancel_after_delivery(&network, wait_process_packets_for_node(&mut nodes, sender))
-                    .await
+                cancel_after_delivery(
+                    receiver,
+                    &source_id,
+                    stage,
+                    ready::drive(source_node, &destination, stage, rekey),
+                )
+                .await
             }
             Stage::DuplicateAck => {
                 cancel_after_delivery(
-                    &network,
-                    nodes[0]
+                    receiver,
+                    &source_id,
+                    stage,
+                    source_node
                         .node
                         .handle_session_payload(LocalSessionPayload::new(
                             remote,
@@ -107,10 +131,12 @@ async fn run_case(stage: Stage, rekey: bool, cancel: bool) {
                             duplicate_ack.as_ref().unwrap(),
                         )),
                 )
-                .await;
+                .await
             }
-        }
+        };
         network.set_node_send_completion_delay(&source, 0);
+        delivered.assert_retained(&source_node.node, &destination, stage, rekey);
+        delivered.release(receiver).await;
     } else {
         assert!(matches!(stage, Stage::Setup));
         begin(&mut nodes[0].node, identity, rekey).await;

@@ -240,7 +240,7 @@ pub(super) async fn observe(
         observation.contact_turn_cost = Some(turn_timing::Capture::new(observation.started, true));
         observation.contact_phase = Some(phase::Capture::new(
             observation.started,
-            observation.next_tick,
+            observation.maintenance.next(),
             opened.observed_ms,
         ));
     }

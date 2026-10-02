@@ -28,6 +28,8 @@ mod phase;
 mod ready;
 #[path = "responsive_round.rs"]
 mod rounds;
+#[path = "responsive_schedule.rs"]
+mod schedule;
 #[path = "responsive_setup.rs"]
 mod setup;
 #[path = "responsive_turn.rs"]
@@ -164,7 +166,7 @@ struct Observation {
     capacity: CapacityLimits,
     post_deadline_diagnostic: bool,
     started: tokio::time::Instant,
-    next_tick: [tokio::time::Instant; 2],
+    maintenance: schedule::Ticks,
     component_phase: Duration,
     cohort_ticks: [usize; 2],
     bridge_msg1: [usize; 2],
@@ -210,7 +212,7 @@ impl Observation {
             capacity,
             post_deadline_diagnostic: false,
             started,
-            next_tick: [started, started + component_phase],
+            maintenance: schedule::Ticks::new(started, component_phase),
             component_phase,
             cohort_ticks: [0; 2],
             bridge_msg1: [0; 2],
