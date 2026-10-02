@@ -96,9 +96,12 @@ async fn check(nodes: &mut [TestNode], control: Control) {
                 panic!("persistent readiness must retain bounded idle fallback");
             }
         }
-        assert_eq!(
-            driver.await.unwrap(),
-            cut_at,
+        let cut_observed = driver.await.unwrap();
+        assert!(cut_observed >= cut_at, "independent cut must not run early");
+        // Tokio rounds deadlines to millisecond ticks; the driver must still
+        // run within that tick, independently of the contact idle fallback.
+        assert!(
+            cut_observed - cut_at <= Duration::from_millis(1),
             "ready work must not postpone the independent cut"
         );
     } else {
@@ -130,7 +133,11 @@ async fn five_ms(idle: &mut Wait, nodes: &[TestNode]) {
     assert!(poll!(wait.as_mut()).is_pending());
     advance(Duration::from_millis(4)).await;
     assert!(poll!(wait.as_mut()).is_pending());
-    advance(Duration::from_millis(1)).await;
-    assert!(poll!(wait.as_mut()).is_ready());
-    assert_eq!(before.elapsed(), Duration::from_millis(5));
+    // advance() need not dispatch an expired timer before the next poll.
+    // Await the real fallback, allowing only Tokio's millisecond rounding.
+    tokio::time::timeout_at(before + Duration::from_millis(6), wait)
+        .await
+        .expect("idle fallback must remain bounded");
+    assert!(before.elapsed() >= Duration::from_millis(5));
+    assert!(before.elapsed() <= Duration::from_millis(6));
 }
