@@ -1,5 +1,45 @@
 # Paid-relay cadence measurements
 
+## Rejected native Linux comparison after checkpoint fix — 2 October 2026
+
+The unchanged eight-trial matrix on FIPS `18110c330558` still fails acceptance
+after removal of the duplicate payment checkpoint. All 48 channels settle and
+all 40,960 test sats reconcile, but only 268,009 of 285,696 submitted packets
+arrive. The 17,687 missing packets occur in seven high-rate workloads; bursty,
+steady and the other high-rate workload deliver every packet. There are no
+duplicates, invalid packets, invalid timestamps or out-of-order packets.
+
+Both the strict analyzer and its existing loss diagnostic first reject
+unreconciled payment work at a measurement boundary. Raw snapshots contain 12
+such channel/boundary observations and no controller errors. Local sends can
+exceed a provider's admitted usage after drops, so this does not independently
+establish a payment defect. The original rates, spending limits, durable window,
+tails and analyzer remain unchanged; no measured packets are retried.
+
+The worst trial, the second 500-ms repetition, again places the loss at the first
+forwarding relay: it receives 32,048 link packets and sends 25,770 onward; the
+endpoint receives 25,723 application packets. Subsequent link counts closely
+match. That relay's 20 payment-update spans now contain 20 journal commits and
+40 syncs, consistent with the separately accepted checkpoint fix. Its 37 window
+checkpoints accumulate 3.35 seconds of wall time and 9.72 ms of CPU time.
+Operation spans can overlap; they do not prove that durable-window exhaustion
+caused the drops. A separate diagnostic must distinguish admission refusals
+from transport or queue drops before choosing a further change.
+
+The runner takes 629.17 seconds under the same four-CPU quota and 3 GiB memory
+limit. No compiler appears in 125 host samples; an ordinary background VM
+averages 186.30% CPU and host I/O pressure varies. Both current native runs use
+disk-backed XFS journals. The earlier accepted ARM64 comparison used memory-backed
+storage, a different architecture and earlier source. These runs do not isolate
+a software speedup, regression or optimal cadence. The default stays 500 ms.
+
+All 36,135 source inputs and both frozen executables retain their hashes;
+process groups, cgroup and target lock are closed. The raw report SHA-256 is
+`add00693370624050372a05977c5b71a4251a9d1ee11f297cd1aaea345304a7f`.
+The receipt and complete evidence are retained under `work/checkpoint-cadence`
+in the local recovery bundle. Both rejected matrices remain preserved. This run
+adds no accepted cadence-cost comparison, hardware result or package update.
+
 ## Rejected current native Linux comparison — 2 October 2026
 
 The unchanged eight-trial matrix completed on FIPS `8b4a9b4a7272`, using the

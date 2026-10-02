@@ -84,15 +84,19 @@ performed; current-device acceptance remains pending.
 
 ## Verified implementation and test history
 
-The current native x86-64 cadence matrix on `8b4a9b4a7272` completed settlement in
-all eight trials and reconciled 40,960 test sats, but failed strict delivery acceptance:
-24,139 of 285,696 submitted packets were missing, all at high rate. The existing
-diagnostic also rejected local-evidence/payment boundary mismatches. The worst
-inspected trial localizes loss to the first forwarding relay; slow durable
-accounting is under investigation, not an established cause. Sources and frozen
-executables remained unchanged, and all owned processes and locks closed. See
-[the rejected comparison](CADENCE-RESULTS.md#rejected-current-native-linux-comparison--2-october-2026).
-This result adds no performance or current-device acceptance.
+The latest native x86-64 cadence matrix on `18110c330558` still fails acceptance
+after removal of the duplicate payment checkpoint. All eight trials settle 48
+channels and reconcile 40,960 test sats, but 17,687 of 285,696 submitted packets
+are missing across seven high-rate workloads. Both strict analysis and the
+existing loss diagnostic reject local-evidence/payment boundary mismatches.
+The worst trial again places loss at the first forwarding relay; slow durable
+accounting remains a hypothesis until admission and transport drops are
+distinguished. This run uses disk-backed XFS, unlike the earlier accepted ARM64
+memory-backed comparison. Sources and frozen executables remain unchanged;
+all owned processes and locks are closed. See
+[the latest rejected comparison](CADENCE-RESULTS.md#rejected-native-linux-comparison-after-checkpoint-fix--2-october-2026).
+Both current rejected runs are preserved. Neither establishes a speedup,
+optimal cadence or current-device acceptance; the default remains 500 ms.
 
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
@@ -103,9 +107,10 @@ recovery case and all 12 durable-accounting tests pass on native Linux, as do
 strict all-feature relay library/test lint, formatting and source-size checks.
 All 36,135 source inputs remain unchanged during verification; the preserved
 before/after evidence is `work/payment-checkpoint/acceptance.json` in the local
-recovery bundle. This removes a redundant ledger write per update. It does not
-accept a high-rate speedup or resolve the rejected cadence matrix without a new
-matched run. The r57 package and device acceptance remain unchanged.
+recovery bundle. This removes a redundant ledger write per update. The new
+matched run above still fails delivery and boundary acceptance, so the source
+fix does not establish a high-rate speedup or resolve that failure. The r57
+package and device acceptance remain unchanged.
 
 The later source-only setup correction publishes complete, synced customer
 profiles and service manifests through the existing no-clobber temporary-file
