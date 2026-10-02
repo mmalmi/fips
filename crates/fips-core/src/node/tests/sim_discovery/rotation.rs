@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::NeighborRotationConfig;
 use crate::node::acl::{PeerAclContext, PeerAclReloader};
-use spanning_tree::process_available_packets;
+use spanning_tree::{poll_available_packets, process_available_packets};
 use std::time::Instant;
 
 mod carrier_demand;
@@ -31,7 +31,7 @@ async fn authenticate(nodes: &mut [TestNode], remote: usize) {
     let remote_addr = *nodes[remote].node.node_addr();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         assert_caps(nodes);
         if nodes[0].node.get_peer(&remote_addr).is_some()
             && nodes[remote].node.get_peer(&local_addr).is_some()
@@ -162,7 +162,7 @@ async fn denied_first_discovery_does_not_starve_allowed_rotation() {
     // queued at the full local node. Discovery and Msg1 alone cannot evict.
     let deadline = Instant::now() + Duration::from_secs(2);
     while nodes[allowed].node.peer_count() == 0 {
-        process_available_packets(&mut nodes[allowed..=allowed]).await;
+        poll_available_packets(&mut nodes[allowed..=allowed]).await;
         assert!(
             Instant::now() < deadline,
             "allowed candidate did not receive Msg1"

@@ -244,7 +244,7 @@ mod cancellation {
         }
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                process_available_packets(&mut nodes[1..]).await;
+                poll_available_packets(&mut nodes[1..]).await;
                 if let Ok(event) = endpoint.try_recv() {
                     endpoint.release_messages(event.messages.len());
                     assert_eq!(

@@ -11,6 +11,9 @@ use crate::node::wire::Msg1Header;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
+#[path = "rotation_crossed_resend_control.rs"]
+mod readiness_control;
+
 #[derive(Clone, Copy)]
 enum ResendBudget {
     Available,
@@ -179,6 +182,18 @@ async fn assert_no_spent_resend(
         "only the scheduled resend was spent"
     );
     assert_eq!(conn.next_resend_at_ms(), next_due);
+}
+
+// Promotion finishes Noise ownership before the first encrypted receive completes.
+fn crossed_peers_authenticated(nodes: &[TestNode; 2], ids: &[NodeAddr; 2]) -> bool {
+    nodes.iter().enumerate().all(|(i, node)| {
+        node.node.get_peer(&ids[1 - i]).is_some()
+            && node.node.connection_count() == 0
+            && node
+                .node
+                .dataplane_fmp_link_metrics(&ids[1 - i], Instant::now())
+                .is_some_and(|metrics| metrics.current_epoch_authenticated)
+    })
 }
 
 async fn exercise_crossed_resend(nodes: &mut [TestNode; 2], budget: ResendBudget) {
@@ -500,9 +515,7 @@ async fn exercise_crossed_resend(nodes: &mut [TestNode; 2], budget: ResendBudget
                 assert!(node.node.link_count() <= 2);
                 assert!(node.node.index_allocator.count() <= 2);
             }
-            if nodes.iter().enumerate().all(|(i, node)| {
-                node.node.get_peer(&ids[1 - i]).is_some() && node.node.connection_count() == 0
-            }) {
+            if crossed_peers_authenticated(nodes, &ids) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;

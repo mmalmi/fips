@@ -86,7 +86,6 @@ inject_rekey_config() {
 
     tmp="$(mktemp "${cfg}.XXXXXX")"
     if ! awk \
-        -v scenario="$REKEY_SCENARIO" \
         -v after_secs="$REKEY_AFTER_SECS" \
         -v after_messages="$after_messages" \
         -v accept_off="$accept_off" \
@@ -95,10 +94,8 @@ inject_rekey_config() {
             print
             # Zero-loss rekey checks require stable routes; routing churn has
             # separate scenarios because FMP datagrams are best-effort.
-            if (scenario == "staggered-overlap") {
-                print "  tree:"
-                print "    reeval_interval_secs: 0"
-            }
+            print "  tree:"
+            print "    reeval_interval_secs: 0"
             print "  rekey:"
             print "    enabled: true"
             print "    after_secs: " after_secs

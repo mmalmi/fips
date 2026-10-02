@@ -1,5 +1,6 @@
 //! Failed or canceled local completion must consume the scheduled retry budget.
 use super::*;
+use std::future::Future;
 
 #[test]
 fn local_send_errors_exhaust_session_rekey_budget() {
@@ -152,11 +153,7 @@ async fn check_budget(cancel: bool, phase: Phase) {
             index as u32
         );
         if let Some(network) = &network {
-            handshake_retention::cancel_after_delivery(
-                network,
-                phase.resend(&mut nodes[0].node, due),
-            )
-            .await;
+            cancel_after_delivery(network, phase.resend(&mut nodes[0].node, due)).await;
         } else {
             phase.resend(&mut nodes[0].node, due).await;
         }
@@ -227,4 +224,22 @@ async fn check_budget(cancel: bool, phase: Phase) {
     if network.is_some() {
         crate::unregister_sim_network(sim_harness::SESSION_100_NODE_NETWORK);
     }
+}
+
+async fn cancel_after_delivery<F: Future>(network: &crate::SimNetwork, operation: F) {
+    let before = network.stats().packets_sent;
+    tokio::pin!(operation);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = &mut operation => panic!("send must still await its delayed completion"),
+            _ = async {
+                while network.stats().packets_delivered <= before {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            } => {}
+        }
+    })
+    .await
+    .expect("handshake must reach the real simulated transport");
+    // Dropping the incomplete operation models the RX maintenance deadline.
 }

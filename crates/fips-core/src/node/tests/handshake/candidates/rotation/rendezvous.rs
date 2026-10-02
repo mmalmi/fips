@@ -3,7 +3,10 @@ use super::*;
 use crate::config::{SimTransportConfig, TransportInstances};
 use crate::node::EndpointDataIo;
 use crate::node::tests::session::{run_large_stack_async_test, send_endpoint_data_via_dataplane};
-use crate::node::tests::spanning_tree::{lock_large_network_test, process_dataplane_packet};
+use crate::node::tests::spanning_tree::{
+    lock_large_network_test, process_dataplane_completions, process_dataplane_packet,
+    process_dataplane_packet_once,
+};
 use crate::node::wire::Msg1Header;
 use crate::{SimLink, SimNetwork, register_sim_network, unregister_sim_network};
 use futures::FutureExt;
@@ -246,7 +249,15 @@ async fn turn(nodes: &mut [TestNode]) {
             .await;
         n.node.resend_pending_session_msg3(Node::now_ms()).await;
     }
-    process_available_packets(&mut nodes[..6]).await;
+    for n in &mut nodes[..6] {
+        for _ in 0..256 {
+            let Ok(packet) = n.packet_rx.try_recv() else {
+                break;
+            };
+            process_dataplane_packet_once(&mut n.node, packet).await;
+        }
+        process_dataplane_completions(&mut n.node).await;
+    }
     caps(nodes);
 }
 
@@ -327,31 +338,51 @@ fn receive_round_with_tag_and_observer(
     mut observe: impl FnMut(usize, &PeerIdentity, &[u8]) -> bool,
 ) {
     for (destination, endpoint) in endpoints.iter_mut().enumerate() {
-        while let Ok(event) = endpoint.event_rx.try_recv() {
-            let count = event.message_count();
-            for message in event.messages {
-                let payload = message.payload.as_slice();
-                if observe(destination, &message.source_peer, payload) {
-                    continue;
-                }
-                assert_eq!(payload.len(), tag.len() + 2);
-                assert_eq!(
-                    &payload[..tag.len()],
-                    tag,
-                    "late packet from a prior observation turn"
-                );
-                let source = usize::from(payload[tag.len()]);
-                assert_eq!(usize::from(payload[tag.len() + 1]), destination);
-                assert_eq!(message.source_peer.node_addr(), ids[source].node_addr());
-                assert!(flows.contains(&(source, destination)));
-                assert!(
-                    !received.contains(&(source, destination)),
-                    "no retry or duplicate can supply progress"
-                );
-                received.push((source, destination));
+        receive_endpoint_round_with_observer(
+            destination,
+            &mut endpoint.event_rx,
+            ids,
+            tag,
+            flows,
+            received,
+            &mut observe,
+        );
+    }
+}
+
+fn receive_endpoint_round_with_observer(
+    destination: usize,
+    receiver: &mut crate::node::EndpointEventReceiver,
+    ids: &[PeerIdentity],
+    tag: &[u8],
+    flows: &[(usize, usize)],
+    received: &mut Vec<(usize, usize)>,
+    observe: &mut impl FnMut(usize, &PeerIdentity, &[u8]) -> bool,
+) {
+    while let Ok(event) = receiver.try_recv() {
+        let count = event.message_count();
+        for message in event.messages {
+            let payload = message.payload.as_slice();
+            if observe(destination, &message.source_peer, payload) {
+                continue;
             }
-            endpoint.event_rx.release_messages(count);
+            assert_eq!(payload.len(), tag.len() + 2);
+            assert_eq!(
+                &payload[..tag.len()],
+                tag,
+                "late packet from a prior observation turn"
+            );
+            let source = usize::from(payload[tag.len()]);
+            assert_eq!(usize::from(payload[tag.len() + 1]), destination);
+            assert_eq!(message.source_peer.node_addr(), ids[source].node_addr());
+            assert!(flows.contains(&(source, destination)));
+            assert!(
+                !received.contains(&(source, destination)),
+                "no retry or duplicate can supply progress"
+            );
+            received.push((source, destination));
         }
+        receiver.release_messages(count);
     }
 }
 

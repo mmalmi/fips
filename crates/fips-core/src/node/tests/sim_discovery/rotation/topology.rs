@@ -13,7 +13,7 @@ async fn turn(nodes: &mut [TestNode]) {
         node.node.check_tree_state().await;
         node.node.send_pending_tree_announces().await;
     }
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
 }
 
 #[test]

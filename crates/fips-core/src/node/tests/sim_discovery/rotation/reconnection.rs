@@ -7,6 +7,11 @@ use futures::FutureExt;
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 
+#[path = "reconnection_diagnostics.rs"]
+mod diagnostics;
+#[path = "reconnection_expiry.rs"]
+mod expiry;
+
 const S: usize = 0;
 const A: usize = 1;
 const I: usize = 2;
@@ -78,26 +83,7 @@ fn run_with_return_delay(
             "discovered-neighbor-reconnection-{}-{before:?}-{replace_before_timeout}",
             std::process::id()
         );
-        let network = SimNetwork::new(107);
-        network.set_default_link(SimLink {
-            up: false,
-            ..Default::default()
-        });
-        register_sim_network(name.clone(), network.clone());
-        let mut identities: Vec<_> = (1..=5)
-            .map(|byte| Identity::from_secret_bytes(&[byte; 32]).unwrap())
-            .collect();
-        // Fixed public test scalars, sorted only to make D precede R in A's
-        // discovery order. No seed search, outcome-dependent choice, or cursor mutation.
-        let mut nodes = Vec::new();
-        for (index, identity) in identities.iter().enumerate().take(I) {
-            nodes.push(make_node(&name, index, identity).await);
-        }
-        identities[I..=R]
-            .sort_by_key(|identity| nodes[A].node.neighbor_rotation_order(*identity.node_addr()));
-        for (index, identity) in identities.iter().enumerate().skip(I) {
-            nodes.push(make_node(&name, index, identity).await);
-        }
+        let (network, mut nodes) = topology(&name).await;
         let result = AssertUnwindSafe(exercise(
             &mut nodes,
             &network,
@@ -113,6 +99,30 @@ fn run_with_return_delay(
             std::panic::resume_unwind(panic);
         }
     });
+}
+
+async fn topology(name: &str) -> (SimNetwork, Vec<TestNode>) {
+    let network = SimNetwork::new(107);
+    network.set_default_link(SimLink {
+        up: false,
+        ..Default::default()
+    });
+    register_sim_network(name.to_string(), network.clone());
+    let mut identities: Vec<_> = (1..=5)
+        .map(|byte| Identity::from_secret_bytes(&[byte; 32]).unwrap())
+        .collect();
+    // Fixed public test scalars, sorted only to make D precede R in A's
+    // discovery order. No seed search, outcome-dependent choice, or cursor mutation.
+    let mut nodes = Vec::new();
+    for (index, identity) in identities.iter().enumerate().take(I) {
+        nodes.push(make_node(name, index, identity).await);
+    }
+    identities[I..=R]
+        .sort_by_key(|identity| nodes[A].node.neighbor_rotation_order(*identity.node_addr()));
+    for (index, identity) in identities.iter().enumerate().skip(I) {
+        nodes.push(make_node(name, index, identity).await);
+    }
+    (network, nodes)
 }
 
 async fn make_node(network: &str, index: usize, identity: &Identity) -> TestNode {
@@ -194,7 +204,7 @@ fn caps(nodes: &[TestNode]) {
 async fn authenticate(nodes: &mut [TestNode], remote: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         caps(nodes);
         if reciprocal(nodes, A, remote) && nodes[A].node.connection_count() == 0 {
             return;
@@ -214,6 +224,11 @@ struct Traffic {
     after_peer: Option<usize>,
     after_received: bool,
     replacement_guard: Option<(NodeAddr, Owner)>,
+    cut_at: Option<Instant>,
+    preparation_observations: Vec<serde_json::Value>,
+    setup_confirmed_ms: Option<u64>,
+    aging_started_ms: Option<u64>,
+    first_eligible_observed_ms: Option<u64>,
     next_payload: Instant,
     next_tick: Instant,
 }
@@ -235,9 +250,19 @@ impl Traffic {
             after_peer: None,
             after_received: false,
             replacement_guard: None,
+            cut_at: None,
+            preparation_observations: Vec::new(),
+            setup_confirmed_ms: None,
+            aging_started_ms: None,
+            first_eligible_observed_ms: None,
             next_payload: Instant::now(),
             next_tick: Instant::now(),
         }
+    }
+
+    fn cut_returning_link(&mut self, network: &SimNetwork) {
+        self.cut_at = Some(Instant::now());
+        network.set_link_up(NAMES[A], NAMES[R], false);
     }
 
     async fn turn(&mut self, nodes: &mut [TestNode], offer_local: bool) {
@@ -254,28 +279,40 @@ impl Traffic {
         // Existing native maintenance, once per second. Discovery is polled at
         // each real topology exposure below so the selected pending owner can
         // be inspected before its remote processes Msg1.
-        if Instant::now() >= self.next_tick {
+        let maintenance_due = Instant::now() >= self.next_tick;
+        if maintenance_due {
             self.next_tick = Instant::now() + Duration::from_secs(1);
             let guarded = self
                 .replacement_guard
                 .filter(|_| nodes[A].node.get_peer(nodes[I].node.node_addr()).is_none());
-            let check = |node: &Node| {
+            let candidate = *nodes[I].node.node_addr();
+            let before = guarded.map(|(peer, _)| {
+                diagnostics::maintenance_snapshot(&nodes[A].node, &peer, &candidate, self.cut_at)
+            });
+            let check = |node: &Node, phase| {
                 if let Some((peer, expected)) = guarded {
-                    assert_eq!(
-                        node_owner(node, &peer),
+                    diagnostics::assert_owner(
+                        node,
+                        &peer,
                         expected,
-                        "timeout maintenance must retain the original replacement victim"
+                        &candidate,
+                        self.cut_at,
+                        phase,
+                        before.as_ref().unwrap(),
                     );
                 }
             };
             for (index, node) in nodes.iter_mut().enumerate() {
                 if index == A {
-                    check(&node.node);
+                    check(&node.node, "before maintenance");
                 }
                 node.node.check_timeouts().await;
+                if index == A {
+                    check(&node.node, "after candidate timeouts");
+                }
                 node.node.check_link_heartbeats().await;
                 if index == A {
-                    check(&node.node);
+                    check(&node.node, "after link heartbeats");
                 }
                 let now = Node::now_ms();
                 node.node.resend_pending_handshakes(now).await;
@@ -295,7 +332,15 @@ impl Traffic {
                 node.node.check_bloom_state().await;
             }
         }
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
+        if maintenance_due
+            && self.replacement_guard.is_some()
+            && self.cut_at.is_none()
+            && self.preparation_observations.len() < 4
+        {
+            self.preparation_observations
+                .push(diagnostics::demand_snapshot(nodes));
+        }
         caps(nodes);
         assert_eq!(owner(nodes, S, A), self.local_owner[0]);
         assert_eq!(owner(nodes, A, S), self.local_owner[1]);
@@ -360,6 +405,47 @@ async fn wait_for(
     }
 }
 
+async fn confirm_application_setup(
+    nodes: &mut [TestNode],
+    traffic: &mut Traffic,
+    source: usize,
+    destination: usize,
+    deadline: tokio::time::Instant,
+) {
+    let confirmed = tokio::time::timeout_at(deadline, async {
+        loop {
+            traffic.turn(nodes, true).await;
+            let ready = [(source, destination), (destination, source)]
+                .into_iter()
+                .all(|(local, remote)| {
+                    let node = &nodes[local].node;
+                    let target = nodes[remote].node.node_addr();
+                    node.get_session(target).is_some_and(|entry| {
+                        entry.is_established() && entry.handshake_payload().is_none()
+                    }) && node
+                        .dataplane
+                        .fsp_owner_activity(target)
+                        .is_some_and(|activity| activity.current_epoch_confirmed())
+                });
+            if ready {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    if confirmed.is_err() {
+        snapshot(
+            nodes,
+            traffic,
+            "original setup must confirm both FSP epochs",
+        );
+    }
+    confirmed.expect("both FSP epochs confirmed within original setup deadline");
+    assert!(tokio::time::Instant::now() < deadline);
+    traffic.setup_confirmed_ms = Some(Node::now_ms());
+}
+
 async fn exercise(
     nodes: &mut [TestNode],
     network: &SimNetwork,
@@ -395,11 +481,13 @@ async fn exercise(
             .unwrap()
             .current_epoch_authenticated
     );
+    let mut setup_deadline = None;
     if let Some((source, destination)) = before {
         let target = identity(nodes, destination);
         send_endpoint_data_via_dataplane(&mut nodes[source].node, target, BEFORE.to_vec())
             .await
             .unwrap();
+        setup_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(15));
         wait_for(
             nodes,
             &mut traffic,
@@ -431,9 +519,22 @@ async fn exercise(
 
     // No explicit Disconnect or direct peer removal. In the replacement case,
     // a real candidate commits before the remote's native link-death cleanup.
-    network.set_link_up(NAMES[A], NAMES[R], false);
     if replace_before_timeout {
+        if let Some((source, destination)) = before {
+            // Delivery alone does not confirm the initiator's reverse epoch.
+            // Keep setup reports and retained Msg3 under the original 15 s
+            // setup budget, before testing whether application demand ages.
+            confirm_application_setup(
+                nodes,
+                &mut traffic,
+                source,
+                destination,
+                setup_deadline.unwrap(),
+            )
+            .await;
+        }
         traffic.replacement_guard = Some((returning, original));
+        traffic.aging_started_ms = Some(Node::now_ms());
         wait_for(
             nodes,
             &mut traffic,
@@ -446,6 +547,13 @@ async fn exercise(
             },
         )
         .await;
+        traffic.first_eligible_observed_ms = Some(Node::now_ms());
+        if std::env::var_os("FIPS_RECONNECTION_DIAGNOSTICS").is_some() {
+            snapshot(nodes, &traffic, "replacement preparation completed");
+        }
+        // Heartbeats keep the incumbent live without renewing application
+        // demand. Spend the link-death window only on actual replacement.
+        traffic.cut_returning_link(network);
         network.set_link(NAMES[A], NAMES[I], SimLink::default());
         nodes[A].node.poll_transport_discovery().await;
         wait_for(
@@ -463,6 +571,8 @@ async fn exercise(
             "the remote still owns its original adjacency before heartbeat expiry"
         );
         traffic.replacement_guard = None;
+    } else {
+        traffic.cut_returning_link(network);
     }
     wait_for(
         nodes,
@@ -681,7 +791,12 @@ fn snapshot(nodes: &[TestNode], traffic: &Traffic, phase: &str) {
         "reconnection state: {}",
         serde_json::json!({
             "phase":phase,"local_offered":traffic.offered,"local_received":traffic.received.len(),
-            "before_received":traffic.before_received,"after_received":traffic.after_received,"nodes":records
+            "before_received":traffic.before_received,"after_received":traffic.after_received,"nodes":records,
+            "preparation_observations":traffic.preparation_observations,
+            "current_demand":diagnostics::demand_snapshot(nodes),
+            "setup_confirmed_ms":traffic.setup_confirmed_ms,
+            "aging_started_ms":traffic.aging_started_ms,
+            "first_eligible_observed_ms":traffic.first_eligible_observed_ms
         })
     );
 }

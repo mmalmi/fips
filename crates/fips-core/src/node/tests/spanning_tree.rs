@@ -33,8 +33,9 @@ mod topology;
 mod unchanged_refresh;
 
 pub(super) use drain::{
-    drain_all_packets, process_available_packets, process_dataplane_completions,
-    process_dataplane_packet, process_dataplane_packet_once, process_node_packets,
+    drain_all_packets, poll_available_packets, poll_node_packets, process_available_packets,
+    process_dataplane_completions, process_dataplane_packet, process_dataplane_packet_once,
+    process_node_packets,
 };
 pub(super) use fixture::{TestNode, initiate_handshake, make_test_node, make_test_node_with_mtu};
 pub(super) use synthetic::refresh_synthetic_filter_announces;
@@ -46,7 +47,7 @@ pub(super) use topology::{
 };
 
 use drain::drain_initial_handshake_burst;
-use fixture::complete_direct_handshake;
+pub(super) use fixture::complete_direct_handshake;
 use repair::repair_missing_edge_handshakes;
 use snapshot::print_tree_snapshot;
 use synthetic::{drain_synthetic_packets_until_idle, has_synthetic_pending_work};

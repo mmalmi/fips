@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "forwarding_completion.rs"]
+mod completion;
+
 #[tokio::test]
 async fn test_request_forwarding_two_node() {
     // Set up a two-node topology: node0 — node1
@@ -15,16 +18,18 @@ async fn test_request_forwarding_two_node() {
     let coords = TreeCoordinate::from_addrs(vec![node0_addr, root]).unwrap();
     let request = LookupRequest::new(42, target, node0_addr, coords, 5, 0);
     let payload = &request.encode()[1..];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
 
     // Handle on node0 as if we received it from outside
-    nodes[0]
-        .node
-        .handle_lookup_request(&node0_addr, payload)
-        .await;
+    tokio::time::timeout_at(
+        deadline,
+        nodes[0].node.handle_lookup_request(&node0_addr, payload),
+    )
+    .await
+    .expect("single lookup submission exceeded selected request deadline");
 
-    // Process packets — node1 should receive the forwarded request
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let count = process_available_packets(&mut nodes).await;
+    // Generic packet activity is not the selected request's crypto/handler fence.
+    let count = completion::wait_for_request(&mut nodes, 1, 42, deadline).await;
     assert!(
         count > 0,
         "Expected forwarded LookupRequest to arrive at node 1"

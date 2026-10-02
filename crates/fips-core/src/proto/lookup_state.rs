@@ -21,6 +21,9 @@ pub(crate) struct RecentRequest {
     /// Prevents response routing loops when convergent request paths
     /// create bidirectional entries in recent_requests.
     pub(crate) response_forwarded: bool,
+    /// Admitted sends and deferred waiters own their return path until a
+    /// response is claimed or the original record expires.
+    protected: bool,
 }
 
 impl RecentRequest {
@@ -31,6 +34,7 @@ impl RecentRequest {
             target,
             timestamp_ms,
             response_forwarded: false,
+            protected: false,
         }
     }
 
@@ -136,17 +140,26 @@ impl RecentDiscoveryRequests {
             .by_peer
             .get(&from_peer)
             .is_some_and(|ids| ids.len() >= share);
+        let at_capacity = self.entries.len() >= limits.max_entries;
         let victim = if over_share {
             Some(from_peer)
-        } else if self.entries.len() >= limits.max_entries {
+        } else if at_capacity {
             self.by_peer
                 .iter()
+                .filter(|(_, ids)| ids.iter().any(|id| !self.entries[id].protected))
                 .max_by_key(|(_, ids)| ids.len())
                 .map(|(peer, _)| *peer)
         } else {
             None
         };
         let evicted = victim.is_some_and(|peer| self.evict_oldest(peer));
+        if (over_share || at_capacity) && !evicted {
+            return RecentDiscoveryRequestAdmission {
+                accepted: false,
+                deduplicated: false,
+                evicted: false,
+            };
+        }
 
         self.last_admission_generation = generation;
         let mut request = RecentRequest::new(from_peer, target, now_ms);
@@ -168,15 +181,27 @@ impl RecentDiscoveryRequests {
             let Some(ids) = self.by_peer.get_mut(&peer) else {
                 return false;
             };
-            let Some(request_id) = ids.pop_front() else {
+            let Some(index) = ids.iter().position(|id| !self.entries[id].protected) else {
                 return false;
             };
+            let request_id = ids.remove(index).expect("selected admission index");
             (request_id, ids.is_empty())
         };
         if remove_queue {
             self.by_peer.remove(&peer);
         }
         self.entries.remove(&request_id).is_some()
+    }
+
+    /// Call only after forwarding admission or successful waiter admission,
+    /// before the first transport await. Cancellation keeps the bounded path
+    /// alive for any work that may already have been queued.
+    pub(crate) fn protect(&mut self, request_id: u64) {
+        if let Some(recent) = self.entries.get_mut(&request_id)
+            && !recent.response_forwarded
+        {
+            recent.protected = true;
+        }
     }
 
     pub(crate) fn claim_response_forward(
@@ -197,6 +222,7 @@ impl RecentDiscoveryRequests {
         }
 
         recent.response_forwarded = true;
+        recent.protected = false;
         RecentResponseForward::Forward {
             from_peer: recent.from_peer,
         }
@@ -280,6 +306,147 @@ impl RecentDiscoveryRequests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_paths_keep_their_ingress_share_without_displacing_other_peers() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let heavy = NodeAddr::from_bytes([1; 16]);
+        let light = NodeAddr::from_bytes([2; 16]);
+        let target = NodeAddr::from_bytes([3; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(4, 2, 1);
+        assert!(
+            recent
+                .record_request(100, light, target, 1, limits)
+                .accepted()
+        );
+        recent.protect(100);
+        assert!(
+            recent
+                .record_request(1, heavy, target, 1, limits)
+                .accepted()
+        );
+        recent.protect(1);
+        assert!(
+            recent
+                .record_request(2, heavy, target, 2, limits)
+                .accepted()
+        );
+        assert!(recent.record_request(3, heavy, target, 3, limits).evicted());
+        assert!(recent.contains_key(&1));
+        assert!(!recent.contains_key(&2));
+        recent.protect(3);
+        let rejected = recent.record_request(4, heavy, target, 4, limits);
+        assert!(!rejected.accepted() && !rejected.evicted());
+        assert!(recent.contains_key(&100));
+        assert!(recent.contains_key(&1));
+        assert!(recent.contains_key(&3));
+        assert!(
+            recent
+                .record_request(101, light, target, 5, limits)
+                .accepted()
+        );
+        assert_eq!(recent.len(), 4);
+        assert_eq!(recent.indexed_len(), 4);
+    }
+
+    #[test]
+    fn global_capacity_evicts_only_unprotected_records_then_rejects() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let target = NodeAddr::from_bytes([9; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(3, 1, 1);
+        for id in 1..=3 {
+            let peer = NodeAddr::from_bytes([id as u8; 16]);
+            assert!(
+                recent
+                    .record_request(id, peer, target, id, limits)
+                    .accepted()
+            );
+            if id != 2 {
+                recent.protect(id);
+            }
+        }
+        let newcomer = NodeAddr::from_bytes([4; 16]);
+        assert!(
+            recent
+                .record_request(4, newcomer, target, 4, limits)
+                .evicted()
+        );
+        assert!(!recent.contains_key(&2));
+        recent.protect(4);
+        let rejected = recent.record_request(5, newcomer, target, 5, limits);
+        assert!(!rejected.accepted() && !rejected.evicted());
+        assert!(
+            recent
+                .record_request(1, newcomer, target, 5, limits)
+                .deduplicated()
+        );
+        for id in [1, 3, 4] {
+            assert!(recent.contains_key(&id));
+        }
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent.indexed_len(), 3);
+    }
+
+    #[test]
+    fn only_matching_response_releases_protection_without_resetting_dedup() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let peer = NodeAddr::from_bytes([1; 16]);
+        let target = NodeAddr::from_bytes([2; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        assert!(recent.record_request(1, peer, target, 1, limits).accepted());
+        recent.protect(1);
+        assert_eq!(
+            recent.claim_response_forward(1, peer),
+            RecentResponseForward::Missing
+        );
+        assert!(!recent.record_request(2, peer, target, 2, limits).accepted());
+        assert_eq!(
+            recent.claim_response_forward(1, target),
+            RecentResponseForward::Forward { from_peer: peer }
+        );
+        assert!(
+            recent
+                .record_request(1, peer, target, 3, limits)
+                .deduplicated()
+        );
+        recent.protect(1);
+        assert_eq!(
+            recent.claim_response_forward(1, target),
+            RecentResponseForward::AlreadyForwarded
+        );
+        assert!(recent.record_request(2, peer, target, 4, limits).evicted());
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent.indexed_len(), 1);
+    }
+
+    #[test]
+    fn abandoned_work_expires_at_the_original_deadline() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let peer = NodeAddr::from_bytes([1; 16]);
+        let target = NodeAddr::from_bytes([2; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        assert!(
+            recent
+                .record_request(1, peer, target, 100, limits)
+                .accepted()
+        );
+        recent.protect(1);
+        recent.protect(1);
+        recent.purge_expired(10_100, 10_000);
+        assert!(
+            !recent
+                .record_request(2, peer, target, 10_100, limits)
+                .accepted()
+        );
+        recent.purge_expired(10_101, 10_000);
+        assert!(recent.is_empty());
+        assert_eq!(recent.indexed_len(), 0);
+        assert!(
+            recent
+                .record_request(2, peer, target, 10_101, limits)
+                .accepted()
+        );
+    }
 
     #[test]
     fn same_millisecond_id_readmission_has_a_new_owner() {

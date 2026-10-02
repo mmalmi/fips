@@ -41,8 +41,9 @@ async fn discovery_turn(nodes: &mut [TestNode]) {
 
 /// Service the same due discovery work as the RX deadline branch. This never
 /// retries pending application packets or advances a lookup before its deadline.
+/// Poll all nodes without the ordered helper's per-node crypto readiness wait.
 async fn due_discovery_turn(nodes: &mut [TestNode]) {
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
     for node in nodes.iter_mut() {
         let now_ms = Node::now_ms();
         if node
@@ -53,7 +54,7 @@ async fn due_discovery_turn(nodes: &mut [TestNode]) {
             node.node.check_discovery_work(now_ms).await;
         }
     }
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
 }
 
 fn discovery_diagnostics(nodes: &[TestNode], destination: &NodeAddr) -> Vec<String> {
@@ -69,7 +70,8 @@ fn discovery_diagnostics(nodes: &[TestNode], destination: &NodeAddr) -> Vec<Stri
         let work_due_in_ms = node.node.discovery_work_deadline_ms().map(|due| i128::from(due) - i128::from(now_ms));
         let reachable = node.node.peers.values().filter(|peer| peer.may_reach(destination)).count();
         format!(
-            "node={index} root={root_index:?} root_is_destination={root_is_destination} pending={pending} local_due_in_ms={local_due_in_ms:?} work_due_in_ms={work_due_in_ms:?} bloom_peers={reachable} initiated={} bloom_miss={} received={} forwarded={} no_peer={} target={} sign_limited={} forward_limited={} responses={} accepted={} identity_miss={} proof_failed={} unsolicited={} timeout={}",
+            "node={index} raw={} runnable={} root={root_index:?} root_is_destination={root_is_destination} pending={pending} local_due_in_ms={local_due_in_ms:?} work_due_in_ms={work_due_in_ms:?} bloom_peers={reachable} initiated={} bloom_miss={} received={} forwarded={} no_peer={} target={} sign_limited={} forward_limited={} responses={} accepted={} identity_miss={} proof_failed={} unsolicited={} timeout={}",
+            node.packet_rx.queued_packets_for_test(), node.node.dataplane.has_runnable_work(),
             stats.req_initiated, stats.req_bloom_miss, stats.req_received,
             stats.req_forwarded, stats.req_no_tree_peer, stats.req_target_is_us,
             stats.req_sign_rate_limited, stats.req_forward_rate_limited,
@@ -78,6 +80,8 @@ fn discovery_diagnostics(nodes: &[TestNode], destination: &NodeAddr) -> Vec<Stri
         )
     }).collect()
 }
+
+mod setup;
 
 #[test]
 fn bound_established_payload_waits_for_coordinates_after_root_change() {
@@ -269,12 +273,10 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
         .maybe_initiate_route_query_lookup(&destination)
         .await;
     let discovered = tokio::time::timeout(Duration::from_secs(5), async {
-        while nodes[0]
-            .node
-            .coord_cache
-            .get(&destination, Node::now_ms())
-            .is_none()
-        {
+        // A first valid reply can leave a later setup retry admitted at a
+        // transit. Finish that real due work inside this same setup budget,
+        // before changing roots and measuring a fresh original's recovery.
+        while !setup::ready(&nodes, &destination) {
             discovery_turn(&mut nodes).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -477,7 +479,10 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
         delayed_filter.then(|| discovery_diagnostics(&nodes, &destination));
     let deadline =
         tokio::time::Instant::now() + Duration::from_secs(if delayed_filter { 1 } else { 5 });
+    let mut recovery_turns = 0;
+    let mut longest_turn = Duration::ZERO;
     loop {
+        let turn_started = tokio::time::Instant::now();
         if delayed_filter {
             // Filter release may encounter a transit's existing forward slot.
             // Honor that due work, but never rescue this original with a later
@@ -492,6 +497,8 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
         } else {
             discovery_turn(&mut nodes).await;
         }
+        recovery_turns += 1;
+        longest_turn = longest_turn.max(turn_started.elapsed());
         collect_deliveries(
             traffic,
             &mut destination_endpoint.event_rx,
@@ -507,6 +514,16 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
     let filter_to_delivery_ms = filter_started
         .filter(|_| !delivered.is_empty())
         .map(|start| start.elapsed().as_millis());
+    let missed_filter_deadline =
+        delayed_filter && filter_to_delivery_ms.is_none_or(|elapsed| elapsed > 1000);
+    if missed_filter_deadline {
+        eprintln!(
+            "missed {traffic:?} filter gate before duplicate drain: turns={recovery_turns}, longest_turn_ms={}, filter_elapsed_ms={:?}, state={:?}",
+            longest_turn.as_millis(),
+            filter_started.map(|start| start.elapsed().as_millis()),
+            discovery_diagnostics(&nodes, &destination),
+        );
+    }
     drain_to_quiescence(&mut nodes).await;
     collect_deliveries(
         traffic,
@@ -531,6 +548,7 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
     if delivered != [payload.clone()]
         || (requires_coordinates && !verified)
         || !filter_lookup_unchanged
+        || missed_filter_deadline
     {
         if let Some(diagnostics) = filter_release_diagnostics {
             eprintln!("at {traffic:?} filter release: {diagnostics:?}");

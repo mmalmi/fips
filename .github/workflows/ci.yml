@@ -183,7 +183,7 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Run unit tests
-        run: cargo nextest run --all --profile ci
+        run: cargo nextest run --all --profile ci --no-fail-fast
 
       - name: Run integration harness parser tests
         run: python3 -m unittest discover -s testing/static/scripts/tests -p 'test_*.py'
@@ -235,7 +235,7 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Run unit tests
-        run: cargo nextest run --all --profile ci
+        run: cargo nextest run --all --profile ci --no-fail-fast
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 2c – Unit tests (Windows)
@@ -264,7 +264,7 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Run unit tests
-        run: cargo nextest run --all --profile ci
+        run: cargo nextest run --all --profile ci --no-fail-fast
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 2d – PowerShell lint (Windows packaging scripts)

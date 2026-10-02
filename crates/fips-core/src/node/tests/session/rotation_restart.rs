@@ -215,18 +215,25 @@ async fn reject_third_source_replay(node: &mut TestNode, captured: &[u8]) {
 #[test]
 fn rotation_restart_replayed_older_epoch_msg1_cannot_clear_retained_fsp() {
     run_large_stack_async_test("rotation-old-epoch-replay", || async {
-        replay_requires_fresh_confirmation(true).await;
+        replay_requires_fresh_confirmation(true, false).await;
     });
 }
 
 #[test]
 fn rotation_restart_replayed_same_epoch_msg1_cannot_redirect_retained_fsp() {
     run_large_stack_async_test("rotation-same-epoch-replay", || async {
-        replay_requires_fresh_confirmation(false).await;
+        replay_requires_fresh_confirmation(false, false).await;
     });
 }
 
-async fn replay_requires_fresh_confirmation(advance_epoch: bool) {
+#[test]
+fn rotation_restart_final_fsp_drains_ready_work_without_a_new_wakeup() {
+    run_large_stack_async_test("rotation-retained-readiness", || async {
+        replay_requires_fresh_confirmation(true, true).await;
+    });
+}
+
+async fn replay_requires_fresh_confirmation(advance_epoch: bool, hold_final_wakeup: bool) {
     let mut nodes = established_pair().await;
     let remote = *nodes[1].node.node_addr();
     let captured_epoch = nodes[1].node.startup_epoch;
@@ -350,7 +357,23 @@ async fn replay_requires_fresh_confirmation(advance_epoch: bool) {
     restart_remote_node(&mut nodes[1]);
     rejoin(&mut nodes, 1).await;
     assert!(nodes[0].node.get_session(&remote).is_none());
+    // Readiness is advisory, not a fence for a particular crypto operation.
+    // Retain the next responder notification in an already registered observer:
+    // the ordinary completion queue must still make progress without a new wake.
+    let notify = nodes[1].node.dataplane.readiness_notify();
+    let mut retained_wakeup = hold_final_wakeup.then(|| Box::pin(notify.notified()));
+    if let Some(wakeup) = &mut retained_wakeup {
+        while wakeup.as_mut().enable() {
+            *wakeup = Box::pin(notify.notified());
+        }
+    }
     establish_fsp(&mut nodes).await;
+    if let Some(wakeup) = &mut retained_wakeup {
+        assert!(
+            wakeup.as_mut().enable(),
+            "control must retain a real readiness wake"
+        );
+    }
     assert_matching_fsp(&nodes);
     deliver(&mut nodes, b"fresh-proof-after-replay-timeout").await;
     cleanup_nodes(&mut nodes).await;

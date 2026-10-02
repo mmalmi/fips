@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "remote_restart_control.rs"]
+mod control;
+
 #[test]
 fn test_recovery_rekey_replaces_session_after_remote_restart() {
     run_large_stack_async_test("fips-session-remote-restart", || async {
@@ -10,7 +13,7 @@ fn test_recovery_rekey_replaces_session_after_remote_restart() {
 #[test]
 fn test_restarted_initiator_reestablishes_with_surviving_responder() {
     run_large_stack_async_test("fips-session-restarted-initiator", || async {
-        restarted_initiator_reestablishes_with_surviving_responder().await;
+        restarted_initiator_reestablishes_with_surviving_responder(false).await;
     });
 }
 
@@ -112,7 +115,7 @@ async fn recovery_rekey_replaces_session_after_remote_restart() {
     cleanup_nodes(&mut nodes).await;
 }
 
-async fn restarted_initiator_reestablishes_with_surviving_responder() {
+async fn restarted_initiator_reestablishes_with_surviving_responder(hold_setup: bool) {
     let _guard = lock_large_network_test().await;
     let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
     verify_tree_convergence(&nodes);
@@ -161,14 +164,11 @@ async fn restarted_initiator_reestablishes_with_surviving_responder() {
         .initiate_session(survivor_addr, survivor_identity.pubkey_full())
         .await
         .expect("restarted peer should start a fresh session");
-    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
-    assert!(
-        nodes[1]
-            .node
-            .get_session(&restarted_addr)
-            .is_some_and(|entry| entry.has_rekey_in_progress()),
-        "surviving responder must process the restarted peer's fresh setup"
-    );
+    if hold_setup {
+        control::withheld_setup(&mut nodes, &restarted_addr, &survivor_addr).await;
+    } else {
+        control::wait_for_fresh_setup(&mut nodes[1], &restarted_addr).await;
+    }
     wait_for_session_established(
         &mut nodes,
         0,

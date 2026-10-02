@@ -142,7 +142,7 @@ fn reciprocal(nodes: &[TestNode], left: usize, right: usize) -> bool {
 async fn authenticate_pair(nodes: &mut [TestNode], left: usize, right: usize) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !reciprocal(nodes, left, right) {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         caps(nodes);
         assert!(
             Instant::now() < deadline,
@@ -442,7 +442,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     while nodes[A].node.get_peer(relay.node_addr()).is_some()
         || nodes[R].node.get_peer(&source).is_some()
     {
-        process_available_packets(nodes).await;
+        poll_available_packets(nodes).await;
         caps(nodes);
         assert!(
             Instant::now() < deadline,

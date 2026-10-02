@@ -2,6 +2,7 @@ use super::*;
 
 mod connection_cleanup;
 mod handshake_lifetime;
+mod read_budget;
 mod write_lifetime;
 
 #[test]

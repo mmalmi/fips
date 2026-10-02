@@ -3,7 +3,10 @@ use crate::config::WebSocketConfig;
 use crate::node::acl::PeerAclReloader;
 use crate::transport::websocket::WebSocketTransport;
 use crate::transport::{TransportAddr, TransportHandle, TransportId, packet_channel};
-use spanning_tree::{TestNode, cleanup_nodes, process_available_packets, run_synthetic_node_work};
+use spanning_tree::{
+    TestNode, cleanup_nodes, poll_available_packets, process_available_packets,
+    run_synthetic_node_work,
+};
 use std::fs;
 use std::time::Duration;
 
@@ -70,7 +73,7 @@ async fn peer_acl_rejection_closes_the_websocket_carrier() {
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             let closed = nodes[0]
                 .node
                 .transports
@@ -139,7 +142,7 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             if nodes[0].node.get_peer(&client_addr).is_some()
                 && nodes[1].node.get_peer(&server_addr).is_some()
             {
@@ -186,7 +189,7 @@ async fn link_dead_inbound_websocket_closes_physical_carrier() {
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             if nodes[0].node.get_peer(&client_addr).is_some()
                 && nodes[1].node.get_peer(&server_addr).is_some()
             {
@@ -220,7 +223,7 @@ async fn link_dead_inbound_websocket_closes_physical_carrier() {
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             let server_closed = nodes[0]
                 .node
                 .transports
@@ -302,7 +305,7 @@ async fn explicit_network_rebind_bypasses_ordinary_seed_backoff_and_preserves_pa
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             if nodes[0].node.get_peer(&client_addr).is_some()
                 && nodes[1].node.get_peer(&server_addr).is_some()
             {
@@ -390,7 +393,7 @@ async fn explicit_network_rebind_bypasses_ordinary_seed_backoff_and_preserves_pa
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             let server_replaced = nodes[0]
                 .node
                 .get_peer(&client_addr)
@@ -526,7 +529,7 @@ async fn open_discovery_routes_and_recovers_routed_websocket_clients() {
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             let seed_ready = nodes[0].node.get_peer(&router_addr).is_some()
                 && nodes[0].node.get_peer(&admin_addr).is_some();
             let router_ready = nodes[1].node.get_peer(&seed_addr).is_some()
@@ -685,7 +688,7 @@ async fn open_discovery_routes_and_recovers_routed_websocket_clients() {
                 node.node.poll_pending_connects().await;
             }
             run_synthetic_node_work(&mut nodes).await;
-            process_available_packets(&mut nodes).await;
+            poll_available_packets(&mut nodes).await;
             let router_replaced = nodes[1]
                 .node
                 .get_peer(&guest_addr)

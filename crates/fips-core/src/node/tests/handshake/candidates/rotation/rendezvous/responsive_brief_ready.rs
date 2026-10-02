@@ -2,6 +2,14 @@
 use super::*;
 use crate::node::acl::PeerAclContext;
 
+#[path = "responsive_receipt_tests.rs"]
+mod receipt_tests;
+
+/// Observe endpoint queues before unrelated node work can hide a timely receipt.
+pub(super) fn observe_completed_turn(observe: impl FnOnce()) {
+    observe();
+}
+
 const IDLE_MS: u64 = 10_000;
 const SPACING_MS: u64 = 2_000;
 const FLOWS: [(usize, usize); 2] = [(2, 3), (3, 2)];

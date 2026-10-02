@@ -212,26 +212,19 @@ impl Bench {
     async fn state(&self, node: usize, remote: usize) -> Value {
         // Read the tree first: an adoption observed here must have an RTT by
         // the later peer read. The inverse order can straddle first-RTT adoption.
+        let tree = self.tree_snapshot(node, remote).await;
+        self.with_peer_metadata(node, remote, tree).await
+    }
+
+    async fn tree_snapshot(&self, node: usize, remote: usize) -> Value {
         let tree = self.request(node, "show_tree", Value::Null).await;
-        let peers = self.request(node, "show_peers", Value::Null).await;
         let address = self.peers[remote].node_addr().to_string();
-        let peer = peers["peers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|peer| peer["node_addr"] == address);
         let declaration = tree["peers"]
             .as_array()
             .unwrap()
             .iter()
             .find(|peer| peer["node_addr"] == address);
         json!({
-            "link": peer.map(|peer| &peer["link_id"]),
-            "authenticated_at_ms": peer.map(|peer| &peer["authenticated_at_ms"]),
-            "index": peer.map(|peer| &peer["our_session_index"]),
-            "srtt_ms": peer.map(|peer| &peer["mmp"]["srtt_ms"]),
-            "announce_pending": peer.map(|peer| &peer["tree_announce_pending"]),
-            "last_announce_ms": peer.map(|peer| &peer["last_tree_announce_sent_ms"]),
             "remote_root": declaration.map(|peer| &peer["root"]),
             "remote_parent": declaration.map(|peer| &peer["parent"]),
             "remote_sequence": declaration.map(|peer| &peer["declaration_sequence"]),
@@ -240,6 +233,36 @@ impl Bench {
             "sequence": tree["declaration_sequence"], "coords": tree["my_coords"],
             "rate_limited": tree["stats"]["rate_limited"],
         })
+    }
+
+    async fn with_peer_metadata(&self, node: usize, remote: usize, mut tree: Value) -> Value {
+        let peers = self.request(node, "show_peers", Value::Null).await;
+        let address = self.peers[remote].node_addr().to_string();
+        let peer = peers["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|peer| peer["node_addr"] == address);
+        for (field, value) in [
+            ("link", peer.map(|peer| &peer["link_id"])),
+            (
+                "authenticated_at_ms",
+                peer.map(|peer| &peer["authenticated_at_ms"]),
+            ),
+            ("index", peer.map(|peer| &peer["our_session_index"])),
+            ("srtt_ms", peer.map(|peer| &peer["mmp"]["srtt_ms"])),
+            (
+                "announce_pending",
+                peer.map(|peer| &peer["tree_announce_pending"]),
+            ),
+            (
+                "last_announce_ms",
+                peer.map(|peer| &peer["last_tree_announce_sent_ms"]),
+            ),
+        ] {
+            tree[field] = value.cloned().unwrap_or(Value::Null);
+        }
+        tree
     }
 
     async fn encounter(&mut self, phase_ms: u64, case: Case) {

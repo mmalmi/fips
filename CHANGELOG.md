@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.90] - 2026-10-01
+
+### Fixed
+
+- Retain ownership of endpoint shutdown tasks across canceled or concurrent
+  shutdown calls, preserving the existing timeout and graceful-drop behavior.
+- Cooperatively yield during sustained ready receive traffic so shutdown and
+  other runtime tasks can make progress without changing packet budgets.
+- Ignore stale dataplane wake notifications until work is runnable, preserving
+  the original completion wait deadline.
+- Allow the final handshake transmission its full reply window before exhausting
+  retry budgets, including link rekeys and established session handshakes.
+- Protect admitted lookup return paths and deferred waiters from rejected request
+  churn while retaining existing cache quotas, expiration and duplicate checks.
+- Report persistent identity directory creation errors instead of generating an
+  identity that cannot be saved.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.90. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+- Correct test isolation and completion fences for multi-node rendezvous and
+  Bloom cancellation checks. Keep zero-loss rekey fixtures on stable routes;
+  routing-churn scenarios and existing test budgets remain unchanged.
+- Wait for the selected late-Ack handshake outcome in session tests, and include
+  per-flow state when responsive-roster payload checks time out. Preserve their
+  existing deadlines and exact payload checks.
+
+## [0.4.89] - 2026-10-01
+
+### Fixed
+
+- Bound WebSocket reads to 16 KiB, including after a large frame, by adopting
+  the decoder's enforced read-buffer limit. Preserve message and frame limits,
+  fragmentation handling and TLS behavior.
+- Hash each lookup target once when checking peer Bloom filters, preserving
+  each filter's parameters, candidate order and routing policy.
+
+### Changed
+
+- Release the reusable core and endpoint libraries as 0.4.89. The identity
+  library remains 0.3.3; protocol message bytes and wire layouts are unchanged.
+
 ## [0.4.88] - 2026-09-30
 
 ### Fixed

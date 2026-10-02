@@ -236,6 +236,14 @@ pub(super) async fn observe(
         closed
     });
     let opened = opened_rx.await.unwrap();
+    if kind == Kind::Mature {
+        observation.contact_turn_cost = Some(turn_timing::Capture::new(observation.started, true));
+        observation.contact_phase = Some(phase::Capture::new(
+            observation.started,
+            observation.maintenance.next(),
+            opened.observed_ms,
+        ));
+    }
     let result = AssertUnwindSafe(async {
         if kind == Kind::Mature {
             let mut payloads = ready::Payloads::default();
@@ -255,11 +263,20 @@ pub(super) async fn observe(
                     .await;
                 next_round = tokio::time::Instant::now() + Duration::from_millis(500);
             } else {
-                observation.turn(nodes, ids).await;
+                observation
+                    .turn_with_endpoint_observer(nodes, ids, |observation| {
+                        if let Some(payloads) = &mut observation.brief_payloads {
+                            payloads.drain(endpoints, ids, observation.started);
+                        }
+                    })
+                    .await;
                 if let Some(payloads) = &mut observation.brief_payloads {
                     payloads.drain(endpoints, ids, observation.started);
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                observation
+                    .contact_idle
+                    .wait(nodes, observation.contact_phase.as_mut(), "brief-loop")
+                    .await;
             }
             useful_retained(nodes, ids, &useful);
             evidence.observe(nodes, ids, observation.started);
@@ -290,6 +307,20 @@ pub(super) async fn observe(
         .brief_payloads
         .as_ref()
         .is_some_and(|payloads| payloads.accepted(closed.observed_ms[0]));
+    if let Some(phase) = observation.contact_phase.take()
+        && (result.is_err() || !reciprocal_in_contact || !payloads_in_contact)
+    {
+        phase.report(closed.observed_ms);
+    }
+    if let Some(cost) = observation.contact_turn_cost.take()
+        && (result.is_err() || !reciprocal_in_contact || !payloads_in_contact)
+    {
+        eprintln!(
+            "responsive contact turn cost: {}",
+            json!({"cut_observation_ms":closed.observed_ms,"turns":cost.report(),
+                "scope":"Includes the existing post-cut separation; classify snapshots by both bracket endpoints."})
+        );
+    }
     // An unchanged full roster with actual demand on its mature useful owner
     // and an idle owner immature through the cut proves this exclusion. Slot
     // counts and victim_selection_ready never establish full admissibility.

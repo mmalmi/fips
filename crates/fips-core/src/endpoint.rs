@@ -28,6 +28,7 @@ const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 const ENDPOINT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod builder;
+mod lifecycle;
 #[path = "endpoint/nostr.rs"]
 mod nostr_api;
 mod receive;
@@ -47,6 +48,7 @@ pub use crate::node::{
     FipsEndpointDirectReceiver, FipsEndpointDirectSink,
 };
 pub use builder::FipsEndpointBuilder;
+use lifecycle::spawn_node_task;
 use receive::{EndpointReceiveState, ServiceReceiveState};
 pub use recent_peers::{
     RECENT_PEERS_MAX_ENDPOINTS_PER_PEER, RECENT_PEERS_MAX_PEERS, RECENT_PEERS_VERSION, RecentPeer,
@@ -230,26 +232,6 @@ fn endpoint_data_payloads_from_vecs(
     Ok(converted)
 }
 
-fn spawn_node_task(
-    mut node: Node,
-    shutdown_rx: oneshot::Receiver<()>,
-) -> JoinHandle<Result<(), NodeError>> {
-    tokio::spawn(async move {
-        tokio::pin!(shutdown_rx);
-        let loop_result = tokio::select! {
-            result = node.run_rx_loop() => result,
-            _ = &mut shutdown_rx => Ok(()),
-        };
-        let stop_result = if node.state().can_stop() {
-            node.stop().await
-        } else {
-            Ok(())
-        };
-        loop_result?;
-        stop_result
-    })
-}
-
 /// A running embedded FIPS endpoint.
 pub struct FipsEndpoint {
     identity: PeerIdentity,
@@ -281,7 +263,9 @@ pub struct FipsEndpoint {
     service_carrier: service_carrier::ServiceCarrierRegistry,
     service_channel_capacity: usize,
     shutdown_tx: StdMutex<Option<oneshot::Sender<()>>>,
-    task: StdMutex<Option<JoinHandle<Result<(), NodeError>>>>,
+    task: Mutex<Option<JoinHandle<Result<(), NodeError>>>>,
+    #[cfg(test)]
+    shutdown_trace: Arc<lifecycle::ShutdownTrace>,
 }
 
 impl FipsEndpoint {
@@ -936,6 +920,7 @@ impl FipsEndpoint {
 
     /// Shut down the endpoint and wait for the node task to stop.
     pub async fn shutdown(&self) -> Result<(), FipsEndpointError> {
+        let deadline = tokio::time::Instant::now() + ENDPOINT_OPERATION_TIMEOUT;
         let shutdown_tx = self
             .shutdown_tx
             .lock()
@@ -943,24 +928,33 @@ impl FipsEndpoint {
             .take();
         if let Some(shutdown_tx) = shutdown_tx {
             let _ = shutdown_tx.send(());
+            #[cfg(test)]
+            self.shutdown_trace
+                .record(lifecycle::ShutdownPhase::Signaled);
         }
-        let task = self
-            .task
-            .lock()
-            .map_err(|_| FipsEndpointError::Closed)?
-            .take();
-        if let Some(mut task) = task {
-            match tokio::time::timeout(ENDPOINT_OPERATION_TIMEOUT, &mut task).await {
-                Ok(result) => result??,
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                    return Err(FipsEndpointError::Timeout {
-                        operation: "shutdown",
-                    });
-                }
+        let mut task_slot = tokio::time::timeout_at(deadline, self.task.lock())
+            .await
+            .map_err(|_| FipsEndpointError::Timeout {
+                operation: "shutdown",
+            })?;
+        let Some(task) = task_slot.as_mut() else {
+            return Ok(());
+        };
+        // Keep ownership in the endpoint if this caller is cancelled. Other
+        // shutdown callers must also wait for the same task to actually exit.
+        let result = match tokio::time::timeout_at(deadline, &mut *task).await {
+            Ok(result) => result,
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                task_slot.take();
+                return Err(FipsEndpointError::Timeout {
+                    operation: "shutdown",
+                });
             }
-        }
+        };
+        task_slot.take();
+        result??;
         Ok(())
     }
 }
@@ -972,13 +966,9 @@ impl Drop for FipsEndpoint {
         {
             let _ = shutdown_tx.send(());
         }
-        if let Ok(mut task) = self.task.lock()
-            && task.is_some()
-        {
-            // Dropping a Tokio JoinHandle detaches it. The shutdown signal lets
-            // the owned node reach node.stop(), including bounded WebRTC
-            // physical cleanup, instead of aborting that cleanup at Drop.
-            drop(task.take());
-        }
+        // Dropping a Tokio JoinHandle detaches it. The shutdown signal lets
+        // the owned node reach node.stop(), including bounded WebRTC
+        // physical cleanup, instead of aborting that cleanup at Drop.
+        drop(self.task.get_mut().take());
     }
 }

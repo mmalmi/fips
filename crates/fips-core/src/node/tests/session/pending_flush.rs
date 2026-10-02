@@ -171,7 +171,7 @@ async fn connect(nodes: &mut [TestNode], from: usize, to: usize) {
 }
 
 async fn turn(nodes: &mut [TestNode]) {
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
     for node in nodes.iter_mut() {
         node.node.check_mmp_reports().await;
         node.node.check_tree_state().await;
@@ -179,7 +179,7 @@ async fn turn(nodes: &mut [TestNode]) {
         node.node.send_pending_tree_announces().await;
         node.node.send_due_filter_announces().await;
     }
-    process_available_packets(nodes).await;
+    poll_available_packets(nodes).await;
     tokio::time::sleep(Duration::from_millis(5)).await;
 }
 
@@ -311,7 +311,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while nodes[0].node.get_peer(peers[2].node_addr()).is_some() {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
@@ -450,7 +450,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     }
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            process_available_packets(&mut nodes[1..]).await;
+            poll_available_packets(&mut nodes[1..]).await;
             if matches!(case, Case::Endpoint) {
                 if let Ok(event) = endpoint.event_rx.try_recv() {
                     endpoint.event_rx.release_messages(event.messages.len());
@@ -528,7 +528,7 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, case: Case) {
     let mut received = BTreeSet::from([0]);
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            process_available_packets(nodes).await;
+            poll_available_packets(nodes).await;
             if matches!(case, Case::Endpoint) {
                 while let Ok(event) = endpoint.event_rx.try_recv() {
                     endpoint.event_rx.release_messages(event.messages.len());

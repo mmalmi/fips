@@ -226,7 +226,11 @@ impl Pump {
                         self.confirmation_frames += 1;
                     }
                 }
-                process_dataplane_packet(&mut nodes[destination], packet).await;
+                crate::node::tests::spanning_tree::process_dataplane_packet_once(
+                    &mut nodes[destination].node,
+                    packet,
+                )
+                .await;
                 if first_request {
                     self.incoming = Pending::capture(nodes, ids, 1, false);
                     assert!(

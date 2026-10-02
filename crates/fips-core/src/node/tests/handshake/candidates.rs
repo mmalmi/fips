@@ -1,5 +1,6 @@
 use super::super::spanning_tree::{
     TestNode, cleanup_nodes, make_test_node, process_available_packets,
+    process_dataplane_completions, process_dataplane_packet_once,
 };
 use super::*;
 use crate::node::wire::{Msg2Header, build_msg1};
@@ -36,6 +37,38 @@ impl Candidate {
             Node::now_ms(),
         )
     }
+}
+
+async fn deliver_owner_heartbeat(node: &mut TestNode, owner: &mut Candidate, peer: &NodeAddr) {
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+    let packet = owner.frame(node.transport_id, &heartbeat);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        process_dataplane_packet_once(&mut node.node, packet).await;
+        let notify = node.node.dataplane.readiness_notify();
+        loop {
+            // Readiness can belong to unrelated work. Register before draining
+            // so this owner's completion cannot race past the following wait.
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            process_dataplane_completions(&mut node.node).await;
+            let received = node
+                .node
+                .dataplane_fmp_link_metrics(peer, Instant::now())
+                .unwrap()
+                .rx_packets;
+            assert!(
+                received <= 1,
+                "the owner's heartbeat must be delivered once"
+            );
+            if received == 1 {
+                break;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .expect("the current owner's heartbeat must complete within one second");
 }
 
 async fn local_path() -> (tokio::net::UdpSocket, TransportAddr) {
@@ -177,9 +210,7 @@ fn outbound_promotion_at_peer_capacity_retires_candidate_without_touching_owner(
             let peer = node.node.get_peer(incumbent.node_addr()).unwrap();
             assert_eq!(peer.our_index(), Some(owner.index));
             assert!(peer.has_session() && peer.can_send());
-            let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
-            let packet = owner.frame(node.transport_id, &heartbeat);
-            super::super::spanning_tree::process_dataplane_packet(&mut node, packet).await;
+            deliver_owner_heartbeat(&mut node, &mut owner, incumbent.node_addr()).await;
             assert_eq!(
                 node.node
                     .dataplane_fmp_link_metrics(incumbent.node_addr(), Instant::now())
@@ -366,9 +397,7 @@ async fn fresh_inbound_at_capacity(max_connections: usize, max_links: usize) {
             .unwrap()
             .has_session()
     );
-    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
-    let packet = current.frame(node.transport_id, &heartbeat);
-    super::super::spanning_tree::process_dataplane_packet(&mut node, packet).await;
+    deliver_owner_heartbeat(&mut node, &mut current, remote.node_addr()).await;
     assert_eq!(
         node.node
             .dataplane_fmp_link_metrics(remote.node_addr(), Instant::now())
@@ -443,9 +472,7 @@ fn inbound_candidate_limits_and_timeout_preserve_current_owner() {
             assert!(owner.has_session() && owner.can_send());
         }
 
-        let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
-        let packet = current.frame(node.transport_id, &heartbeat);
-        super::super::spanning_tree::process_dataplane_packet(&mut node, packet).await;
+        deliver_owner_heartbeat(&mut node, &mut current, remote.node_addr()).await;
         assert_eq!(
             node.node
                 .dataplane_fmp_link_metrics(remote.node_addr(), Instant::now())
