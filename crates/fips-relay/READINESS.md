@@ -14,29 +14,38 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r55 package contains the current receiver-wallet and outgoing-wallet recovery
-changes and the committed private FIPS integration at `744c9ef4ba94`, with SDK
-`ff1678c2b6ca` and CDK `8de95a89c9e0`. Its static ARM64 executable was built from
-that revision. The packaging-only fix at `b7dbfa2350a5` (integrated as
-`83cb4d781`) retains parent-directory metadata so APK 3.0.8 can extract the package
-into an empty root; runtime Rust sources are unchanged between these revisions.
+The r56 package contains the current receiver-wallet and outgoing-wallet recovery
+changes, built from private FIPS integration `83cb4d7815db`, SDK `ff1678c2b6ca`,
+CDK `8de95a89c9e0` and the isolated bitreq cancellation commit `f59be760bcc5`.
+The complete portable source bundle includes six clean Git inputs and the
+vendored registry sources. Its 36,132 files were verified before and after
+relocation. Offline all-feature metadata resolves 697 packages, including 676
+registry packages; this is dependency resolution, not all-feature compilation.
 
-The prior r54 package reproduced the extraction failure. The r55 package passes
-fresh extraction and integrity checks for all eleven payload files and fifteen
-directory records, including root ownership and a disabled service by default.
-Using the actual extracted ARM64 daemon and CLI under QEMU, the unchanged
-initialization-safety and four-relay wallet fees/refunds/restart cases both pass.
-The native test harness and test mint are separate from the emulated executable.
-Source fingerprints and process/target closure were independently verified.
-Evidence is retained in `arm-candidate-744c9ef/r55-check` and
-`arm-runtime-r55/work` within the local ARM runtime evidence bundle.
+An optimized static ARM64 executable was built offline from that relocated
+bundle with an empty Cargo home and target directory. Its bytes differ from the
+earlier minimal-workspace r55 build, so it is packaged separately as r56.
+Fresh extraction and integrity checks pass for all eleven payload files and
+fifteen directory records, including root ownership and a disabled service by
+default. The parent-directory metadata fix at `83cb4d781` remains included.
 
-This is acceptance of those two packaged-executable cases, not the whole ARM
-suite, hardware, physical power-loss or performance acceptance. The minimal
-build fixture is not a complete portable source bundle. Earlier r53 customer
-and mixed-link checks retain their original source and workload scope. No
-hardware installation, publication or real-money operation was performed;
-current-device acceptance remains pending.
+Using the actual extracted ARM64 daemon and CLI under QEMU, four unchanged cases
+pass: initialization safety; four-relay wallet fees, refunds, restart and lifetime
+bounds; mixed UDP/TCP exhaustion, renewal and restart; and self-signed WebSocket
+FIPS authentication, reconnect and restart. The native test harness and local
+test mint are separate from the emulated executable. All 68,414 recorded inputs
+remained unchanged; process groups, cgroups and target locks were verified closed.
+The consolidated receipt is `work/portable-r55/acceptance.json` in the local
+recovery bundle, with build and runtime evidence in
+`work/portable-r55/evidence/portable-r55` and
+`work/portable-r55/evidence/arm-runtime-r56`.
+
+This accepts those four packaged-executable cases and the portable offline build,
+not the whole ARM suite, hardware, physical power-loss, performance or a
+bit-identical rebuild. External Rust, Zig, cargo-zigbuild and APK tools remain
+required. Earlier r53–r55 results retain their original source and workload
+scope. No hardware installation, publication or real-money operation was
+performed; current-device acceptance remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
