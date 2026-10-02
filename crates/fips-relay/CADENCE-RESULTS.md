@@ -1,5 +1,46 @@
 # Paid-relay cadence measurements
 
+## Credit and durable-window attribution — 2 October 2026
+
+The follow-on diagnostic uses `29ded47759ea`, which adds optional process-local
+counters at the existing credit-limit and durable-window refusal branches.
+Admission decisions, financial limits, workloads, cadence and tails are unchanged.
+The harness executable is identical to the previous forwarding diagnostic.
+
+| High-rate trial | Missing application packets | First relay policy refusals | Credit-limit refusal attempts | Durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 785 | 785 | 521 | 264 |
+| 1 | 778 | 778 | 363 | 415 |
+
+All recorded refusals occur at the first relay. The two admission counters sum
+to its native policy refusals and the application loss in each trial. Bursty and
+steady traffic deliver every packet; no other native forwarding-drop, decode or
+TTL counter increases. Overall, 69,861 of 71,424 packets arrive, all 12 channels
+settle and all 10,240 test sats reconcile.
+
+These counters count admission attempts, not unique packets. Fallback can repeat
+an admission, credit is checked before the durable window, and the credit branch
+combines channel capacity and relationship credit. Window refusals can also
+include packets larger than the configured window. Earlier refusal branches are
+not instrumented. Matching process IDs were verified across the service guards
+and the enclosing native snapshots; the different intervals still prevent a
+general one-to-one interpretation. This run demonstrates that both recorded
+bounds are reached; it does not yet identify why replenishment falls behind.
+
+The existing 12 durable tests, strict all-feature and default-feature relay lint,
+formatting and source-size checks pass. The diagnostic test takes 165.17 seconds;
+the guarded runner takes 206.16 seconds. All 36,136 source files and frozen
+executables retain their hashes, and owned process groups, cgroup and target lock
+close. No compiler appears in 33 host samples; ordinary VMs remain running.
+
+Evidence is retained in `work/admission-bounds/acceptance.json` in the local
+recovery bundle; the raw report SHA-256 is
+`60a44f3a0360d1e9ef6dd56ab9d77ac3455d2ab4e5b1fd0f14a748a68d1936f0`.
+This accepts counter attribution only. The lower loss than previous runs is not
+an established improvement: no forwarding fix was made and host conditions vary.
+Both payment-credit replenishment and durable-window scheduling need investigation;
+the full cadence comparison remains rejected and the default stays 500 ms.
+
 ## Native forwarding-drop attribution — 2 October 2026
 
 The optional diagnostic in harness `ac467ea2d01e` runs two 500-ms trials against

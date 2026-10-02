@@ -109,6 +109,20 @@ integrity checks pass. See [drop attribution](CADENCE-RESULTS.md#native-forwardi
 and `work/forwarding-drops/acceptance.json` in the local recovery bundle. This
 narrows the investigation; it adds no runtime fix or accepted performance result.
 
+A follow-on diagnostic at `29ded47759ea` distinguishes the existing credit and
+durable-window refusal branches with optional counters. Its high-rate trials
+record 884 credit-limit and 679 durable-window refusal attempts, all at the first
+relay; their sum matches its native policy refusals and the 1,563 missing
+application packets in this run. Bursty and steady traffic deliver fully, and
+all 12 channels settle with all 10,240 test sats reconciled. Attempts are not
+generally unique packets, credit is checked first and earlier refusal branches
+remain uninstrumented. Both bounds are reached, but the cause of slow
+replenishment remains open. The existing 12 durable tests and strict all-feature
+and default-feature lint pass; sources, binaries and evidence hashes verify and
+owned processes and locks close. See [admission attribution](CADENCE-RESULTS.md#credit-and-durable-window-attribution--2-october-2026)
+and `work/admission-bounds/acceptance.json`. This adds diagnostic evidence only;
+there is no new forwarding fix, accepted cadence comparison or device result.
+
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
 The existing mixed UDP/TCP service regression reproduces four ledger commits
