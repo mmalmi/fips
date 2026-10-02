@@ -14,19 +14,29 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
-The r53 package includes the receiver-wallet recovery fix: payment control
-requires the original database and seed instead of initializing a replacement.
-It also includes bounded session retries, final handshake reply windows and the
-UDP receive-error fix. It uses FIPS core 0.4.88, TCP endpoint 0.2.21,
-SDK `8995f435abc6` and CDK `7c250132ae57`.
+The r55 package contains the current receiver-wallet and outgoing-wallet recovery
+changes and the committed private FIPS integration at `744c9ef4ba94`, with SDK
+`ff1678c2b6ca` and CDK `8de95a89c9e0`. Its static ARM64 executable was built from
+that revision. The packaging-only fix at `b7dbfa2350a5` (integrated as
+`83cb4d781`) retains parent-directory metadata so APK 3.0.8 can extract the package
+into an empty root; runtime Rust sources are unchanged between these revisions.
 
-Its customer and mixed-link checks supplement the focused ARM64 Linux payout
-regression and native macOS ARM64 SDK suite below. Earlier controller runs,
-package suites and cadence measurements retain their recorded source scope and
-workloads. Current-device acceptance remains pending.
+The prior r54 package reproduced the extraction failure. The r55 package passes
+fresh extraction and integrity checks for all eleven payload files and fifteen
+directory records, including root ownership and a disabled service by default.
+Using the actual extracted ARM64 daemon and CLI under QEMU, the unchanged
+initialization-safety and four-relay wallet fees/refunds/restart cases both pass.
+The native test harness and test mint are separate from the emulated executable.
+Source fingerprints and process/target closure were independently verified.
+Evidence is retained in `arm-candidate-744c9ef/r55-check` and
+`arm-runtime-r55/work` within the local ARM runtime evidence bundle.
 
-The newer outgoing-wallet recovery fix has focused source acceptance below;
-rebuilding and exercising a package containing it remains pending.
+This is acceptance of those two packaged-executable cases, not the whole ARM
+suite, hardware, physical power-loss or performance acceptance. The minimal
+build fixture is not a complete portable source bundle. Earlier r53 customer
+and mixed-link checks retain their original source and workload scope. No
+hardware installation, publication or real-money operation was performed;
+current-device acceptance remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
