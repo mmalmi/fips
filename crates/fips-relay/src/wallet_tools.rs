@@ -1,5 +1,7 @@
 //! Offline administration of the existing relay wallet, never relay credit.
 mod history;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     durable::{acquire_owner, write_private_journal},
