@@ -32,7 +32,7 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.15")
+    testImplementation("org.robolectric:robolectric:4.17")
     constraints {
         testImplementation("org.bouncycastle:bcprov-jdk18on:1.85")
         testImplementation("androidx.test:monitor:1.8.0")
