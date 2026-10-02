@@ -31,6 +31,11 @@ impl PaymentStage {
 type PaymentResult = Result<Option<ChannelUsage>, (PaymentStage, String)>;
 use PaymentStage as Stage;
 
+fn has_unpaid_claim(usage: ChannelUsage, evidence_msat: u64, authorized_sat: u64) -> bool {
+    usage.submitted_msat.min(evidence_msat).div_ceil(1_000)
+        > authorized_sat.max(usage.paid_msat / 1_000)
+}
+
 #[derive(Default)]
 struct PaymentObservation {
     #[cfg(feature = "measurements")]
@@ -84,7 +89,7 @@ impl Controller {
                 continue;
             }
             if let Err((_, error)) = self
-                .pay_channel(purchase, PaymentObservation::default())
+                .pay_channel(purchase, None, PaymentObservation::default())
                 .await
             {
                 first_error.get_or_insert(error);
@@ -96,6 +101,7 @@ impl Controller {
     async fn pay_channel(
         &self,
         purchase: Purchase,
+        previous_usage: Option<ChannelUsage>,
         observation: PaymentObservation,
     ) -> PaymentResult {
         observation.stage(Stage::ChannelLock);
@@ -120,28 +126,50 @@ impl Controller {
             .neighbor(purchase.provider)
             .await
             .map_err(|e| Stage::Preparation.error(e))?;
-        observation.stage(Stage::UsageRequest);
-        let response = self
-            .services
-            .payments
-            .request(
-                peer,
-                serde_json::to_vec(&PaymentRequest::Usage {
-                    channel_id: purchase.channel.id.clone(),
-                })
-                .map_err(|e| Stage::UsageRequest.error(e))?,
-            )
-            .await
-            .map_err(|e| Stage::UsageRequest.error(e))?;
-        observation.stage(Stage::UsageResponse);
-        let PaymentResponse::Status { channel_id, usage } = serde_json::from_slice(&response)
-            .map_err(|_| Stage::UsageResponse.error("invalid usage response"))?
-        else {
-            return Err(Stage::UsageResponse.error("provider rejected usage"));
+        let channel_id = purchase.channel.id.clone();
+        // A successful reply can already contain newer durable usage. Reuse
+        // only a still-unpaid supported claim; the signer remains authoritative.
+        let previous_usage = previous_usage.filter(|usage| {
+            settlement::valid_usage(&purchase.channel, *usage)
+                && self
+                    .services
+                    .buyer
+                    .evidence_msat(&channel_id)
+                    .zip(self.services.buyer.authorized_sat(&channel_id))
+                    .is_some_and(|(evidence, authorized)| {
+                        has_unpaid_claim(*usage, evidence, authorized)
+                    })
+        });
+        let usage = if let Some(usage) = previous_usage {
+            usage
+        } else {
+            observation.stage(Stage::UsageRequest);
+            let response = self
+                .services
+                .payments
+                .request(
+                    peer,
+                    serde_json::to_vec(&PaymentRequest::Usage {
+                        channel_id: channel_id.clone(),
+                    })
+                    .map_err(|e| Stage::UsageRequest.error(e))?,
+                )
+                .await
+                .map_err(|e| Stage::UsageRequest.error(e))?;
+            observation.stage(Stage::UsageResponse);
+            let PaymentResponse::Status {
+                channel_id: actual,
+                usage,
+            } = serde_json::from_slice(&response)
+                .map_err(|_| Stage::UsageResponse.error("invalid usage response"))?
+            else {
+                return Err(Stage::UsageResponse.error("provider rejected usage"));
+            };
+            if actual != channel_id || !settlement::valid_usage(&purchase.channel, usage) {
+                return Err(Stage::UsageResponse.error("invalid usage response"));
+            }
+            usage
         };
-        if channel_id != purchase.channel.id || !settlement::valid_usage(&purchase.channel, usage) {
-            return Err(Stage::UsageResponse.error("invalid usage response"));
-        }
         let prior = self
             .services
             .buyer
@@ -248,6 +276,7 @@ struct ChannelPayment {
     schedule: ChannelSchedule,
     job: Option<JoinHandle<PaymentResult>>,
     started_evidence_msat: u64,
+    last_usage: Option<ChannelUsage>,
     #[cfg(feature = "measurements")]
     progress: Option<Arc<Mutex<super::payment_progress::ScheduleProgress>>>,
 }
@@ -262,6 +291,10 @@ impl ChannelPayment {
             .map_err(|e| Stage::Worker.error(e))
             .and_then(|r| r);
         self.job = None;
+        self.last_usage = match &result {
+            Ok(usage) => *usage,
+            Err(_) => None,
+        };
         #[cfg(feature = "measurements")]
         if let Some(progress) = &self.progress {
             progress.lock().unwrap().finished(
@@ -369,6 +402,7 @@ impl PaymentWorkers {
             let payer = controller.clone();
             // Later sends must wake the schedule, even if they race this reply.
             work.started_evidence_msat = evidence;
+            let previous_usage = work.last_usage.take();
             #[cfg(feature = "measurements")]
             if let Some(progress) = &work.progress {
                 progress.lock().unwrap().started();
@@ -378,7 +412,9 @@ impl PaymentWorkers {
                 progress: work.progress.clone(),
             };
             work.job = Some(tokio::spawn(async move {
-                payer.pay_channel(purchase, observation).await
+                payer
+                    .pay_channel(purchase, previous_usage, observation)
+                    .await
             }));
         }
         error.map_or(Ok(()), Err)
