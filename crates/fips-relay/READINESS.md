@@ -74,7 +74,7 @@ performed; current-device acceptance remains pending.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Resolve the current native high-rate delivery failure, then sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, and refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
@@ -93,6 +93,19 @@ accounting is under investigation, not an established cause. Sources and frozen
 executables remained unchanged, and all owned processes and locks closed. See
 [the rejected comparison](CADENCE-RESULTS.md#rejected-current-native-linux-comparison--2-october-2026).
 This result adds no performance or current-device acceptance.
+
+Payment replies at `18110c330` now reuse the usage captured when verified credit
+is durably saved. The former reply path immediately wrote a second checkpoint.
+The existing mixed UDP/TCP service regression reproduces four ledger commits
+and eight syncs for two updates before the fix, then passes its single-commit
+check along with exhaustion, renewal and restart. The existing journal-failure
+recovery case and all 12 durable-accounting tests pass on native Linux, as do
+strict all-feature relay library/test lint, formatting and source-size checks.
+All 36,135 source inputs remain unchanged during verification; the preserved
+before/after evidence is `work/payment-checkpoint/acceptance.json` in the local
+recovery bundle. This removes a redundant ledger write per update. It does not
+accept a high-rate speedup or resolve the rejected cadence matrix without a new
+matched run. The r57 package and device acceptance remain unchanged.
 
 The later source-only setup correction publishes complete, synced customer
 profiles and service manifests through the existing no-clobber temporary-file
