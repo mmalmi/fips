@@ -63,6 +63,7 @@ impl Observation {
                 "exact direct payloads must continue while candidates compete: {}",
                 json!({"sequence":current,"expected":flows,"received":received,
                     "turns":turns,"last_turn_ms":[turn_started,turn_finished],
+                    "turn_cost":self.last_turn_cost.as_ref().map(|cost|cost.report()),
                     "failure_state":round_failure_state(nodes, ids, flows)})
             );
             self.contact_idle

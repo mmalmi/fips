@@ -237,6 +237,7 @@ pub(super) async fn observe(
     });
     let opened = opened_rx.await.unwrap();
     if kind == Kind::Mature {
+        observation.contact_turn_cost = Some(turn_timing::Capture::new(observation.started, true));
         observation.contact_phase = Some(phase::Capture::new(
             observation.started,
             observation.next_tick,
@@ -310,6 +311,15 @@ pub(super) async fn observe(
         && (result.is_err() || !reciprocal_in_contact || !payloads_in_contact)
     {
         phase.report(closed.observed_ms);
+    }
+    if let Some(cost) = observation.contact_turn_cost.take()
+        && (result.is_err() || !reciprocal_in_contact || !payloads_in_contact)
+    {
+        eprintln!(
+            "responsive contact turn cost: {}",
+            json!({"cut_observation_ms":closed.observed_ms,"turns":cost.report(),
+                "scope":"Includes the existing post-cut separation; classify snapshots by both bracket endpoints."})
+        );
     }
     // An unchanged full roster with actual demand on its mature useful owner
     // and an idle owner immature through the cut proves this exclusion. Slot
