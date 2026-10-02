@@ -1,4 +1,4 @@
-use super::{JournalEvent, Operation};
+use super::{AdmissionDenial, JournalEvent, Operation};
 use serde::Serialize;
 use std::{
     cell::Cell,
@@ -20,6 +20,9 @@ const OPERATIONS: &[&str] = &[
     "test",
 ];
 static COUNTERS: [Counters; OPERATIONS.len()] = [const { Counters::new() }; OPERATIONS.len()];
+const DENIAL_REASONS: &[&str] = &["credit_limit", "durable_window"];
+static DENIALS: [AtomicU64; DENIAL_REASONS.len()] =
+    [const { AtomicU64::new(0) }; DENIAL_REASONS.len()];
 thread_local! {
     static CURRENT: Cell<Operation> = const { Cell::new(Operation::Other) };
 }
@@ -83,6 +86,8 @@ pub struct Snapshot {
     pub process_id: u32,
     pub process_cpu_ns: Option<u64>,
     pub operations: BTreeMap<&'static str, OperationSnapshot>,
+    /// Failed admission attempts, not charged bytes or unique packets.
+    pub admission_denials: BTreeMap<&'static str, u64>,
 }
 
 /// Cumulative counters since this process started. Concurrent snapshots may
@@ -97,7 +102,16 @@ pub fn snapshot() -> Option<Snapshot> {
             .zip(&COUNTERS)
             .map(|(name, c)| (*name, c.snapshot()))
             .collect(),
+        admission_denials: DENIAL_REASONS
+            .iter()
+            .zip(&DENIALS)
+            .map(|(name, count)| (*name, count.load(Relaxed)))
+            .collect(),
     })
+}
+
+pub(super) fn admission_denied(reason: AdmissionDenial) {
+    DENIALS[reason as usize].fetch_add(1, Relaxed);
 }
 
 pub(super) struct Span {

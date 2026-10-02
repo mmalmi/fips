@@ -90,6 +90,9 @@ impl RelayLedger {
             state.history.as_ref(),
         )?;
         if channel_reserved > limit {
+            crate::measurements::admission_denied(
+                crate::measurements::AdmissionDenial::CreditLimit,
+            );
             return None;
         }
         if channel_reserved > windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0))

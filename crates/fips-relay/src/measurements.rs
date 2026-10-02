@@ -25,6 +25,19 @@ pub(crate) enum JournalEvent {
     Committed,
 }
 
+pub(crate) enum AdmissionDenial {
+    CreditLimit,
+    DurableWindow,
+}
+
+#[inline]
+pub(crate) fn admission_denied(reason: AdmissionDenial) {
+    #[cfg(feature = "measurements")]
+    enabled::admission_denied(reason);
+    #[cfg(not(feature = "measurements"))]
+    let _ = reason;
+}
+
 /// The closure must finish synchronously on this thread. Never wrap a future.
 #[inline]
 pub(crate) fn measure<T>(operation: Operation, work: impl FnOnce() -> T) -> T {

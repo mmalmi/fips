@@ -424,6 +424,9 @@ impl ForwardingPolicy for DurableRelay {
         {
             Admission::Granted(token) => Some(token),
             Admission::WindowExhausted { cost_msat } => {
+                crate::measurements::admission_denied(
+                    crate::measurements::AdmissionDenial::DurableWindow,
+                );
                 if cost_msat <= self.window_msat {
                     self.window_blocked.store(true, Ordering::Relaxed);
                 }
