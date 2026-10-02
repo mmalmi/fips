@@ -138,6 +138,15 @@ a diagnostic, not a matched cadence-cost comparison. Its metadata explicitly
 sets `comparison_complete: false`; the cadence analyzer must not accept it as
 a complete matrix.
 
+Instrumented relays also expose cumulative `measurements.admission_denials`
+counters for `credit_limit` and `durable_window`. These count failed admission
+attempts; a fallback can attempt admission more than once for one packet.
+Credit is checked first and includes channel capacity and relationship credit.
+A window refusal can mean delayed checkpoint progress or a packet whose cost
+exceeds the configured window. Other rejection reasons remain unclassified.
+Compare matching process identities and sampling intervals before relating
+these counters to native policy refusals; they have no accounting authority.
+
 ## Hardware report contract (schema 3)
 
 The hardware runner uses three router service processes, one paid relay, two
