@@ -78,12 +78,13 @@ fn legacy_and_malformed_billing_never_fall_back_to_another_tariff() {
 async fn rejected_service_configuration_does_not_save_or_lock_customer_profile() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("customer");
         let mint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         mint.set_nonblocking(true).unwrap();
         let mut profile: CustomerProfile = serde_json::from_value(saved_original()).unwrap();
         profile.mint_url = format!("http://{}/", mint.local_addr().unwrap());
         profile.validate().unwrap();
-        let mut client = CustomerClient::open(root.path()).unwrap();
+        let mut client = CustomerClient::open(&directory).unwrap();
         let preview = client
             .execute(CustomerCommand::Preview {
                 profile: profile.clone(),
@@ -100,10 +101,10 @@ async fn rejected_service_configuration_does_not_save_or_lock_customer_profile()
             "{error}"
         );
         assert!(
-            !root.path().join("profile.json").exists(),
+            !directory.join("profile.json").exists(),
             "rejected setup saved its profile"
         );
-        assert!(!root.path().join("state").exists());
+        assert!(!directory.join("state").exists());
         assert!(
             preview.is_err(),
             "preview must check the same service configuration"
@@ -130,7 +131,7 @@ async fn rejected_service_configuration_does_not_save_or_lock_customer_profile()
         assert_eq!(ready["configured"], true);
         assert_eq!(ready["profile"]["budget_sat"], 96);
         drop(client);
-        let mut reopened = CustomerClient::open(root.path()).unwrap();
+        let mut reopened = CustomerClient::open(&directory).unwrap();
         let after = reopened
             .execute(CustomerCommand::Setup {
                 profile: profile.clone(),
