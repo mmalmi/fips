@@ -107,6 +107,16 @@ match the tested snapshot. Evidence is `work/customer-preflight/acceptance.json`
 in the local recovery bundle. This is source acceptance only; r57 is unchanged,
 and partial accounts still require manual recovery.
 
+The corresponding Android source passes a fresh ARM64 JNI release build,
+isolated APK assembly, strict Android lint, both existing JVM activity recovery
+tests, and strict Android-target Rust lint. Updating only the Robolectric test
+dependency from 4.15 to 4.17 resolved the recorded lint failure. The APK's native
+library matches Gradle's stripped build output; all 1,077 Rust/build files and
+18 Android files match the verified source. Evidence is
+`work/android-current/acceptance.json` in the local recovery bundle. This accepts
+compilation and JVM checks, not device execution, JNI runtime, radio behavior or
+performance. The r57 package remains unchanged.
+
 Wallet imports with SDK `ff1678c2b6ca` and CDK `8de95a89c9e0` can recover a
 completed receive whose display-activity write failed. Retrying returns the
 retained original result without redeeming again or adding balance. Native CDK
