@@ -1,5 +1,37 @@
 # Paid-relay cadence measurements
 
+## Native forwarding-drop attribution — 2 October 2026
+
+The optional diagnostic in harness `ac467ea2d01e` runs two 500-ms trials against
+the exact frozen `18110c330558` daemon from the rejected matrix below, with the
+original workloads, financial limits and tails. It reuses native `show_status` counters around each
+workload; the ordinary matched matrix takes no additional snapshots.
+
+| High-rate trial | Missing application packets | First relay policy refusals | Second relay policy refusals | Other recorded native forwarding drops |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 6,776 | 6,611 | 165 | 0 |
+| 1 | 3,982 | 3,818 | 166 | 0 |
+
+Bursty and steady traffic deliver every packet. Across both trials, 60,666 of
+71,424 application packets arrive; all 12 channels settle and all 10,240 test
+sats reconcile. The first trial's policy refusals exactly match its missing
+application packets. The second has two additional refusals: native counters
+also include protocol traffic and surrounding service snapshots, so they are
+not an application-only packet trace. No route, MTU, decode, TTL or send-error
+counter increases. The evidence locates the observed forwarding loss in policy
+admission; it does not distinguish exhausted credit, durable windows or other
+admission limits, and does not yet establish a fix.
+
+The test passes in 165.88 seconds; the guarded runner completes in 201.38 seconds.
+No host compiler appears in 34 samples; normal applications and VMs remain
+running. All 36,136 source inputs and both selected executables retain their
+hashes; process groups, cgroup and target lock close. The receipt is
+`work/forwarding-drops/acceptance.json` in the local recovery bundle and the raw
+report SHA-256 is
+`6760512c70d7e05f8b58f3e40152d0b2a335133ec6591fb3be5ecca183861cd1`.
+This accepts the diagnostic's execution and evidence, not cadence costs,
+throughput, hardware or the failed matched comparisons below.
+
 ## Rejected native Linux comparison after checkpoint fix — 2 October 2026
 
 The unchanged eight-trial matrix on FIPS `18110c330558` still fails acceptance

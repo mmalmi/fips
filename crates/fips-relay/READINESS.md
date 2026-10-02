@@ -90,13 +90,24 @@ channels and reconcile 40,960 test sats, but 17,687 of 285,696 submitted packets
 are missing across seven high-rate workloads. Both strict analysis and the
 existing loss diagnostic reject local-evidence/payment boundary mismatches.
 The worst trial again places loss at the first forwarding relay; slow durable
-accounting remains a hypothesis until admission and transport drops are
-distinguished. This run uses disk-backed XFS, unlike the earlier accepted ARM64
-memory-backed comparison. Sources and frozen executables remain unchanged;
+accounting remains a hypothesis. This run uses disk-backed XFS, unlike the earlier
+accepted ARM64 memory-backed comparison. Sources and frozen executables remain unchanged;
 all owned processes and locks are closed. See
 [the latest rejected comparison](CADENCE-RESULTS.md#rejected-native-linux-comparison-after-checkpoint-fix--2-october-2026).
 Both current rejected runs are preserved. Neither establishes a speedup,
 optimal cadence or current-device acceptance; the default remains 500 ms.
+
+A subsequent two-trial diagnostic reuses native forwarding counters with the
+exact same daemon and unchanged workloads and financial limits. Its 10,758
+missing application packets coincide with policy refusals at the first two
+relays; no native route, MTU, decode, TTL or send-error counter increases. Native
+refusals also include protocol traffic, so the second trial has two more
+refusals than missing application packets. All 12 channels settle and all
+10,240 test sats reconcile. The specific limiting admission predicate remains
+unidentified. Build, focused lint, formatting, source-size and source/binary
+integrity checks pass. See [drop attribution](CADENCE-RESULTS.md#native-forwarding-drop-attribution--2-october-2026)
+and `work/forwarding-drops/acceptance.json` in the local recovery bundle. This
+narrows the investigation; it adds no runtime fix or accepted performance result.
 
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
