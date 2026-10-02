@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Retain ownership of endpoint shutdown tasks across canceled or concurrent
+  shutdown calls, preserving the existing timeout and graceful-drop behavior.
+- Cooperatively yield during sustained ready receive traffic so shutdown and
+  other runtime tasks can make progress without changing packet budgets.
 - Ignore stale dataplane wake notifications until work is runnable, preserving
   the original completion wait deadline.
 - Allow the final handshake transmission its full reply window before exhausting
