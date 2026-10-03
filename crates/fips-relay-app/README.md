@@ -195,3 +195,7 @@ verified purchase, both traffic directions, app reopen and final settlement over
 the intended native wireless links. Each router earned 49 test sats net and all
 2,560 run funds were collected. See [the acceptance report](../fips-relay/PROTOTYPE-RESULTS.md)
 for the initial dropped attempts, capture evidence, network isolation and limits.
+The newer named-installation regression verifies the current APK, automatic
+payments in both directions through three routers, complete test-fund collection
+and preservation of both saved phone accounts. See the current scoped evidence
+in [paid-relay readiness](../fips-relay/READINESS.md#scope-and-outstanding-acceptance).

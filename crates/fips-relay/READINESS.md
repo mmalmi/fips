@@ -94,9 +94,10 @@ router baselines, stopped candidate services and mints, and removed temporary
 executables and filters. Closed receipts are under
 `work/hardware-current-r1/{paid-current-r2,paid-current-brief-r1}/closure.json`
 in the private recovery bundle. The initial failed attempt and its complete
-test-fund recovery remain recorded separately. Current Pixel, sustained
-throughput, arbitrary mobile encounters and physical power-loss acceptance remain
-outstanding; these standalone tests do not replace the packaged-build evidence.
+test-fund recovery remain recorded separately. Sustained throughput, arbitrary
+mobile encounters and physical power-loss acceptance remain outstanding; these
+standalone tests do not replace the packaged-build evidence. Current Pixel
+session acceptance is recorded below.
 
 The same standalone ARM64 runtime subsequently passes a current 500-ms
 three-router workload pilot with the default 4,000-msat durable window and
@@ -131,10 +132,32 @@ storage/workload. Ordinary host activity prevents isolated performance claims;
 the earlier HDD/XFS loss remains a storage-pressure limitation. See
 [the accepted matrix](CADENCE-RESULTS.md#default-limit-native-matrix-on-ssd--3-october-2026).
 
+The current Android source `d7b2f43f6a4d` passes native ARM64 release compilation,
+APK assembly, strict Android lint, both activity tests and Android-target Rust
+lint. Source, actual dependency paths, packaged native library and APK signature
+are verified. A named test installation preserves both existing phone accounts;
+52 focused phone-harness checks also pass.
+
+That APK completes a physical Pixel session through the same three-router ARM64
+runtime above. The phone uses the isolated customer AP and UDP entry, followed
+by two native wireless hops. All eight fresh 1,000-byte payloads arrive in both
+directions, automatic payments advance on all four paying channels, and all 512
+test sats are collected after settlement. Both forwarding routers earn test
+funds. Customer-network probes allow the mint and deny the tested management,
+gateway and Internet endpoints. All 666 management checks pass; original router
+state and both saved phone accounts remain unchanged, and normal phone Wi-Fi and
+Internet access are restored. The stopped, empty test account remains saved.
+
+The consolidated receipt is `work/android-device-r1/acceptance.json` in the
+private recovery bundle. Independent closure retains an openwrt.org HTTPS
+timeout and verifies HTTPS/DNS through another site with every device-state
+equality check unchanged. This accepts the recorded paid phone session, not
+Android crash/reopen recovery, physical power loss, throughput or an Internet VPN.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted current default-limit SSD cadence matrix and finite router workload pilot; see [cadence results](CADENCE-RESULTS.md). | Characterize and qualify slow-storage limits, sustained and impaired current-build hardware workloads, and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery. | Current-build Pixel and broader router regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid session through three routers. | Current-build Android crash/reopen and broader router regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -4503,9 +4526,9 @@ funds are outstanding, then verifies 128 issued equals 128 collected before stop
 The host's existing mint processes and web service remain healthy. These initial
 checks cover mint ownership and cleanup; they do not measure router throughput.
 
-### Physical phone customer across the wireless mesh
+### Earlier physical phone customer across the wireless mesh
 
-The current isolated Pixel app also completes a paid session through all three
+An earlier isolated Pixel app completes a paid session through all three
 ARM64 OpenWrt routers. The phone joins the existing customer AP and authenticates
 at its UDP entry. Native Ethernet discovery forms the temporary open 802.11s mesh
 without a router peer roster; owned shortcut filters force the remaining two
