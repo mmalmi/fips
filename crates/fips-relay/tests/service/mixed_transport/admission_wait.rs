@@ -42,7 +42,7 @@ async fn temporary_allowance_waits_in_the_running_service() {
         // One finite burst fits the channel and waiting queue, but crosses
         // several durable windows. No application resend or explicit flush.
         bench.send_probe(0, 2, 16, 256, 10_000).await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let status = request(&bench.configs[2], &AdminRequest::Status)
                     .await
@@ -53,8 +53,18 @@ async fn temporary_allowance_waits_in_the_running_service() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .expect("the original waiting packets must resume without an application retry");
+        .await;
+        if delivered.is_err() {
+            let native = native_request(provider, &json!({"command":"show_status"}))
+                .await
+                .unwrap();
+            eprintln!(
+                "admission failure forwarding={}",
+                native["data"]["forwarding"]
+            );
+            bench.delivery_failure(0, 2).await;
+            panic!("the original waiting packets must resume without an application retry");
+        }
         tokio::time::sleep(Duration::from_millis(2_100)).await;
         let status = request(&bench.configs[2], &AdminRequest::Status)
             .await
