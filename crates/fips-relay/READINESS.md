@@ -213,6 +213,16 @@ The receipt is `work/hardware-current-r1/diamond-feedback5-r1/closure.json` in
 the private recovery bundle. This single local Wi-Fi comparison does not qualify
 a shorter window for slow or impaired links; production defaults remain unchanged.
 
+A subsequent active-restart trial on the same ARM64 executable fails. After
+24,000/24,000 healthy payloads, the middle process restarts in 0.99 seconds
+during a 20-second send. Only 224/4,000 payloads arrive, with no count increase
+after the new process is observed. The restarted process initially has no peers;
+neighbor/session recovery remains under investigation. All 384 test sats are
+collected, all 432 management checks pass, and independent closure verifies
+restored device state and stopped test services. See [the failed active-restart
+result](CADENCE-RESULTS.md#active-stream-during-process-restart). Passing tests
+that paused offered traffic during restart do not close this recovery gap.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial

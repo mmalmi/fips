@@ -64,6 +64,30 @@ and partial-cleanup failures. This accepts bounded injected frame loss around a
 process restart; it does not simulate physical radio interference, power loss,
 traffic during the stopped interval, maximum throughput or a long soak.
 
+### Active stream during process restart
+
+The newer `699840f52` ARM64 runtime fails the `603942bc9` active-restart
+harness. The first six streams deliver all 24,000 payloads. During the fourth
+round's forward stream, the middle process is killed and reopened in 0.99 seconds.
+The sender submits all 4,000 payloads over 20 seconds, but only 224 arrive; its
+receiver count does not increase after the new middle process is observed.
+The test therefore fails its requirement to resume delivery within the same
+sending window and does not run the remaining five streams.
+
+The new middle process initially has no peers, despite its Ethernet transport
+being up and having sent a discovery beacon. Surviving endpoints later report
+the old direct paths stale at the 30-second link-dead timeout. This suggests a
+neighbor/session-recovery delay; it is not yet a proven root cause. The earlier
+paused-traffic restart passes do not establish recovery under active traffic.
+
+Both 4,000-msat unbilled exposure bounds remain recorded and all 384 test sats
+are collected. All 432 management checks pass; independent closure verifies
+restored router state and stopped candidate, guard and mint processes. The
+failed receipt is `work/hardware-current-r1/restart-active-r1/closure.json` in
+the private recovery bundle. The harness's 31 focused Linux checks pass,
+including rejection of late/stale delivery and preservation of the exact sender
+and receiver results after an uncertain crash. No runtime behavior was changed.
+
 ## Default-limit native matrix on SSD — 3 October 2026
 
 The complete untraced matrix passes on the frozen `060f12a56bac` standalone
