@@ -31,6 +31,17 @@ use std::{
 
 const FUNDING: u64 = 1_024;
 
+fn allowance_settings() -> (u64, u8) {
+    let grace_msat = match std::env::var("FIPS_CADENCE_GRACE_MSAT") {
+        Ok(value) => value.parse().expect("numeric benchmark grace"),
+        Err(std::env::VarError::NotPresent) => 8_000,
+        Err(error) => panic!("invalid benchmark grace: {error}"),
+    };
+    assert!(matches!(grace_msat, 8_000 | 16_000));
+    // Keep the debt trigger at 4,000 msat while varying available allowance.
+    (grace_msat, (400_000 / grace_msat) as u8)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrialMode {
     Matrix,
@@ -160,14 +171,17 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
     let mut reservations = Vec::new();
+    let (grace_msat, unpaid_percent) = allowance_settings();
     for i in 0..5 {
         let directory = root.path().join(format!("n{i}"));
         std::fs::create_dir(&directory).unwrap();
         let mut cfg = config(&directory, mint.url());
         cfg.payment_cadence = PaymentCadence {
             max_delay_ms: delay,
-            unpaid_percent: 50,
+            unpaid_percent,
         };
+        cfg.terms.grace_msat = grace_msat;
+        cfg.terms.window_msat = 4_000;
         cfg.terms.billing = BillingBasis::ForwardingAttempt;
         cfg.terms.controller.channel_capacity_sat = 256;
         cfg.terms.controller.max_locked_sat = 512;
@@ -423,10 +437,11 @@ fn new_report() -> std::fs::File {
 #[ignore = "matched multi-process measurement; run alone with --release and FIPS_CADENCE_REPORT"]
 async fn matched_cadence_matrix() {
     let mut output = new_report();
+    let (grace_msat, unpaid_percent) = allowance_settings();
     writeln!(output, "{}", json!({"schema":2, "optimized":!cfg!(debug_assertions),
         "platform":std::env::consts::OS, "architecture":std::env::consts::ARCH,
         "nodes":5, "paid_relays":3, "funded_directions":2, "transport":"UDP loopback",
-        "repeats":2, "unpaid_percent":50, "window_msat":4_000, "grace_msat":8_000,
+        "repeats":2, "unpaid_percent":unpaid_percent, "window_msat":4_000, "grace_msat":grace_msat,
         "channel_capacity_sat":256, "fee_msat_per_kib":1,
         "payment_service_carrier":true,
         "boundary_accounting":"prepaid-usage-v1",
