@@ -116,15 +116,9 @@ impl Node {
                     copy_forwarded_session_datagram(payload, route.ttl, route.path_mtu)
                 };
                 let forward = route.with_plaintext(PacketBuffer::new(plaintext));
-                let result = self
-                    .send_dataplane_fmp_link_plaintext_with_class(
-                        &forward.next_hop_addr,
-                        forward.plaintext.as_slice(),
-                        forward.outgoing_ce,
-                        Some(forwarding_packet_class(&forward)),
-                    )
-                    .await;
-                self.finish_prepared_session_forward(forward, result, true)
+                // Retain the permit until its exact transport completion, as
+                // batched transit does, even when a retry outlasts this turn.
+                self.flush_prepared_session_forwards(&mut vec![forward])
                     .await;
             }
             PreparedSessionDatagram::NoRoute {
