@@ -96,6 +96,14 @@ impl DeliveryTrace {
         eprintln!("routed rekey lost and subsequently admitted setup, ack and finish");
     }
 
+    pub(crate) fn handshakes_recovered(&self) -> bool {
+        self.handshake_loss
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|loss| loss.dropped == [true; 3] && loss.admitted_after_loss == [true; 3])
+    }
+
     pub(crate) fn dump(&self, node: usize) {
         for row in self.records.lock().unwrap().iter() {
             eprintln!(

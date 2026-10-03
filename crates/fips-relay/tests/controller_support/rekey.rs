@@ -188,6 +188,15 @@ impl RekeyObservation {
         ready == self.expected
     }
 
+    pub(crate) fn recovered(&self) -> bool {
+        self.rotated == self.expected
+            && self.traffic_after_rotation
+            && self
+                .handshake_loss
+                .as_ref()
+                .is_some_and(|(transit, armed)| *armed && transit.handshakes_recovered())
+    }
+
     pub(crate) fn assert_rotated(self, workload: &str) {
         if let Some((transit, armed)) = self.handshake_loss {
             assert!(armed);

@@ -428,7 +428,10 @@ async fn controller_scenario(
         }
         #[cfg(unix)]
         let mut rekey = controller_support::RekeyObservation::start(root.path(), &peers, automatic_renewal, &forwarding[2]).await;
-        for round in 0..if automatic_renewal { 18 } else { 8 } {
+        // A final handshake retry can outlive the original 18 traffic rounds.
+        // Keep driving delivery until recovery is observed, with a finite cap
+        // and the existing overall scenario deadline and spending bounds.
+        for round in 0..if automatic_renewal { 36 } else { 8 } {
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![round; 1_000];
                 payload[0] = source as u8;
@@ -469,6 +472,8 @@ async fn controller_scenario(
             tokio::time::sleep(Duration::from_millis(600)).await;
             #[cfg(unix)]
             if let Some(rekey) = &mut rekey { rekey.observe(root.path(), &peers).await; }
+            #[cfg(unix)]
+            if round >= 17 && rekey.as_ref().is_some_and(|rekey| rekey.recovered()) { break; }
         }
         #[cfg(unix)]
         if let Some(rekey) = rekey { rekey.assert_rotated("paid renewal"); }
