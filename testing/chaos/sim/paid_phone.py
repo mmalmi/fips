@@ -58,7 +58,8 @@ class PaidPhoneRun(WifiRun):
         self.entry_address = f"{guest.ip}:{self.customer['entry_port']}"
         super().__init__(args)
         phone = self.scenario['phone']
-        self.phone = PhoneCustomer(phone['adb'], phone['serial'], phone['evidence_dir'])
+        self.phone = PhoneCustomer(phone['adb'], phone['serial'], phone['evidence_dir'],
+                                   instance=phone.get('instance'))
         mint = self.scenario['mint']
         self.mint = RemoteMint(
             mint['ssh_spec'], args.mint_binary, self.run, self.root,

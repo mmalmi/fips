@@ -9,7 +9,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 from .paid_settlement import require
-from .phone_customer import PACKAGE, save
+from .phone_customer import PACKAGE, acceptance_identity, save
 from .wifi_remote import checked_name
 
 
@@ -20,6 +20,7 @@ def scenario(path):
     value = json.loads(Path(path).read_text())
     require(value.get("version") == 1, "unsupported phone scenario version")
     phone, customer, mint = (value[key] for key in ("phone", "customer", "mint"))
+    acceptance_identity(phone.get("instance"))
     require(all(isinstance(phone.get(key), str) and phone[key] for key in
                 ("adb", "serial", "evidence_dir")), "phone identity and private evidence are required")
     require(Path(phone["adb"]).is_absolute() and Path(phone["evidence_dir"]).is_absolute(),
@@ -72,7 +73,13 @@ def original_hashes(phone):
     # Do not hide find/sha256sum failures behind a final successful sort process.
     command = ("set -eu; files=$(find files -type f); test -n \"$files\"; "
                "printf '%s\\n' \"$files\" | while IFS= read -r file; do sha256sum \"$file\" || exit; done")
-    data = phone.shell("run-as", ORIGINAL_PACKAGE, "sh", "-c", command)
+    packages = [ORIGINAL_PACKAGE] if phone.package == PACKAGE else [ORIGINAL_PACKAGE, PACKAGE]
+    return b"".join(package.encode() + b"\n" + _account_hashes(phone, package, command)
+                    for package in packages)
+
+
+def _account_hashes(phone, package, command):
+    data = phone.shell("run-as", package, "sh", "-c", command)
     rows = data.splitlines()
     require(bool(rows) and all(re.fullmatch(rb"[0-9a-f]{64}  files/.+", row) for row in rows),
             "original account hashes missing or malformed")
@@ -82,7 +89,7 @@ def original_hashes(phone):
 
 
 def installed_apk_hash(phone, expected):
-    paths = phone.shell("pm", "path", PACKAGE).decode().splitlines()
+    paths = phone.shell("pm", "path", phone.package).decode().splitlines()
     require(len(paths) == 1 and paths[0].startswith("package:/"),
             "acceptance needs the explicit single debug APK")
     path = paths[0][len("package:"):]

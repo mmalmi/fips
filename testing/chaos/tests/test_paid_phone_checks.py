@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from sim.phone_customer import PACKAGE
 from sim.paid_phone_checks import (check_customer_access, guest_source, installed_apk_hash,
                                    original_hashes, probe_result, scenario)
 
@@ -66,7 +67,7 @@ class PaidPhoneCheckTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
 
     def test_guest_selection_is_observed_never_changed(self):
-        phone = Mock()
+        phone = Mock(package=PACKAGE)
         for status in (b'SSID: "Other", IP: /192.0.2.2', b'SSID: "Fixture Guest", IP: /198.51.100.2',
                        b'SSID: "Fixture Guest", IP: /192.0.2.1'):
             phone.shell.return_value = status
@@ -75,17 +76,27 @@ class PaidPhoneCheckTests(unittest.TestCase):
         self.assertTrue(all(call.args == ("cmd", "wifi", "status") for call in phone.shell.call_args_list))
 
     def test_original_hashes_are_nonempty_complete_lines_and_canonically_sorted(self):
-        phone = Mock()
+        phone = Mock(package=PACKAGE)
         first, second = b"a" * 64 + b"  files/first", b"b" * 64 + b"  files/second"
         phone.shell.return_value = second + b"\r\n" + first + b"\r\n"
-        self.assertEqual(original_hashes(phone), first + b"\n" + second + b"\n")
+        self.assertEqual(original_hashes(phone), b"org.fips.relaybench\n" + first + b"\n" + second + b"\n")
         for invalid in (b"", b"find: permission denied", first + b"\n" + first):
             phone.shell.return_value = invalid
             with self.assertRaises(RuntimeError):
                 original_hashes(phone)
 
+    def test_named_run_verifies_both_existing_accounts(self):
+        phone = Mock(package=PACKAGE + ".trial2")
+        first, second = b"a" * 64 + b"  files/account", b"b" * 64 + b"  files/account"
+        phone.shell.side_effect = [first, second]
+        self.assertEqual(original_hashes(phone),
+                         b"org.fips.relaybench\n" + first + b"\n" +
+                         PACKAGE.encode() + b"\n" + second + b"\n")
+        self.assertEqual([call.args[1] for call in phone.shell.call_args_list],
+                         ["org.fips.relaybench", PACKAGE])
+
     def test_only_the_exact_single_verified_apk_is_accepted(self):
-        phone = Mock()
+        phone = Mock(package=PACKAGE)
         path = "/data/app/fixture/base.apk"
         phone.shell.side_effect = [("package:" + path + "\n").encode(), ("a" * 64 + "  " + path).encode()]
         self.assertEqual(installed_apk_hash(phone, "a" * 64), "a" * 64)

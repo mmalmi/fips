@@ -30,6 +30,14 @@ LABELS = {"setup": "Set up test account", "import": "Load test funds",
           "export": "Prepare fund return", "status": "Refresh"}
 
 
+def acceptance_identity(instance=None):
+    if instance is None:
+        return PACKAGE, SCHEME
+    if not isinstance(instance, str) or not re.fullmatch(r"[a-z][a-z0-9]{0,23}", instance):
+        raise ValueError("invalid named acceptance instance")
+    return PACKAGE + "." + instance, SCHEME + "-" + instance
+
+
 def sync_directory(path):
     descriptor = os.open(path, os.O_RDONLY)
     try:
@@ -54,7 +62,8 @@ def checked_timeout(value):
 
 
 class PhoneCustomer:
-    def __init__(self, adb_path, serial, evidence_dir):
+    def __init__(self, adb_path, serial, evidence_dir, *, instance=None):
+        self.package, self.scheme = acceptance_identity(instance)
         self.adb_path = Path(adb_path).resolve(strict=True)
         if not self.adb_path.is_file() or not os.access(self.adb_path, os.X_OK):
             raise ValueError("an explicit executable adb path is required")
@@ -65,7 +74,7 @@ class PhoneCustomer:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.root.stat().st_mode & 0o077:
             raise ValueError("phone evidence directory must be private")
-        self.identity = {"adb": str(self.adb_path), "serial": serial, "package": PACKAGE}
+        self.identity = {"adb": str(self.adb_path), "serial": serial, "package": self.package}
         with self.locked():
             path = self.root / "identity.json"
             if path.exists():
@@ -107,13 +116,13 @@ class PhoneCustomer:
             values = re.findall(r"\b" + key + r"=(true|false)\b", policy)
             if not values or any(value != "false" for value in values):
                 raise RuntimeError("phone must be freshly observed unlocked")
-        if not self.shell("pm", "path", PACKAGE).strip().startswith(b"package:"):
+        if not self.shell("pm", "path", self.package).strip().startswith(b"package:"):
             raise RuntimeError("acceptance package is not installed")
-        self.shell("run-as", PACKAGE, "id", "-u")
+        self.shell("run-as", self.package, "id", "-u")
         if foreground:
             activity = self.shell("dumpsys", "activity", "activities").decode()
             components = re.findall(r"(?:topResumedActivity|mResumedActivity)[^\n]*?\bu\d+\s+(\S+/\S+)", activity)
-            if not components or any(item != PACKAGE + "/" + ACTIVITY for item in components):
+            if not components or any(item != self.package + "/" + ACTIVITY for item in components):
                 raise RuntimeError("acceptance activity must be in the foreground")
 
     def private(self, name):
@@ -122,7 +131,7 @@ class PhoneCustomer:
         return self.read_file("files/" + name)
 
     def read_file(self, path):
-        value = self.shell("run-as", PACKAGE, "sh", "-c",
+        value = self.shell("run-as", self.package, "sh", "-c",
                            f"if [ -f {path} ]; then head -c 1048577 {path}; else printf null; fi")
         if len(value) > 1024 * 1024:
             raise RuntimeError("private acceptance output exceeds its limit")
@@ -162,7 +171,7 @@ class PhoneCustomer:
             intent = {"sha256": hashlib.sha256(data).hexdigest()}
             save(self.root / "funding-intent.json", intent)
             self.check()
-            command = ["run-as", PACKAGE, "sh", "-c", "umask 077; set -C; cat > files/funding.json"]
+            command = ["run-as", self.package, "sh", "-c", "umask 077; set -C; cat > files/funding.json"]
             self.adb("shell", shlex.join(command), data=data)
             if self.read_file("files/funding.json") != {"token": token}:
                 raise RuntimeError("funding input is uncertain; inspect the existing file")
@@ -187,7 +196,7 @@ class PhoneCustomer:
     def point(self, label):
         matches = [node for node in self.tree().iter("node")
                    if node.get("text") == label and node.get("enabled") == "true"
-                   and node.get("clickable") == "true" and node.get("package") == PACKAGE]
+                   and node.get("clickable") == "true" and node.get("package") == self.package]
         if len(matches) != 1:
             raise RuntimeError("expected one exact enabled acceptance button")
         bounds = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", matches[0].get("bounds", ""))
@@ -214,7 +223,7 @@ class PhoneCustomer:
         save(self.root / "pending.json", {"id": identifier})
         old = "files/last-action.json"
         archived = "files/acceptance-prior-" + identifier + ".json"
-        self.shell("run-as", PACKAGE, "sh", "-c",
+        self.shell("run-as", self.package, "sh", "-c",
                    f"test ! -e {archived} && {{ if [ -e {old} ]; then mv {old} {archived}; fi; }} && test ! -e {old}")
         if self.private("last-action.json") is not None:
             raise RuntimeError("completion marker changed before the action")
@@ -279,7 +288,7 @@ class PhoneCustomer:
             # Plain launcher starts may only bring an existing task forward.
             # VIEW + SINGLE_TOP delivers onNewIntent to its current instance,
             # which runs the app's read-only preview and writes a fresh marker.
-            self.shell("am", "start", "-W", "--activity-single-top", "-n", PACKAGE + "/" + ACTIVITY,
+            self.shell("am", "start", "-W", "--activity-single-top", "-n", self.package + "/" + ACTIVITY,
                        "-a", "android.intent.action.VIEW", *arguments)
             return self.wait(directory, timeout)
 
@@ -291,7 +300,7 @@ class PhoneCustomer:
         encoded = base64.urlsafe_b64encode(json.dumps(profile).encode()).decode().rstrip("=")
         if len(encoded) > 8192:
             raise ValueError("setup profile exceeds the app limit")
-        uri = SCHEME + "://setup?profile=" + encoded
+        uri = self.scheme + "://setup?profile=" + encoded
         return self.preview(("-d", uri), {"profile_sha256": hashlib.sha256(encoded.encode()).hexdigest()}, timeout)
 
     def screenshot(self, label):

@@ -35,6 +35,15 @@ package for installation, explicit activity intents and `run-as` transfers; the
 activity class remains `org.fips.relaybench.MainActivity`. Reinstalling either
 package retains its own account. Never clear its data to retry a pending payment.
 
+If that acceptance account is already configured, use a named installation:
+`crates/fips-relay-app/build-android.sh --isolated trial2`. The instance must
+start with a lowercase letter and contain at most 24 lowercase letters or digits.
+This builds package `org.fips.relaybench.acceptance.trial2` with setup scheme
+`fipsbench-acceptance-trial2`. Use the same `phone.instance` in the physical
+acceptance scenario. Each name has separate Android account storage; reusing a
+name retains that account. Named runs verify that both the regular and original
+acceptance accounts remain unchanged.
+
 The existing `scripts/check-rust-file-lines.sh` gate also checks Java. Paid-relay
 Rust and Android source files have a 600-line limit. Integration scenarios retain
 the workspace's 1,000-line limit. Android lint treats warnings as errors, with
