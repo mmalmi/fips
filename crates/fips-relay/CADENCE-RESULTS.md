@@ -76,8 +76,8 @@ sending window and does not run the remaining five streams.
 
 The new middle process initially has no peers, despite its Ethernet transport
 being up and having sent a discovery beacon. Surviving endpoints later report
-the old direct paths stale at the 30-second link-dead timeout. This suggests a
-neighbor/session-recovery delay; it is not yet a proven root cause. The earlier
+the old direct paths stale at the 30-second link-dead timeout. The native
+reproduction below isolates the discarded startup hint. The earlier
 paused-traffic restart passes do not establish recovery under active traffic.
 
 Both 4,000-msat unbilled exposure bounds remain recorded and all 384 test sats
@@ -100,8 +100,25 @@ On frozen `discovery-restart-green-r3`, five real-veth tests pass in an isolated
 Linux network namespace, including mixed UDP/Ethernet, the restart case with a
 temporarily full link budget, and healthy heartbeat jitter. Another 113 focused
 discovery, liveness, same-path ownership and replay checks pass. Both new failures
-were observed before their fixes. Formatting and file-length checks pass. These
-are native functional checks; the same physical active-stream rerun is pending.
+were observed before their fixes. Formatting and file-length checks pass.
+
+The unchanged physical test passes on the subsequent `80bf5baec` ARM64 runtime
+(`4a53448ae49162f7643e0c47de2b4bea0ca45806ca34ab8e73442d75e130c0d6`).
+The process restart takes 0.985 seconds; fresh delivery resumes 14.12 seconds
+after the kill, before the original 20-second send ends. The active stream
+delivers 1,290/4,000 payloads, and the other eleven deliver 44,000/44,000, for
+45,290/48,000 overall. All six bidirectional rounds reconcile automatic payments
+with the same channels, capital and budgets. Both 4,000-msat unbilled exposure
+bounds remain exact. All 384 test sats are collected and all 573 management
+checks pass.
+
+Independent closure verifies restored router state and stopped candidate,
+guard and mint processes. The receipt is
+`work/hardware-current-r1/restart-active-r2/closure.json` in the private recovery
+bundle, SHA-256 `06d721159d73d8bd14dfedb028416b748383263769dc8de7d426653aafe72252`.
+This accepts one finite active process-restart scenario on the recorded devices;
+it does not qualify physical power loss, maximum throughput, mobile handover,
+long soaks or production readiness.
 
 ## Default-limit native matrix on SSD — 3 October 2026
 

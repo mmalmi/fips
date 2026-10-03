@@ -231,8 +231,20 @@ existing admission limits, and is cancelled by authenticated link activity or an
 owner/path change. The original connection remains until fresh authentication.
 All 113 focused discovery/liveness/ownership checks and five real-veth Ethernet
 tests pass on the frozen `discovery-restart-green-r3` source. These include a full
-link budget and delayed healthy heartbeats. The corresponding router rerun is
-still pending; this native evidence does not close the physical recovery gap.
+link budget and delayed healthy heartbeats.
+
+The corresponding `80bf5baec` static ARM64 executable passes the unchanged
+active-restart test on the three routers. Delivery resumes 14.12 seconds after
+the middle process is killed, within the original 20-second sending window.
+That stream delivers 1,290/4,000 payloads; the other eleven deliver all 44,000.
+All six bidirectional rounds reconcile automatic payments using the original
+channels and budgets. The two 4,000-msat unbilled exposure bounds remain exact,
+all 384 test sats are collected, and all 573 management checks pass. Independent
+closure verifies restored router state and stopped test services. The receipt
+is `work/hardware-current-r1/restart-active-r2/closure.json` in the private
+recovery bundle. This closes the recorded active process-restart failure for
+this artifact and workload; physical power loss, longer soaks, mobile handover
+and matched performance qualification remain open.
 
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
