@@ -2,10 +2,12 @@
 from contextlib import nullcontext
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.phone_restart import force_stop
 
 
