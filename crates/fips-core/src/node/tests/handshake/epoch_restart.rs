@@ -207,3 +207,74 @@ async fn first_epoch_change_against_silent_peering_is_accepted() {
     assert_ne!(replacement.link_id(), stale_link);
     assert_eq!(replacement.remote_epoch(), Some(initiator.startup_epoch));
 }
+
+#[tokio::test]
+async fn restart_msg1_removes_stale_or_unestablished_fsp() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    for established in [false, true] {
+        let mut responder = make_node();
+        let initiator = make_node();
+        let peer_addr = *initiator.node_addr();
+        let transport_id = TransportId::new(1);
+        let source_addr = TransportAddr::from_string("127.0.0.1:41005");
+        let now = Node::now_ms();
+        install_peering_at_different_epoch(
+            &mut responder,
+            &initiator,
+            transport_id,
+            &source_addr,
+            now.saturating_sub(STALE_PEERING_AGE_MS),
+        );
+        let mut local = HandshakeState::new_initiator(
+            responder.identity.keypair(),
+            initiator.identity.pubkey_full(),
+        );
+        local.set_local_epoch(responder.startup_epoch);
+        let state = if established {
+            let mut remote = HandshakeState::new_responder(initiator.identity.keypair());
+            remote.set_local_epoch([0xAA; 8]);
+            remote
+                .read_message_1(&local.write_message_1().unwrap())
+                .unwrap();
+            local
+                .read_message_2(&remote.write_message_2().unwrap())
+                .unwrap();
+            EndToEndState::Established(local.into_session().unwrap())
+        } else {
+            EndToEndState::Initiating(local)
+        };
+        responder.sessions.insert(
+            peer_addr,
+            SessionEntry::new(
+                peer_addr,
+                initiator.identity.pubkey_full(),
+                state,
+                now,
+                true,
+            ),
+        );
+        if established {
+            assert!(responder.sync_dataplane_fsp_owner_from_current_session(&peer_addr, 0));
+            assert!(responder.dataplane_has_fsp_owner(&peer_addr));
+        }
+        responder
+            .handle_msg1(ReceivedPacket::with_timestamp(
+                transport_id,
+                source_addr,
+                genuine_msg1(&initiator, &responder, 81),
+                now,
+            ))
+            .await;
+        assert_eq!(
+            responder.get_peer(&peer_addr).unwrap().remote_epoch(),
+            Some(initiator.startup_epoch)
+        );
+        assert!(
+            responder.get_session(&peer_addr).is_none(),
+            "an old or unproven FSP epoch is not restart continuity"
+        );
+        assert!(!responder.dataplane_has_fsp_owner(&peer_addr));
+    }
+}

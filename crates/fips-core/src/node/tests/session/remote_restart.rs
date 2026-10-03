@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "remote_restart_control.rs"]
 mod control;
+#[path = "remote_restart_direct.rs"]
+mod direct;
 
 #[test]
 fn test_recovery_rekey_replaces_session_after_remote_restart() {

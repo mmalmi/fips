@@ -223,8 +223,8 @@ impl Node {
         }
 
         // Generic removal still discards stale end-to-end state. Elective
-        // rotation and an authenticated same-epoch handoff only remove the
-        // adjacency: the remote still owns the same end-to-end session keys.
+        // rotation and handoffs matching the authenticated FSP epoch only
+        // remove the adjacency: the remote still owns those end-to-end keys.
         if !preserve_end_to_end {
             let session_mmp = self.session_mmp_snapshot(node_addr);
             self.remove_dataplane_fsp_owner(node_addr);

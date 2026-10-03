@@ -667,7 +667,10 @@ impl WebRtcTransport {
         let Ok(addr) = canonical_webrtc_addr(addr) else {
             return;
         };
-        self.recovering.lock().expect("WebRTC recoveries").remove(&addr);
+        self.recovering
+            .lock()
+            .expect("WebRTC recoveries")
+            .remove(&addr);
         let owners =
             WebRtcSessionOwners::from_refs(&self.pool, &self.pending, &self.failed, &self.ready);
         cleanup_webrtc_session(&owners, &addr, None, None, CleanupWait::Bounded).await;
@@ -682,7 +685,10 @@ impl WebRtcTransport {
 
     fn close_connection_detached_task(&self, addr: &TransportAddr) -> Option<JoinHandle<()>> {
         let addr = canonical_webrtc_addr(addr).ok()?;
-        self.recovering.lock().expect("WebRTC recoveries").remove(&addr);
+        self.recovering
+            .lock()
+            .expect("WebRTC recoveries")
+            .remove(&addr);
         let generation = self.physical.generation(&addr)?;
         Some(spawn_webrtc_session_cleanup(
             Arc::clone(&self.pool),

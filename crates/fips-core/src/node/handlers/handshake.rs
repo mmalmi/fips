@@ -501,12 +501,20 @@ impl Node {
                     // Epoch mismatch against a silent peer: accept a genuine
                     // restart. Schedule before removal so the fork retains
                     // its authenticated UDP recovery address.
+                    // Routed FSP recovery may already have authenticated this
+                    // new process while the obsolete direct FMP was retained.
+                    // Removing that newer session would reset only our K bit.
+                    let preserve_end_to_end = self
+                        .sessions
+                        .get(&peer_node_addr)
+                        .is_some_and(|session| session.established_remote_epoch_matches(new_epoch));
                     info!(
                         peer = %self.peer_display_name(&peer_node_addr),
-                        "Peer restart detected (epoch mismatch), removing stale session"
+                        preserve_end_to_end,
+                        "Peer restart detected (epoch mismatch), replacing stale direct peering"
                     );
                     self.schedule_reconnect(peer_node_addr, now_ms);
-                    self.remove_active_peer(&peer_node_addr);
+                    self.remove_active_peer_inner(&peer_node_addr, preserve_end_to_end);
                     let cutoff = Duration::from_secs(EPOCH_RESTART_MIN_INTERVAL_SECS);
                     self.restart_dampener
                         .retain(|_, accepted_at| accepted_at.elapsed() < cutoff);
