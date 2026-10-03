@@ -19,7 +19,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Mutex, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -67,6 +67,7 @@ pub struct DurableRelay {
     window_msat: u64,
     windows: RwLock<PublishedWindows>,
     window_blocked: AtomicBool,
+    admission_changed: Arc<tokio::sync::Notify>,
     writer: Mutex<()>,
     _owner: File,
 }
@@ -90,6 +91,7 @@ impl DurableRelay {
             window_msat,
             windows: RwLock::new(PublishedWindows::default()),
             window_blocked: AtomicBool::new(false),
+            admission_changed: Arc::default(),
             writer: Mutex::new(()),
             _owner: owner,
         };
@@ -118,6 +120,7 @@ impl DurableRelay {
             window_msat: journal.window_msat,
             windows: RwLock::new(PublishedWindows::default()),
             window_blocked: AtomicBool::new(false),
+            admission_changed: Arc::default(),
             writer: Mutex::new(()),
             _owner: owner,
         };
@@ -403,6 +406,10 @@ impl DurableRelay {
                 ceilings.insert(channel.terms.id.clone(), ceiling);
             }
         }
+        let increased = allow_next_window
+            && ceilings
+                .iter()
+                .any(|(id, ceiling)| *ceiling > previous.get(id).copied().unwrap_or(0));
         let journal = Journal {
             version: 1,
             window_msat: self.window_msat,
@@ -418,6 +425,10 @@ impl DurableRelay {
             .collect();
         published.ceilings = ceilings;
         published.ready = allow_next_window;
+        drop(published);
+        if increased {
+            self.admission_changed.notify_one();
+        }
         Ok(usage)
     }
 }

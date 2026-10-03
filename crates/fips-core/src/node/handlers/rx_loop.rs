@@ -225,6 +225,10 @@ impl Node {
 
         loop {
             self.expire_waiting_admissions();
+            let admission_notify = self
+                .forwarding_policy
+                .as_ref()
+                .and_then(|policy| policy.admission_notify());
             tokio::select! {
                 biased;
                 // Timer-driven liveness is a reserved-progress branch. It
@@ -291,9 +295,14 @@ impl Node {
                         tick.reset();
                     }
                 }
-                _ = wait_for_optional_epoch_deadline(
-                    self.admission_work_deadline_ms().map(|due| due.max(admission_not_before_ms)),
+                changed = wait_for_admission_retry(
+                    self.admission_work_deadline_ms(),
+                    admission_not_before_ms,
+                    admission_notify.as_ref(),
                 ) => {
+                    if changed {
+                        self.wake_waiting_admissions();
+                    }
                     let drained = self.run_rx_loop_admission_turn(&mut dataplane_runtime.io()).await;
                     // Leave a turn for other ready work even after a stalled retry.
                     admission_not_before_ms = Self::now_ms().saturating_add(1);
@@ -952,6 +961,21 @@ async fn wait_for_optional_epoch_deadline(deadline_ms: Option<u64>) {
     match tokio::time::Instant::now().checked_add(Duration::from_millis(remaining)) {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_admission_retry(
+    deadline_ms: Option<u64>,
+    not_before_ms: u64,
+    notify: Option<&Arc<Notify>>,
+) -> bool {
+    if deadline_ms.is_none() {
+        return std::future::pending().await;
+    }
+    wait_for_optional_epoch_deadline(Some(not_before_ms)).await;
+    tokio::select! {
+        _ = wait_for_optional_notify(notify) => true,
+        _ = wait_for_optional_epoch_deadline(deadline_ms) => false,
     }
 }
 

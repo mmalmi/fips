@@ -55,11 +55,24 @@ fn start(path: &std::path::Path) -> DurableRelay {
     relay
 }
 
+fn take_admission_wake(relay: &DurableRelay) -> bool {
+    use std::{
+        future::Future,
+        task::{Context, Waker},
+    };
+    let notify = relay.admission_notify().unwrap();
+    std::pin::pin!(notify.notified())
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_ready()
+}
+
 #[test]
 fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
     use fips_core::node::ForwardingDecision;
     let root = tempfile::tempdir().unwrap();
     let relay = start(&root.path().join("relay"));
+    assert!(take_admission_wake(&relay));
+    assert!(!take_admission_wake(&relay));
     for value in 1..=3 {
         let bytes = [value; 8];
         if value > 1 {
@@ -67,6 +80,7 @@ fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
             assert_eq!(relay.decide(&request(&bytes)), ForwardingDecision::Retry);
             assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
             assert!(relay.checkpoint_if_due().unwrap());
+            assert!(take_admission_wake(&relay));
         }
         let token = relay.decide(&request(&bytes)).admission().unwrap().token;
         relay.complete(token, ForwardingOutcome::Submitted);
@@ -82,8 +96,15 @@ fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
     assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
     // A checkpoint alone cannot replenish unpaid credit.
     relay.checkpoint().unwrap();
+    assert!(take_admission_wake(&relay));
+    relay.checkpoint().unwrap();
+    assert!(
+        !take_admission_wake(&relay),
+        "unchanged allowance must stay quiet"
+    );
     assert_eq!(relay.decide(&request(&[4; 8])), ForwardingDecision::Retry);
     relay.apply_verified_balance("neighbor", 1_000).unwrap();
+    assert!(take_admission_wake(&relay));
     let token = relay.decide(&request(&[4; 8])).admission().unwrap().token;
     relay.complete(token, ForwardingOutcome::Submitted);
     assert_eq!(relay.channel_usage("neighbor").unwrap().submitted_msat, 32);
@@ -385,12 +406,19 @@ fn exclusive_owner_corruption_and_failed_persistence_fail_closed() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("relay");
     let relay = start(&path);
+    assert!(take_admission_wake(&relay));
+    let token = relay.admit(&request(b"x")).unwrap();
+    relay.complete(token, ForwardingOutcome::Submitted);
     assert!(DurableRelay::load(&path).is_err());
     assert!(DurableRelay::create(&path, Limits::default(), 10).is_err());
     // Making the destination a directory makes the atomic replace fail.
     std::fs::remove_file(path.join("ledger.json")).unwrap();
     std::fs::create_dir(path.join("ledger.json")).unwrap();
     assert!(relay.checkpoint().is_err());
+    assert!(
+        !take_admission_wake(&relay),
+        "failed persistence must not wake admission"
+    );
     assert!(relay.admit(&request(b"x")).is_none());
     assert!(
         relay.checkpoint().is_err(),

@@ -196,6 +196,14 @@ impl Node {
             .map(|delay| Self::now_ms().saturating_add(delay.as_nanos().div_ceil(1_000_000) as u64))
     }
 
+    pub(in crate::node) fn wake_waiting_admissions(&mut self) {
+        let now = tokio::time::Instant::now();
+        for packet in &mut self.waiting_admissions.packets {
+            // Taking the minimum preserves queue order and the original expiry.
+            packet.due = packet.due.min(now);
+        }
+    }
+
     pub(in crate::node) fn admission_work_delay(&self) -> Option<Duration> {
         self.waiting_admissions.packets.front().map(|packet| {
             packet

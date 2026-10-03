@@ -206,6 +206,10 @@ impl PaidForwarder {
 }
 
 impl ForwardingPolicy for PaidForwarder {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.seller.admission_notify()
+    }
+
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
         self.admit_classified(request)
             .map(|admission| admission.token)

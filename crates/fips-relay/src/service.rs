@@ -75,6 +75,10 @@ struct ServiceForwarder {
 }
 
 impl ForwardingPolicy for ServiceForwarder {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.relay.admission_notify()
+    }
+
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
         self.admit_classified(request)
             .map(|admission| admission.token)

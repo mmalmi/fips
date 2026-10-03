@@ -2,6 +2,10 @@
 use super::*;
 
 impl ForwardingPolicy for DurableRelay {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.admission_changed.clone())
+    }
+
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
         self.decide(request)
             .admission()
