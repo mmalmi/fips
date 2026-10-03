@@ -63,7 +63,7 @@ class FakeRun:
         return copy.deepcopy(self.settled)
 
     def state_json(self, node, relative):
-        assert relative == f"exports/collect-{node}.json"
+        assert relative == "exports/1.json"
         return self.transform("saved_export", copy.deepcopy(self.exports[node]))
 
     def execute(self, node, binary, action, request):
@@ -78,6 +78,7 @@ class FakeRun:
             return self.transform("balance", {"mint_url": MINT, "unit": "sat",
                                               "balance_sat": self.balances[node]})
         if kind == "export":
+            assert type(request["id"]) is int and request["id"] == 1
             amount = request["amount_sat"]
             assert node not in self.exports
             assert amount == self.balances[node]

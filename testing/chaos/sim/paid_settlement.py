@@ -254,7 +254,8 @@ def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, sto
         require(balances == expected, "settled wallet distribution differs from verified payments")
     for node, balance in balances.items():
         if balance:
-            export_id = f"collect-{node}"
+            # Each isolated wallet performs one export using the current sequence API.
+            export_id = 1
             exported = execute(node, "fips-relay", "wallet", {
                 "type": "export", "id": export_id, "amount_sat": balance})
             relative = f"exports/{export_id}.json"

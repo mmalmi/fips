@@ -117,8 +117,8 @@ class PaidWifiTests(unittest.TestCase):
             return f"/etc/test/{name}/{relative}"
         def adapt(kind, result):
             if kind == "export":
-                name = Path(result["path"]).stem.removeprefix("collect-")
-                result["path"] = path(name, f"exports/collect-{name}.json")
+                name = result["operation_id"].removeprefix("export-")
+                result["path"] = path(name, "exports/1.json")
             return result
         run.transform = adapt
         settle_and_collect(run, run.prior, execute=execute, stop=stopped, export_path=path)

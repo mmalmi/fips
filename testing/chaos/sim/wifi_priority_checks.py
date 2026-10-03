@@ -199,7 +199,8 @@ def payment(status):
     value.update(acknowledged_msat=None if ack is None else natural(ack), in_flight=current["in_flight"])
     require(type(value["in_flight"]) is bool, "invalid payment scheduler evidence")
     pid = natural(status["measurements"]["process_id"])
-    require(pid > 0 and status["measurements"]["version"] == 1, "measurement-enabled source required")
+    version = status["measurements"]["version"]
+    require(pid > 0 and type(version) is int and version in (1, 2), "measurement-enabled source required")
     return {"channel": channel, "process_id": pid, **value}
 
 

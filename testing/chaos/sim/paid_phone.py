@@ -380,11 +380,11 @@ class PaidPhoneRun(WifiRun):
             checks=checks, balances=balances,
         )
         for name, node in self.nodes.items():
-            export_id = 'collect-' + name
+            export_id = '1'
             exported = self.once(
                 'export-' + name,
                 lambda node=node, name=name: node.control(
-                    'export', action='wallet', id='collect-' + name,
+                    'export', action='wallet', id=1,
                     amount_sat=balances[name],
                 ),
             )

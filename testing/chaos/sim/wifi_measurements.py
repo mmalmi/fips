@@ -65,14 +65,22 @@ def resource_fields(text, names, unit=None):
 
 def validate_measurements(status, pid):
     value = status.get("measurements")
-    if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1:
-        raise ValueError("measurement-enabled version 1 relay required")
+    if (not isinstance(value, dict) or type(value.get("version")) is not int
+            or value["version"] not in (1, 2)):
+        raise ValueError("measurement-enabled version 1 or 2 relay required")
     if unsigned(value.get("process_id")) != pid:
         raise ValueError("relay status came from a different process")
     unsigned(value.get("process_cpu_ns"))
     operations = value.get("operations")
-    if not isinstance(operations, dict) or set(operations) != OPERATIONS:
+    expected = OPERATIONS if value["version"] == 1 else OPERATIONS - {"payment_open", "payment_stop"}
+    if not isinstance(operations, dict) or set(operations) != expected:
         raise ValueError("missing or unsupported measurement operations")
+    if value["version"] == 2:
+        denials = value.get("admission_denials")
+        if not isinstance(denials, dict) or set(denials) != {"credit_limit", "durable_window"}:
+            raise ValueError("missing or unsupported admission counters")
+        for counter in denials.values():
+            unsigned(counter)
     for counters in operations.values():
         if not isinstance(counters, dict) or set(counters) != COUNTERS:
             raise ValueError("missing or unsupported measurement counters")
