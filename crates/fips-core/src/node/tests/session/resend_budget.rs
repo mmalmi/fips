@@ -106,16 +106,27 @@ async fn check_budget(cancel: bool, phase: Phase) {
     nodes[0].node.config.node.rate_limit.handshake_max_resends = 5;
     assert!(nodes[0].node.initiate_session_rekey(&remote).await);
     if matches!(phase, Phase::Finish) {
-        assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
-        assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
-        assert!(
-            nodes[0]
-                .node
-                .get_session(&remote)
-                .unwrap()
-                .pending_new_session()
-                .is_some()
-        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                for index in [1, 0] {
+                    process_available_packets_for_node(&mut nodes[index]).await;
+                }
+                // Unrelated link packets do not prove that the ACK arrived.
+                // Stop before the responder can consume the final message.
+                if nodes[0]
+                    .node
+                    .get_session(&remote)
+                    .unwrap()
+                    .pending_new_session()
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the rekey acknowledgement installs a pending session");
     }
     assert!(wait_drop_queued_packets_for_node(&mut nodes[1]).await > 0);
     let original_k = nodes[0].node.get_session(&remote).unwrap().current_k_bit();

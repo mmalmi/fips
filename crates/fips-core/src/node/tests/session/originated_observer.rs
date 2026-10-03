@@ -111,6 +111,7 @@ fn originated_session_observer_tracks_actual_source_envelopes_and_excludes_trans
                 seen.insert(bytes[0]);
             }
         }
+        drain_to_quiescence(&mut nodes).await;
         let observed_before = observers[1].records.lock().unwrap().len();
         let forwarded_before = nodes[1].node.stats().forwarding.forwarded_packets;
         let spoofed =
@@ -124,6 +125,8 @@ fn originated_session_observer_tracks_actual_source_envelopes_and_excludes_trans
                 false,
             ))
             .await;
+        // Forwarding is counted when the asynchronous send completes.
+        drain_to_quiescence(&mut nodes).await;
         assert_eq!(
             nodes[1].node.stats().forwarding.forwarded_packets,
             forwarded_before + 1
