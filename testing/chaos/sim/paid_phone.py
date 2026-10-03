@@ -20,10 +20,11 @@ from .paid_phone_checks import (
     check_customer_access, guest_source, installed_apk_hash, original_hashes,
     scenario,
 )
-from .paid_phone_finances import check_mint, validate_settled
+from .paid_phone_finances import check_mint, validate_settled, validate_reopened
 from .paid_relay import eventually, relay_config
 from .paid_settlement import require, validate_report
 from .phone_customer import PhoneCustomer, LABELS, save
+from .phone_restart import force_stop, process
 from .remote_mint import RemoteMint
 from .wifi_customer import CustomerAccess
 from .wifi_discovery import WifiRun
@@ -72,6 +73,8 @@ class PaidPhoneRun(WifiRun):
             test_funds_only=True, money_operations=True,
             phone_adapter=str(self.phone.root),
         )
+        self.restart_phone = bool(getattr(args, 'phone_restart', False))
+        self.evidence['phone_restart_requested'] = self.restart_phone
         self.original_phone = None
         self.steps = self.root / 'operations'
         self.steps.mkdir(mode=0o700)
@@ -79,7 +82,7 @@ class PaidPhoneRun(WifiRun):
         for name in (
             'paid_phone.py', 'paid_phone_checks.py', 'paid_phone_finances.py',
             'phone_customer.py', 'remote_mint.py', 'mint_host.py',
-            'wifi_customer.py',
+            'wifi_customer.py', 'phone_restart.py',
         ):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
@@ -282,8 +285,38 @@ class PaidPhoneRun(WifiRun):
         initial = eventually('four-account funding observation', self.finances, 45)
         self.journals('funded')
         self.phase('both endpoints authorized paid forwarding', financial=initial)
+        final = self.transfer('before-restart' if self.restart_phone else 'paid',
+                              2 if self.restart_phone else 4, initial)
+        if self.restart_phone:
+            before = self.journals('before-restart')
+            customer = self.phone.status()['customer']
+            stopped = force_stop(self.phone)
+            self.evidence['phone_restart'] = stopped
+            self.save()
+            reopened = self.phone.launch()['customer']
+            require(reopened['configured'] and not reopened['running']
+                    and all(reopened[key] == customer[key] for key in ('npub', 'profile')),
+                    'reopen changed the saved identity or immutable profile')
+            after_process = process(self.phone)
+            require(after_process and after_process['start_ticks'] > stopped['before']['start_ticks'],
+                    'reopen did not create a fresh candidate process')
+            self.evidence['phone_restart']['after'] = after_process
+            self.ui('start')
+            eventually('reopened phone authenticated at the original entry', joined, 90)
+            final = self.transfer('after-restart', 2, final)
+            validate_reopened(self.journals('after-restart'), before, self.mint_url,
+                              [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')])
+            self.phase('phone process reopened; original channels and budgets retained')
+        save(self.root / 'paid-finances.json', final)
+        self.journals('paid')
+        self.phone.screenshot('phone-paid-' + self.run)
+        self.verify_shortcuts()
+        self.settle()
+
+    def transfer(self, label, count, initial):
+        phone_npub = self.evidence['phone_npub']
         delivery = []
-        for index in range(4):
+        for index in range(count):
             before = self.ctl('n03', 'status')['received']
             self.ui('send')
 
@@ -301,12 +334,12 @@ class PaidPhoneRun(WifiRun):
                 'stale received payload',
             )
             delivery.append({'direction': 'phone_to_router', 'before': before, 'after': after})
-        for index in range(4):
+        for index in range(count):
             before = self.ui('status')['customer']['relay']['received']
-            payload = ('phone-mesh-' + self.run + '-' + str(index) + '-').ljust(1000, 'x')
+            payload = ('phone-mesh-' + self.run + '-' + label + '-' + str(index) + '-').ljust(1000, 'x')
             expected = hashlib.sha256(payload.encode()).hexdigest()
             self.once(
-                'reverse-send-' + str(index),
+                'reverse-send-' + label + '-' + str(index),
                 lambda payload=payload: self.ctl(
                     'n03', 'send', destination=phone_npub, payload=payload,
                 ),
@@ -334,15 +367,9 @@ class PaidPhoneRun(WifiRun):
             ) else None
 
         final = eventually('automatic payments on all four funded channels', paid, 60)
-        save(self.root / 'paid-finances.json', final)
-        self.journals('paid')
-        self.phase(
-            'eight fresh 1000-byte payloads delivered; every paying hop advanced',
-            delivery=delivery, financial=final,
-        )
-        self.phone.screenshot('phone-paid-' + self.run)
-        self.verify_shortcuts()
-        self.settle()
+        self.phase('paid phone cohort delivered; every paying hop advanced',
+                   cohort=label, delivery=delivery, financial=final)
+        return final
 
     def settle(self):
         reports = {}
@@ -497,6 +524,8 @@ def main():
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--mint-binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--phone-restart', action='store_true',
+                        help='force-stop and reopen the app between two paid cohorts')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',

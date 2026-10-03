@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sim.paid_phone_finances import validate_settled, check_mint
+from sim.paid_phone_finances import validate_settled, check_mint, validate_reopened
 
 EDGES = [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')]
 
@@ -67,6 +67,24 @@ def fixture():
 
 
 class PaidPhoneFinanceTests(unittest.TestCase):
+    def test_reopen_keeps_original_channels_and_lifetime_authority(self):
+        _, before, _, mint, edges = fixture()
+        current = copy.deepcopy(before)
+        current['phone']['buyer']['channels']['channel-phone']['authorized_sat'] += 1
+        validate_reopened(current, before, mint['url'], edges)
+        for section, field, value in (
+            ('buyer', 'total_budget_sat', 128),
+            ('controller', 'policy', {'max_wallet_spend_sat': 128}),
+            ('controller', 'buyer_settlements', {'unexpected': {}}),
+        ):
+            changed = copy.deepcopy(current)
+            changed['phone'][section][field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                validate_reopened(changed, before, mint['url'], edges)
+        current['phone']['buyer']['channels']['channel-phone']['authorized_sat'] = 0
+        with self.assertRaises(RuntimeError):
+            validate_reopened(current, before, mint['url'], edges)
+
     def test_complete_four_account_roundtrip(self):
         args = fixture()
         result = validate_settled(*args)

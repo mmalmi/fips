@@ -41,8 +41,8 @@ start with a lowercase letter and contain at most 24 lowercase letters or digits
 This builds package `org.fips.relaybench.acceptance.trial2` with setup scheme
 `fipsbench-acceptance-trial2`. Use the same `phone.instance` in the physical
 acceptance scenario. Each name has separate Android account storage; reusing a
-name retains that account. Named runs verify that both the regular and original
-acceptance accounts remain unchanged.
+name retains that account. Runs verify that all other installed bench accounts
+remain unchanged, including earlier named installations.
 
 The existing `scripts/check-rust-file-lines.sh` gate also checks Java. Paid-relay
 Rust and Android source files have a 600-line limit. Integration scenarios retain

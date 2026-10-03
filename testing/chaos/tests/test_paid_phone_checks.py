@@ -78,22 +78,25 @@ class PaidPhoneCheckTests(unittest.TestCase):
     def test_original_hashes_are_nonempty_complete_lines_and_canonically_sorted(self):
         phone = Mock(package=PACKAGE)
         first, second = b"a" * 64 + b"  files/first", b"b" * 64 + b"  files/second"
-        phone.shell.return_value = second + b"\r\n" + first + b"\r\n"
+        inventory = b"package:org.fips.relaybench\npackage:org.fips.relaybench.acceptance\n"
+        phone.shell.side_effect = [inventory, second + b"\r\n" + first + b"\r\n"]
         self.assertEqual(original_hashes(phone), b"org.fips.relaybench\n" + first + b"\n" + second + b"\n")
         for invalid in (b"", b"find: permission denied", first + b"\n" + first):
-            phone.shell.return_value = invalid
+            phone.shell.side_effect = [inventory, invalid]
             with self.assertRaises(RuntimeError):
                 original_hashes(phone)
 
-    def test_named_run_verifies_both_existing_accounts(self):
+    def test_named_run_verifies_all_existing_accounts(self):
         phone = Mock(package=PACKAGE + ".trial2")
         first, second = b"a" * 64 + b"  files/account", b"b" * 64 + b"  files/account"
-        phone.shell.side_effect = [first, second]
+        inventory = ("package:org.fips.relaybench\npackage:" + PACKAGE + "\npackage:" + PACKAGE + ".trial1\npackage:" + phone.package + "\n").encode()
+        phone.shell.side_effect = [inventory, first, second, first]
         self.assertEqual(original_hashes(phone),
                          b"org.fips.relaybench\n" + first + b"\n" +
-                         PACKAGE.encode() + b"\n" + second + b"\n")
-        self.assertEqual([call.args[1] for call in phone.shell.call_args_list],
-                         ["org.fips.relaybench", PACKAGE])
+                         PACKAGE.encode() + b"\n" + second + b"\n" +
+                         (PACKAGE + ".trial1").encode() + b"\n" + first + b"\n")
+        self.assertEqual([call.args[1] for call in phone.shell.call_args_list[1:]],
+                         ["org.fips.relaybench", PACKAGE, PACKAGE + ".trial1"])
 
     def test_only_the_exact_single_verified_apk_is_accepted(self):
         phone = Mock(package=PACKAGE)

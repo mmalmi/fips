@@ -1,5 +1,7 @@
 """Lifecycle composition without devices, services or test-money mutations."""
 
+import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -41,6 +43,40 @@ class PaidPhoneTests(unittest.TestCase):
 
     def stored(self):
         return json.loads((self.run.root / "result.json").read_text())
+
+    def test_shared_cohort_sends_fresh_data_both_ways_and_observes_all_payments(self):
+        self.run.run = 'fixture'
+        self.run.evidence.update(phone_npub='customer-key', phases=[])
+        self.run.accounts = Mock(nodes=['phone', 'n01', 'n02', 'n03'])
+        counters = {name: {'packets': 0, 'bytes': 0, 'last_sha256': None}
+                    for name in ('phone', 'n03')}
+        def receive(name, payload):
+            counters[name]['packets'] += 1
+            counters[name]['bytes'] += len(payload)
+            counters[name]['last_sha256'] = hashlib.sha256(payload.encode()).hexdigest()
+        def control(node, kind, **fields):
+            self.assertEqual(node, 'n03')
+            if kind == 'send':
+                self.assertEqual(fields['destination'], 'customer-key')
+                self.assertEqual(len(fields['payload']), 1000)
+                receive('phone', fields['payload'])
+                return {}
+            self.assertEqual(kind, 'status')
+            return {'received': copy.deepcopy(counters[node])}
+        def ui(action):
+            if action == 'send':
+                receive('n03', 'fresh-phone-data'.ljust(1000, 'x'))
+            else:
+                self.assertEqual(action, 'status')
+            return {'customer': {'relay': {'received': copy.deepcopy(counters['phone'])}}}
+        self.run.ctl, self.run.ui = control, ui
+        current = {name: {'authorized': 2, 'signed': {name: 2}, 'credited': {name: 2000}}
+                   for name in self.run.accounts.nodes}
+        self.run.finances = Mock(return_value=current)
+        initial = {name: {'authorized': 1} for name in current}
+        self.assertEqual(self.run.transfer('after-restart', 1, initial), current)
+        self.assertEqual([v['direction'] for v in self.run.evidence['phases'][0]['delivery']],
+                         ['phone_to_router', 'router_to_phone'])
 
     def test_success_requires_terminal_mint_then_restoration_and_original_hashes(self):
         self.run.finish()

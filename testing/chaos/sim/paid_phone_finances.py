@@ -136,6 +136,28 @@ def _snapshot(journals, mint, edges):
     return identities, channels, outgoing, sellers
 
 
+def validate_reopened(journals, before, mint_url, edges):
+    """Require retained ownership and spending authority after a client restart."""
+    old_identity, old_channels, old_outgoing, old_sellers = _snapshot(before, mint_url, edges)
+    identity, channels, outgoing, sellers = _snapshot(journals, mint_url, edges)
+    require(identity == old_identity and channels == old_channels and outgoing == old_outgoing,
+            'reopen changed original identities, channels or terms')
+    for name, state in journals.items():
+        prior = before[name]
+        for key in ('funding', 'policy', 'buyer_settlements', 'seller_settlements'):
+            require(state['controller'][key] == prior['controller'][key],
+                    'reopen changed funding, spending policy or settlement work')
+        buyer, old_buyer = state['buyer'], prior['buyer']
+        require(buyer['total_budget_sat'] == old_buyer['total_budget_sat'],
+                'reopen changed lifetime spending authority')
+        key = outgoing[name]
+        require(old_buyer['channels'][key]['authorized_sat'] <= buyer['channels'][key]['authorized_sat'],
+                'reopen lost signed liability')
+        for key, row in sellers[name].items():
+            require(old_sellers[name][key]['usage']['paid_msat'] <= row['usage']['paid_msat'],
+                    'reopen lost provider credit')
+
+
 def validate_settled(journals, before, balances, mint, expected_edges):
     """Validate four terminal cooperative settlements and all 512 stopped sats."""
     try:

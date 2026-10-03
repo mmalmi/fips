@@ -9,7 +9,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 from .paid_settlement import require
-from .phone_customer import PACKAGE, acceptance_identity, save
+from .phone_customer import acceptance_identity, save
 from .wifi_remote import checked_name
 
 
@@ -73,7 +73,13 @@ def original_hashes(phone):
     # Do not hide find/sha256sum failures behind a final successful sort process.
     command = ("set -eu; files=$(find files -type f); test -n \"$files\"; "
                "printf '%s\\n' \"$files\" | while IFS= read -r file; do sha256sum \"$file\" || exit; done")
-    packages = [ORIGINAL_PACKAGE] if phone.package == PACKAGE else [ORIGINAL_PACKAGE, PACKAGE]
+    installed = phone.shell('pm', 'list', 'packages', ORIGINAL_PACKAGE).decode().splitlines()
+    pattern = re.escape(ORIGINAL_PACKAGE) + r'(?:\.acceptance(?:\.[a-z][a-z0-9]{0,23})?)?'
+    require(all(row.startswith('package:') and re.fullmatch(pattern, row[8:]) for row in installed),
+            'unexpected bench package inventory')
+    packages = sorted(row[8:] for row in installed if row[8:] != phone.package)
+    require(len(packages) == len(set(packages)) and ORIGINAL_PACKAGE in packages,
+            'original bench account is missing or ambiguous')
     return b"".join(package.encode() + b"\n" + _account_hashes(phone, package, command)
                     for package in packages)
 

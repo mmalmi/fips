@@ -723,7 +723,7 @@ accounts.
 `sim.paid_phone` composes these helpers for one acceptance phone and the same
 three-router inventory. Install the verified isolated acceptance APK first,
 leave it foreground and unlocked, and select the guest Wi-Fi yourself. The
-harness checks the installed APK hash and original app's private-file hashes;
+harness checks the installed APK hash and all other installed bench accounts' private-file hashes;
 it neither installs apps nor changes the phone's Wi-Fi selection.
 
 ```sh
@@ -738,13 +738,24 @@ python3 -m sim.paid_phone \
 The private scenario JSON has `version: 1` and these required objects:
 
 - `phone`: absolute `adb` path, exact `serial`, preserved private `evidence_dir`,
-  and the verified acceptance artifact's `apk_sha256`.
+  and the verified acceptance artifact's `apk_sha256`. Optional `instance` must
+  match the named isolated APK build; omit it for the original acceptance package.
 - `customer`: existing guest `interface`, router address/prefix in `cidr`, unused
   `entry_port`, exact `ssid`, and one to four `denied_tcp` objects containing
   `label`, numeric IPv4 `address`, and `port`. Choose known reachable services
   outside the permitted mint access. No target is inferred from the inventory.
 - `mint`: `address` assigned to the explicit Linux host, plus `ssh_spec` with
   `host`, `state_parent`, and optional `ssh_config`, as used by `RemoteMint`.
+
+Add `--phone-restart` to split the same eight-packet workload into two cohorts,
+each with two packets in each direction. After the first cohort is delivered
+and paid, the harness records the app process identity, force-stops that exact
+Android package once, verifies process absence and reopens it. Connect resumes
+the saved account; no second Buy or manual payment flush occurs. The second
+cohort must deliver and advance every paying channel on the original terms and
+lifetime budgets, followed by the same settlement and collection checks. An
+uncertain force-stop is retained and never dispatched again. This tests an
+Android process interruption, not physical power loss or traffic during the stop.
 
 Add `--open-mesh` for the existing guarded temporary open profile and late third
 router join. Before issuance, the phone must reach the exact mint before and
