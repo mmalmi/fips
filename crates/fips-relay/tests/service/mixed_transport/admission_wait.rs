@@ -26,14 +26,24 @@ async fn temporary_allowance_waits_in_the_running_service() {
             })
             .await;
         bench.set_renewals_paused(true).await;
-        let bought = request(
-            &bench.configs[0],
-            &AdminRequest::Buy {
-                destination: bench.npubs[2].clone(),
-            },
-        )
-        .await
-        .unwrap();
+        let mut channels = Vec::new();
+        // Opaque reverse session control also needs its sender's paid route.
+        for (source, destination) in [(0, 2), (2, 0)] {
+            let bought = request(
+                &bench.configs[source],
+                &AdminRequest::Buy {
+                    destination: bench.npubs[destination].clone(),
+                },
+            )
+            .await
+            .unwrap();
+            channels.push(
+                bought["purchase"]["channel"]["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
         let provider = &bench.configs[1];
         let before = native_request(provider, &json!({"command":"show_status"}))
             .await
@@ -98,9 +108,10 @@ async fn temporary_allowance_waits_in_the_running_service() {
             b["drop_policy_denied_packets"],
             a["drop_policy_denied_packets"]
         );
-        bench
-            .wait_paid(bought["purchase"]["channel"]["id"].as_str().unwrap())
-            .await;
+        bench.wait_paid(&channels[0]).await;
+        if bench.relay_usage_msat(&channels[1]).0 > 0 {
+            bench.wait_paid(&channels[1]).await;
+        }
         for config in &bench.configs {
             request(config, &AdminRequest::Settle).await.unwrap();
         }

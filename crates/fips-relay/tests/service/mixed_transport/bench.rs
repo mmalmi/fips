@@ -603,9 +603,12 @@ impl MixedBench {
                     request(config, &AdminRequest::Status),
                 ).await {
                     Ok(Ok(status)) => {
+                        diagnostic(node, "admission-denials", &selected(
+                            &status["measurements"], &["process_id", "admission_denials"],
+                        ));
                         let mut safe = selected(&status, &[
                             "peers", "funding_budget", "remaining_budget_sat", "locked_sat",
-                            "probe", "data_carrier", "control_traffic", "payment_progress", "bootstrap", "return_allowance", "measurements",
+                            "probe", "data_carrier", "control_traffic", "payment_progress", "bootstrap", "return_allowance",
                         ]);
                         safe["last_error_present"] = json!(!status["last_error"].is_null());
                         // Emit only known labels, never an arbitrary error that
