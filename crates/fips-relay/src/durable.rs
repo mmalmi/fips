@@ -544,9 +544,9 @@ mod tests {
                 fips_core::node::ForwardingDecision::Retry
             );
             assert_eq!(worker.channel_usage("channel").unwrap().reserved_msat, 6);
+            // Both callbacks finish while the writer is held. The checkpoint
+            // and manual re-admission below check recovery after its release.
             sent.send(()).unwrap();
-            // The writer is still held until the test observes both callbacks.
-            // A waiting checkpoint must reopen admission after that writer exits.
             assert!(worker.checkpoint_if_due().unwrap());
             let token = worker
                 .admit(&request)
