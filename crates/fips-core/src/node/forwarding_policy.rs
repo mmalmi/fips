@@ -95,6 +95,11 @@ pub trait ForwardingPolicy: Debug + Send + Sync + 'static {
         self.admit_classified(request)
             .map_or(ForwardingDecision::Reject, ForwardingDecision::Admit)
     }
+    /// Optional coalesced wake after usable allowance changes. This is advisory:
+    /// queued packets still require a fresh decision under the current policy.
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
     fn complete(&self, token: u64, outcome: ForwardingOutcome);
 }
 
