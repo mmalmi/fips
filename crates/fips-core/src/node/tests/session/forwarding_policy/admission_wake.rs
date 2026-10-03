@@ -105,14 +105,15 @@ fn published_allowance_readmits_authenticated_packet_before_timer() {
                 }) => completed.expect("readmitted packet must reach its transport"),
             }
         }
-        let audit = policy.audit.0.lock().unwrap();
-        assert!(audit.pending.is_empty());
-        assert_eq!(audit.completed.len(), 1);
-        let (record, outcome) = &audit.completed[0];
-        assert_eq!(*outcome, ForwardingOutcome::Submitted);
-        assert_eq!(record.ingress, *ingress.node_addr());
-        assert_eq!(record.destination, destination);
-        drop(audit);
+        {
+            let audit = policy.audit.0.lock().unwrap();
+            assert!(audit.pending.is_empty());
+            assert_eq!(audit.completed.len(), 1);
+            let (record, outcome) = &audit.completed[0];
+            assert_eq!(*outcome, ForwardingOutcome::Submitted);
+            assert_eq!(record.ingress, *ingress.node_addr());
+            assert_eq!(record.destination, destination);
+        }
         assert_eq!(node.node.admission_work_delay(), None);
         assert_eq!(node.node.stats().forwarding.drop_policy_denied_packets, 0);
         cleanup_nodes(&mut nodes).await;
