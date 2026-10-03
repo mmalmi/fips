@@ -149,8 +149,29 @@ Automatic payments advance while loss is enabled before and after the middle
 process restart; original channels and exact exposure bounds remain intact.
 All 384 test sats are collected and all 612 management checks pass, with
 independently verified device restoration. The loss filters are disabled during
-restart. This adds finite impaired-load acceptance for the newer runtime;
-continuous traffic through automatic channel replacement remains unverified.
+restart. This adds finite impaired-load acceptance for the newer runtime.
+
+The 4 October continuous-renewal experiment on `0ffdf4daa` does **not** pass
+complete-delivery acceptance. Two simultaneous five-minute streams each submit
+42,000 packets of 1,000 bytes through the paid middle router. They receive
+41,783 and 41,752 packets respectively: 465 of 84,000 are missing, with no
+duplicates or invalid packets. Both directions automatically replace one
+channel, deliver fresh traffic and advance successor credit during the original
+streams. Each authorizes 43 test sats within its unchanged 64-sat lifetime
+budget; the 32-sat capacity and other exposure limits remain intact.
+
+All four channels settle, all 384 test sats are collected, and all 654 management
+checks pass. Independent closure verifies original router state restored and
+test processes stopped. Source review confirms renewal settles and refunds the
+predecessor before funding its successor, leaving an admission gap; this is
+consistent with the loss but does not attribute every missing packet. Bounded
+continuity through that transition remains outstanding. The experiment never
+pauses or retries its measured payloads. Evidence is retained in
+`work/hardware-current-r1/renewal-load-r1` in the private recovery bundle;
+closure SHA-256 is
+`c593047c72bd5858e83f7623d1dbc958e5052206e78dbdea498ad377d641dc4d`. The supporting bounded-probe changes pass nine native checks
+and 83 focused harness checks; those checks do not turn this failed hardware
+delivery experiment into production acceptance.
 
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
@@ -340,7 +361,7 @@ power loss, continuous traffic during recovery, throughput or an Internet VPN.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and current three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). | Characterize and qualify slow-storage limits, continuous device traffic through renewal, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and current three-router cadence matrices; continuous device renewal completes financially but loses 465/84,000 payloads. See [cadence results](CADENCE-RESULTS.md). | Address and qualify delivery through renewal, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
