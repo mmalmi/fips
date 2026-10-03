@@ -403,6 +403,7 @@ impl DataplaneOwnerShard {
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         lane: Lane,
         drops: &mut Vec<PacketDrop>,
+        source_wait: &mut SourceAdmissionWait,
     ) -> usize {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.outbound_admission.len();
@@ -440,6 +441,7 @@ impl DataplaneOwnerShard {
                         queued,
                         PacketDropReason::UnknownOwner,
                     ));
+                    source_wait.release(queued.ingress_seq);
                 }
                 self.outbound_admission_run.clear();
                 self.outbound_admission.continue_owner_lane(cursor);
@@ -447,7 +449,17 @@ impl DataplaneOwnerShard {
             };
 
             self.outbound_admission_run.reverse();
-            while let Some(queued) = self.outbound_admission_run.pop() {
+            while let Some(mut queued) = self.outbound_admission_run.pop() {
+                if source_wait.tracked.contains_key(&queued.ingress_seq)
+                    && queued.packet.generation != owner.generation
+                {
+                    source_wait.release(queued.ingress_seq);
+                    drops.push(PacketDrop::from_queued_outbound(
+                        &queued,
+                        PacketDropReason::StaleGeneration,
+                    ));
+                    continue;
+                }
                 let class = queued.packet.class;
                 let ingress_seq = queued.ingress_seq;
                 if !owner.can_reserve_class(class) {
@@ -458,8 +470,10 @@ impl DataplaneOwnerShard {
                 }
 
                 let send_token = queued.packet.send_token;
-                match owner.reserve_outbound(queued.packet, ingress_seq) {
-                    Ok((reservation, packet)) => {
+                match owner.reserve_outbound(&mut queued.packet, ingress_seq) {
+                    Ok(reservation) => {
+                        source_wait.release(ingress_seq);
+                        let packet = queued.packet;
                         let reservation = reservation.with_owner_shard(self.index);
                         let work = OutboundCryptoWork {
                             reservation,
@@ -489,7 +503,17 @@ impl DataplaneOwnerShard {
                         }
                         dispatched = dispatched.saturating_add(1);
                     }
+                    Err(OwnerReserveError::SourcePolicyRetry) => {
+                        if let Some(queued) = source_wait.retain(queued) {
+                            source_wait.release(ingress_seq);
+                            drops.push(PacketDrop::from_queued_outbound(
+                                &queued,
+                                PacketDropReason::SourcePolicy,
+                            ));
+                        }
+                    }
                     Err(error) => {
+                        source_wait.release(ingress_seq);
                         drops.push(PacketDrop {
                             owner: owner_id,
                             counter: None,

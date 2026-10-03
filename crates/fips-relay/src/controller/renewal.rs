@@ -362,6 +362,11 @@ impl Controller {
     // The caller owns this renewal's claim and a shared pause guard. Settlement
     // separately serializes payment and closure of this particular channel.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
+        let _source_pause = self
+            .services
+            .buyer
+            .pause_for_renewal(renewal.previous.iter().map(|old| &old.purchase.contract))
+            .map_err(|error| error.to_string())?;
         if !self
             .snapshot()
             .await?

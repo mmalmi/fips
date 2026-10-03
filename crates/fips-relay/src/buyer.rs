@@ -128,6 +128,8 @@ struct State {
     seen: HashSet<(NodeAddr, [u8; 32])>,
     #[serde(skip)]
     pending: BTreeMap<u64, (String, usize)>,
+    #[serde(skip)]
+    renewal_pauses: BTreeMap<String, usize>,
 }
 
 impl State {
@@ -312,6 +314,7 @@ impl BuyerAuthorizer {
                 quotes: BTreeMap::new(),
                 seen: HashSet::new(),
                 pending: BTreeMap::new(),
+                renewal_pauses: BTreeMap::new(),
             }),
             writer_ready: Mutex::new(true),
             _owner: owner,

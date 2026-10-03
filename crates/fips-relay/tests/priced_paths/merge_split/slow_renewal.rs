@@ -32,7 +32,7 @@ impl HeldReply {
     }
 }
 
-async fn start() -> (Bench, MintProxy, String, String) {
+pub(super) async fn start() -> (Bench, MintProxy, String, String) {
     let (mut bench, proxy) = bench::start_with_renewal_proxy(0, 122).await;
     bench.network.set_link("2", "3", SimLink::default());
     converge(&bench, true, "connected mesh before slow renewal").await;
@@ -506,7 +506,7 @@ async fn independent_renewal() {
     );
 }
 
-async fn collect(mut bench: Bench) {
+pub(super) async fn collect(mut bench: Bench) {
     for controller in &bench.controllers {
         controller.pause_route_refresh().await.unwrap();
         controller.pause_renewals().await.unwrap();

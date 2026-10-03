@@ -221,6 +221,9 @@ impl Node {
                 .due
                 .saturating_duration_since(tokio::time::Instant::now())
         })
+        .into_iter()
+        .chain(self.dataplane.source_admission_work_delay())
+        .min()
     }
 
     pub(in crate::node) fn expire_waiting_admissions(&mut self) {
@@ -233,6 +236,7 @@ impl Node {
     }
 
     pub(in crate::node) fn cancel_waiting_admissions(&mut self) {
+        self.dataplane.cancel_source_admissions();
         while let Some(packet) = self.waiting_admissions.pop() {
             self.stats_mut()
                 .forwarding
@@ -241,6 +245,7 @@ impl Node {
     }
 
     pub(in crate::node) async fn service_waiting_admissions(&mut self) {
+        self.dataplane.service_source_admissions();
         self.expire_waiting_admissions();
         if tokio::time::timeout(ADMISSION_RETRY_DELAY, self.retry_forwarding_admissions())
             .await

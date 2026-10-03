@@ -168,6 +168,7 @@ pub(crate) struct DataplaneLiveTurnIo<'a> {
 
 impl DataplaneLiveNode {
     pub(crate) fn set_originated_session_observer(&mut self, observer: Option<Arc<dyn OriginatedSessionObserver>>) {
+        self.driver.mover.cancel_source_admissions(None);
         self.driver.originated_session_observer = observer;
     }
 

@@ -67,6 +67,7 @@ impl AdmissionDrop {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QueuedAdmission<P> {
     ingress_seq: u64,
+    enqueued_at: tokio::time::Instant,
     packet: P,
 }
 
@@ -436,6 +437,7 @@ where
         self.queues.push(
             QueuedAdmission {
                 ingress_seq,
+                enqueued_at: tokio::time::Instant::now(),
                 packet,
             },
             false,
@@ -452,6 +454,7 @@ where
         let queued = packets.into_iter().map(move |packet| {
             let queued = QueuedAdmission {
                 ingress_seq,
+                enqueued_at: tokio::time::Instant::now(),
                 packet,
             };
             ingress_seq = ingress_seq.wrapping_add(1);

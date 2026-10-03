@@ -25,6 +25,8 @@ mod crowded;
 mod pending_funding;
 #[path = "merge_split/reliable.rs"]
 mod reliable;
+#[path = "merge_split/renewal_gap.rs"]
+mod renewal_gap;
 #[path = "merge_split/settlement_cleanup.rs"]
 mod settlement_cleanup;
 #[path = "merge_split/slow_renewal.rs"]

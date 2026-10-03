@@ -39,6 +39,9 @@ pub enum OriginatedSessionAdmission {
     Track(u64),
     /// Do not reserve a sequence number, transmit or update sent/loss metrics.
     Reject,
+    /// Retain the original unsealed record for a bounded admission recheck.
+    /// No accounting token or transmission may be reserved for this result.
+    Retry,
 }
 
 /// Observe locally originated FMP session envelopes and their local transport
@@ -121,7 +124,7 @@ impl OriginatedSessionPreparation {
     pub(crate) fn prepare(
         &self,
         intent: &OriginatedSessionIntent,
-    ) -> Result<(bool, Option<OriginatedSessionObservation>), ()> {
+    ) -> Result<(bool, Option<OriginatedSessionObservation>), OriginatedSessionAdmission> {
         match self.0.prepare(intent) {
             OriginatedSessionAdmission::Defer => Ok((false, None)),
             OriginatedSessionAdmission::Untracked => Ok((true, None)),
@@ -139,7 +142,9 @@ impl OriginatedSessionPreparation {
                     Some(OriginatedSessionObservation::from_token(&self.0, token)),
                 ))
             }
-            OriginatedSessionAdmission::Reject => Err(()),
+            refusal @ (OriginatedSessionAdmission::Reject | OriginatedSessionAdmission::Retry) => {
+                Err(refusal)
+            }
         }
     }
 }

@@ -65,6 +65,74 @@ fn submit(buyer: &BuyerAuthorizer, offer: &RouteOffer, bytes: usize) {
 }
 
 #[test]
+fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let (buyer, offer, contract) = fixture(&directory, 32_768, Limits::default());
+    let buyer = Arc::new(buyer);
+    submit(&buyer, &offer, 100);
+    buyer.checkpoint().unwrap();
+    let before = std::fs::read(directory.join("buyer.json")).unwrap();
+    let pause = buyer.pause_for_renewal([&contract]).unwrap();
+    let nested = buyer.pause_for_renewal([&contract]).unwrap();
+    let mut mismatched = contract.clone();
+    mismatched.max_units += 1;
+    assert!(buyer.pause_for_renewal([&contract, &mismatched]).is_err());
+    let mut direct = intent(&offer, 200);
+    direct.next_hop = direct.destination;
+    assert_eq!(buyer.prepare(&direct), OriginatedSessionAdmission::Defer);
+    for _ in 0..3 {
+        assert_eq!(
+            buyer.prepare(&intent(&offer, 200)),
+            OriginatedSessionAdmission::Retry
+        );
+    }
+    buyer.checkpoint().unwrap();
+    assert_eq!(std::fs::read(directory.join("buyer.json")).unwrap(), before);
+    drop(nested);
+    assert_eq!(
+        buyer.prepare(&intent(&offer, 200)),
+        OriginatedSessionAdmission::Retry
+    );
+    buyer.close_channel(&contract.channel_id).unwrap();
+    let mut replacement = buyer.state.lock().unwrap().channels[&contract.channel_id]
+        .terms
+        .clone();
+    replacement.id = "replacement".into();
+    buyer
+        .accept_channel(offer.provider, replacement.clone(), 0)
+        .unwrap();
+    let replacement_contract = Contract {
+        id: "replacement-quote".into(),
+        channel_id: replacement.id.clone(),
+        ..contract.clone()
+    };
+    buyer.accept_quote(replacement_contract.clone()).unwrap();
+    assert_eq!(
+        buyer.prepare(&intent(&offer, 200)),
+        OriginatedSessionAdmission::Retry
+    );
+    assert_eq!(buyer.evidence_msat(&replacement.id), Some(0));
+    let previous_evidence = buyer.evidence_msat(&contract.channel_id);
+    drop(pause);
+    submit(&buyer, &offer, 200);
+    assert_eq!(buyer.evidence_msat(&contract.channel_id), previous_evidence);
+    assert_eq!(
+        buyer.state.lock().unwrap().quotes[&replacement_contract.id].submitted_units,
+        200
+    );
+    assert_eq!(buyer.remaining_budget_sat(), Some(64));
+    let cancelled = buyer.pause_for_renewal([&replacement_contract]).unwrap();
+    buyer.close_channel(&replacement.id).unwrap();
+    drop(cancelled);
+    assert_eq!(
+        buyer.prepare(&intent(&offer, 200)),
+        OriginatedSessionAdmission::Reject
+    );
+    assert!(buyer.state.lock().unwrap().renewal_pauses.is_empty());
+}
+
+#[test]
 fn closed_trial_retains_only_exact_unspent_quota_across_reload() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("buyer");

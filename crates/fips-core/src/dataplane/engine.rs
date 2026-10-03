@@ -4,6 +4,7 @@ pub(crate) struct Dataplane {
     shards: Vec<DataplaneOwnerShard>,
     admission_lens: LaneLens,
     outbound_admission_lens: LaneLens,
+    source_wait: SourceAdmissionWait,
     drops: Vec<PacketDrop>,
     orphaned_slots: VecDeque<OwnerRetireSlot>,
     next_ingress_seq: u64,
@@ -53,6 +54,7 @@ impl Dataplane {
             shards,
             admission_lens: LaneLens::default(),
             outbound_admission_lens: LaneLens::default(),
+            source_wait: SourceAdmissionWait::default(),
             drops: Vec::new(),
             orphaned_slots: VecDeque::new(),
             next_ingress_seq: 0,
@@ -64,6 +66,7 @@ impl Dataplane {
     }
 
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
+        self.cancel_source_admissions(Some(owner));
         let shard = self.owner_shard_index(owner);
         let orphaned = self.shards[shard].register_owner(owner, config);
         if !orphaned.is_empty() {
@@ -74,6 +77,7 @@ impl Dataplane {
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
+        self.cancel_source_admissions(Some(owner));
         let shard = self.owner_shard_index(owner);
         let Some(orphaned) = self.shards[shard].unregister_owner(owner) else {
             return false;
@@ -749,6 +753,7 @@ impl Dataplane {
         ready_slots: &mut Vec<Arc<CryptoReadySlot>>,
         lane: Lane,
     ) -> usize {
+        self.service_source_admissions();
         if limit == 0 || self.shards.is_empty() {
             crate::perf_profile::record_dataplane_crypto_seal_batch(0);
             return 0;
@@ -773,18 +778,21 @@ impl Dataplane {
                     break;
                 };
                 let before = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
+                let parked_before = self.source_wait.parked_lens();
                 let got = self.shards[shard].dispatch_outbound_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
                     prepared,
                     ready_slots,
                     lane,
                     &mut self.drops,
+                    &mut self.source_wait,
                 );
                 let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
                 let ready_after =
                     LaneLens::from_tuple(self.shards[shard].outbound_admission_ready_lens());
+                let newly_parked = self.source_wait.parked_lens().saturating_sub(parked_before);
                 self.outbound_admission_lens
-                    .saturating_sub_assign(before.saturating_sub(after));
+                    .saturating_sub_assign(before.saturating_sub(after).saturating_sub(newly_parked));
                 self.outbound_ready_shards.mark_from_lens(shard, ready_after);
                 dispatched = dispatched.saturating_add(got);
                 pass_dispatched = pass_dispatched.saturating_add(got);

@@ -173,6 +173,19 @@ closure SHA-256 is
 and 83 focused harness checks; those checks do not turn this failed hardware
 delivery experiment into production acceptance.
 
+A focused source-side fix now passes 14 native checks: seven core ownership and
+queue-bound checks, six buyer admission checks, and one real-controller renewal
+regression. The regression offers eight distinct original datagrams after the
+predecessor is sealed and its settlement reply is held. The prior runtime loses
+all eight; bounded pre-seal waiting delivers each once after successor acceptance,
+without changing predecessor usage, evidence, signed authority or lifetime
+budgets. All 1,536 test sats are collected before the final delivery assertion.
+Source holds expire after two seconds and do not replay submitted traffic or
+repair incoming/in-flight renewal gaps. See [the bounds](PRICE-SELECTION.md#bounds-and-recovery).
+Native evidence is retained under `renewal-wait-red-r1` and
+`renewal-wait-green-r2` in the private payment-recovery bundle. Device acceptance
+for this fix remains separate from the failed continuous-renewal experiment.
+
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted

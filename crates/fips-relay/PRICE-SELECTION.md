@@ -169,6 +169,21 @@ Completion still follows local transport submission; canceled work retains its
 conservative quota reservation. The legacy unique-envelope tariff keeps its
 post-seal ciphertext/deduplication observer and is not changed into a source gate.
 
+An active automatic renewal may hold new source records before that reservation.
+The controller pauses only its exact retained agreements while settling and
+replacing their channel. FIPS retains the original unsealed packet for at most
+two seconds from its first enqueue, checking admission every 50 ms. Holds share
+the ordinary outbound queue capacity and are additionally capped at 512 packets /
+1 MiB of payload globally and 256 packets / 512 KiB per next hop. Woken packets
+remain charged to these bounds until admission or drop. Other owners and direct
+neighbor control traffic continue; owner or policy replacement cancels holds.
+The pause is volatile and ends with the controller operation, including errors
+or cancellation. A closed agreement then rejects unless replacement authority
+exists. No sequence, sent metric or financial token is reserved while waiting.
+Already submitted packets are never replayed or charged to the successor by this
+mechanism. Slow renewals, full queues and packets already in flight can still
+lose traffic; this is bounded source continuity, not a delivery guarantee.
+
 Unknown/unpurchased routes and direct endpoints retain their original admission
 paths, so bounded bootstrap and earned return traffic can still reach the relay's
 gate. This is not a universal source authorization gate. Seller credit/grace,

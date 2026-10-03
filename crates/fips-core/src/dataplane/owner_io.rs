@@ -94,9 +94,9 @@ impl OwnerState {
 
     pub(crate) fn reserve_outbound(
         &mut self,
-        mut packet: OutboundPacket,
+        packet: &mut OutboundPacket,
         ingress_seq: u64,
-    ) -> Result<(OwnerReservation, OutboundPacket), OwnerReserveError> {
+    ) -> Result<OwnerReservation, OwnerReserveError> {
         if packet.generation != self.generation {
             if !self.retains_draining_generation(packet.generation)
                 || (packet.send_epoch == OutboundSendEpoch::Pending
@@ -135,11 +135,11 @@ impl OwnerState {
         } else {
             u16::MAX
         };
-        self.refresh_fsp_outbound_headers(&mut packet);
-        self.apply_fsp_wrap_route(&mut packet);
-        self.apply_fsp_direct_transport_flag(&mut packet);
-        let used_coords = self.prepare_fsp_coords_warmup(&mut packet);
-        if let Some(preparation) = packet.originated_preparation.take()
+        self.refresh_fsp_outbound_headers(packet);
+        self.apply_fsp_wrap_route(packet);
+        self.apply_fsp_direct_transport_flag(packet);
+        let used_coords = self.prepare_fsp_coords_warmup(packet);
+        if let Some(preparation) = packet.originated_preparation.as_ref()
             && let OutboundPostSeal::FmpWrap(route) = packet.post_seal
         {
             let intent = OriginatedSessionIntent {
@@ -150,12 +150,27 @@ impl OwnerState {
                     .fsp_session_wire_len()
                     .ok_or(OwnerReserveError::SourcePolicy)?,
             };
-            let (handled, observation) = preparation
-                .prepare(&intent)
-                .map_err(|()| OwnerReserveError::SourcePolicy)?;
+            let (handled, observation) = match preparation.prepare(&intent) {
+                Ok(accepted) => accepted,
+                Err(refusal) => {
+                    if used_coords {
+                        packet.fsp_cleartext_prefix.clear();
+                        if let OutboundWire::Fsp { flags } = &mut packet.wire {
+                            *flags &= !crate::node::session_wire::FSP_FLAG_CP;
+                        }
+                    }
+                    return Err(match refusal {
+                        crate::node::OriginatedSessionAdmission::Retry => {
+                            OwnerReserveError::SourcePolicyRetry
+                        }
+                        _ => OwnerReserveError::SourcePolicy,
+                    });
+                }
+            };
             packet.originated_prepared = handled;
             packet.originated_observation = observation;
         }
+        packet.originated_preparation = None;
         // Admission runs before sequence and metric reservation. A local quota
         // rejection is not a wire loss, and cannot consume coordinate warmup.
         let counter = self.reserve_send_counter(packet.send_epoch)?;
@@ -233,7 +248,7 @@ impl OwnerState {
             send_epoch: packet.send_epoch,
             send_token: packet.send_token,
         };
-        Ok((reservation, packet))
+        Ok(reservation)
     }
 
     pub(crate) fn record_authenticated_fsp_session(

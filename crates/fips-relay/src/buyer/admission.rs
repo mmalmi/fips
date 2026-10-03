@@ -1,7 +1,51 @@
 //! Share reservation between pre-seal source admission and admitted transit.
 use super::*;
 
+/// Only a live controller operation can pause new, unreserved source traffic.
+/// Cancellation releases the pause; retained closed agreements still reject.
+pub(crate) struct RenewalAdmissionPause {
+    buyer: Arc<BuyerAuthorizer>,
+    contracts: Vec<String>,
+}
+
+impl Drop for RenewalAdmissionPause {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.buyer.state.lock() {
+            for id in &self.contracts {
+                if let Some(count) = state.renewal_pauses.get_mut(id) {
+                    *count -= 1;
+                    if *count == 0 {
+                        state.renewal_pauses.remove(id);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl BuyerAuthorizer {
+    pub(crate) fn pause_for_renewal<'a>(
+        self: &Arc<Self>,
+        contracts: impl IntoIterator<Item = &'a Contract>,
+    ) -> Result<RenewalAdmissionPause, BuyerError> {
+        let mut state = self.state.lock().map_err(|_| BuyerError::Format)?;
+        let mut pauses = state.renewal_pauses.clone();
+        let mut ids = Vec::new();
+        for contract in contracts {
+            if state.quotes.get(&contract.id).map(|q| &q.contract) != Some(contract) {
+                return Err(BuyerError::UnknownAgreement);
+            }
+            let count = pauses.entry(contract.id.clone()).or_default();
+            *count = count.checked_add(1).ok_or(BuyerError::Capacity)?;
+            ids.push(contract.id.clone());
+        }
+        state.renewal_pauses = pauses;
+        Ok(RenewalAdmissionPause {
+            buyer: Arc::clone(self),
+            contracts: ids,
+        })
+    }
+
     pub(super) fn begin(
         &self,
         request: &OriginatedSessionRequest<'_>,
@@ -87,6 +131,11 @@ impl BuyerAuthorizer {
             state.channels[&q.contract.channel_id].provider == intent.next_hop
                 && q.contract.destination == intent.destination
         };
+        if state.quotes.values().filter(matching).any(|q| {
+            !q.contract.billing.is_legacy() && state.renewal_pauses.contains_key(&q.contract.id)
+        }) {
+            return OriginatedSessionAdmission::Retry;
+        }
         let active = state.quotes.values().filter(matching).find(|q| {
             let c = &state.channels[&q.contract.channel_id];
             q.active && c.active && now < q.contract.expires_unix && now < c.terms.expires_unix
