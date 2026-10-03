@@ -33,6 +33,13 @@ pub struct ForwardingStats {
     pub deferred_policy_bytes: u64,
     pub drop_policy_denied_packets: u64,
     pub drop_policy_denied_bytes: u64,
+    /// Disjoint subsets of policy drops; the remainder is explicit rejection.
+    pub drop_policy_wait_full_packets: u64,
+    pub drop_policy_wait_full_bytes: u64,
+    pub drop_policy_wait_expired_packets: u64,
+    pub drop_policy_wait_expired_bytes: u64,
+    pub drop_policy_wait_invalidated_packets: u64,
+    pub drop_policy_wait_invalidated_bytes: u64,
     pub originated_packets: u64,
     pub originated_bytes: u64,
 }
@@ -88,6 +95,24 @@ impl ForwardingStats {
         self.drop_policy_denied_bytes += bytes as u64;
     }
 
+    pub fn record_drop_policy_wait_full(&mut self, bytes: usize) {
+        self.record_drop_policy_denied(bytes);
+        self.drop_policy_wait_full_packets += 1;
+        self.drop_policy_wait_full_bytes += bytes as u64;
+    }
+
+    pub fn record_drop_policy_wait_expired(&mut self, bytes: usize) {
+        self.record_drop_policy_denied(bytes);
+        self.drop_policy_wait_expired_packets += 1;
+        self.drop_policy_wait_expired_bytes += bytes as u64;
+    }
+
+    pub fn record_drop_policy_wait_invalidated(&mut self, bytes: usize) {
+        self.record_drop_policy_denied(bytes);
+        self.drop_policy_wait_invalidated_packets += 1;
+        self.drop_policy_wait_invalidated_bytes += bytes as u64;
+    }
+
     pub fn record_originated(&mut self, bytes: usize) {
         self.originated_packets += 1;
         self.originated_bytes += bytes as u64;
@@ -122,6 +147,12 @@ impl ForwardingStats {
             deferred_policy_bytes: self.deferred_policy_bytes,
             drop_policy_denied_packets: self.drop_policy_denied_packets,
             drop_policy_denied_bytes: self.drop_policy_denied_bytes,
+            drop_policy_wait_full_packets: self.drop_policy_wait_full_packets,
+            drop_policy_wait_full_bytes: self.drop_policy_wait_full_bytes,
+            drop_policy_wait_expired_packets: self.drop_policy_wait_expired_packets,
+            drop_policy_wait_expired_bytes: self.drop_policy_wait_expired_bytes,
+            drop_policy_wait_invalidated_packets: self.drop_policy_wait_invalidated_packets,
+            drop_policy_wait_invalidated_bytes: self.drop_policy_wait_invalidated_bytes,
             originated_packets: self.originated_packets,
             originated_bytes: self.originated_bytes,
         }
@@ -430,6 +461,12 @@ pub struct ForwardingStatsSnapshot {
     pub deferred_policy_bytes: u64,
     pub drop_policy_denied_packets: u64,
     pub drop_policy_denied_bytes: u64,
+    pub drop_policy_wait_full_packets: u64,
+    pub drop_policy_wait_full_bytes: u64,
+    pub drop_policy_wait_expired_packets: u64,
+    pub drop_policy_wait_expired_bytes: u64,
+    pub drop_policy_wait_invalidated_packets: u64,
+    pub drop_policy_wait_invalidated_bytes: u64,
     pub originated_packets: u64,
     pub originated_bytes: u64,
 }

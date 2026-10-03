@@ -428,17 +428,16 @@ impl Node {
                 crate::node::ForwardingDecision::Admit(admission) => Some(
                     crate::node::forwarding_policy::ForwardingPermit::new(policy, admission),
                 ),
-                crate::node::ForwardingDecision::Retry
-                    if self.wait_for_forwarding_admission(
+                crate::node::ForwardingDecision::Retry => {
+                    self.wait_for_forwarding_admission(
                         previous_hop_peer,
                         payload,
                         incoming_ce,
                         expires,
-                    ) =>
-                {
+                    );
                     return PreparedSessionDatagram::Done;
                 }
-                _ => {
+                crate::node::ForwardingDecision::Reject => {
                     self.stats_mut()
                         .forwarding
                         .record_drop_policy_denied(payload.len());

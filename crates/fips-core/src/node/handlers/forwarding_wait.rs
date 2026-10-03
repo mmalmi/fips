@@ -91,7 +91,7 @@ impl WaitingAdmissions {
                 return true;
             }
             Self::release_usage(packet, &mut self.bytes, &mut self.peers);
-            stats.record_drop_policy_denied(packet.payload.len());
+            stats.record_drop_policy_wait_expired(packet.payload.len());
             false
         });
     }
@@ -153,16 +153,27 @@ impl Node {
         expires: Option<tokio::time::Instant>,
     ) -> bool {
         let Some(peer) = self.peers.get(ingress.node_addr()) else {
+            self.stats_mut()
+                .forwarding
+                .record_drop_policy_wait_invalidated(payload.len());
             return false;
         };
         let now = tokio::time::Instant::now();
         let is_new = expires.is_none();
         let expires = expires.unwrap_or(now + ADMISSION_WAIT_LIMIT);
-        if now >= expires
-            || !self
-                .waiting_admissions
-                .has_capacity(*ingress.node_addr(), payload.len())
+        if now >= expires {
+            self.stats_mut()
+                .forwarding
+                .record_drop_policy_wait_expired(payload.len());
+            return false;
+        }
+        if !self
+            .waiting_admissions
+            .has_capacity(*ingress.node_addr(), payload.len())
         {
+            self.stats_mut()
+                .forwarding
+                .record_drop_policy_wait_full(payload.len());
             return false;
         }
         let accepted = self.waiting_admissions.insert(WaitingAdmission {
@@ -178,6 +189,10 @@ impl Node {
             self.stats_mut()
                 .forwarding
                 .record_deferred_policy(payload.len());
+        } else if !accepted {
+            self.stats_mut()
+                .forwarding
+                .record_drop_policy_wait_full(payload.len());
         }
         accepted
     }
@@ -208,7 +223,7 @@ impl Node {
         while let Some(packet) = self.waiting_admissions.pop() {
             self.stats_mut()
                 .forwarding
-                .record_drop_policy_denied(packet.payload.len());
+                .record_drop_policy_wait_invalidated(packet.payload.len());
         }
     }
 
@@ -242,10 +257,16 @@ impl Node {
                     peer.link_id() == packet.link_id
                         && peer.authenticated_at() == packet.authenticated_at
                 });
-            if now >= packet.expires || !current_peer {
+            if now >= packet.expires {
                 self.stats_mut()
                     .forwarding
-                    .record_drop_policy_denied(packet.payload.len());
+                    .record_drop_policy_wait_expired(packet.payload.len());
+                continue;
+            }
+            if !current_peer {
+                self.stats_mut()
+                    .forwarding
+                    .record_drop_policy_wait_invalidated(packet.payload.len());
                 continue;
             }
             // Route selection, policy and financial authorization all run again.
