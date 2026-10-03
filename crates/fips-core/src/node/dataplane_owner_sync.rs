@@ -362,10 +362,14 @@ impl Node {
         // Traversal liveness may briefly be stale before endpoint traffic
         // refreshes it; falling back here can seed the new FSP owner onto an
         // unproven branch.
+        // Direct peers remain sendable for recovery probes after degradation.
+        // Their old output cannot remain a proven reply carrier while degraded:
+        // retaining it would override a newly discovered fallback. Authenticated
+        // recovery releases that hold before staging a direct validation send.
         let proven_next_hop = proven_next_hop.filter(|next_hop| {
-            self.peers
-                .get(next_hop)
-                .is_some_and(|peer| peer.can_send())
+            (*next_hop != *node_addr
+                || !self.session_direct_path_degradation_active(node_addr, Self::now_ms()))
+                && self.peers.get(next_hop).is_some_and(|peer| peer.can_send())
                 && self.dataplane_has_fmp_owner(next_hop)
         });
         let next = if self.source_routes.contains_key(node_addr) {

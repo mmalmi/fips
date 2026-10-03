@@ -414,3 +414,119 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
     );
     cleanup_nodes(&mut nodes).await;
 }
+
+#[tokio::test]
+async fn discovery_replaces_stale_direct_output_after_delayed_fallback() {
+    let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+    populate_all_coord_caches(&mut nodes);
+    let transit = *nodes[1].node.node_addr();
+    let dest = *nodes[2].node.node_addr();
+    let identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+    let mut endpoint = nodes[2].node.attach_endpoint_data_io(8).unwrap();
+    nodes[0]
+        .node
+        .initiate_session(dest, identity.pubkey_full())
+        .await
+        .unwrap();
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest,
+        Duration::from_secs(10),
+        "delayed fallback fixture",
+    )
+    .await;
+
+    // A completed direct promotion replaces the routed output. The physical
+    // carrier then dies before a replacement route is known, as on reload.
+    let link = LinkId::new(77);
+    let now = Node::now_ms();
+    let mut connection = crate::peer::PeerConnection::outbound(link, identity, now);
+    let msg1 = connection
+        .start_handshake(
+            nodes[0].node.identity().keypair(),
+            nodes[0].node.startup_epoch,
+            now,
+        )
+        .unwrap();
+    let mut responder = crate::peer::PeerConnection::inbound(LinkId::new(78), now);
+    let msg2 = responder
+        .receive_handshake_init(
+            nodes[2].node.identity().keypair(),
+            nodes[2].node.startup_epoch,
+            &msg1,
+            now,
+        )
+        .unwrap();
+    connection.complete_handshake(&msg2, now).unwrap();
+    connection.set_our_index(nodes[0].node.index_allocator.allocate().unwrap());
+    connection.set_their_index(crate::utils::index::SessionIndex::new(42));
+    connection.set_transport_id(nodes[0].transport_id);
+    connection.set_source_addr(TransportAddr::from_string("127.0.0.1:5000"));
+    nodes[0].node.add_connection(connection).unwrap();
+    nodes[0]
+        .node
+        .promote_connection(link, identity, now)
+        .unwrap();
+    assert!(nodes[0].node.refresh_dataplane_fsp_owner_routes(&dest));
+    assert_eq!(
+        nodes[0].node.dataplane.fsp_owner_next_hop(&dest),
+        Some(dest)
+    );
+    nodes[0].node.learned_routes = Default::default();
+    nodes[0].node.coord_cache_mut().remove(&dest);
+    nodes[0].node.remove_link_dead_peer(&dest);
+    assert!(nodes[0].node.find_next_hop(&dest).is_none());
+    assert_eq!(
+        nodes[0].node.dataplane.fsp_owner_next_hop(&dest),
+        Some(dest)
+    );
+    assert!(nodes[0].node.get_peer(&dest).unwrap().can_send());
+    assert!(!nodes[0].node.get_peer(&dest).unwrap().is_healthy());
+
+    nodes[0]
+        .node
+        .maybe_initiate_path_recovery_lookup(&dest)
+        .await;
+    let request = nodes[0]
+        .node
+        .pending_lookups
+        .last_origin_request_id(&dest)
+        .unwrap();
+    let coords = nodes[2].node.tree_state().my_coords().clone();
+    let proof = nodes[2]
+        .node
+        .identity()
+        .sign(&crate::protocol::LookupResponse::proof_bytes(
+            request, &dest, &coords,
+        ));
+    let response = crate::protocol::LookupResponse::new(request, dest, coords, proof).encode();
+    nodes[0]
+        .node
+        .handle_lookup_response(&transit, &response[1..])
+        .await;
+    assert_eq!(
+        nodes[0].node.dataplane.fsp_owner_next_hop(&dest),
+        Some(transit),
+        "authenticated fallback discovery must replace the stale direct output"
+    );
+    send_endpoint_data_via_dataplane(&mut nodes[0].node, identity, b"after-reload".to_vec())
+        .await
+        .unwrap();
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint.event_rx,
+        Duration::from_secs(5),
+        "data after delayed fallback discovery",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        b"after-reload"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
