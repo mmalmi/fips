@@ -20,6 +20,7 @@ from .wifi_measurements import snapshot
 from .wifi_priority_checks import natural, received, submitted
 from .wifi_remote import digest
 from .wifi_restart import crash_profile
+from .wifi_restart_traffic import active_restart_stream, validate_overlap
 
 
 PACKETS, RATE, ROUNDS, QUOTE_UNITS = 4000, 200, 6, 32 * 1024 * 1024
@@ -29,9 +30,13 @@ def validate_stream(row, source):
     shape = {'stream_id': row['sender']['stream_id'], 'packet_count': PACKETS, 'payload_bytes': 1000}
     submitted(row['sender'], shape)
     fault = row.get('frame_loss')
-    delivered = received(row['receiver'], shape, source, complete=fault is None)
+    interrupted = row.get('active_restart')
+    delivered = received(row['receiver'], shape, source, complete=fault is None and interrupted is None)
     require(row['seconds'] >= (PACKETS - 1) / RATE,
             'finite load completed before its pacing duration')
+    if interrupted is not None:
+        require(fault is None, 'restart traffic must not also inject frame loss')
+        validate_overlap(interrupted, shape, source, RATE)
     if fault is not None:
         require(isinstance(fault, dict) and set(fault) == {'before', 'after'},
                 'missing frame-loss observations')
@@ -106,12 +111,15 @@ class RestartLoadRun(PaidWifiRun):
         self.expected_lost = {}
         self.restart_attempted = False
         self.frame_loss = bool(getattr(args, 'frame_loss', False))
+        self.active_restart = bool(getattr(args, 'active_restart', False))
+        require(not (self.frame_loss and self.active_restart),
+                'active restart and frame loss are separate experiments')
         self.loss_filters = {}
         self.evidence.update(workload={'rounds': ROUNDS, 'packets_per_direction_per_round': PACKETS,
                                       'packets_per_second': RATE, 'payload_bytes': 1000},
                              crash_after_round=ROUNDS // 2, physical_power_loss=False,
                              streams=[], warmup=[], frame_loss_every=EVERY if self.frame_loss else None)
-        for name in ('wifi_restart_load.py', 'wifi_frame_loss.py'):
+        for name in ('wifi_restart_load.py', 'wifi_frame_loss.py', 'wifi_restart_traffic.py'):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def profile_config(self, node):
@@ -141,7 +149,7 @@ class RestartLoadRun(PaidWifiRun):
         self.monitor.check()
         return snapshot(self.nodes['n02'], 'n02', native_counters=True)
 
-    def restart_middle(self):
+    def restart_middle(self, *, wait_for_recovery=True):
         node = self.nodes['n02']
         state = self.evidence['restart'] = {'before': self.middle_sample(), 'attempted_at': time.monotonic()}
         self.restart_attempted = True
@@ -159,8 +167,15 @@ class RestartLoadRun(PaidWifiRun):
                 and old['host'] == new['host'] == 'n02' and new['start_ticks'] > old['start_ticks'],
                 'middle restart did not retain its identity with a new process epoch')
         state['after'] = after
+        self.save()
+        if wait_for_recovery:
+            self.finish_restart()
+
+    def finish_restart(self, *, warmup=True):
+        state = self.evidence['restart']
         eventually('original authenticated line after restart', lambda: self.ready(line=True), 150)
-        self.warmup()
+        if warmup:
+            self.warmup()
         state['financial'] = eventually('exact durable exposure retained after restart', self.checkpoint, 60)
         state['completed_at'] = time.monotonic()
         self.phase('middle process restarted; original channels and exact unbilled exposure retained')
@@ -200,13 +215,21 @@ class RestartLoadRun(PaidWifiRun):
                 self.loss_filters = {name: FrameLoss(self.nodes[name], self.nodes['n02'].mac)
                                      for name in ('n01', 'n03')}
             for round_id in range(ROUNDS):
-                if round_id == ROUNDS // 2:
+                if round_id == ROUNDS // 2 and not getattr(self, 'active_restart', False):
                     self.restart_middle()
                 impaired = self.frame_loss and round_id in (1, 4)
                 if impaired:
                     self.phase('test frame loss armed at both receivers', round=round_id,
                                filters={name: fault.enable() for name, fault in self.loss_filters.items()})
                 for source, destination in (('n01', 'n03'), ('n03', 'n01')):
+                    if (getattr(self, 'active_restart', False)
+                            and round_id == ROUNDS // 2 and source == 'n01'):
+                        row = active_restart_stream(self, round_id, PACKETS, RATE)
+                        self.evidence['streams'].append(row)
+                        self.save()
+                        validate_stream(row, self.nodes[source].npub)
+                        self.finish_restart(warmup=False)
+                        continue
                     before = self.middle_sample()
                     fault = self.loss_filters[destination] if impaired else None
                     loss_before = fault.observe() if fault else None
@@ -245,6 +268,8 @@ def main():
     parser.add_argument('--mint-address', required=True)
     parser.add_argument('--frame-loss', action='store_true',
                         help='drop every twentieth test frame in the second and fifth load cohorts')
+    parser.add_argument('--active-restart', action='store_true',
+                        help='crash and recover the middle process during one paced paid stream')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

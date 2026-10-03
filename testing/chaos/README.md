@@ -623,8 +623,15 @@ recovery streams still require complete delivery. Financial closure collects
 all 384 test sats. This finite workload does not establish maximum throughput,
 physical power-loss recovery or delivery while the process is stopped.
 
+Use `--active-restart` instead of `--frame-loss` to crash the middle process
+during the fourth round's forward stream. Fresh delivery must resume within
+that same 20-second paced send, without rearming the receiver or resending the
+probe. Only that interrupted stream permits loss; the other eleven streams
+still require full delivery. The sender is drained before financial recovery
+and settlement, including after an uncertain crash response.
+
 Focused checks: `python3 -m unittest tests.test_wifi_restart_load
-tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
+tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
 
 ### Paid/free Wi-Fi priority
 

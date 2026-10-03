@@ -2,12 +2,14 @@
 
 import copy
 import json
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from sim.wifi_frame_loss import FrameLoss
 from sim.wifi_restart_load import PACKETS, RestartLoadRun, recovered_exposure, retained_finances, validate_stream
+from sim.wifi_restart_traffic import active_restart_stream, validate_overlap
 from tests.test_paid_settlement import finances
 from tests.test_wifi_priority import reports
 
@@ -40,6 +42,53 @@ def journal():
 
 
 class RestartLoadTests(unittest.TestCase):
+    def test_active_restart_rejects_stale_delivery_or_a_late_control_response(self):
+        shape, _, report = reports(PACKETS, 1000)
+        def partial(count):
+            return {**report, 'unique_packets': count, 'unique_bytes': count * 1000,
+                    'missing_packets': PACKETS - count}
+        evidence = {'before_crash': partial(10), 'recovery_before': partial(12),
+                    'recovery_after': partial(13), 'dispatch_started': 100,
+                    'crash_started': 101, 'restarted_at': 103,
+                    'recovery_sampled_at': 104, 'recovery_observed_at': 105}
+        validate_overlap(evidence, shape, 'paid-source', 200)
+        for edit in (
+            lambda e: e.update(recovery_after=partial(12)),
+            lambda e: e.update(recovery_after=partial(PACKETS)),
+            lambda e: e.update(recovery_observed_at=120),
+            lambda e: e.update(restarted_at=106),
+            lambda e: e['recovery_after'].update(stream_id='foreign'),
+        ):
+            changed = copy.deepcopy(evidence); edit(changed)
+            with self.assertRaises(RuntimeError):
+                validate_overlap(changed, shape, 'paid-source', 200)
+
+    def test_uncertain_crash_drains_one_sender_before_returning_to_cleanup(self):
+        shape, sender, receiver = reports(PACKETS, 1000)
+        receiver.update(unique_packets=1, unique_bytes=1000, missing_packets=PACKETS - 1)
+        released, finished = threading.Event(), threading.Event()
+        run = SimpleNamespace(nodes={'n01': SimpleNamespace(npub='paid-source')},
+                              middle_sample=Mock(return_value={}), evidence={}, save=Mock())
+        def send(*_args):
+            if not released.wait(5):
+                raise RuntimeError('test sender was never released')
+            finished.set()
+            return sender
+        def crash(**_kwargs):
+            released.set()
+            raise RuntimeError('crash reply lost')
+        run.restart_middle = crash
+        with patch('sim.wifi_restart_traffic.probes.arm', return_value=shape), \
+             patch('sim.wifi_restart_traffic.probes.receive', return_value=receiver), \
+             patch('sim.wifi_restart_traffic.time.sleep'), \
+             patch('sim.wifi_restart_traffic.probes.send', side_effect=send) as sending:
+            with self.assertRaisesRegex(RuntimeError, 'crash reply lost'):
+                active_restart_stream(run, 3, PACKETS, 200)
+        self.assertTrue(finished.is_set())
+        self.assertEqual(run.evidence['active_restart']['sender'], sender)
+        self.assertEqual(run.evidence['active_restart']['receiver'], receiver)
+        sending.assert_called_once()
+
     def test_loss_needs_counted_drops_and_healthy_streams_still_require_full_delivery(self):
         _, sender, receiver = reports(PACKETS, 1000)
         row = {'sender': sender, 'receiver': receiver, 'seconds': 20}
