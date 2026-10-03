@@ -1,12 +1,15 @@
 """Restart/load acceptance rejects lost financial evidence and still closes known funds."""
 
 import copy
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.wifi_restart_load import RestartLoadRun, recovered_exposure, retained_finances
+from sim.wifi_frame_loss import FrameLoss
+from sim.wifi_restart_load import PACKETS, RestartLoadRun, recovered_exposure, retained_finances, validate_stream
 from tests.test_paid_settlement import finances
+from tests.test_wifi_priority import reports
 
 
 def accounts():
@@ -37,6 +40,116 @@ def journal():
 
 
 class RestartLoadTests(unittest.TestCase):
+    def test_loss_needs_counted_drops_and_healthy_streams_still_require_full_delivery(self):
+        _, sender, receiver = reports(PACKETS, 1000)
+        row = {'sender': sender, 'receiver': receiver, 'seconds': 20}
+        validate_stream(row, 'paid-source')
+        row['frame_loss'] = {
+            'before': {'enabled': True, 'jump_handle': 9, 'dropped_packets': 0, 'dropped_bytes': 0},
+            'after': {'enabled': True, 'jump_handle': 9, 'dropped_packets': 200, 'dropped_bytes': 220000},
+        }
+        receiver.update(unique_packets=3800, unique_bytes=3800000, missing_packets=200)
+        validate_stream(row, 'paid-source')
+        for edit in (
+            lambda r: r.pop('frame_loss'),
+            lambda r: r.update(frame_loss={}),
+            lambda r: r['frame_loss']['after'].update(dropped_packets=199),
+            lambda r: r['frame_loss']['after'].update(enabled=False),
+            lambda r: r['frame_loss']['after'].update(jump_handle=10),
+            lambda r: r['receiver'].update(unique_packets=3500, unique_bytes=3500000, missing_packets=500),
+            lambda r: r['receiver'].update(unique_packets=4000, unique_bytes=4000000, missing_packets=0),
+            lambda r: r['receiver'].update(duplicate_packets=1),
+        ):
+            changed = copy.deepcopy(row); edit(changed)
+            with self.assertRaises(RuntimeError):
+                validate_stream(changed, 'paid-source')
+
+    def test_uncertain_loss_installation_is_cleared_without_replaying_or_touching_foreign_rules(self):
+        node = SimpleNamespace(table='fips_test', table_owner='test-owner', temporary='/tmp/owned')
+        loss = FrameLoss(node, '02:00:00:00:00:02')
+        active, calls = False, []
+
+        def guarded(command, data=None):
+            nonlocal active
+            calls.append((command, data))
+            self.assertIn('test -f /tmp/owned/table-created', command)
+            self.assertIn('= "test-owner"', command)
+            if data:
+                if b'create chain' in data:
+                    active = True
+                    raise RuntimeError('reply lost after installation')
+                active = False
+                return b''
+            rows = [{'chain': {'name': 'ingress'}},
+                    {'rule': {'chain': 'ingress', 'handle': 7, 'expr': [{'drop': None}]}}]
+            if active:
+                rows += [{'chain': {'name': 'frame_loss'}},
+                         {'rule': {'chain': 'ingress', 'handle': 9, 'comment': loss.comment}},
+                         {'rule': {'chain': 'frame_loss', 'expr': [
+                             {'counter': {'packets': 3, 'bytes': 3000}}, {'drop': None}]}}]
+            return json.dumps({'nftables': rows}).encode()
+
+        node.guarded = guarded
+        with self.assertRaisesRegex(RuntimeError, 'reply lost'):
+            loss.enable()
+        observed = loss.clear()
+        self.assertEqual(observed['before']['dropped_packets'], 3)
+        self.assertFalse(observed['after']['enabled'])
+        writes = [data.decode() for _, data in calls if data]
+        self.assertEqual(len(writes), 2)
+        self.assertIn('ether type 0x88b5 ether saddr 02:00:00:00:00:02 jump frame_loss', writes[0])
+        self.assertIn('numgen inc mod 20 0 counter drop', writes[0])
+        self.assertEqual(writes[1], 'delete rule netdev fips_test ingress handle 9\n'
+                         'flush chain netdev fips_test frame_loss\n'
+                         'delete chain netdev fips_test frame_loss\n')
+        with self.assertRaisesRegex(ValueError, 'exact adjacent'):
+            FrameLoss(node, '02:00:00:00:00:02; reboot')
+
+    def test_failed_impaired_stream_clears_both_filters_before_collecting_funds(self):
+        run = object.__new__(RestartLoadRun)
+        run.nodes = {n: SimpleNamespace(npub=n, mac='02:00:00:00:00:02')
+                     for n in ('n01', 'n02', 'n03')}
+        run.form_line, run.ctl, run.finances = Mock(), Mock(), Mock(return_value=accounts())
+        run.warmup, run.save, run.phase = Mock(), Mock(), Mock()
+        run.frame_loss, run.loss_filters, run.evidence = True, {}, {'streams': []}
+        run.middle_sample = Mock(return_value={'host_process': {'host': 'n02', 'pid': 2, 'start_ticks': 10}})
+        run.checkpoint = Mock(return_value=accounts())
+        events = []
+        run.restore_middle = lambda: events.append('restore')
+        run.collect = lambda: events.append('collect')
+        faults = [Mock(), Mock()]
+        for name, fault in zip(('n01', 'n03'), faults):
+            fault.clear.side_effect = lambda name=name: events.append('clear-' + name)
+
+        def stream(_count, _rate, *, source, destination):
+            if len(run.evidence['streams']) == 2:
+                raise RuntimeError('impaired stream failed')
+            _, sender, receiver = reports(PACKETS, 1000)
+            receiver['source'] = source
+            return {'sender': sender, 'receiver': receiver}
+
+        run.stream = stream
+        with patch('sim.wifi_restart_load.FrameLoss', side_effect=faults), \
+                patch('sim.wifi_restart_load.time.monotonic', side_effect=range(0, 1000, 20)), \
+                patch('sim.wifi_restart_load.signal.alarm'), \
+                self.assertRaisesRegex(RuntimeError, 'impaired stream failed'):
+            run.exercise()
+        self.assertEqual(events, ['clear-n01', 'clear-n03', 'restore', 'collect'])
+        for fault in faults:
+            fault.enable.assert_called_once()
+
+    def test_one_failed_filter_clear_does_not_skip_the_other_receiver(self):
+        run = object.__new__(RestartLoadRun)
+        first = Mock(clear=Mock(side_effect=RuntimeError('uncertain removal')))
+        second = Mock(clear=Mock(return_value={'after': {'enabled': False}}))
+        run.loss_filters, run.phase = {'n01': first, 'n03': second}, Mock()
+        with self.assertRaisesRegex(RuntimeError, 'removal incomplete: n01'):
+            run.clear_loss()
+        second.clear.assert_called_once()
+        outcomes = run.phase.call_args.kwargs['filters']
+        self.assertEqual(outcomes['n01'], {'error': 'RuntimeError'})
+        self.assertFalse(outcomes['n03']['after']['enabled'])
+
     def test_recovery_requires_the_exact_stopped_durable_window(self):
         self.assertEqual(recovered_exposure(journal()), {'a': 3000, 'b': 4000})
         for key, value in (('window_msat', 8000), ('ceilings', {'a': 3999, 'b': 8000}),
@@ -69,6 +182,7 @@ class RestartLoadTests(unittest.TestCase):
         run.nodes = {n: SimpleNamespace(npub=n) for n in ('n01', 'n02', 'n03')}
         run.form_line, run.ctl, run.finances = Mock(), Mock(), Mock(return_value=accounts())
         run.warmup = Mock(side_effect=RuntimeError('delivery failed'))
+        run.loss_filters = {}
         run.restore_middle, run.collect = Mock(), Mock()
         with patch('sim.wifi_restart_load.signal.alarm') as alarm, self.assertRaisesRegex(RuntimeError, 'delivery failed'):
             run.exercise()

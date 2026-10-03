@@ -15,13 +15,33 @@ from .paid_finances import payments_credited
 from .paid_relay import eventually
 from .paid_settlement import amount, original_channels, require
 from .paid_wifi import PaidWifiRun
+from .wifi_frame_loss import EVERY, FrameLoss
 from .wifi_measurements import snapshot
-from .wifi_priority_checks import received, submitted
+from .wifi_priority_checks import natural, received, submitted
 from .wifi_remote import digest
 from .wifi_restart import crash_profile
 
 
 PACKETS, RATE, ROUNDS, QUOTE_UNITS = 4000, 200, 6, 32 * 1024 * 1024
+
+
+def validate_stream(row, source):
+    shape = {'stream_id': row['sender']['stream_id'], 'packet_count': PACKETS, 'payload_bytes': 1000}
+    submitted(row['sender'], shape)
+    fault = row.get('frame_loss')
+    delivered = received(row['receiver'], shape, source, complete=fault is None)
+    require(row['seconds'] >= (PACKETS - 1) / RATE,
+            'finite load completed before its pacing duration')
+    if fault is not None:
+        require(isinstance(fault, dict) and set(fault) == {'before', 'after'},
+                'missing frame-loss observations')
+        before, after = fault['before'], fault['after']
+        dropped = natural(after['dropped_packets']) - natural(before['dropped_packets'])
+        require(before['enabled'] and after['enabled']
+                and before['jump_handle'] == after['jump_handle']
+                and natural(after['dropped_bytes']) >= natural(before['dropped_bytes'])
+                and 0 < PACKETS - delivered <= dropped and delivered * 10 >= PACKETS * 9,
+                'impaired delivery lacks observed loss or exceeds its declared bounds')
 
 
 def recovered_exposure(journal):
@@ -85,11 +105,14 @@ class RestartLoadRun(PaidWifiRun):
         self.anchor = None
         self.expected_lost = {}
         self.restart_attempted = False
+        self.frame_loss = bool(getattr(args, 'frame_loss', False))
+        self.loss_filters = {}
         self.evidence.update(workload={'rounds': ROUNDS, 'packets_per_direction_per_round': PACKETS,
                                       'packets_per_second': RATE, 'payload_bytes': 1000},
                              crash_after_round=ROUNDS // 2, physical_power_loss=False,
-                             streams=[], warmup=[])
-        self.evidence['harness_sha256']['wifi_restart_load.py'] = digest(Path(__file__).read_bytes())
+                             streams=[], warmup=[], frame_loss_every=EVERY if self.frame_loss else None)
+        for name in ('wifi_restart_load.py', 'wifi_frame_loss.py'):
+            self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def profile_config(self, node):
         config = super().profile_config(node)
@@ -152,6 +175,18 @@ class RestartLoadRun(PaidWifiRun):
             self.nodes['n02'].start()
             eventually('middle control restored for financial closure', self.middle_sample, 60)
 
+    def clear_loss(self):
+        if self.loss_filters:
+            outcomes, errors = {}, []
+            for name, fault in self.loss_filters.items():
+                try:
+                    outcomes[name] = fault.clear()
+                except Exception as error:
+                    outcomes[name] = {'error': type(error).__name__}
+                    errors.append(name)
+            self.phase('test frame-loss removal checked', filters=outcomes)
+            require(not errors, 'frame-loss removal incomplete: ' + ', '.join(errors))
+
     def exercise(self):
         self.form_line()
         for source, destination in (('n01', 'n03'), ('n03', 'n01')):
@@ -161,36 +196,46 @@ class RestartLoadRun(PaidWifiRun):
         self.expected_lost = dict.fromkeys(self.anchor['n02']['credited'], 0)
         try:
             self.warmup()
+            if self.frame_loss:
+                self.loss_filters = {name: FrameLoss(self.nodes[name], self.nodes['n02'].mac)
+                                     for name in ('n01', 'n03')}
             for round_id in range(ROUNDS):
                 if round_id == ROUNDS // 2:
                     self.restart_middle()
+                impaired = self.frame_loss and round_id in (1, 4)
+                if impaired:
+                    self.phase('test frame loss armed at both receivers', round=round_id,
+                               filters={name: fault.enable() for name, fault in self.loss_filters.items()})
                 for source, destination in (('n01', 'n03'), ('n03', 'n01')):
                     before = self.middle_sample()
+                    fault = self.loss_filters[destination] if impaired else None
+                    loss_before = fault.observe() if fault else None
                     started = time.monotonic()
                     probe = self.stream(PACKETS, RATE, source=source, destination=destination)
                     row = {'round': round_id, 'source': source, 'destination': destination,
                            'seconds': time.monotonic() - started, 'before': before,
-                           'after': self.middle_sample(), **probe}
+                           'after': self.middle_sample(), **probe,
+                           'frame_loss': {'before': loss_before, 'after': fault.observe()} if fault else None}
                     self.evidence['streams'].append(row)
                     self.save()  # Failed delivery remains evidence and still requires collection.
                     require(all(row['before']['host_process'][key] == row['after']['host_process'][key]
                                 for key in ('host', 'pid', 'start_ticks')),
                             'middle relay restarted inside a measured load stream')
-                    shape = {'stream_id': probe['sender']['stream_id'],
-                             'packet_count': PACKETS, 'payload_bytes': 1000}
-                    submitted(probe['sender'], shape)
-                    received(probe['receiver'], shape, self.nodes[source].npub, complete=True)
-                    require(row['seconds'] >= (PACKETS - 1) / RATE,
-                            'finite load completed before its pacing duration')
+                    validate_stream(row, self.nodes[source].npub)
                 current = eventually('automatic payments for the load cohort',
                                      lambda: self.checkpoint(advance=True), 30)
                 self.anchor = current
                 self.phase('bidirectional load cohort delivered and paid', round=round_id, financial=current)
+                if impaired:
+                    self.clear_loss()
             self.verify_shortcuts()
         finally:
             signal.alarm(0)
-            self.restore_middle()
-            self.collect()
+            try:
+                self.clear_loss()
+            finally:
+                self.restore_middle()
+                self.collect()
 
 
 def main():
@@ -198,6 +243,8 @@ def main():
     for name in ('inventory', 'binary', 'mint-binary', 'mint-host', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--mint-address', required=True)
+    parser.add_argument('--frame-loss', action='store_true',
+                        help='drop every twentieth test frame in the second and fifth load cohorts')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

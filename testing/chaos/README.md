@@ -590,6 +590,38 @@ records the passing same-process and full source-process restart hardware runs
 and their limits. Whole-router power loss and arbitrary mobile mesh encounters
 remain separate checks.
 
+### Router load, restart and frame loss
+
+`sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped
+remote test mint. Each of six rounds sends 4,000 1,000-byte payloads in each
+direction at 200 packets/s. After the third round, the middle candidate is
+force-killed and its persistent profile reopened. Original channels, budgets
+and the exact stopped journal's unbilled exposure must survive.
+
+```sh
+python3 -m sim.wifi_restart_load \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address 192.0.2.10 \
+  --output /private/results/new-router-load --frame-loss
+```
+
+The optional `--frame-loss` drops every twentieth test-EtherType frame from the
+middle router at both receivers during the second and fifth rounds. Rules live
+inside the existing owned table and expire with its recovery guard; original
+traffic is outside their match. Payments must advance while loss is still
+enabled. Impaired streams require at least 90% delivery, nonzero missing payloads
+and counted drops at least as large as that loss. Drop counters include control
+frames; they do not prove individual payload attribution. Healthy and subsequent
+recovery streams still require complete delivery. Financial closure collects
+all 384 test sats. This finite workload does not establish maximum throughput,
+physical power-loss recovery or delivery while the process is stopped.
+
+Focused checks: `python3 -m unittest tests.test_wifi_restart_load
+tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded
