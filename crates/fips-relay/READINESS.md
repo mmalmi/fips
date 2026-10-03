@@ -69,13 +69,33 @@ test methods and the portable offline build,
 not the whole ARM suite, hardware, physical power-loss, performance or a
 bit-identical rebuild. External Rust, Zig, cargo-zigbuild and APK tools remain
 required. Earlier package results retain their original source and workload
-scope. No hardware installation, publication or real-money operation was
-performed; current-device acceptance remains pending.
+scope. Those package tests did not install software on hardware, publish a
+release or use real money.
+
+The 3 October three-router regression passes on the newer standalone ARM64
+runtime `6f97dfb03a41` (source `5b64cf8b184b`, measurements enabled), using
+harness `09824d7aa746`. Native Wi-Fi discovery needs no configured peer roster;
+unpaid transit is denied, and paid streams deliver in both directions through
+the middle router. A leaf radio cut interrupts the active stream: one of 24
+replies arrives, followed by no progress during isolation. Rejoin delivers all
+eight fresh round trips on the same processes and channels, and automatic
+payments continue. Full peer eviction is observed 95.13 seconds after the cut;
+the rejoin-to-completed-probe bound is 20.68 seconds, including controller
+observations and paced probing. This is recovery evidence, not fast roaming.
+
+Both channels settle, all 384 test sats are collected, and all 423 management
+checks pass. Independent final checks confirm restored router baselines, stopped
+candidate services and mint, and removed temporary executables and filters.
+The closed receipt is `work/hardware-current-r1/paid-current-r2/closure.json`
+in the private recovery bundle. The initial failed attempt and its complete
+test-fund recovery remain recorded separately. Current Pixel, sustained
+throughput, arbitrary mobile encounters and physical power-loss acceptance remain
+outstanding; this standalone test does not replace the packaged-build evidence.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Resolve the current native high-rate delivery failure, then sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection. | Current-build device regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery. | Current-build Pixel and broader router regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, and refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |

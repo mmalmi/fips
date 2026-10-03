@@ -435,6 +435,9 @@ Reply counts must remain unchanged during a two-second isolated window.
 The radio then rejoins automatically; a distinct eight-packet round-trip stream
 must complete, followed by the existing bidirectional payment checks. Return
 allowances are disabled so both directions require the original paid channels.
+Build the relay with `--features measurements` for this mode: its process checks
+require the live measurement counters. The test mint is a separate build with
+`--features testbench`.
 
 Use `--active-outage --outage-node n02` to remove the middle router instead;
 add `--open-mesh` to use the existing temporary open-radio lifecycle. This bridge
