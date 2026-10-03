@@ -147,6 +147,21 @@ a diagnostic, not a matched cadence-cost comparison. Its metadata explicitly
 sets `comparison_complete: false`; the cadence analyzer must not accept it as
 a complete matrix.
 
+Validate and summarize this fixed diagnostic separately:
+
+```sh
+python3 testing/relay-cadence/forwarding_diagnostic.py /absolute/new-forwarding-drops.jsonl
+```
+
+This reports probe loss and native queue-full packets/bytes separately. Equal
+totals do not prove that the queue dropped those probes; different totals do not
+identify a control message. The diagnostic may remain valid with high-rate loss
+or queue congestion, but `clean_link_accepted` stays false. Lower-rate loss,
+unexpected native errors, incomplete payments and failed settlement reject it.
+Any high-rate usage exceeding acknowledged credit is retained explicitly in
+`evidence_deficits`; signed liability must always be acknowledged. A successful
+command validates the diagnostic, not production readiness or a cadence matrix.
+
 Instrumented relays also expose cumulative `measurements.admission_denials`
 counters for `credit_limit` and `durable_window`. These count failed admission
 attempts; a fallback can attempt admission more than once for one packet.
