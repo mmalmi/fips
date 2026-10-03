@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.91] - 2026-10-03
+
+### Fixed
+
+- Retry unanswered WebRTC offers after an authenticated remote session restart,
+  keeping the original deadline and protecting healthy, answered, and inbound
+  connections from replacement. Explicit close and shutdown cancel recovery.
+- Release the reusable core and matching endpoint libraries as 0.4.91. Identity
+  remains 0.3.3; protocol messages and wire layouts are unchanged.
+
 ## [0.4.90] - 2026-10-01
 
 ### Fixed
