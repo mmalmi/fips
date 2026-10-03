@@ -55,13 +55,18 @@ async fn temporary_allowance_waits_in_the_running_service() {
         })
         .await;
         if delivered.is_err() {
-            let native = native_request(provider, &json!({"command":"show_status"}))
-                .await
-                .unwrap();
-            eprintln!(
-                "admission failure forwarding={}",
-                native["data"]["forwarding"]
-            );
+            match tokio::time::timeout(
+                Duration::from_millis(250),
+                native_request(provider, &json!({"command":"show_status"})),
+            )
+            .await
+            {
+                Ok(Ok(native)) if native["status"] == "ok" => eprintln!(
+                    "admission failure forwarding={}",
+                    native["data"]["forwarding"]
+                ),
+                _ => eprintln!("admission failure forwarding=unavailable"),
+            }
             bench.delivery_failure(0, 2).await;
             panic!("the original waiting packets must resume without an application retry");
         }
