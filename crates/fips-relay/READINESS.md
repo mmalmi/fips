@@ -111,9 +111,18 @@ and `work/hardware-current-r1/cadence-current-r1` in the private recovery bundle
 The two-second high-rate stream is finite workload acceptance, not a sustained
 throughput, physical power-loss, flash-lifetime or matched cadence comparison.
 
+The newer `060f12a56bac` native runtime also passes the complete untraced
+250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
+limits. All 285,696 packets arrive; strict payment-boundary and whole-trial
+accounting checks pass, all 48 channels settle and all 40,960 test sats are
+collected. This closes that default-limit functional matrix for the recorded
+storage/workload. Ordinary host activity prevents isolated performance claims;
+the earlier HDD/XFS loss remains a storage-pressure limitation. See
+[the accepted matrix](CADENCE-RESULTS.md#default-limit-native-matrix-on-ssd--3-october-2026).
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Resolve the current native high-rate delivery failure, then sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted current default-limit SSD cadence matrix and finite router workload pilot; see [cadence results](CADENCE-RESULTS.md). | Characterize and qualify slow-storage limits, sustained and impaired current-build hardware workloads, and long-run overhead; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery. | Current-build Pixel and broader router regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, and refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; router-filesystem and physical power-loss checks. |
@@ -123,7 +132,7 @@ throughput, physical power-loss, flash-lifetime or matched cadence comparison.
 
 ## Verified implementation and test history
 
-The latest native x86-64 cadence matrix on `18110c330558` still fails acceptance
+The earlier native x86-64 cadence matrix on `18110c330558` failed acceptance
 after removal of the duplicate payment checkpoint. All eight trials settle 48
 channels and reconcile 40,960 test sats, but 17,687 of 285,696 submitted packets
 are missing across seven high-rate workloads. Both strict analysis and the
@@ -132,7 +141,7 @@ The worst trial again places loss at the first forwarding relay; slow durable
 accounting remains a hypothesis. This run uses disk-backed XFS, unlike the earlier
 accepted ARM64 memory-backed comparison. Sources and frozen executables remain unchanged;
 all owned processes and locks are closed. See
-[the latest rejected comparison](CADENCE-RESULTS.md#rejected-native-linux-comparison-after-checkpoint-fix--2-october-2026).
+[the rejected comparison](CADENCE-RESULTS.md#rejected-native-linux-comparison-after-checkpoint-fix--2-october-2026).
 Both current rejected runs are preserved. Neither establishes a speedup,
 optimal cadence or current-device acceptance; the default remains 500 ms.
 

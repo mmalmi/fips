@@ -1,5 +1,53 @@
 # Paid-relay cadence measurements
 
+## Default-limit native matrix on SSD — 3 October 2026
+
+The complete untraced matrix passes on the frozen `060f12a56bac` standalone
+runtime and driver, using persistent SSD/ext4 storage. It restores the default
+8,000-msat unpaid allowance and 4,000-msat durable window. Policies run in the
+unchanged 250/500/1000/2000/2000/1000/500/250-ms order with the original workloads,
+drains, three-second payment tails and spending limits.
+
+All 285,696 payload packets arrive, including all 256,000 high-rate packets.
+Four arrive out of order; none are duplicated, invalid or timestamp-rejected,
+and no controller error is recorded. All 48 channels settle and all 40,960 test
+sats are collected. Strict clean-link, payment-boundary, prepaid-gap and exact
+whole-trial accounting checks pass. Every idle window has zero payment polling,
+updates, payment CPU and journal work.
+
+High-rate observations below average two trials per policy, summing all five
+service processes. Each trial delivers 32,000,000 application bytes.
+
+| Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 58 | 11.99 | 416.62 | 133.96 |
+| 500 ms | 44 | 9.25 | 312.83 | 101.63 |
+| 1 s | 40 | 7.71 | 281.41 | 92.39 |
+| 2 s | 40 | 7.88 | 284.55 | 92.39 |
+
+Payment CPU covers the existing synchronous spans; whole-process observations
+range from 170.81 to 188.02 ms per delivered MiB. Journal bytes are logical relay
+writes, excluding wallet SQLite and physical media writes. Carrier counts cover
+local payment-service submissions, including TCP/FIPS segments and retries;
+physical wire bytes remain unmeasured. Raw JSON retains workload intervals,
+guard gaps and whole-trial totals separately. Mean high-rate packet latency
+ranges from 0.411 to 0.428 ms on this local host.
+
+All 87 samples are compiler-free with no cgroup CPU throttling. Ordinary host
+activity remains: mean sampled I/O-full average is 16.40%, peaking at 25.57%.
+This accepts the recorded functional/accounting matrix, not isolated performance
+attribution or an optimal policy. Two repetitions and one topology do not
+justify changing the 500-ms default. The 1-s and 2-s policies perform the same
+number of high-rate updates, consistent with the usage trigger limiting their
+effective cadence at this rate.
+
+Source/executable hashes and terminal process/cgroup/lock checks pass. The closed
+receipt is `work/payment-reply-recovery/cadence-ssd-r1-1/closure.json`; the reduced
+summary is `work/payment-reply-recovery/cadence-ssd-r1-summary.json` in the private
+recovery bundle. The earlier lossy disk-array results remain valid evidence of
+storage-pressure limitations. This matrix does not accept arbitrary disks,
+physical power-loss recovery, radio roaming, or the latest packaged/phone build.
+
 ## Persistent storage comparison — 3 October 2026
 
 A predeclared HDD/SSD/SSD/HDD sequence uses the same traced `060f12a56bac`

@@ -109,6 +109,10 @@ continue using only the previously persisted allowance while disk work runs.
 Window and grace must cover the desired bursts and actual control/disk delays
 at the aggregate price. Merely selecting a longer payment interval can exhaust
 credit. There is no automatic increase of unpaid exposure to hide such drops.
+Qualify the actual persistent state filesystem at the intended traffic rate:
+the [storage comparison](CADENCE-RESULTS.md#persistent-storage-comparison--3-october-2026)
+shows queue overflow during long disk stalls with unchanged limits. A RAM-backed
+benchmark cannot establish persistent-storage capacity or crash recovery.
 
 ## Verification and measurement scope
 
