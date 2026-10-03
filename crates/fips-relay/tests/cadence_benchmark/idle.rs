@@ -1,6 +1,5 @@
 //! Diagnostic only: identify billed native upkeep without changing its timers.
 use super::*;
-use std::{os::unix::fs::OpenOptionsExt, path::PathBuf};
 
 pub(super) async fn observe(configs: &[ServiceConfig], output: &mut std::fs::File) {
     let started = Instant::now();
@@ -19,21 +18,6 @@ pub(super) async fn observe(configs: &[ServiceConfig], output: &mut std::fs::Fil
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-pub(super) fn retain_logs(paths: &[PathBuf]) {
-    let directory = PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap());
-    for (node, path) in paths.iter().enumerate() {
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(directory.join(format!("node-{node}.log")))
-            .unwrap();
-        output
-            .write_all(&std::fs::read(path.with_extension("log")).unwrap())
-            .unwrap();
     }
 }
 

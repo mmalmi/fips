@@ -21,8 +21,10 @@ use fips_relay::{
 use process_support::*;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsStr,
     fs::OpenOptions,
     io::Write,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -216,7 +218,12 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     drop(reservations);
     let mut children = Vec::new();
     for path in &paths {
-        children.push(start(path).await);
+        let child = if mode == TrialMode::ForwardingDrops {
+            start_with_env(path, &[("RUST_LOG", OsStr::new(forwarding::LOG_FILTER))]).await
+        } else {
+            start(path).await
+        };
+        children.push(child);
     }
     ready(&configs, &paths, &npubs, &mut children).await;
     let purchase = request(
@@ -300,7 +307,15 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
         stop(child).await;
     }
     if mode == TrialMode::IdleControl {
-        idle::retain_logs(&paths);
+        retain_logs(
+            &paths,
+            &PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap()),
+        );
+    } else if mode == TrialMode::ForwardingDrops {
+        let directory = PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap())
+            .join(format!("trial-{trial_id}"));
+        std::fs::create_dir(&directory).unwrap();
+        retain_logs(&paths, &directory);
     }
     let redeemed = root.path().join("redeemed");
     let mut total = 0;
@@ -345,6 +360,52 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     )
     .unwrap();
     output.flush().unwrap();
+}
+
+fn retain_logs(paths: &[PathBuf], directory: &Path) {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    const MAX_BYTES: u64 = 64 * 1024;
+    for (node, path) in paths.iter().enumerate() {
+        let mut input = std::fs::File::open(path.with_extension("log")).unwrap();
+        let bytes = input.metadata().unwrap().len();
+        let omitted = bytes.saturating_sub(MAX_BYTES);
+        input.seek(SeekFrom::Start(omitted)).unwrap();
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(directory.join(format!("node-{node}.log")))
+            .unwrap();
+        writeln!(
+            output,
+            "# original_bytes={bytes} omitted_prefix_bytes={omitted}"
+        )
+        .unwrap();
+        std::io::copy(&mut input.take(MAX_BYTES), &mut output).unwrap();
+    }
+}
+
+#[test]
+fn diagnostic_log_retention_keeps_a_bounded_private_tail() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.json");
+    let mut log = vec![b'x'; 70_000];
+    log.extend_from_slice(b"\nlast forwarding error\n");
+    std::fs::write(config.with_extension("log"), &log).unwrap();
+    retain_logs(&[config], root.path());
+    let path = root.path().join("node-0.log");
+    let saved = std::fs::read(&path).unwrap();
+    assert!(saved.starts_with(b"# original_bytes=70023 omitted_prefix_bytes=4487\n"));
+    assert_eq!(saved.len(), 65_536 + 49);
+    assert!(saved.ends_with(b"\nlast forwarding error\n"));
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 fn new_report() -> std::fs::File {

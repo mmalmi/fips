@@ -576,6 +576,7 @@ impl Node {
                         .forwarding
                         .record_drop_send_error(received_len);
                     debug!(
+                        target: "fips_core::forwarding_error",
                         next_hop = %next_hop_addr,
                         dest = %dest_addr,
                         error = %e,

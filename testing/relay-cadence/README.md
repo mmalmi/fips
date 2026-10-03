@@ -122,12 +122,19 @@ before and after each unchanged workload in two 500-ms trials:
 
 ```sh
 FIPS_CADENCE_REPORT=/absolute/new-forwarding-drops.jsonl \
+FIPS_CADENCE_DIAGNOSTIC_DIR=/absolute/new-forwarding-logs \
   cargo test -p fips-relay --release --features measurements \
   --test cadence_benchmark forwarding::observe_forwarding_drops \
   -- --ignored --exact --test-threads=1 --nocapture
 ```
 
-The report must not already exist. Funding, workload rates, durable windows,
+The report and log directory must not already exist. The diagnostic enables
+`warn,fips_core::forwarding_error=debug`, retaining each node's final 64 KiB of
+logs in a private file under `trial-0` or `trial-1` after shutdown. Each file
+states its original byte count and any omitted prefix; a retained tail is not
+a complete event history. Successful forwards remain outside that debug target.
+The logs survive later report-validation failures, but an interrupted trial
+may end before retention. Funding, workload rates, durable windows,
 spending limits, tails and settlement use the normal trial implementation.
 Each workload's `forwarding.before` and `forwarding.after` arrays contain the
 process identity and cumulative native counters for all five nodes. Compare
