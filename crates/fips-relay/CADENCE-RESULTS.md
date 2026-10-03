@@ -1,5 +1,37 @@
 # Paid-relay cadence measurements
 
+## Router load and process recovery — 3 October 2026
+
+The same standalone ARM64 build used for the router pilot (`5b64cf8b184b`,
+runtime `6f97dfb03a41`) passes the longer `5fce2fa94` hardware harness. Twelve
+alternating forward/reverse streams each deliver all 4,000 × 1,000-byte packets
+at 200 packets/s: 48,000 packets and 48 MB in total, without loss, duplicates,
+invalid packets or reordering. Each measured stream lasts 20.47–20.51 seconds;
+the six pairs retain successful automatic-payment observations between them.
+
+After the third pair, an ownership-checked process kill stops the middle relay.
+It restarts from the same persistent overlay/UBIFS account. Its identity, both
+original channels, quote agreements and lifetime budgets remain unchanged.
+Recovery conservatively records exactly 4,000 msat of unbilled exposure per
+channel, matching each stopped journal's durable ceiling minus reserved usage.
+Fresh bidirectional probes and financial reconciliation complete within 24.95
+seconds of the restart attempt; the remaining six measured streams then pass.
+No payload stream is offered while the process is stopped.
+
+The 500-ms cadence, 8,000-msat unpaid allowance, 4,000-msat durable window,
+32-sat channel capacities and original spending limits remain unchanged. The
+one-msat/KiB tariff and 32-MiB quote grants are set before the run. Both channels
+settle, all 384 test sats are collected, and all 606 management checks pass.
+Independent closure verifies restored router baselines, stopped candidate
+services and mint, and removal of temporary executables and test filters.
+
+The closed receipt is `work/hardware-current-r1/restart-load-r1/closure.json`
+in the private recovery bundle. All 30 focused Linux harness checks pass,
+including the real process-ownership checks. This accepts finite paid traffic
+before and after one process crash. Physical power loss, uninterrupted traffic
+during restart, maximum throughput, long-running operation and Pixel acceptance
+remain separate requirements.
+
 ## Default-limit native matrix on SSD — 3 October 2026
 
 The complete untraced matrix passes on the frozen `060f12a56bac` standalone
