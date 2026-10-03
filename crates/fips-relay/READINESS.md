@@ -196,6 +196,19 @@ still rejects high-rate delivery and payment boundaries. See
 [the corrected-service load result](CADENCE-RESULTS.md#corrected-service-under-load);
 finite service acceptance does not resolve those failures.
 
+The `f3609ed433dd` counter diagnostic identifies waiting-queue overflow: all
+8,079 high-rate policy drops are classified as full queues, matching missing
+payload counts across two repeats. No wait expires or becomes invalid, no
+explicit policy rejection occurs, and other recorded native drop/error counters
+stay zero. The original queue and financial bounds remain unchanged. Six core
+regressions, the running-daemon admission check, strict core/relay lint and all
+121 analyzer tests pass; independent review and integrity/closure checks clear.
+All 12 test channels settle and 10,240 sats reconcile, but high-rate delivery
+and payment-boundary acceptance still fail. See
+[overflow attribution](CADENCE-RESULTS.md#waiting-queue-overflow-attribution).
+Reducing replenishment stalls and measuring the resulting delivery/overhead
+remains required; no cadence default or device acceptance changes.
+
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
 The existing mixed UDP/TCP service regression reproduces four ledger commits

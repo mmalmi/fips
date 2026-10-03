@@ -38,8 +38,9 @@ occur at the first relay, matching application loss in this run; other recorded
 native drop/error counters stay zero. The service now records 1,447 deferred
 packets, so the waiting path is active. Its 2,937 credit and 4,794 durable-window
 refusal counts include repeated attempts and are not unique packet losses.
-Aggregate policy drops do not distinguish a full waiting queue, expired wait,
-changed peer/policy or permanent refusal; that distinction remains unresolved.
+These aggregate counters could not distinguish a full waiting queue, expired
+wait, changed peer/policy or permanent refusal. The category diagnostic below
+resolves that ambiguity.
 
 Bursty and steady delivery is complete. All 12 channels settle and 10,240 test
 sats reconcile, but both high-rate payment-boundary checks still reject the
@@ -48,6 +49,39 @@ ordinary apps and VMs running. This is not a speedup, cadence comparison or
 device acceptance. All 36,141 source inputs and frozen executable hashes verify,
 and process groups, cgroup and build locks close. The retained evidence is
 `work/admission-service/load-r1/review.json` in the local recovery bundle.
+
+### Waiting-queue overflow attribution
+
+The `f3609ed433dd` diagnostic adds disjoint full, expired and invalidated waiting
+drop counters inside the existing policy total; the remainder is explicit
+rejection. Forwarding decisions, queue bounds, financial limits, 500-ms cadence
+and frozen traffic driver are unchanged. Six focused core tests, the running
+daemon admission regression, strict core/relay lint and 121 analyzer tests pass.
+
+| High-rate trial | Missing packets | First relay full-queue drops | Second relay full-queue drops |
+| --- | ---: | ---: | ---: |
+| 0 | 6,747 | 6,217 | 530 |
+| 1 | 1,332 | 1,332 | 0 |
+
+All 8,079 policy drops are full-queue drops, matching missing application packets
+in both repeats. Expired waits, invalidated waits, explicit rejections and other
+recorded native drop/error categories stay zero. There are 1,752 deferrals,
+6,428 credit refusal attempts and 9,172 durable-window refusal attempts; attempts
+include retries. This identifies queue overflow while temporary financial
+shortages wait for replenishment. It does not yet explain the replenishment
+latency or establish which shortage dominates each overflow.
+
+Bursty and steady traffic deliver fully. All 12 channels settle and 10,240 test
+sats reconcile. Both high-rate payment boundaries remain rejected because local
+send evidence exceeds acknowledged credit; signed balances are fully
+acknowledged, with no payment update in flight or recorded controller error.
+All samples are compiler-free; sampled I/O-full averages 2.70%. This daemon was
+built with `cargo build` rather than the preceding `cargo test` target, so this
+is not a matched performance comparison. No speedup, default or device
+acceptance follows. Source and executable hashes verify and owned processes,
+cgroup and locks close. Functional and load evidence are retained separately in
+`work/admission-drop-counters/r1/acceptance.json` and
+`work/admission-drop-counters/load-r1/review.json` in the local recovery bundle.
 
 ## Superseded window checkpoints — 2 October 2026
 
