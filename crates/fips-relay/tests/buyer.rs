@@ -292,6 +292,15 @@ fn loading_a_legacy_buyer_does_not_change_its_duplicate_tariff() {
         .unwrap()
         .remove("token");
     std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    assert!(matches!(
+        BuyerAuthorizer::load(&directory),
+        Err(BuyerError::Format)
+    ));
+    journal["channels"]["legacy"]["terms"]
+        .as_object_mut()
+        .unwrap()
+        .remove("refund_after_unix");
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
     let buyer = BuyerAuthorizer::load(&directory).unwrap();
     assert!(observe(&buyer, b"same").is_none());
     assert_eq!(buyer.evidence_msat("legacy"), Some(400));
