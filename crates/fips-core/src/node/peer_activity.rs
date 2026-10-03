@@ -106,6 +106,7 @@ mod tests {
                     ty.to_byte(),
                     8,
                     FspReceiveSync {
+                        receive_epoch: None,
                         counter: at,
                         received_k_bit: false,
                         timestamp: 0,

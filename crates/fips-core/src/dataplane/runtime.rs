@@ -158,15 +158,6 @@ impl DataplaneTurnDriver {
         self.mover.owner_fsp_activity(owner)
     }
 
-    pub(crate) fn owner_has_fsp_pending_receive_epoch(
-        &self,
-        owner: OwnerId,
-        received_k_bit: bool,
-    ) -> bool {
-        self.mover
-            .owner_has_fsp_pending_receive_epoch(owner, received_k_bit)
-    }
-
     pub(crate) fn owner_has_fmp_pending_receive_epoch(
         &self,
         owner: OwnerId,

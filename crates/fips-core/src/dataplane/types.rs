@@ -92,6 +92,7 @@ pub(crate) enum OutputTarget {
 /// Authenticated FSP receive metadata produced by dataplane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FspReceiveSync {
+    pub(crate) receive_epoch: Option<(DataplaneReceiveEpoch, u64)>,
     pub(crate) counter: u64,
     pub(crate) received_k_bit: bool,
     pub(crate) timestamp: u32,

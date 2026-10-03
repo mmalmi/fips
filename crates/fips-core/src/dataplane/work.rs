@@ -1,7 +1,8 @@
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct CryptoWork {
     reservation: OwnerReservation,
     packet: SocketPacket,
+    fallback_key: Option<AeadKey>,
 }
 
 impl CryptoWork {
@@ -21,6 +22,16 @@ pub(crate) struct OutboundCryptoWork {
 pub(crate) struct CryptoCompletion {
     reservation: OwnerReservation,
     result: CryptoResult,
+}
+
+impl CryptoCompletion {
+    fn authenticated_receive_epoch(&self) -> Option<(DataplaneReceiveEpoch, u64)> {
+        match &self.result {
+            CryptoResult::Opened(output) => output.authenticated_receive_epoch
+                .or(self.reservation.receive_epoch),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -44,7 +55,7 @@ unsafe impl Sync for CryptoOwnerRunItem {}
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 enum CryptoOwnerRunItemState {
-    Open(SocketPacket),
+    Open(SocketPacket, Option<AeadKey>),
     Seal(OutboundPacket),
     Completed(CryptoResult),
 }
@@ -133,10 +144,11 @@ impl CryptoOwnerRunItem {
         let CryptoWork {
             reservation,
             packet,
+            fallback_key,
         } = work;
         Self {
             reservation,
-            state: std::cell::UnsafeCell::new(CryptoOwnerRunItemState::Open(packet)),
+            state: std::cell::UnsafeCell::new(CryptoOwnerRunItemState::Open(packet, fallback_key)),
         }
     }
 
@@ -173,7 +185,7 @@ impl CryptoOwnerRunItem {
     fn is_open(&self) -> bool {
         // Run construction is single-threaded and finishes before workers can see it.
         match unsafe { &*self.state.get() } {
-            CryptoOwnerRunItemState::Open(_) => true,
+            CryptoOwnerRunItemState::Open(..) => true,
             CryptoOwnerRunItemState::Seal(_) => false,
             CryptoOwnerRunItemState::Completed(_) => panic!("completed crypto work regrouped"),
         }
@@ -182,7 +194,7 @@ impl CryptoOwnerRunItem {
     fn is_open_fsp_session_payload(&self) -> bool {
         // Run construction is single-threaded and finishes before workers can see it.
         match unsafe { &*self.state.get() } {
-            CryptoOwnerRunItemState::Open(packet) => {
+            CryptoOwnerRunItemState::Open(packet, _) => {
                 self.reservation.owner.protocol() == PacketProtocol::Fsp
                     && matches!(packet.output, OutputTarget::SessionPayload { .. })
             }
@@ -240,6 +252,7 @@ pub(crate) struct PacketOutput {
     path_mtu: u16,
     wire_flags: u8,
     opened_payload_offset: u16,
+    authenticated_receive_epoch: Option<(DataplaneReceiveEpoch, u64)>,
     source_peer: Option<crate::PeerIdentity>,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,

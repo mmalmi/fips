@@ -87,8 +87,9 @@ pub(crate) struct SessionEntry {
     next_resend_at_ms: u64,
 
     // === Rekey (Key Rotation) ===
-    /// Current K-bit epoch value (alternates each rekey).
+    /// Current authenticated K-bit epoch value.
     current_k_bit: bool,
+    previous_k_bit: Option<bool>,
     /// When drain window started (Unix ms). 0 = no drain.
     drain_started_ms: u64,
     /// In-progress rekey state (runs alongside Established session).
@@ -143,6 +144,7 @@ impl SessionEntry {
             resend_count: 0,
             next_resend_at_ms: 0,
             current_k_bit: false,
+            previous_k_bit: None,
             drain_started_ms: 0,
             rekey_state: None,
             pending_new_session: None,
@@ -229,6 +231,7 @@ impl SessionEntry {
         self.set_state(EndToEndState::Established(session));
         self.mark_established(now_ms);
         self.current_k_bit = false;
+        self.previous_k_bit = None;
         self.drain_started_ms = 0;
         self.rekey_state = None;
         self.pending_new_session = None;
@@ -522,6 +525,7 @@ impl SessionEntry {
         };
 
         self.drain_started_ms = now_ms;
+        self.previous_k_bit = Some(self.current_k_bit);
 
         // Promote pending to current
         self.state = Some(EndToEndState::Established(new_session));
@@ -549,11 +553,14 @@ impl SessionEntry {
         now_ms: u64,
         received_k_bit: bool,
     ) -> bool {
-        if self.pending_new_session.is_none() || received_k_bit == self.current_k_bit {
+        if self.pending_new_session.is_none()
+            || (self.pending_rekey_initiator && received_k_bit == self.current_k_bit)
+        {
             return false;
         }
         let promoted = self.promote_pending(now_ms);
         if promoted {
+            self.current_k_bit = received_k_bit;
             self.clear_rekey_msg3_payload();
         }
         promoted
@@ -572,9 +579,14 @@ impl SessionEntry {
         self.drain_started_ms > 0
     }
 
+    pub(crate) fn previous_draining_k_bit(&self) -> Option<bool> {
+        self.is_draining().then_some(self.previous_k_bit).flatten()
+    }
+
     /// Complete the stale-epoch drain window.
     pub(crate) fn complete_drain(&mut self) {
         self.drain_started_ms = 0;
+        self.previous_k_bit = None;
     }
 
     /// Whether a completed pending session has waited longer than `stale_ms`

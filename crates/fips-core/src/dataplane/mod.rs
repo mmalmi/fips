@@ -64,6 +64,7 @@ include!("owner_state.rs");
 include!("owner_io.rs");
 include!("owner_retire.rs");
 include!("owner_replay.rs");
+include!("owner_receive_epoch.rs");
 include!("owner_shard.rs");
 include!("work.rs");
 include!("direct_transport.rs");

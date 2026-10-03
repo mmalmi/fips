@@ -12,6 +12,7 @@ include!("aead_owner_inbound.rs");
 include!("aead_owner_activity.rs");
 include!("receive_epoch.rs");
 include!("pending_instance.rs");
+include!("fsp_pending_recovery.rs");
 include!("path_feedback.rs");
 include!("aead_completion.rs");
 include!("aead_completion_tail.rs");

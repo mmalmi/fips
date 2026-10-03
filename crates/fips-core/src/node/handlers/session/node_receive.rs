@@ -325,6 +325,8 @@ impl Node {
         ingress: crate::dataplane::DataplaneFspSessionIngress,
     ) -> Option<AuthenticatedSessionDispatch> {
         let received_k_bit = ingress.received_k_bit();
+        let previous_epoch = ingress.is_previous_epoch();
+        let pending_epoch = ingress.is_pending_epoch();
         let (
             source_addr,
             source_peer,
@@ -351,10 +353,11 @@ impl Node {
             "Dispatching dataplane authenticated session"
         );
 
-        if self.promote_dataplane_authenticated_pending_fsp_epoch(
+        let promoted = self.promote_dataplane_authenticated_pending_fsp_epoch(
             &source_addr,
             received_k_bit,
-        ) {
+        );
+        if promoted {
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 received_k_bit,
@@ -362,16 +365,19 @@ impl Node {
             );
         }
 
+        let pending_confirmation = pending_epoch && !promoted && self.sessions.get(&source_addr)
+            .is_some_and(|session| session.pending_new_session().is_some());
+
         // Reports describe counters and timestamps from their key epoch. The
         // draining epoch still admits late application data, but its reports
         // cannot update the newly promoted session's measurements.
         if matches!(
             SessionMessageType::from_byte(msg_type),
             Some(SessionMessageType::SenderReport | SessionMessageType::ReceiverReport)
-        ) && self
+        ) && (previous_epoch || pending_confirmation || self
             .sessions
             .get(&source_addr)
-            .is_none_or(|session| session.current_k_bit() != received_k_bit)
+            .is_none_or(|session| session.current_k_bit() != received_k_bit))
         {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -517,13 +523,16 @@ impl Node {
                 }
                 let activity = self.dataplane.fsp_owner_activity(addr)?;
                 let next_hop = activity.last_outbound_next_hop()?;
+                // Eligibility already ages pending epochs. Authenticated probes
+                // do not complete cutover or resolve unanswered application data.
+                let can_retry = entry.pending_new_session().is_some()
+                    || activity.authenticated_inbound_or_session_age_ms(now_ms)
+                        .is_some_and(|age| age >= DECRYPT_FAILURE_RECOVERY_QUIET_MS);
                 (activity.has_unacknowledged_outbound_from(
                     &next_hop,
                     now_ms,
                     DECRYPT_FAILURE_RECOVERY_QUIET_MS,
-                ) && activity
-                    .authenticated_inbound_or_session_age_ms(now_ms)
-                    .is_some_and(|age| age >= DECRYPT_FAILURE_RECOVERY_QUIET_MS))
+                ) && can_retry)
                 .then_some(*addr)
             })
             .collect();

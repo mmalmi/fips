@@ -293,6 +293,7 @@ fn session_ingress_raw_handoff_defers_unrouted_fsp() {
         path_mtu: u16::MAX,
         wire_flags: 0,
         opened_payload_offset: FMP_ESTABLISHED_HEADER_SIZE as u16,
+        authenticated_receive_epoch: None,
         source_peer: None,
         path: None,
         activity_tick: Some(ActivityTick::new(919_002)),

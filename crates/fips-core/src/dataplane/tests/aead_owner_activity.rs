@@ -92,6 +92,7 @@ fn fsp_owner_tracks_data_return_without_registry_side_channel() {
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
     assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(2));
     let sync = |counter, body_len| FspReceiveSync {
+        receive_epoch: None,
         counter,
         received_k_bit: false,
         timestamp: 0,
@@ -287,6 +288,7 @@ fn fsp_owner_report_only_traffic_quiesces_and_payload_resumes_measurement() {
             mover.submit_outbound_packet(outbound).unwrap();
             assert_eq!(dispatch_outbound_available(mover, 8).len(), 1);
             let sync = FspReceiveSync {
+                receive_epoch: None,
                 counter,
                 received_k_bit: false,
                 timestamp: counter as u32,
@@ -392,6 +394,7 @@ fn fsp_owner_owns_session_mmp_reports() {
     assert_eq!(dispatch_outbound_available(&mut mover, 8).len(), 1);
 
     let sync = FspReceiveSync {
+        receive_epoch: None,
         counter: 9,
         received_k_bit: false,
         timestamp: 7,
@@ -455,6 +458,7 @@ fn fsp_owner_current_epoch_confirmation_is_one_shot_per_generation() {
             .with_fsp_send_headers(0, 0),
     );
     let sync = FspReceiveSync {
+        receive_epoch: None,
         counter: 1,
         received_k_bit: false,
         timestamp: 10,
@@ -607,6 +611,7 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
     );
 
     let sync = FspReceiveSync {
+        receive_epoch: None,
         counter: 40,
         received_k_bit: false,
         timestamp: 10,
@@ -682,6 +687,7 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 32,
                 FspReceiveSync {
+                    receive_epoch: None,
                     counter: 41,
                     received_k_bit: false,
                     timestamp: 20,

@@ -24,6 +24,7 @@ impl OwnerState {
             pending_fsp_seal: None,
             pending_fsp_send_counter_authority: None,
             pending_fsp_k_bit: None,
+            pending_fsp_authenticated_k_bits: 0,
             pending_fsp_replay_window: None,
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
@@ -103,6 +104,7 @@ impl OwnerState {
         self.pending_fsp_seal = None;
         self.pending_fsp_send_counter_authority = None;
         self.pending_fsp_k_bit = None;
+        self.pending_fsp_authenticated_k_bits = 0;
         self.pending_fsp_replay_window = None;
         self.fmp_session_start_ms = None;
         self.fmp_send_headers = None;
@@ -297,6 +299,7 @@ impl OwnerState {
             self.pending_fsp_seal = None;
             self.pending_fsp_send_counter_authority = None;
             self.pending_fsp_k_bit = None;
+            self.pending_fsp_authenticated_k_bits = 0;
             self.pending_fsp_replay_window = None;
         }
         if let (Some(open), Some(replay)) = (previous_open, previous_replay) {
@@ -380,6 +383,7 @@ impl OwnerState {
         self.pending_fsp_seal = None;
         self.pending_fsp_send_counter_authority = None;
         self.pending_fsp_k_bit = Some(pending_k_bit);
+        self.pending_fsp_authenticated_k_bits = 0;
         self.pending_fsp_replay_window = Some(ReplayWindow::default());
         true
     }
@@ -416,6 +420,7 @@ impl OwnerState {
         self.pending_fsp_seal = None;
         self.pending_fsp_send_counter_authority = None;
         self.pending_fsp_k_bit = None;
+        self.pending_fsp_authenticated_k_bits = 0;
         self.pending_fsp_replay_window = None;
         true
     }
@@ -462,6 +467,7 @@ impl OwnerState {
             self.pending_fsp_seal = None;
             self.pending_fsp_send_counter_authority = None;
             self.pending_fsp_k_bit = None;
+            self.pending_fsp_authenticated_k_bits = 0;
             self.pending_fsp_replay_window = None;
         }
         true
@@ -621,48 +627,6 @@ impl OwnerState {
                     Some((DataplaneReceiveEpoch::Current, 0)),
             _ => None,
         }
-    }
-
-    fn complete_replay_reservation(
-        &mut self,
-        reservation: &OwnerReservation,
-        authenticated: bool,
-    ) -> bool {
-        let Some(mut epoch) = reservation.receive_epoch else {
-            return true;
-        };
-        if reservation.generation != self.generation {
-            let Some(previous_epoch) = self.retains_draining_generation(reservation.generation)
-                .then(|| self.remap_draining_receive_epoch(epoch)).flatten() else {
-                return false;
-            };
-            epoch = previous_epoch;
-        }
-        let (receive_epoch, instance) = epoch;
-        let was_pending = self
-            .pending_replay_counters
-            .remove(&((receive_epoch, instance), reservation.counter));
-        if !authenticated {
-            return true;
-        }
-        if receive_epoch == DataplaneReceiveEpoch::Pending
-            && instance != self.pending_receive_epoch_instance
-        {
-            return false;
-        }
-        let accepted = was_pending
-            && self
-                .replay_window_for_epoch_mut(receive_epoch)
-                .is_some_and(|window| window.accept(reservation.counter));
-        if accepted
-            && self.owner.protocol() == PacketProtocol::Fmp
-            && receive_epoch == DataplaneReceiveEpoch::Pending
-        {
-            self.pending_fmp_authenticated_k_bit.get_or_insert(
-                reservation.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0,
-            );
-        }
-        accepted
     }
 
     fn advance_pending_receive_epoch(&mut self) {

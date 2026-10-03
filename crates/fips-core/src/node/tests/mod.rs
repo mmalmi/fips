@@ -171,6 +171,7 @@ pub(super) fn seed_dataplane_fsp_data_rx_for_test(
                     crate::protocol::SessionMessageType::EndpointData.to_byte(),
                     body_len,
                     crate::dataplane::FspReceiveSync {
+                        receive_epoch: None,
                         counter: 2,
                         received_k_bit: false,
                         timestamp: 0,

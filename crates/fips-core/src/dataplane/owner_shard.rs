@@ -86,15 +86,6 @@ impl DataplaneOwnerShard {
         self.owner(owner).and_then(OwnerState::fsp_activity)
     }
 
-    fn owner_has_fsp_pending_receive_epoch(
-        &self,
-        owner: OwnerId,
-        received_k_bit: bool,
-    ) -> bool {
-        self.owner(owner)
-            .is_some_and(|owner| owner.has_fsp_pending_receive_epoch(received_k_bit))
-    }
-
     fn owner_has_fmp_pending_receive_epoch(
         &self,
         owner: OwnerId,
@@ -326,7 +317,10 @@ impl DataplaneOwnerShard {
                         let packet_lane = queued.packet.lane();
                         let reservation = reservation.with_owner_shard(self.index);
                         fsp_path_open.count(&reservation);
+                        let fallback_key = reservation.alternate_receive_epoch
+                            .and_then(|(epoch, _)| owner.open_key(epoch));
                         let work = CryptoWork {
+                            fallback_key,
                             reservation,
                             packet: queued.packet,
                         };

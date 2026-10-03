@@ -70,6 +70,7 @@ fn populated(peers: usize, sessions: usize, state: State) -> Node {
                     SessionMessageType::EndpointData.to_byte(),
                     8,
                     FspReceiveSync {
+                        receive_epoch: None,
                         counter: 1,
                         received_k_bit: false,
                         timestamp: 0,

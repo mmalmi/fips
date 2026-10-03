@@ -23,29 +23,6 @@ impl OwnerState {
         if !self.can_reserve_class(packet.class) {
             return Err(OwnerReserveError::InFlightFull);
         }
-        let replay_window = if use_previous_fmp_epoch {
-            self.previous_fmp_replay_window
-                .as_mut()
-                .expect("previous FMP epoch checked before reservation")
-        } else if use_pending_fmp_epoch {
-            self.pending_fmp_replay_window
-                .as_mut()
-                .expect("pending FMP epoch checked before reservation")
-        } else if use_previous_fsp_epoch {
-            self.previous_fsp_replay_window
-                .as_mut()
-                .expect("previous FSP epoch checked before reservation")
-        } else if use_pending_fsp_epoch {
-            self.pending_fsp_replay_window
-                .as_mut()
-                .expect("pending FSP epoch checked before reservation")
-        } else {
-            &mut self.replay_window
-        };
-
-        if !replay_window.can_accept(packet.counter) {
-            return Err(OwnerReserveError::Replay);
-        }
         let receive_epoch = if use_previous_fmp_epoch || use_previous_fsp_epoch {
             DataplaneReceiveEpoch::Previous
         } else if use_pending_fmp_epoch || use_pending_fsp_epoch {
@@ -61,9 +38,22 @@ impl OwnerState {
                 0
             },
         );
-        if !self
-            .pending_replay_counters
-            .insert((receive_epoch_identity, packet.counter))
+        let alternate_receive_epoch = self.fsp_alternate_receive_epoch(packet, receive_epoch);
+        if let Some((alternate, _)) = alternate_receive_epoch {
+            // A flag cannot distinguish these keys. Check each counter space
+            // independently, then commit only the AEAD-selected epoch at serial
+            // owner retirement; reserving both exclusively would reject valid
+            // same-counter packets encrypted under different keys.
+            if !self.replay_window_for_epoch_mut(receive_epoch)
+                .is_some_and(|window| window.can_accept(packet.counter))
+                && !self.replay_window_for_epoch_mut(alternate)
+                    .is_some_and(|window| window.can_accept(packet.counter))
+            {
+                return Err(OwnerReserveError::Replay);
+            }
+        } else if !self.replay_window_for_epoch_mut(receive_epoch)
+            .is_some_and(|window| window.can_accept(packet.counter))
+            || !self.pending_replay_counters.insert((receive_epoch_identity, packet.counter))
         {
             return Err(OwnerReserveError::Replay);
         }
@@ -89,6 +79,7 @@ impl OwnerState {
                 path_mtu: packet.path_mtu,
                 wire_flags: packet.wire_flags,
                 receive_epoch: Some(receive_epoch_identity),
+                alternate_receive_epoch,
                 source_peer: self.source_peer,
                 output_path: None,
                 activity_tick: packet.activity_tick,
@@ -233,6 +224,7 @@ impl OwnerState {
             path_mtu,
             wire_flags: 0,
             receive_epoch: None,
+            alternate_receive_epoch: None,
             source_peer: self.source_peer,
             output_path,
             activity_tick: packet.activity_tick,
@@ -261,7 +253,7 @@ impl OwnerState {
             now,
             ..
         } = session;
-        if self.select_fsp_mmp_receive_epoch(sync.received_k_bit, now)
+        if self.select_fsp_mmp_receive_epoch(sync, now)
             && let Some(mmp) = &mut self.fsp_mmp
         {
             mmp.receiver_report_pending |= dataplane_fsp_message_elicits_report(msg_type);
@@ -298,7 +290,10 @@ impl OwnerState {
             self.data_packets_recv = self.data_packets_recv.saturating_add(1);
             self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
         }
-        let current_epoch_confirmed = sync.received_k_bit == self.fsp_current_k_bit;
+        let current_epoch_confirmed = sync.receive_epoch
+            .map_or(sync.received_k_bit == self.fsp_current_k_bit, |(epoch, _)| {
+                epoch == DataplaneReceiveEpoch::Current
+            });
         let newly_confirmed_current_epoch =
             current_epoch_confirmed && !self.fsp_lifecycle_confirmed;
         if current_epoch_confirmed {
@@ -307,11 +302,24 @@ impl OwnerState {
         Some(newly_confirmed_current_epoch)
     }
 
-    fn select_fsp_mmp_receive_epoch(&mut self, received_k_bit: bool, now: std::time::Instant) -> bool {
-        if received_k_bit == self.fsp_current_k_bit {
-            return self.fsp_mmp_pending_receive_epoch.is_none();
+    fn select_fsp_mmp_receive_epoch(&mut self, sync: FspReceiveSync, now: std::time::Instant) -> bool {
+        let epoch = sync.receive_epoch.map(|(epoch, _)| epoch).unwrap_or_else(|| {
+            if sync.received_k_bit == self.fsp_current_k_bit {
+                DataplaneReceiveEpoch::Current
+            } else if self.has_fsp_pending_receive_epoch(sync.received_k_bit) {
+                DataplaneReceiveEpoch::Pending
+            } else {
+                DataplaneReceiveEpoch::Previous
+            }
+        });
+        match epoch {
+            DataplaneReceiveEpoch::Current => return self.fsp_mmp_pending_receive_epoch.is_none(),
+            DataplaneReceiveEpoch::Previous => return false,
+            DataplaneReceiveEpoch::Pending => {}
         }
-        if !self.has_fsp_pending_receive_epoch(received_k_bit) {
+        if self.pending_fsp_open.is_none()
+            || sync.receive_epoch.is_some_and(|(_, instance)| instance != self.pending_receive_epoch_instance)
+        {
             return false;
         }
         if self.fsp_mmp_pending_receive_epoch != Some(self.pending_receive_epoch_instance) {

@@ -392,6 +392,7 @@ impl DataplaneFspSessionIngress {
             (timestamp_ms, msg_type, inner_flags, plaintext.len())
         };
         let receive_sync = FspReceiveSync {
+            receive_epoch: output.authenticated_receive_epoch,
             counter: output.counter(),
             received_k_bit: output.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0,
             timestamp: timestamp_ms,
@@ -413,10 +414,6 @@ impl DataplaneFspSessionIngress {
             inner_flags,
             plaintext,
         })
-    }
-
-    pub(crate) fn received_k_bit(&self) -> bool {
-        self.receive_sync.received_k_bit
     }
 
     pub(crate) fn into_parts(
@@ -533,6 +530,7 @@ impl DataplaneFspEndpointDataIngress {
             (timestamp_ms, inner_flags, plaintext.len(), body.len())
         };
         let receive_sync = FspReceiveSync {
+            receive_epoch: output.authenticated_receive_epoch,
             counter: output.counter(),
             received_k_bit: output.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0,
             timestamp: timestamp_ms,

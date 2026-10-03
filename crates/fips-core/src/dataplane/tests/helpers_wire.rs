@@ -133,6 +133,7 @@
             path_mtu: u16::MAX,
             wire_flags: 0,
             opened_payload_offset: 0,
+            authenticated_receive_epoch: None,
             source_peer: None,
             path: Some(TransportPath::live(transport_id, remote_addr)),
             activity_tick: None,

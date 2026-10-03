@@ -14,6 +14,7 @@ mod receiver_epochs {
 
     fn receive(state: &mut OwnerState, key: bool, counter: u64, now: Instant) {
         let sync = FspReceiveSync {
+            receive_epoch: None,
             counter,
             received_k_bit: key,
             timestamp: counter as u32 + 1,

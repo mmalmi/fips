@@ -442,9 +442,18 @@ impl Node {
         node_addr: &NodeAddr,
         received_k_bit: bool,
     ) -> bool {
+        // Crossed probes must converge on one flag. The completed XK
+        // initiator chooses it; the responder learns it from pending-key AEAD.
+        if self.sessions.get(node_addr).is_none_or(|session| {
+            session.pending_new_session().is_none()
+                || (session.pending_rekey_initiator()
+                    && received_k_bit == session.current_k_bit())
+        }) {
+            return false;
+        }
         if !self
             .dataplane
-            .fsp_owner_has_pending_receive_epoch(node_addr, received_k_bit)
+            .confirm_fsp_owner_pending_receive_epoch(node_addr, received_k_bit)
         {
             return false;
         }
@@ -468,7 +477,7 @@ impl Node {
         let current_k_bit = session.current_k_bit();
         (
             current_k_bit,
-            session.is_draining().then_some(!current_k_bit),
+            session.previous_draining_k_bit(),
         )
     }
 

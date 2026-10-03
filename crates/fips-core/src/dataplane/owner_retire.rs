@@ -118,8 +118,11 @@ impl OwnerState {
         let record_endpoint_packets = crate::perf_profile::enabled();
         let mut direct_enqueued_at_ms = None;
         let received_at = std::time::Instant::now();
-        let drained = slot.drain_results(limit, |completion| {
-            if !self.complete_replay_reservation(&completion.reservation, true) {
+        let drained = slot.drain_results(limit, |mut completion| {
+            if !self.complete_replay_reservation(
+                &completion.reservation,
+                completion.authenticated_receive_epoch(),
+            ) {
                 drops.push(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::Replay,
@@ -127,13 +130,11 @@ impl OwnerState {
                 ));
                 return;
             }
+            self.stamp_authenticated_receive_epoch(&mut completion);
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload slot contains only opened outputs");
             };
-            self.record_authenticated_path(&output);
-            self.authenticated_counter_highest = self
-                .authenticated_counter_highest
-                .max(completion.reservation.counter);
+            self.record_authenticated_current_receive(&output);
             let mut output = output;
             if compact_endpoint_data {
                 let enqueued_at_ms =
@@ -168,14 +169,14 @@ impl OwnerState {
 
     fn retire_ready_completion_into(
         &mut self,
-        completion: CryptoCompletion,
+        mut completion: CryptoCompletion,
         retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
         let replay_accepted = self.complete_replay_reservation(
             &completion.reservation,
-            matches!(&completion.result, CryptoResult::Opened(_)),
+            completion.authenticated_receive_epoch(),
         );
         if matches!(&completion.result, CryptoResult::Opened(_)) && !replay_accepted {
             drops.push(PacketDrop::from_completion(
@@ -185,17 +186,10 @@ impl OwnerState {
             ));
             return;
         }
+        self.stamp_authenticated_receive_epoch(&mut completion);
         match completion.result {
             CryptoResult::Opened(output) => {
-                let from_draining = completion.reservation.generation != self.generation
-                    && completion.reservation.receive_epoch
-                        .is_some_and(|(epoch, _)| epoch == DataplaneReceiveEpoch::Current);
-                if !from_draining {
-                    self.record_authenticated_path(&output);
-                    self.authenticated_counter_highest = self
-                        .authenticated_counter_highest
-                        .max(completion.reservation.counter);
-                }
+                self.record_authenticated_current_receive(&output);
                 self.retire_opened_output_into(output, retired, compact_endpoint_data);
             }
             CryptoResult::Sealed(output) => retired.push_output(output),
@@ -209,6 +203,16 @@ impl OwnerState {
                 ));
             }
         }
+    }
+
+    fn record_authenticated_current_receive(&mut self, output: &PacketOutput) {
+        if output.authenticated_receive_epoch
+            .is_some_and(|(epoch, _)| epoch == DataplaneReceiveEpoch::Previous)
+        {
+            return;
+        }
+        self.record_authenticated_path(output);
+        self.authenticated_counter_highest = self.authenticated_counter_highest.max(output.counter);
     }
 
     fn record_authenticated_path(&mut self, output: &PacketOutput) {

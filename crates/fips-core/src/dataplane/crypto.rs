@@ -658,8 +658,21 @@ fn execute_crypto_owner_run(
         // The caller owns a unique subrun range, so this worker is the item's sole writer.
         let state = unsafe { item.begin_crypto(failed) };
         let result = match state {
-            CryptoOwnerRunItemState::Open(packet) => {
-                execute_open_crypto_work(packet, &item.reservation, cipher)
+            CryptoOwnerRunItemState::Open(packet, fallback_key) => {
+                if let Some(fallback) = fallback_key {
+                    // A failed in-place open may alter ciphertext. Only the
+                    // bounded ambiguous-epoch path needs an intact retry copy.
+                    let first = execute_open_crypto_work(packet.clone(), &item.reservation, cipher);
+                    if matches!(first, CryptoResult::Failed(CryptoFailureKind::Open)) {
+                        let mut reservation = item.reservation.clone();
+                        reservation.receive_epoch = reservation.alternate_receive_epoch;
+                        execute_open_crypto_work(packet, &reservation, &fallback)
+                    } else {
+                        first
+                    }
+                } else {
+                    execute_open_crypto_work(packet, &item.reservation, cipher)
+                }
             }
             CryptoOwnerRunItemState::Seal(packet) => {
                 execute_seal_crypto_work(packet, &item.reservation, cipher)
@@ -771,6 +784,7 @@ fn execute_open_crypto_work(
         path_mtu: reservation.path_mtu,
         wire_flags,
         opened_payload_offset: packet.ciphertext_offset,
+        authenticated_receive_epoch: reservation.receive_epoch,
         source_peer: reservation.source_peer,
         path: reservation.output_path.clone(),
         activity_tick: reservation.activity_tick,
@@ -895,6 +909,7 @@ fn execute_seal_crypto_work(
             path_mtu: reservation.path_mtu,
             wire_flags: reservation.wire_flags,
             opened_payload_offset: 0,
+            authenticated_receive_epoch: None,
             source_peer: reservation.source_peer,
             path: reservation.output_path.clone(),
             activity_tick: reservation.activity_tick,

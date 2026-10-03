@@ -153,10 +153,11 @@
                 let PreparedCryptoRun { run, cipher } = prepared;
                 run.items.into_iter().map(move |item| {
                     match item.state.into_inner() {
-                        CryptoOwnerRunItemState::Open(packet) => CapturedCryptoWork::Open(
+                        CryptoOwnerRunItemState::Open(packet, fallback_key) => CapturedCryptoWork::Open(
                             CryptoWork {
                                 reservation: item.reservation,
                                 packet,
+                                fallback_key,
                             },
                             cipher.clone(),
                         ),
