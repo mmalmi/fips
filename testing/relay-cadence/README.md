@@ -106,7 +106,9 @@ FIPS_CADENCE_DIAGNOSTIC_DIR=/absolute/new-idle-logs \
   -- --ignored --exact --test-threads=1 --nocapture
 ```
 
-The report and log directory must not already exist. Source traces identify
+The report and log directory must not already exist. Each private node log
+retains its final 64 KiB, with a header identifying its original size and any
+omitted prefix. Source traces identify
 control type/body length and tracked reservation bytes/token/completion; the
 snapshots retain buyer evidence and payment counters. Status reads are not
 atomic packet captures, so use the trace to identify actual submitted controls.
