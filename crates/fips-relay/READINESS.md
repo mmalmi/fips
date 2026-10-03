@@ -98,6 +98,19 @@ test-fund recovery remain recorded separately. Current Pixel, sustained
 throughput, arbitrary mobile encounters and physical power-loss acceptance remain
 outstanding; these standalone tests do not replace the packaged-build evidence.
 
+The same standalone ARM64 runtime subsequently passes a current 500-ms
+three-router workload pilot with the default 4,000-msat durable window and
+8,000-msat unpaid allowance. All 11,712 payload packets arrive across the fixed
+idle/bursty/steady/high-rate sequence; both channels settle and all 384 test
+sats are collected. Strict measurement validation and all 261 management checks
+pass, and independent closure confirms restored baselines and stopped test
+services. Candidate journals use persistent overlay/UBIFS storage, as confirmed
+by the raw mount evidence and its retained storage-wording correction. See
+[the pilot results](CADENCE-RESULTS.md#current-router-workload-pilot--3-october-2026)
+and `work/hardware-current-r1/cadence-current-r1` in the private recovery bundle.
+The two-second high-rate stream is finite workload acceptance, not a sustained
+throughput, physical power-loss, flash-lifetime or matched cadence comparison.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression and matched 250/500/1000/2000-ms workloads; see [cadence results](CADENCE-RESULTS.md). | Resolve the current native high-rate delivery failure, then sustained and impaired current-build hardware workloads; physical wire cost remains distinct from local submission counters. |

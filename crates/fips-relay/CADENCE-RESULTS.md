@@ -1,5 +1,104 @@
 # Paid-relay cadence measurements
 
+## Persistent storage comparison — 3 October 2026
+
+A predeclared HDD/SSD/SSD/HDD sequence uses the same traced `060f12a56bac`
+runtime and driver. Only temporary workload storage changes, between mechanical
+RAID/XFS and NVMe/ext4; both are persistent filesystems. Each invocation has two
+unchanged five-process trials with 16,000-msat unpaid allowance, a 4,000-msat
+durable window, a 4,000-msat payment trigger and a 500-ms maximum payment age.
+
+| Storage path | High-rate delivered / submitted | Delivery | First-relay publication medians across trials | Queue-full drops |
+| --- | ---: | ---: | ---: | ---: |
+| HDD / XFS | 119,095 / 128,000 | 93.04% | 84.78–91.86 ms | 8,905 |
+| SSD / ext4 | 128,000 / 128,000 | 100% | 10.43–10.47 ms | 0 |
+
+The first relay queues 1,789 packets across the HDD trials, with readmission
+waits reaching 713.29 ms and publication reaching 871.42 ms. Neither SSD run
+queues packets; its longest observed first-relay publication is 20.43 ms.
+Individual delivery counts in execution order are 31,156/31,851,
+32,000/32,000, 32,000/32,000 and 26,793/29,295, each out of 32,000.
+Native queue counters include control traffic; matching the total application
+loss does not identify individual dropped packets.
+
+Bursty and steady delivery is complete. All 48 channels settle and all 40,960
+test sats are collected. Both SSD runs and the last HDD run pass the diagnostic
+cost-boundary checks. The first HDD run retains an unfinished-payment boundary
+rejection, so no aggregate HDD CPU-cost comparison is accepted. Later settlement
+does not repair that sample. All 121 host samples are compiler-free, with no
+cgroup CPU throttling. Ordinary background I/O remains active; mean sampled
+I/O-full averages are 10.09%, 11.29%, 11.43% and 9.85% in execution order.
+
+This identifies storage latency as a major contributor under these conditions;
+device, filesystem and contention change together. It does not establish a
+hardware-only causal comparison, optimal cadence or loss-free behavior under
+arbitrary storage stalls. No production limits, buffers or crash exposure are
+increased. The SSD result still uses doubled unpaid allowance and tracing;
+the full untraced matrix at default limits requires separate acceptance.
+All four runs are closed and rehashed. Raw evidence and the fixed-sequence
+summary remain under `work/payment-reply-recovery/storage-abba-r1-*` in the
+private recovery bundle.
+
+## Current router workload pilot — 3 October 2026
+
+The verified static ARM64 OpenWrt build (`5b64cf8b184b`, runtime
+`6f97dfb03a41`, measurements enabled) passes the existing three-router
+500-ms pilot with harness `2e0b39520`. It retains the default 4,000-msat
+durable window and 8,000-msat unpaid allowance, a separate capped LAN test
+mint, both paying directions and the original three-second payment tails.
+
+| Workload | Delivered / submitted | Middle-router CPU seconds / delivered MiB |
+| --- | ---: | ---: |
+| Idle | 0 / 0 | — |
+| Bursty | 512 / 512 | 1.526 |
+| Steady | 3,200 / 3,200 | 0.946 |
+| High rate | 8,000 / 8,000 | 0.288 |
+
+All 11,712 payloads arrive, with 24 reordered and none missing, duplicated or
+invalid. Idle causes no payment or journal work. Steady and high-rate workloads
+each complete three payment updates; strict delivery, payment-boundary and cost
+validation passes. Both channels settle, all 384 test sats are collected and
+every test wallet is empty. All 261 management checks pass; independent closure
+confirms restored router baselines, stopped candidate processes and mint, and
+removed test filters and executables.
+
+The candidate journals reside on persistent OpenWrt overlay storage backed by
+UBIFS; only the temporary executable and sockets use `/tmp`. The original
+closure's scope text incorrectly says tmpfs, although its raw filesystem output
+already shows overlay. A separately retained `storage-clarification.json` binds
+that correction to the original receipt, saved configuration and fresh mount
+checks without changing test results. Evidence is under
+`work/hardware-current-r1/cadence-current-r1` in the private recovery bundle.
+
+This is one finite workload sequence: high rate offers 4,000 packets/s for two
+seconds. It establishes neither sustained capacity nor a cadence winner,
+physical power-loss safety or flash lifetime. CPU observations include sampling
+and the fixed tail; independent router clocks provide no one-way latency.
+Earlier package and phone acceptance retain their original revisions.
+
+## Admission timing capture — 3 October 2026
+
+Opt-in instrumentation at `060f12a56bac` measures journal publication and queued
+readmission using monotonic clocks. The frozen standalone build passes the real
+UDP publication-wakeup regression, delayed-crypto accounting, checkpoint-callback
+and log-retention checks, three parser tests, and strict Clippy. Normal logging
+leaves the extra tracing disabled; forwarding and accounting semantics are
+unchanged.
+
+The first two-trial high-rate capture delivers 23,743 and 31,267 of 32,000
+packets. At the first relay, publication medians are 83.72 and 91.14 ms, maxima
+822.67 and 154.06 ms. Queued packet waits reach 687.98 and 135.99 ms.
+Publication includes snapshot/serialization, disk writes and allowance
+publication; readmission ends before transport submission. Wakeups can coalesce,
+so these events do not establish an exact causal refill-to-packet interval.
+
+The scratch directory resolves to disk-backed XFS on a mechanical RAID array.
+Both trials pass diagnostic financial-boundary checks, settle all twelve
+channels and collect all 10,240 test sats. Delivery loss still rejects clean-link
+acceptance. Full logs and source/binary hashes verify; all owned processes and
+locks are closed. The private receipt is
+`work/payment-reply-recovery/admission-timing-load-r1-1/closure.json`.
+
 ## Durable-window diagnostic — 3 October 2026
 
 A fixed A–B–B–A sequence compares 4,000 and 8,000 msat durable windows with
