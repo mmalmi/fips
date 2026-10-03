@@ -130,6 +130,26 @@ budgets and bounded unbilled exposure survive; all test funds are collected and
 normal router state is restored. See [the injected-loss results](CADENCE-RESULTS.md#injected-frame-loss-before-and-after-restart)
 for the delivery counts, exact impairment and scope limits.
 
+The current ARM64 runtime also passes the three-router competing-provider cycle
+with harness `f426a35cb`. One source watch selects the cheaper provider, switches
+after an in-flight radio cut, and returns after that radio recovers. Every accepted
+stage requires a complete fresh burst, healthy native delivery feedback and an
+advancing acknowledged payment. The original two 64-sat channels and 128-sat
+source budget remain intact; no extra watch or renewal is issued.
+
+Delivery is 32/32 initially, 61/96 during failover and 80/160 during the return
+phase. The 115 missing packets expose transition disruption despite eventual
+recovery. Alternative-route confirmation takes at most 49.86 seconds including
+paced probing and controller observations; this is not a measured packet outage.
+Both providers settle (6/9 test sats), the source recovers 113, and all 128 test
+sats are collected. All 546 management checks and independent device restoration
+checks pass. The closed receipt is
+`work/hardware-current-r1/diamond-active-r1/closure.json` in the private recovery
+bundle. The source's first hops use management-LAN UDP, onward hops use native
+Wi-Fi, and source/destination share a router. This saved-SAE test does not accept
+fast roaming, isolated quality ranking, global cheapest routes or arbitrary
+mobile encounters. Transition delivery and recovery time still need improvement.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial
