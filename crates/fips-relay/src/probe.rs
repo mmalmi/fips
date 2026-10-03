@@ -11,10 +11,8 @@ use tokio::time::Instant;
 
 const MAGIC: &[u8; 8] = b"FIPSPRB1";
 const REPLY_MAGIC: &[u8; 8] = b"FIPSRPL1";
-const RECEIVE_LIFETIME: Duration = Duration::from_secs(60);
 const HEADER: usize = 40;
 const MAX_PACKETS: u32 = 65_536;
-const MAX_DURATION: Duration = Duration::from_secs(30);
 const DATA_PORT: u16 = 44_740;
 // The last bucket is unbounded. Percentiles from these counts are bounds, not
 // interpolated samples. Actual extrema and sum are also retained.
@@ -30,6 +28,9 @@ pub struct ReceiveProbe {
     pub stream_id: String,
     pub packet_count: u32,
     pub payload_bytes: usize,
+    /// Local operator opt-in; omitted requests keep the 60-second lifetime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_secs: Option<u64>,
     #[serde(default)]
     pub measure_one_way_latency: bool,
     #[serde(default)]
@@ -44,6 +45,9 @@ pub struct SendProbe {
     pub packet_count: u32,
     pub payload_bytes: usize,
     pub packets_per_second: u32,
+    /// Local operator opt-in; omitted requests keep the 30-second deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_secs: Option<u64>,
     #[serde(default)]
     pub measure_round_trip: bool,
 }
@@ -64,15 +68,30 @@ fn validate_shape(count: u32, bytes: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn bounded_duration(seconds: Option<u64>, default: u64, maximum: u64) -> Result<Duration, String> {
+    let seconds = seconds.unwrap_or(default);
+    if !(1..=maximum).contains(&seconds) {
+        return Err(format!("probe duration must be 1..{maximum} seconds"));
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
 impl SendProbe {
+    fn duration(&self) -> Result<Duration, String> {
+        bounded_duration(self.max_duration_secs, 30, 300)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         PeerIdentity::from_npub(&self.destination).map_err(|_| "invalid probe destination")?;
         stream_id(&self.stream_id)?;
         validate_shape(self.packet_count, self.payload_bytes)?;
+        let seconds = self.duration()?.as_secs();
         if !(1..=16_000).contains(&self.packets_per_second)
-            || u64::from(self.packet_count) > u64::from(self.packets_per_second) * 30
+            || u64::from(self.packet_count) > u64::from(self.packets_per_second) * seconds
         {
-            return Err("probe rate must be 1..16000 packets/s and fit within 30 seconds".into());
+            return Err(format!(
+                "probe rate must be 1..16000 packets/s and fit within {seconds} seconds"
+            ));
         }
         Ok(())
     }
@@ -187,7 +206,7 @@ impl ProbeReceiver {
             seen: vec![0; (request.packet_count as usize).div_ceil(64)],
             largest: None,
             first_received: None,
-            expires: Instant::now() + RECEIVE_LIFETIME,
+            expires: Instant::now() + bounded_duration(request.lifetime_secs, 60, 360)?,
             reflect: request.reflect,
             sent: None,
             report: ProbeReport {
@@ -218,6 +237,7 @@ impl ProbeReceiver {
             packet_count: request.packet_count,
             payload_bytes: request.payload_bytes,
             measure_one_way_latency: false,
+            lifetime_secs: Some(request.duration()?.as_secs() + 30),
             reflect: false,
         })?;
         receiver.sent = Some(vec![None; request.packet_count as usize]);
@@ -379,6 +399,7 @@ pub(crate) async fn send(
     endpoint: &FipsEndpoint,
     request: SendProbe,
     state: &SharedReceiver,
+    mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<SendProbeReport, String> {
     request.validate()?;
     let remote =
@@ -388,7 +409,7 @@ pub(crate) async fn send(
         *state.lock().unwrap() = Some(ProbeReceiver::round_trip(&request)?);
     }
     let started = tokio::time::Instant::now();
-    let deadline = started + MAX_DURATION;
+    let deadline = started + request.duration()?;
     let mut report = SendProbeReport {
         stream_id: request.stream_id.to_ascii_lowercase(),
         requested_packets: request.packet_count,
@@ -403,7 +424,14 @@ pub(crate) async fn send(
             + Duration::from_nanos(
                 u64::from(sequence) * 1_000_000_000 / u64::from(request.packets_per_second),
             );
-        tokio::time::sleep_until(due).await;
+        tokio::select! {
+            biased;
+            _ = stop.wait_for(|stopped| *stopped) => {
+                report.stopped_reason = Some("service stopping".into());
+                break;
+            }
+            _ = tokio::time::sleep_until(due) => {}
+        }
         if tokio::time::Instant::now() >= deadline {
             report.stopped_reason = Some("duration limit reached".into());
             break;

@@ -5,7 +5,7 @@ use cashu_service::{
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
 use fips_core::config::{TcpConfig, TransportInstances, UdpConfig, WebSocketConfig};
-use fips_relay::service::{RelayService, native_request};
+use fips_relay::service::{AdminRequest, RelayService, native_request, request};
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -22,6 +22,68 @@ fn network() -> PaymentNetwork {
         .unwrap()
         .as_secs();
     PaymentNetwork::new(110, 0, Arc::new(VirtualClock::new(now)))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn service_stop_cancels_an_active_long_probe() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let root = tempfile::tempdir().unwrap();
+        let mint = LocalMint::start(root.path(), network(), "probe-stop", IssuerMode::ClosedLoop)
+            .await
+            .unwrap();
+        let config = process_support::config(root.path(), mint.url());
+        let npub = RelayService::initialize(config.clone()).await.unwrap();
+        let service = RelayService::load(config.clone()).await.unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(service.serve(async {
+            stopped.await.unwrap();
+        }));
+        while request(&config, &AdminRequest::Status).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let send: AdminRequest = serde_json::from_value(json!({"type":"send_probe", "probe":{
+            "destination":npub, "stream_id":"65".repeat(16), "packet_count":300,
+            "payload_bytes":128, "packets_per_second":1, "max_duration_secs":300,
+            "measure_round_trip":true
+        }}))
+        .unwrap();
+        let sender_config = config.clone();
+        let sender = tokio::spawn(async move { request(&sender_config, &send).await });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let status = request(&config, &AdminRequest::Status).await.unwrap();
+                if status["probe"]["stream_id"] == "65".repeat(16) {
+                    break;
+                }
+                assert!(
+                    !sender.is_finished(),
+                    "the probe must still be running at shutdown"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("long sender acquired its bounded slot");
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("service stop must cancel operator traffic")
+            .unwrap()
+            .unwrap();
+        let report = sender.await.unwrap().unwrap();
+        assert_eq!(report["probe"]["stopped_reason"], "service stopping");
+        assert!(report["probe"]["submitted_packets"].as_u64().unwrap() < 300);
+        assert!(!config.socket_path().exists());
+        assert_eq!(
+            load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+                .await
+                .unwrap()
+                .balance_sat,
+            0
+        );
+    })
+    .await
+    .expect("bounded service-stop acceptance");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

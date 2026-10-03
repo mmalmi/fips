@@ -137,7 +137,8 @@ impl RelayService {
                     .try_acquire()
                     .map_err(|_| "a probe sender is already running")?;
                 Ok(
-                    json!({"probe": probe::send(&self.endpoint, probe, &self.probe_receiver).await?}),
+                    json!({"probe": probe::send(&self.endpoint, probe, &self.probe_receiver,
+                        self.probe_stop.subscribe()).await?}),
                 )
             }
             AdminRequest::PauseRenewals => {
@@ -188,6 +189,8 @@ impl RelayService {
                 _ = jobs.join_next(), if !jobs.is_empty() => {}
             }
         }
+        // Operator traffic must stop promptly; financial jobs still drain.
+        service.probe_stop.send_replace(true);
         drop(listener);
         while jobs.join_next().await.is_some() {}
         std::fs::remove_file(&socket).map_err(|e| e.to_string())?;

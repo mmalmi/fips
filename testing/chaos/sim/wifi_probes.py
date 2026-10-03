@@ -9,22 +9,26 @@ from .paid_settlement import require
 from .wifi_priority_checks import received, submitted
 
 
-def arm(run, source, destination, count, size, *, round_trip=False):
+def arm(run, source, destination, count, size, *, round_trip=False, lifetime_secs=None):
     shape = {"stream_id": secrets.token_hex(16), "packet_count": count, "payload_bytes": size}
     reflection = {"reflect": True} if round_trip else {}
+    lifetime = {} if lifetime_secs is None else {"lifetime_secs": lifetime_secs}
     run.ctl(destination, "receive_probe", probe={
         **shape, "source": run.participants()[source].npub, "measure_one_way_latency": False,
-        **reflection,
+        **reflection, **lifetime,
     })
     return shape
 
 
-def send(run, source, destination, shape, rate, *, round_trip=False):
+def send(run, source, destination, shape, rate, *, round_trip=False,
+         max_duration_secs=None, operation_timeout=None):
     latency = {"measure_round_trip": True} if round_trip else {}
+    duration = {} if max_duration_secs is None else {"max_duration_secs": max_duration_secs}
+    timeout = {} if operation_timeout is None else {"operation_timeout": operation_timeout}
     return run.ctl(source, "send_probe", probe={
         **shape, "destination": run.participants()[destination].npub,
-        "packets_per_second": rate, **latency,
-    })["probe"]
+        "packets_per_second": rate, **latency, **duration,
+    }, **timeout)["probe"]
 
 
 def receive(run, source, destination, shape, *, complete=False, round_trip=False):

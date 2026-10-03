@@ -633,6 +633,45 @@ and settlement, including after an uncertain crash response.
 Focused checks: `python3 -m unittest tests.test_wifi_restart_load
 tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
 
+### Continuous paid Wi-Fi renewal
+
+`sim.wifi_renewal_load` runs two simultaneous five-minute streams through one
+paid middle router: 42,000 packets per direction, 1,000 bytes each, at 140
+packets/s. Use the same three-router inventory and owned remote test mint as
+`sim.paid_wifi`, and a verified ARM64 measurements build supporting the bounded
+`max_duration_secs` and `lifetime_secs` diagnostic options:
+
+```sh
+PYTHONPATH=testing/chaos python3 -m sim.wifi_renewal_load \
+  --inventory /private/routers.json --binary /private/verified/fips-relay \
+  --mint-binary /private/verified/fips-relay-test-mint \
+  --mint-host /private/mint-host.json --mint-address PRIVATE_MINT_IPV4 \
+  --output /private/new-renewal-run
+```
+
+The tariff is 1 msat/KiB and each quote allows 32 MiB. Automatic renewal uses
+80% of channel capacity or allowance, with a 30-second expiry lead. The original
+32-sat channels, 64-sat lifetime buyer budgets, 128-sat wallet exposure limits,
+64-sat locked-capital limits, 8,000-msat grace and 4,000-msat durability window
+remain unchanged. Each router receives 128 test sats; all 384 must be collected.
+Quote lifetime remains 1,200 seconds; channel service ends after 900 seconds,
+with the immutable mint refund deadline at 1,800 seconds.
+
+Both receivers are armed before either sender starts. Each sender runs once,
+without pauses around renewal or payload retries. Acceptance requires every
+packet, unchanged service processes, one actual refunded predecessor and one
+accepted successor in each direction, and fresh delivery plus increased
+successor credit while the continuous sends remain active. Raw failed or partial
+streams remain evidence. After the exact sends finish, cleanup pauses renewals,
+verifies all retained channel settlements and uses the shared wallet collector.
+Unresolved funding retains the original accounts and mint for recovery.
+
+The diagnostic sender is bounded at 300 seconds, receiver at 360 seconds and
+individual remote send call at 330 seconds. These explicit bounds do not change
+the existing 30-second/60-second probe defaults or the short cadence matrix.
+This finite renewal regression is not a cadence comparison, impaired-radio
+acceptance, physical power-loss test or maximum-throughput qualification.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded
@@ -689,7 +728,7 @@ Larger RTT workloads fail before setup rather than enlarging financial terms.
 The receiver is explicitly armed with `receive_probe.reflect=true`; the source
 uses `send_probe.measure_round_trip=true`. Defaults remain disabled. Reflection
 accepts only a matching authenticated source, fresh stream and unseen valid
-sequence, and the arm expires after 60 seconds. Replies have a distinct
+sequence, and the arm expires after 60 seconds by default. Replies have a distinct
 application marker and never cause more replies. No route is purchased by the
 diagnostic. Re-arming a receiver while a probe sender runs is rejected.
 

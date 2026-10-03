@@ -423,6 +423,7 @@ impl MixedBench {
                     packet_count: count,
                     payload_bytes: bytes,
                     measure_one_way_latency: false,
+                    lifetime_secs: None,
                     reflect: false,
                 },
             },
@@ -436,6 +437,7 @@ impl MixedBench {
             payload_bytes: bytes,
             packets_per_second: rate,
             measure_round_trip: false,
+            max_duration_secs: None,
         }
     }
 

@@ -9,6 +9,7 @@ fn request() -> SendProbe {
         payload_bytes: 80,
         packets_per_second: 10,
         measure_round_trip: true,
+        max_duration_secs: None,
     }
 }
 
@@ -20,6 +21,7 @@ fn reflector(request: &SendProbe) -> ProbeReceiver {
         payload_bytes: request.payload_bytes,
         reflect: true,
         measure_one_way_latency: false,
+        lifetime_secs: None,
     })
     .unwrap()
 }
@@ -132,4 +134,50 @@ fn existing_json_requests_remain_passive_by_default() {
     let parsed: ReceiveProbe = serde_json::from_value(json).unwrap();
     assert!(!parsed.reflect);
     assert!(!parsed.measure_one_way_latency);
+}
+
+#[test]
+fn explicit_long_probes_remain_bounded_and_preserve_short_defaults() {
+    let mut json = serde_json::to_value(request()).unwrap();
+    json["packet_count"] = 42_000.into();
+    json["packets_per_second"] = 140.into();
+    let short: SendProbe = serde_json::from_value(json.clone()).unwrap();
+    assert!(short.validate().is_err());
+    json["max_duration_secs"] = 300.into();
+    let long: SendProbe = serde_json::from_value(json.clone()).unwrap();
+    assert!(long.validate().is_ok());
+    let round_trip = ProbeReceiver::round_trip(&long).unwrap();
+    assert!(round_trip.expires > Instant::now() + Duration::from_secs(329));
+    assert!(round_trip.expires <= Instant::now() + Duration::from_secs(330));
+    for invalid in [0, 299, 301, u64::MAX] {
+        json["max_duration_secs"] = invalid.into();
+        assert!(
+            serde_json::from_value::<SendProbe>(json.clone())
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    json["max_duration_secs"] = 300.into();
+    json["packet_count"] = 65_537.into();
+    json["packets_per_second"] = 1_000.into();
+    assert!(
+        serde_json::from_value::<SendProbe>(json)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+
+    let mut json = serde_json::json!({"source":request().destination, "stream_id":"61".repeat(16),
+        "packet_count":42_000, "payload_bytes":1_000});
+    let receiver = ProbeReceiver::new(serde_json::from_value(json.clone()).unwrap()).unwrap();
+    assert!(receiver.expires > Instant::now() + Duration::from_secs(59));
+    assert!(receiver.expires <= Instant::now() + Duration::from_secs(60));
+    json["lifetime_secs"] = 360.into();
+    let receiver = ProbeReceiver::new(serde_json::from_value(json.clone()).unwrap()).unwrap();
+    assert!(receiver.expires > Instant::now() + Duration::from_secs(359));
+    for invalid in [0, 361, u64::MAX] {
+        json["lifetime_secs"] = invalid.into();
+        assert!(ProbeReceiver::new(serde_json::from_value(json.clone()).unwrap()).is_err());
+    }
 }

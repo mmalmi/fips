@@ -1,6 +1,22 @@
 """Shared paid-route observations from individually atomic local journals."""
 
 
+class FinancialObservationChanged(RuntimeError):
+    """Individually atomic observations disagree across a live transition."""
+
+
+def consistent_observation(condition, reason):
+    if not condition:
+        raise FinancialObservationChanged(reason)
+
+
+def account_journals(run):
+    """Keep raw wallet authority in memory; callers emit only monetary summaries."""
+    return {name: {kind: run.state_json(name, relative) for kind, relative in (
+        ("controller", "controller/controller.json"), ("buyer", "buyer/buyer.json"),
+        ("seller", "seller/ledger.json"))} for name in run.nodes}
+
+
 def financial_snapshot(run, *, wallet):
     """Read live accounting; pass None when a live wallet snapshot is unavailable."""
     result = {}
@@ -12,7 +28,7 @@ def financial_snapshot(run, *, wallet):
         authorized = sum(channel["authorized_sat"] for channel in buyer["channels"].values())
         if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized:
             # Journals and status are individually atomic, not one snapshot.
-            raise RuntimeError("financial observation changed during sampling")
+            raise FinancialObservationChanged("financial observation changed during sampling")
         funding = {key: (item["funded"]["terms"]["id"], item["funded"]["wallet_operation_id"])
                    for key, item in controller["funding"].items() if item["funded"] is not None}
         result[node] = {

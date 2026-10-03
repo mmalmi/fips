@@ -54,6 +54,8 @@ class SettlementFixture:
     The caller verifies raw funding terms and rejects unresolved intents before
     freezing channel ownership; a financial summary alone cannot establish this.
     Optional provider identities also require exact per-wallet conservation.
+    Prior settlements require the original terms and a durable verified refund;
+    their immutable reports remain part of final channel and wallet conservation.
     """
 
     initial_balances: Mapping[str, int]
@@ -61,6 +63,7 @@ class SettlementFixture:
     channel_capacity_sat: int
     channel_owners: Mapping[str, str]
     channel_providers: Mapping[str, str] | None = None
+    prior_settlements: Mapping[str, Mapping] | None = None
 
     def __post_init__(self):
         for field in ("initial_balances", "buyer_budgets", "channel_owners", "channel_providers"):
@@ -85,6 +88,15 @@ class SettlementFixture:
                             and provider != self.channel_owners[channel]
                             for channel, provider in self.channel_providers.items()),
                     "fixture provider graph differs from original channels")
+        prior = {} if self.prior_settlements is None else self.prior_settlements
+        require(isinstance(prior, Mapping) and set(prior) <= set(self.channel_owners),
+                "prior settlement lacks a frozen funded owner")
+        frozen = {}
+        for channel, report in prior.items():
+            checked = validate_report(report, capacity_sat=self.channel_capacity_sat)
+            require(checked["channel_id"] == channel, "prior settlement channel differs")
+            frozen[channel] = MappingProxyType(checked)
+        object.__setattr__(self, "prior_settlements", MappingProxyType(frozen))
 
     @property
     def issued_sat(self):
@@ -119,10 +131,15 @@ def original_channels(nodes, finances, *, fixture=None):
         funded = ((0 if node == "n02" else 32) if fixture is None else
                   sum(owner == node for owner in fixture.channel_owners.values())
                   * fixture.channel_capacity_sat)
-        require(amount(budget["wallet_debited_sat"]) == amount(budget["locked_sat"])
-                == amount(budget["exposure_sat"]) == funded
+        prior = ({} if fixture is None else {key: report for key, report in fixture.prior_settlements.items()
+                 if fixture.channel_owners[key] == node})
+        refunds = sum(report["refunded_sat"] for report in prior.values())
+        released = len(prior) * (32 if fixture is None else fixture.channel_capacity_sat)
+        require(amount(budget["wallet_debited_sat"]) == funded
+                and amount(budget["locked_sat"]) == funded - released
+                and amount(budget["exposure_sat"]) == funded - refunds
                 and amount(budget["pending_reserved_sat"]) == 0
-                and amount(budget["wallet_refunded_sat"]) == 0,
+                and amount(budget["wallet_refunded_sat"]) == refunds,
                 "original funding budget differs from the fixed fixture")
         require(amount(state["authorized"]) == sum(amount(value) for value in state["signed"].values())
                 and amount(state["remaining"]) + state["authorized"]
@@ -137,6 +154,9 @@ def original_channels(nodes, finances, *, fixture=None):
             operations.add(operation)
         require(set(state["signed"]) == {channel for channel, _ in state["funding"].values()},
                 "original authorization differs from funded channels")
+        require(all(state["signed"].get(channel) == report["paid_sat"]
+                    for channel, report in prior.items()),
+                "prior settlement differs from retained authorization")
     if fixture is None:
         require(len(owners) == 2 and set(owners.values()) == {"n01", "n03"},
                 "expected the original two endpoint-funded channels")
@@ -159,6 +179,18 @@ def validate_report(report, *, capacity_sat=32):
     return {"channel_id": report["channel_id"], **values}
 
 
+def verified_refund(controller, channel, terms):
+    """Only durable wallet-confirmed refunds release a fixture's prior capital."""
+    record = controller["buyer_settlements"].get(channel)
+    if record is None or record["refunded"] is not True:
+        return None
+    report = validate_report(record["report"], capacity_sat=terms["capacity_sat"])
+    require(record["channel"] == terms and report["channel_id"] == channel
+            and amount(record["wallet_refund_sat"]) == report["refunded_sat"],
+            "released capital lacks exact verified refund evidence")
+    return report
+
+
 def validate_finances(before, after, reports, *, fixture=None):
     require(set(before) == set(after), "settlement changed the account set")
     for node, prior in before.items():
@@ -171,7 +203,10 @@ def validate_finances(before, after, reports, *, fixture=None):
         require(amount(new["wallet_debited_sat"]) == amount(old["wallet_debited_sat"]),
                 "settlement changed historical wallet debit")
         refunds = sum(reports[channel]["refunded_sat"] for channel, _ in prior["funding"].values())
-        require(amount(old["wallet_refunded_sat"]) == 0
+        prior_refunds = (0 if fixture is None else sum(
+            report["refunded_sat"] for channel, report in fixture.prior_settlements.items()
+            if fixture.channel_owners[channel] == node))
+        require(amount(old["wallet_refunded_sat"]) == prior_refunds
                 and amount(new["wallet_refunded_sat"]) == refunds,
                 "settlement refund differs from the original channels")
         require(amount(new["exposure_sat"]) == new["wallet_debited_sat"] - refunds,
@@ -221,6 +256,9 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
                     "settlement returned an unexpected or duplicate channel")
             reports[channel] = validate_report(report, capacity_sat=capacity)
     require(set(reports) == set(owners), "settlement omitted an original channel")
+    if fixture is not None:
+        require(all(reports[channel] == report for channel, report in fixture.prior_settlements.items()),
+                "settlement changed a verified predecessor report")
     settled = run.finances()
     validate_finances(prior_finances, settled, reports, fixture=fixture)
     collect_settled_wallets(run, settled, reports, owners, mint, execute=execute, stop=stop,

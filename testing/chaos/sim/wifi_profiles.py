@@ -26,11 +26,13 @@ def configure_stopped(profile, **changes):
 
 
 class RelayCommands:
-    def control(self, kind, original=False, action="ctl", **fields):
+    def control(self, kind, original=False, action="ctl", operation_timeout=45, **fields):
+        if type(operation_timeout) is not int or not 1 <= operation_timeout <= 330:
+            raise ValueError("control operation timeout must be an integer in 1..330 seconds")
         binary = self.original_binary if original else self.binary
         config = self.original_config if original else self.config
         return json.loads(self.remote([binary, action, config],
-                                     json.dumps({"type": kind, **fields}).encode(), timeout=45))
+                                     json.dumps({"type": kind, **fields}).encode(), timeout=operation_timeout))
 
     def native(self, command):
         return json.loads(self.remote([self.binary, "native", self.config],

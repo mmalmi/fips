@@ -8,9 +8,11 @@ import copy
 import json
 
 from .paid_phone_finances import _address, _zero
+from .paid_finances import account_journals as journals
 from .paid_relay import eventually
 from .paid_settlement import (
     SettlementFixture, amount, check_mint, collect_settled_wallets, require, validate_report,
+    verified_refund,
 )
 from .wifi_promotion_checks import CEILING, FEE, FULL_QUOTA, POLICY
 from .wifi_remote import digest
@@ -26,20 +28,10 @@ def check(condition, message):
 
 
 def refund(controller, channel, terms):
-    record = controller["buyer_settlements"].get(channel)
-    if record is None or record["refunded"] is not True:
-        return None
-    report = validate_report(record["report"])
-    check(record["channel"] == terms and report["channel_id"] == channel
-          and amount(record["wallet_refund_sat"]) == report["refunded_sat"],
-          "released promotion capital lacks exact verified refund evidence")
-    return report
-
-
-def journals(run):
-    return {name: {kind: run.state_json(name, relative) for kind, relative in (
-        ("controller", "controller/controller.json"), ("buyer", "buyer/buyer.json"),
-        ("seller", "seller/ledger.json"))} for name in NAMES}
+    try:
+        return verified_refund(controller, channel, terms)
+    except RuntimeError as error:
+        raise ValueError(str(error)) from error
 
 
 class PromotionAccounts:
