@@ -39,6 +39,8 @@ impl SourceAdmissionWait {
             return Some(queued);
         };
         if now >= expires {
+            tracing::debug!(target: "fips_core::dataplane::source_wait",
+                reason = "expired", packets = 1, "Source admission wait dropped");
             return Some(queued);
         }
         if self
@@ -56,6 +58,10 @@ impl SourceAdmissionWait {
                 || peer_packets >= SOURCE_ADMISSION_PEER_PACKETS
                 || bytes > SOURCE_ADMISSION_PEER_BYTES.saturating_sub(peer_bytes)
             {
+                tracing::debug!(target: "fips_core::dataplane::source_wait",
+                    reason = "capacity", packets = 1,
+                    held_packets = self.tracked.len(), held_bytes = self.bytes,
+                    peer_packets, peer_bytes, "Source admission wait dropped");
                 return Some(queued);
             }
             self.bytes += bytes;
@@ -113,10 +119,16 @@ impl SourceAdmissionWait {
 
 impl Dataplane {
     fn cancel_source_admissions(&mut self, owner: Option<OwnerId>) {
-        self.remove_source_admissions(|charge| owner.is_none_or(|owner| owner == charge.owner));
+        self.remove_source_admissions("invalidated", |charge| {
+            owner.is_none_or(|owner| owner == charge.owner)
+        });
     }
 
-    fn remove_source_admissions(&mut self, remove: impl Fn(&SourceAdmissionCharge) -> bool) {
+    fn remove_source_admissions(
+        &mut self,
+        reason: &'static str,
+        remove: impl Fn(&SourceAdmissionCharge) -> bool,
+    ) {
         // Timer and replacement cleanup also visit woken packets that are still
         // queued behind in-flight crypto. Such packets must not outlive the hold.
         let removals: std::collections::HashSet<_> = self
@@ -128,6 +140,8 @@ impl Dataplane {
         if removals.is_empty() {
             return;
         }
+        tracing::debug!(target: "fips_core::dataplane::source_wait",
+            reason, packets = removals.len(), "Source admission wait dropped");
         let mut removed = LaneLens::default();
         self.source_wait.packets.retain(|waiting| {
             if !removals.contains(&waiting.queued.ingress_seq) {
@@ -179,7 +193,7 @@ impl Dataplane {
             return;
         }
         let now = tokio::time::Instant::now();
-        self.remove_source_admissions(|charge| charge.expires <= now);
+        self.remove_source_admissions("expired", |charge| charge.expires <= now);
         let count = self.source_wait.packets.len();
         for _ in 0..count {
             let waiting = self

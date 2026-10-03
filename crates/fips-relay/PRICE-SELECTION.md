@@ -183,6 +183,8 @@ exists. No sequence, sent metric or financial token is reserved while waiting.
 Already submitted packets are never replayed or charged to the successor by this
 mechanism. Slow renewals, full queues and packets already in flight can still
 lose traffic; this is bounded source continuity, not a delivery guarantee.
+For a diagnostic run, `RUST_LOG=warn,fips_core::dataplane::source_wait=debug`
+reports hold drops caused by capacity, expiry or invalidation, without payloads.
 
 Unknown/unpurchased routes and direct endpoints retain their original admission
 paths, so bounded bootstrap and earned return traffic can still reach the relay's
