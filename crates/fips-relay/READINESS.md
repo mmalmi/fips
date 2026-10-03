@@ -150,6 +150,18 @@ Wi-Fi, and source/destination share a router. This saved-SAE test does not accep
 fast roaming, isolated quality ranking, global cheapest routes or arbitrary
 mobile encounters. Transition delivery and recovery time still need improvement.
 
+The existing native recovery-timing simulation now follows both edge loss and
+return, using one numbered stream per phase, the default selector policy and
+the original channels. On baseline runtime `060f12a56bac`, it delivers 84/128
+packets during loss and 255/256 after rejoin. The alternative first delivers
+after 22.00 seconds and has fresh quality/payment evidence by 25.75 seconds;
+the returning cheaper route has that evidence by 14.79 seconds. Complete-batch
+confirmation takes 47.75 and 24.01 seconds respectively. All 259 test sats are
+conserved. Five focused timeline checks also pass. The closed receipt is
+`work/payment-reply-recovery/route-return-r2/closure.json` in the private recovery
+bundle. This extends simulation coverage; it does not explain or resolve the
+longer blackout observed on the physical return path.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial

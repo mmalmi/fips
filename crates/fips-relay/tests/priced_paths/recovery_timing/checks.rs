@@ -6,8 +6,10 @@ pub(super) fn summarize(
     received: &BTreeMap<usize, Received>,
     observations: &[Observation],
     cut: u64,
+    schedule: Schedule,
 ) -> Result<Value, &'static str> {
-    if sent.len() != PACKETS || sent.iter().enumerate().any(|(i, item)| item.sequence != i) {
+    if sent.len() != schedule.packets || sent.iter().enumerate().any(|(i, item)| item.sequence != i)
+    {
         return Err("the one finite numbered stream was not fully submitted");
     }
     let (first_sequence, first_receipt) = sent
@@ -15,18 +17,18 @@ pub(super) fn summarize(
         .filter(|item| item.started_at_ms > cut)
         .filter_map(|item| received.get(&item.sequence).map(|r| (item.sequence, r)))
         .min_by_key(|(_, receipt)| receipt.observed_at_ms)
-        .ok_or("no newly submitted payload arrived after the edge cut")?;
+        .ok_or("no newly submitted payload arrived after the transition")?;
     let first_delivery = first_receipt.observed_at_ms;
     let working = observations
         .iter()
         .find(|sample| sample.working && sample.started_at_ms >= first_delivery)
         .ok_or("no delivered, fully promoted replacement with fresh quality and provider credit")?;
-    for batch in sent.chunks_exact(BATCH) {
+    for batch in sent.chunks_exact(schedule.batch) {
         let first = &batch[0];
         let Some(agreement) = first
             .batch_agreement
             .as_ref()
-            .filter(|a| a.provider == 2 && a.quota > 32_768)
+            .filter(|a| a.provider == schedule.provider && a.quota > 32_768)
         else {
             continue;
         };
@@ -62,32 +64,37 @@ pub(super) fn summarize(
             continue;
         }
         return Ok(json!({
-            "first_post_cut_delivery_sequence": first_sequence,
-            "first_post_cut_delivery_enqueued_unix_ms": first_receipt.enqueued_at_ms,
-            "first_post_cut_delivery_observed_ms": first_delivery,
+            "first_post_transition_delivery_sequence": first_sequence,
+            "first_post_transition_delivery_enqueued_unix_ms": first_receipt.enqueued_at_ms,
+            "first_post_transition_delivery_observed_ms": first_delivery,
             "working_route_observed_ms": working.finished_at_ms,
             "batch_confirmation_observed_ms": confirmation.finished_at_ms,
             "batch_first_sequence": first.sequence,
             "batch_last_sequence": batch.last().unwrap().sequence,
-            "delivery_after_cut_ms": first_delivery - cut,
-            "working_after_cut_ms": working.finished_at_ms - cut,
+            "delivery_after_transition_ms": first_delivery - cut,
+            "working_after_transition_ms": working.finished_at_ms - cut,
             "working_after_delivery_ms": working.finished_at_ms - first_delivery,
-            "confirmation_after_cut_ms": confirmation.finished_at_ms - cut,
+            "confirmation_after_transition_ms": confirmation.finished_at_ms - cut,
             "confirmation_after_working_ms": confirmation.finished_at_ms - working.finished_at_ms,
             "batch_receipt_to_confirmation_ms": confirmation.finished_at_ms - last_arrival,
             "delivered_packets": received.len(),
+            "missing_packets": sent.len() - received.len(),
+            "longest_missing_run": sent.iter().fold((0, 0), |(current, longest), item| {
+                let current = if received.contains_key(&item.sequence) { 0 } else { current + 1 };
+                (current, longest.max(current))
+            }).1,
             "first_feedback_timeout_observed_ms": observations.iter().find(|o| {
                 o.details["feedback_timed_out"] == true
             }).map(|o| o.finished_at_ms),
             "first_trial_observed_ms": observations.iter().find(|o| {
-                o.agreement.as_ref().is_some_and(|a| a.provider == 2 && a.quota == 32_768)
+                o.agreement.as_ref().is_some_and(|a| a.provider == schedule.provider && a.quota == 32_768)
             }).map(|o| o.finished_at_ms),
             "first_full_replacement_observed_ms": observations.iter().find(|o| {
-                o.agreement.as_ref().is_some_and(|a| a.provider == 2 && a.quota > 32_768)
+                o.agreement.as_ref().is_some_and(|a| a.provider == schedule.provider && a.quota > 32_768)
             }).map(|o| o.finished_at_ms),
         }));
     }
-    Err("no complete 32-packet batch bracketed by the same working replacement agreement")
+    Err("no complete batch bracketed by the same working replacement agreement")
 }
 
 #[cfg(test)]
@@ -138,12 +145,17 @@ mod tests {
     #[test]
     fn delivery_and_working_route_precede_batch_confirmation() {
         let (sent, received, observations) = fixture();
-        let summary = summarize(&sent, &received, &observations, 100).unwrap();
-        assert_eq!(summary["first_post_cut_delivery_observed_ms"], 10_010);
+        let summary = summarize(&sent, &received, &observations, 100, FAILOVER).unwrap();
+        assert_eq!(
+            summary["first_post_transition_delivery_observed_ms"],
+            10_010
+        );
         assert_eq!(summary["working_route_observed_ms"], 10_101);
         assert_eq!(summary["batch_confirmation_observed_ms"], 32_001);
         assert_eq!(summary["confirmation_after_working_ms"], 21_900);
         assert_eq!(summary["batch_first_sequence"], 32);
+        assert_eq!(summary["missing_packets"], 19);
+        assert_eq!(summary["longest_missing_run"], 19);
     }
 
     #[test]
@@ -152,12 +164,12 @@ mod tests {
         for sequence in [63, 95, 127] {
             received.remove(&sequence);
         }
-        assert!(summarize(&sent, &received, &observations, 100).is_err());
+        assert!(summarize(&sent, &received, &observations, 100, FAILOVER).is_err());
         let (sent, received, _) = fixture();
         for sample in &mut observations {
             sample.agreement.as_mut().unwrap().id = "changed".into();
         }
-        assert!(summarize(&sent, &received, &observations, 100).is_err());
+        assert!(summarize(&sent, &received, &observations, 100, FAILOVER).is_err());
     }
 
     #[test]
@@ -166,7 +178,7 @@ mod tests {
         for sample in &mut observations {
             sample.working = false;
         }
-        assert!(summarize(&sent, &received, &observations, 100).is_err());
+        assert!(summarize(&sent, &received, &observations, 100, FAILOVER).is_err());
     }
 
     #[test]
@@ -181,8 +193,11 @@ mod tests {
                 enqueued_at_ms: 1,
             },
         );
-        let summary = summarize(&sent, &received, &observations, 100).unwrap();
-        assert_eq!(summary["first_post_cut_delivery_observed_ms"], 10_010);
+        let summary = summarize(&sent, &received, &observations, 100, FAILOVER).unwrap();
+        assert_eq!(
+            summary["first_post_transition_delivery_observed_ms"],
+            10_010
+        );
     }
 
     #[test]
@@ -200,6 +215,6 @@ mod tests {
             });
         }
         observations.sort_by_key(|sample| sample.started_at_ms);
-        assert!(summarize(&sent, &received, &observations, 100).is_err());
+        assert!(summarize(&sent, &received, &observations, 100, FAILOVER).is_err());
     }
 }
