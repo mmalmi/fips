@@ -14,6 +14,19 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+The newer standalone `80bf5baec` ARM64 runtime passes the full matched
+three-router cadence matrix: two opposite-order repetitions of the 250-ms,
+500-ms, 1-s and 2-s policies, with default financial limits and persistent
+overlay/UBIFS journals. All 93,696 payloads arrive; strict measurement validation
+passes. All sixteen channels settle, all 3,072 test sats are collected, and all
+2,142 management checks pass. Independent closure confirms restored router
+state and stopped test services. See [the matched hardware results](CADENCE-RESULTS.md#matched-router-cadence-matrix--3-october-2026)
+for payment CPU, journal and carrier costs and the retained evidence. The 1-s
+and 2-s policies reduce measured payment overhead in the finite high-rate
+workload; the 500-ms default remains unchanged pending sustained/impaired
+comparisons. This does not accept a new package, physical power loss, mobile
+handover, flash lifetime or production deployment.
+
 The current r57 package contains the receiver-wallet and outgoing-wallet recovery
 changes. It uses the identical accepted r56 ARM64 executable, built from private
 FIPS integration `83cb4d7815db`, SDK `ff1678c2b6ca`, CDK `8de95a89c9e0` and

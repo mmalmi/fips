@@ -1,5 +1,67 @@
 # Paid-relay cadence measurements
 
+## Matched router cadence matrix — 3 October 2026
+
+The full eight-trial hardware matrix passes on the standalone `80bf5baec`
+ARM64 runtime, using the unchanged `59c8901c2` harness. The three OpenWrt
+routers use native Ethernet over their dedicated 802.11s radio, with one paid
+middle relay and two funded directions. Candidate journals remain on persistent
+overlay/UBIFS storage. The optimized, measurements-enabled executable is
+`4a53448ae49162f7643e0c47de2b4bea0ca45806ca34ab8e73442d75e130c0d6`.
+
+Policies run in 250/500/1000/2000/2000/1000/500/250-ms order. Each fresh trial
+retains the default 8,000-msat unpaid allowance, 4,000-msat durable window,
+32-sat channel capacities, one-msat/KiB tariff and common three-second payment
+tail. The workloads are four seconds idle, eight 64-packet bursts, 3,200 packets
+at 400 packets/s, and 8,000 packets at 4,000 packets/s. Payloads are 1,000 bytes;
+each burst retains its final 800-ms sleep. Measured payloads are not retried.
+
+All 93,696 submitted payloads arrive, including all 64,000 high-rate payloads.
+There are 151 reordered packets, no duplicates or invalid payloads, and no
+controller errors. Strict delivery, payment-boundary and cost validation passes.
+Every idle and bursty window records zero new payment updates, usage polls,
+payment CPU, journal work and local payment-carrier submissions. This describes
+those measured windows; it does not classify the burst traffic as free or remove
+the initial purchases. Every steady window completes three payment updates.
+
+High-rate costs below average two trials per policy. Payment costs sum all three
+candidate processes; each trial delivers 8,000,000 application bytes.
+
+| Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Middle-router CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 4 | 29.55 | 37.40 | 9.53 | 0.291 |
+| 500 ms | 3 | 23.18 | 24.12 | 7.15 | 0.287 |
+| 1 s | 2 | 14.34 | 15.70 | 4.76 | 0.284 |
+| 2 s | 2 | 14.44 | 17.54 | 4.76 | 0.280 |
+
+Payment CPU covers the existing synchronous spans, not complete transport or
+wallet cost. Journal bytes are logical relay writes, excluding wallet SQLite and
+physical flash writes. Local payment-carrier bytes include submitted TCP/FIPS
+segments, acknowledgments, retries and the Ethernet transport prefix; they
+exclude opaque transit, kernel/radio framing, radio retries and airtime. Record
+bytes and carrier bytes are nested measurements, not additive overhead.
+OS process I/O is unavailable on all three routers and remains null. Independent
+router clocks provide no one-way latency. CPU windows include sampling and the
+fixed tail; raw evidence retains each repetition and costs between windows.
+
+All sixteen channels settle, all 3,072 test sats are collected and all 2,142
+management checks pass. Independent closure reruns the strict analyzer, checks
+the source/artifact evidence and verifies restored router baselines, stopped
+candidate/guard/mint processes, and removed temporary executables and filters.
+The receipt is `work/hardware-current-r1/cadence-current-r2/closure.json` in the
+private recovery bundle, SHA-256
+`5c022698637de06f1f15a2fc4cf5c141f7e402936ece5c3f6e846090b6b4c56f`;
+`summary.json` and `reduced-summary.json` retain the complete and reduced results.
+The sixteen focused hardware-harness checks and 129 analyzer checks pass.
+
+The 1-s and 2-s settings have fewer updates and lower measured payment cost in
+this finite high-rate workload. Two repetitions do not establish an optimal
+cadence or a significant whole-router improvement, so the 500-ms default stays
+unchanged. The two-second burst does not qualify sustained capacity, impaired
+radio conditions, mobile handover, flash lifetime, physical power loss, a long
+soak or production deployment. Earlier packaged and phone acceptance retains
+its recorded revision.
+
 ## Router load and process recovery — 3 October 2026
 
 The same standalone ARM64 build used for the router pilot (`5b64cf8b184b`,
