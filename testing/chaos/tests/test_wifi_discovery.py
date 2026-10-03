@@ -1,5 +1,6 @@
 """Exercise guard ownership and expired-lease behavior before a hardware outage."""
 
+import copy
 import json
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -406,6 +407,46 @@ class GuardTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_restoration_allows_known_mesh_links_without_losing_saved_state(self):
+        original = {
+            name: {'identity': name, 'hashes': 'saved config and accounts',
+                   'remaining_budget_sat': 64, 'connected_peers': [],
+                   'mesh_runtime': {'mac': f'02:00:00:00:00:0{index}'}}
+            for index, name in enumerate(('n01', 'n02', 'n03'), 1)
+        }
+        existing = ('n03', 'ethernet', '020000000003')
+        recovered = ('n02', 'ethernet', '020000000002')
+        original['n01']['connected_peers'] = [existing]
+        cases = [({}, True), ({'connected_peers': [existing, recovered]}, True),
+                 ({'connected_peers': [recovered]}, False),
+                 ({'connected_peers': [existing, ('unknown', *recovered[1:])]}, False),
+                 ({'connected_peers': [existing, ('n02', 'udp', recovered[2])]}, False),
+                 ({'connected_peers': [existing, ('n02', 'ethernet', '020000000004')]}, False),
+                 ({'hashes': 'changed'}, False), ({'remaining_budget_sat': 63}, False)]
+
+        def observe(_label, predicate, _timeout):
+            if not predicate():
+                raise RuntimeError('baseline not restored')
+
+        for changes, accepted in cases:
+            with self.subTest(changes=changes):
+                run = object.__new__(WifiRun)
+                run.original = copy.deepcopy(original)
+                current = copy.deepcopy(original)
+                current['n01'].update(changes)
+                run.nodes = {name: Mock(baseline=Mock(return_value=value))
+                             for name, value in current.items()}
+                run.evidence, run.save = {'passed': True}, Mock()
+                run.monitor = SimpleNamespace(samples=[], errors=[], close=Mock())
+                with patch('sim.wifi_discovery.eventually', observe):
+                    if accepted:
+                        run.finish()
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'restoration incomplete'):
+                            run.finish()
+                self.assertEqual(run.evidence['passed'], accepted)
+                self.assertEqual(run.original, original)
+
     def test_false_trial_marker_may_be_omitted_but_true_or_paid_is_rejected(self):
         validate_free_offer({"price": {"msat": 0}})
         validate_free_offer({"price": {"msat": 0}, "trial": False})

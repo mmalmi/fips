@@ -57,6 +57,18 @@ def original_ethernet(config):
             for item in entries]
 
 
+def baseline_restored(current, original, originals):
+    """Keep saved state and links; allow known original routers to rediscover."""
+    fixed = lambda state: {key: value for key, value in state.items() if key != 'connected_peers'}
+    if fixed(current) != fixed(original):
+        return False
+    before = {tuple(peer) for peer in original['connected_peers']}
+    after = {tuple(peer) for peer in current['connected_peers']}
+    known = {(state['identity'], 'ethernet', state['mesh_runtime']['mac'].replace(':', ''))
+             for state in originals.values() if state['identity'] != original['identity']}
+    return before <= after <= before | known
+
+
 class Router(RelayCommands, SshCommands):
     def __init__(self, spec, run, output, open_mesh=None):
         if not re.fullmatch(r"[0-9a-f]{12}", run):

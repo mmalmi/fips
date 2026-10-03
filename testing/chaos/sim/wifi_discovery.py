@@ -21,7 +21,7 @@ import time
 
 from .paid_faults import capture_probe
 from .paid_relay import eventually, relay_config
-from .wifi_remote import ETHERTYPE, Router, digest
+from .wifi_remote import ETHERTYPE, Router, baseline_restored, digest
 
 
 def free_config(router):
@@ -318,7 +318,7 @@ class WifiRun:
         self.evidence["cleanup_errors"] = errors
         for name, original in self.original.items():
             def restored():
-                return self.nodes[name].baseline() == original
+                return baseline_restored(self.nodes[name].baseline(), original, self.original)
             try:
                 eventually("original router state restored", restored, 100)
             except Exception as error:
