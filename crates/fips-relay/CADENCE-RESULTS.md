@@ -40,7 +40,7 @@ packets, so the waiting path is active. Its 2,937 credit and 4,794 durable-windo
 refusal counts include repeated attempts and are not unique packet losses.
 These aggregate counters could not distinguish a full waiting queue, expired
 wait, changed peer/policy or permanent refusal. The category diagnostic below
-resolves that ambiguity.
+identifies overflow in a later run; these earlier drops remain unclassified.
 
 Bursty and steady delivery is complete. All 12 channels settle and 10,240 test
 sats reconcile, but both high-rate payment-boundary checks still reject the

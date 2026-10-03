@@ -206,8 +206,8 @@ regressions, the running-daemon admission check, strict core/relay lint and all
 All 12 test channels settle and 10,240 sats reconcile, but high-rate delivery
 and payment-boundary acceptance still fail. See
 [overflow attribution](CADENCE-RESULTS.md#waiting-queue-overflow-attribution).
-Reducing replenishment stalls and measuring the resulting delivery/overhead
-remains required; no cadence default or device acceptance changes.
+Investigating replenishment latency and measuring delivery/overhead remain
+required; no cadence default or device acceptance changes.
 
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
