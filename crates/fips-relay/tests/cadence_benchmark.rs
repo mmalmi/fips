@@ -31,15 +31,21 @@ use std::{
 
 const FUNDING: u64 = 1_024;
 
-fn allowance_settings() -> (u64, u8) {
-    let grace_msat = match std::env::var("FIPS_CADENCE_GRACE_MSAT") {
-        Ok(value) => value.parse().expect("numeric benchmark grace"),
-        Err(std::env::VarError::NotPresent) => 8_000,
-        Err(error) => panic!("invalid benchmark grace: {error}"),
-    };
+fn benchmark_amount(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(value) => value.parse().expect("numeric benchmark amount"),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => panic!("invalid benchmark amount {name}: {error}"),
+    }
+}
+
+fn allowance_settings() -> (u64, u8, u64) {
+    let grace_msat = benchmark_amount("FIPS_CADENCE_GRACE_MSAT", 8_000);
+    let window_msat = benchmark_amount("FIPS_CADENCE_WINDOW_MSAT", 4_000);
     assert!(matches!(grace_msat, 8_000 | 16_000));
+    assert!(matches!(window_msat, 4_000 | 8_000));
     // Keep the debt trigger at 4,000 msat while varying available allowance.
-    (grace_msat, (400_000 / grace_msat) as u8)
+    (grace_msat, (400_000 / grace_msat) as u8, window_msat)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -171,7 +177,7 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
     let mut reservations = Vec::new();
-    let (grace_msat, unpaid_percent) = allowance_settings();
+    let (grace_msat, unpaid_percent, window_msat) = allowance_settings();
     for i in 0..5 {
         let directory = root.path().join(format!("n{i}"));
         std::fs::create_dir(&directory).unwrap();
@@ -181,7 +187,7 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
             unpaid_percent,
         };
         cfg.terms.grace_msat = grace_msat;
-        cfg.terms.window_msat = 4_000;
+        cfg.terms.window_msat = window_msat;
         cfg.terms.billing = BillingBasis::ForwardingAttempt;
         cfg.terms.controller.channel_capacity_sat = 256;
         cfg.terms.controller.max_locked_sat = 512;
@@ -437,11 +443,11 @@ fn new_report() -> std::fs::File {
 #[ignore = "matched multi-process measurement; run alone with --release and FIPS_CADENCE_REPORT"]
 async fn matched_cadence_matrix() {
     let mut output = new_report();
-    let (grace_msat, unpaid_percent) = allowance_settings();
+    let (grace_msat, unpaid_percent, window_msat) = allowance_settings();
     writeln!(output, "{}", json!({"schema":2, "optimized":!cfg!(debug_assertions),
         "platform":std::env::consts::OS, "architecture":std::env::consts::ARCH,
         "nodes":5, "paid_relays":3, "funded_directions":2, "transport":"UDP loopback",
-        "repeats":2, "unpaid_percent":unpaid_percent, "window_msat":4_000, "grace_msat":grace_msat,
+        "repeats":2, "unpaid_percent":unpaid_percent, "window_msat":window_msat, "grace_msat":grace_msat,
         "channel_capacity_sat":256, "fee_msat_per_kib":1,
         "payment_service_carrier":true,
         "boundary_accounting":"prepaid-usage-v1",

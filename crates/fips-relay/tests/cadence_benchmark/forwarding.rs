@@ -27,13 +27,13 @@ async fn observe_forwarding_drops() {
     );
     std::fs::create_dir(&directory).unwrap();
     let mut output = new_report();
-    let (grace_msat, unpaid_percent) = allowance_settings();
+    let (grace_msat, unpaid_percent, window_msat) = allowance_settings();
     writeln!(
         output,
         "{}",
         json!({"diagnostic": "native-forwarding-drops", "comparison_complete": false,
             "max_delay_ms": 500, "repeats": 2,
-            "grace_msat": grace_msat, "unpaid_percent": unpaid_percent, "window_msat": 4_000,
+            "grace_msat": grace_msat, "unpaid_percent": unpaid_percent, "window_msat": window_msat,
             "log_filter": LOG_FILTER, "retained_log_tail_bytes_per_node": 65_536,
             "scope": "native forwarding counters around unchanged workload and service snapshots"})
     )
