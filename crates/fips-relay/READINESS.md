@@ -222,6 +222,21 @@ storage/workload. Ordinary host activity prevents isolated performance claims;
 the earlier HDD/XFS loss remains a storage-pressure limitation. See
 [the accepted matrix](CADENCE-RESULTS.md#default-limit-native-matrix-on-ssd--3-october-2026).
 
+The existing mixed UDP/TCP lifecycle also passes both opt-in payment-store
+write failures on native Linux and the accepted ARM64 executable under QEMU.
+After the native receiver accepts a payment, failed seller credit publication
+keeps transit closed even when directory permissions are repaired. Restarting
+only the middle daemon recovers the original channel, with cumulative payments
+bounded by supported usage and exact buyer budget increments. Crash exposure
+remains unbilled, subsequent renewal succeeds, and all 384 test sats are collected
+in each run. The buyer-signature failure in the same lifecycle recovers without
+a restart while the other payer continues. Only test sources differ from the
+accepted ARM build. Formatting and file-length checks pass; this is focused
+failed-write/process recovery, not a full workspace gate or physical flash,
+ENOSPC or power-loss acceptance. See [the reproduction command](SERVICE.md#payment-store-write-failures)
+and `work/payment-reply-recovery/storage-credit-r5/closure.json` in the private
+recovery bundle.
+
 The current Android source `d7b2f43f6a4d` passes native ARM64 release compilation,
 APK assembly, strict Android lint, both activity tests and Android-target Rust
 lint. Source, actual dependency paths, packaged native library and APK signature

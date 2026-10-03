@@ -8,13 +8,13 @@ use std::{
     time::Duration,
 };
 
-struct BlockWalletWrites {
+pub(super) struct BlockDirectoryWrites {
     directory: PathBuf,
     original: Permissions,
 }
 
-impl BlockWalletWrites {
-    fn new(directory: &Path) -> Self {
+impl BlockDirectoryWrites {
+    pub(super) fn new(directory: &Path) -> Self {
         let guard = Self {
             directory: directory.into(),
             original: fs::metadata(directory).unwrap().permissions(),
@@ -23,7 +23,7 @@ impl BlockWalletWrites {
         fs::set_permissions(directory, Permissions::from_mode(0o500)).unwrap();
         assert_eq!(
             tempfile::NamedTempFile::new_in(directory)
-                .expect_err("run signer write-failure acceptance as an unprivileged user")
+                .expect_err("run storage write-failure acceptance as an unprivileged user")
                 .kind(),
             ErrorKind::PermissionDenied
         );
@@ -31,7 +31,7 @@ impl BlockWalletWrites {
     }
 }
 
-impl Drop for BlockWalletWrites {
+impl Drop for BlockDirectoryWrites {
     fn drop(&mut self) {
         fs::set_permissions(&self.directory, self.original.clone()).unwrap();
     }
@@ -59,7 +59,7 @@ pub(super) async fn assert_automatic_recovery(bench: &mut MixedBench, channels: 
         .map(|channel| bench.relay_usage_msat(channel).1)
         .collect::<Vec<_>>();
 
-    let blocked = BlockWalletWrites::new(&wallet);
+    let blocked = BlockDirectoryWrites::new(&wallet);
     bench.deliver_cohorts(0, 2, 512, 2).await;
     let failed = tokio::time::timeout(Duration::from_secs(20), async {
         loop {

@@ -35,6 +35,9 @@ mod renewal_load;
 mod restart;
 #[path = "mixed_transport/round_trip.rs"]
 mod round_trip;
+#[cfg(feature = "measurements")]
+#[path = "mixed_transport/seller_storage.rs"]
+mod seller_storage;
 #[path = "mixed_transport/service_carrier.rs"]
 mod service_carrier;
 #[path = "mixed_transport/signer_storage.rs"]
@@ -205,7 +208,19 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         bench.set_stage("middle-restart");
         let original_funding = bench.funding_intents(false);
         let before = bench.states().await;
+        #[cfg(feature = "measurements")]
+        let failed_credit = if second_hop == SecondHop::Tcp
+            && std::env::var("FIPS_TEST_SELLER_WRITE_FAILURE").as_deref() == Ok("1")
+        {
+            Some(seller_storage::interrupt(&mut bench, &before).await)
+        } else {
+            None
+        };
         restart::middle(&mut bench, &before, &original_funding).await;
+        #[cfg(feature = "measurements")]
+        if let Some(failed_credit) = failed_credit {
+            failed_credit.assert_recovered(&bench, &before).await;
+        }
         bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
             // Exceed the previous whole-sat payment so both buyers request

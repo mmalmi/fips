@@ -371,6 +371,28 @@ For failed-test diagnostics, set `FIPS_RELAY_TEST_LOG=fips_core::node=debug` and
 `FIPS_RELAY_TEST_LOG_DIR` to an existing private directory. Failed tests save only
 node logs there. Normal test wallets and account state remain temporary.
 
+## Payment-store write failures
+
+The existing mixed UDP/TCP lifecycle can inject two directory-permission faults:
+a failed buyer signature save, and a failed seller credit save after the receiver
+accepts the payment. Run unprivileged so the permission changes are effective.
+The second case uses the existing debug rejection stage to prove the failure
+boundary, denies transit even after permissions are repaired, and reuses the
+existing middle-daemon restart. Recovery must reconcile cumulative payments with
+supported usage, including priced session-control traffic, and debit each buyer's
+budget only by the authorization increase. Automatic renewal and final settlement
+then proceed through the same lifecycle.
+
+```sh
+FIPS_TEST_SIGNER_WRITE_FAILURE=1 FIPS_TEST_SELLER_WRITE_FAILURE=1 \
+FIPS_RELAY_TEST_LOG=warn,fips_relay::payment_control=debug \
+cargo test -p fips-relay --features measurements --test service \
+  mixed_transport::mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart \
+  -- --exact --test-threads=1 --nocapture
+```
+
+These are failed-write/process-recovery checks, not physical power-loss tests.
+
 ## Filesystem exhaustion regression
 
 The ignored `funding_costs` filesystem test uses four local services and test
