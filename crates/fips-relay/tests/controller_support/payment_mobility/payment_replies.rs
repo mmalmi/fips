@@ -1,4 +1,4 @@
-//! Lose updates before application and replies after it, using the real scheduler.
+//! Hold updates and lose replies around the real payment handler and scheduler.
 use super::*;
 use fips_relay::{
     controller::Purchase,
@@ -10,15 +10,16 @@ use tokio::sync::oneshot;
 #[derive(Default)]
 struct Observation {
     channel: Option<String>,
-    capture: Option<(LossPoint, oneshot::Sender<HeldUpdate>)>,
+    capture: Option<(Interception, oneshot::Sender<HeldUpdate>)>,
     captures: u8,
     requests: Vec<Request>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LossPoint {
-    BeforeApply,
-    AfterApply,
+enum Interception {
+    HoldUpdate,
+    LoseUpdate,
+    LoseReply,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,15 +35,15 @@ pub(super) struct ReplyGate {
 
 struct HeldUpdate {
     balance: u64,
-    discard: oneshot::Sender<()>,
+    release: oneshot::Sender<()>,
     expired: oneshot::Receiver<Duration>,
 }
 
 impl ReplyGate {
-    fn arm(&self, channel: &str, point: LossPoint) -> oneshot::Receiver<HeldUpdate> {
+    fn arm(&self, channel: &str, point: Interception) -> oneshot::Receiver<HeldUpdate> {
         let (capture, applied) = oneshot::channel();
         let mut state = self.observation.lock().unwrap();
-        assert!(state.captures < 2 && state.capture.is_none());
+        assert!(state.captures < 3 && state.capture.is_none());
         assert!(state.channel.as_ref().is_none_or(|old| old == channel));
         state.channel = Some(channel.into());
         state.captures += 1;
@@ -61,19 +62,19 @@ impl Drop for ReplyGate {
     }
 }
 
-async fn discard_reply(
+async fn hold_reply(
     capture: oneshot::Sender<HeldUpdate>,
     balance: u64,
     mut respond: oneshot::Sender<Vec<u8>>,
-) {
+) -> oneshot::Sender<Vec<u8>> {
     let started = tokio::time::Instant::now();
-    let (discard, release) = oneshot::channel();
+    let (release, released) = oneshot::channel();
     let (expired, expiry) = oneshot::channel();
     assert!(
         capture
             .send(HeldUpdate {
                 balance,
-                discard,
+                release,
                 expired: expiry
             })
             .is_ok()
@@ -83,12 +84,12 @@ async fn discard_reply(
     tokio::time::timeout(Duration::from_secs(35), async {
         tokio::select! {
             _ = respond.closed() => { let _ = expired.send(started.elapsed()); }
-            released = release => released.unwrap(),
+            released = released => released.unwrap(),
         }
     })
     .await
     .unwrap();
-    drop(respond);
+    respond
 }
 
 pub(super) fn proxy(
@@ -143,8 +144,20 @@ pub(super) fn proxy(
                 }
                 continue;
             };
-            if point == LossPoint::BeforeApply {
-                replies.spawn(discard_reply(capture, balance, request.respond));
+            if point != Interception::LoseReply {
+                let send = send.clone();
+                replies.spawn(async move {
+                    let respond = hold_reply(capture, balance, request.respond).await;
+                    if point == Interception::HoldUpdate {
+                        assert!(
+                            !respond.is_closed(),
+                            "held update must be released before expiry"
+                        );
+                        send.send(IncomingRequest { respond, ..request })
+                            .await
+                            .unwrap();
+                    }
+                });
                 continue;
             }
             let (respond, response) = oneshot::channel();
@@ -171,7 +184,7 @@ pub(super) fn proxy(
                 };
                 assert_eq!(actual, channel_id);
                 assert_eq!(usage.paid_msat, balance * 1_000);
-                discard_reply(capture, balance, request.respond).await;
+                drop(hold_reply(capture, balance, request.respond).await);
             });
         }
     });
@@ -202,6 +215,65 @@ async fn acknowledged(controller: &Controller, channel: &str, minimum: u64) {
     .expect("automatic scheduler must acknowledge the retained payment");
 }
 
+async fn newer_reply_usage_skips_the_next_query(
+    traffic: &mut Traffic<'_>,
+    gate: &ReplyGate,
+    purchase: &Purchase,
+    buyer: &BuyerAuthorizer,
+    provider: usize,
+) {
+    let channel = &purchase.channel.id;
+    let controller = traffic.controllers[2].clone();
+    acknowledged(
+        &controller,
+        channel,
+        buyer.authorized_sat(channel).unwrap() * 1_000,
+    )
+    .await;
+    let requests_before = gate.observed().len();
+    let held = gate.arm(channel, Interception::HoldUpdate);
+    let source = if provider == 1 { 4 } else { 0 };
+    traffic.send(source, 168).await;
+    let held = tokio::time::timeout(Duration::from_secs(10), held)
+        .await
+        .unwrap()
+        .unwrap();
+    // The next packet reaches the real seller before its first update commits,
+    // so that update's durable reply must contain a newer, still-unpaid claim.
+    traffic.send(source, 169).await;
+    let evidence = buyer.evidence_msat(channel).unwrap();
+    let submitted = traffic.sellers[provider]
+        .channel_usage(channel)
+        .unwrap()
+        .submitted_msat;
+    let due = submitted.min(evidence).div_ceil(1_000) * 1_000;
+    assert!(due > held.balance * 1_000);
+    assert_eq!(buyer.authorized_sat(channel), Some(held.balance));
+    held.release.send(()).unwrap();
+    acknowledged(&controller, channel, due).await;
+    let requests = gate.observed();
+    let first_update = requests[requests_before..]
+        .iter()
+        .position(|r| *r == Request::Update(held.balance))
+        .expect("held update was observed")
+        + requests_before;
+    assert!(
+        matches!(requests.get(first_update + 1), Some(Request::Update(balance)) if balance * 1_000 >= due),
+        "new unpaid reply usage must avoid another Usage request: {requests:?}"
+    );
+    assert!(
+        traffic.sellers[provider]
+            .channel_usage(channel)
+            .unwrap()
+            .paid_msat
+            >= due
+    );
+    eprintln!(
+        "newer unpaid reply reused without Usage: first_balance={} next_due_msat={due}",
+        held.balance,
+    );
+}
+
 pub(super) async fn lost_updates_and_replies_recover_automatically(
     root: &Path,
     traffic: &mut Traffic<'_>,
@@ -224,6 +296,8 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     let controller = traffic.controllers[2].clone();
     let buyer = &buyers[2];
     let sellers = traffic.sellers;
+    newer_reply_usage_skips_the_next_query(traffic, gate, purchase, buyer, slow).await;
+    let recovery_start = gate.observed().len();
     let funding = journal(root, "controller-2/controller.json")["funding"].clone();
     let budget = controller.funding_budget().await.unwrap();
     let prior = buyer.authorized_sat(channel).unwrap();
@@ -231,7 +305,7 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     #[cfg(unix)]
     let mut rekey =
         controller_support::RekeyObservation::start_pair(root, traffic.peers, 2, slow).await;
-    let applied = gate.arm(channel, LossPoint::AfterApply);
+    let applied = gate.arm(channel, Interception::LoseReply);
     traffic.send(if slow == 1 { 4 } else { 0 }, 170).await;
     let applied = tokio::time::timeout(Duration::from_secs(10), applied)
         .await
@@ -275,7 +349,7 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
         funding
     );
     let requests_before = gate.observed().len();
-    applied.discard.send(()).unwrap();
+    applied.release.send(()).unwrap();
     acknowledged(&controller, channel, applied.balance * 1_000).await;
     let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
     assert_eq!(
@@ -292,6 +366,7 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     );
     let updates: Vec<_> = requests
         .iter()
+        .skip(recovery_start)
         .filter_map(|request| match request {
             Request::Update(balance) => Some(*balance),
             Request::Usage => None,
@@ -336,7 +411,7 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
         "retained lifetime authority cannot exceed its original cap"
     );
 
-    let held = gate.arm(channel, LossPoint::BeforeApply);
+    let held = gate.arm(channel, Interception::LoseUpdate);
     traffic.send(if slow == 1 { 4 } else { 0 }, 177).await;
     let held = tokio::time::timeout(Duration::from_secs(10), held)
         .await
