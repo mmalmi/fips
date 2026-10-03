@@ -32,6 +32,7 @@ fn fixture(root: &Path, max_units: u64, limits: Limits) -> (BuyerAuthorizer, Rou
     };
     let buyer = BuyerAuthorizer::create(root, offer.buyer, 64, limits).unwrap();
     let channel = ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: offer.buyer,
         mint_url: offer.mint_url.clone(),

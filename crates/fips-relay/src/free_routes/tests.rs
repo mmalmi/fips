@@ -442,6 +442,7 @@ fn paid_accounts_must_close_before_a_free_switch_without_erasing_history() {
     let routes = FreeRoutes::for_accounts(seller.clone(), buyer.clone());
     let grant = offer(1, 2, 9);
     let mut terms = ChannelTerms {
+        refund_after_unix: None,
         id: "in".into(),
         buyer: grant.buyer,
         mint_url: grant.mint_url.clone(),

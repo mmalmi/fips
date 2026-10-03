@@ -13,10 +13,11 @@ fn buyer() -> PeerIdentity {
 
 fn channel() -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: Some(u64::MAX),
         id: "neighbor".into(),
         buyer: *buyer().node_addr(),
         mint_url: "http://127.0.0.1:1234".into(),
-        expires_unix: u64::MAX,
+        expires_unix: u64::MAX - 60,
         capacity_sat: 1,
         grace_msat: 30,
     }
@@ -29,7 +30,7 @@ fn contract() -> Contract {
         channel_id: "neighbor".into(),
         destination: NodeAddr::from_bytes([9; 16]),
         next_hop: NodeAddr::from_bytes([2; 16]),
-        expires_unix: u64::MAX,
+        expires_unix: u64::MAX - 60,
         price: BytePrice {
             msat: 1,
             per_bytes: 1,

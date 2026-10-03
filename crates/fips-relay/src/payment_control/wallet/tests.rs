@@ -104,6 +104,7 @@ async fn funded_payments_recover_journal_writes_without_lifecycle_authority() {
     let identity = Identity::generate();
     let peer = PeerIdentity::from_pubkey_full(identity.pubkey_full());
     let channel = ChannelTerms {
+        refund_after_unix: None,
         id: opened.channel.channel_id,
         buyer: *peer.node_addr(),
         mint_url: mint.url().into(),

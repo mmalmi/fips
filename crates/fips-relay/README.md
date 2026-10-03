@@ -225,6 +225,13 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   Background recovery uses the existing wallet recovery API to find committed
   channels even after quote expiry or pause, without spending again or enabling
   routing. Missing records retain their reservation; orphan refunds remain work.
+* New channels default to a **12-hour service limit and 24-hour mint refund
+  deadline**. Providers automatically begin settlement when service ends;
+  unilateral buyer refunds wait for the funding deadline. Cooperative settlement
+  can return unused funds earlier. `channel_lifetime_secs` sets the funding
+  lifetime (default `86400`); shorter lifetimes end service halfway through.
+  Existing funded channels retain their original deadlines. Recovery and history
+  retirement use those saved financial terms.
 * Each controller periodically requests usage and sends cumulative payments
   through `BuyerAuthorizer`. Funding-proof retries use the same durable signing
   gate. Background recovery resumes retained requests without allocating fresh

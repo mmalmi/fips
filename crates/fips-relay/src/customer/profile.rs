@@ -123,7 +123,7 @@ impl CustomerProfile {
                     max_locked_sat: self.channel_capacity_sat * 2,
                     max_funding_overhead_sat: 0,
                     max_wallet_spend_sat: self.budget_sat,
-                    channel_lifetime_secs: 7200,
+                    channel_lifetime_secs: ControllerPolicy::DEFAULT_CHANNEL_LIFETIME_SECS,
                     renewal: Some(RenewalPolicy {
                         at_capacity_percent: 80,
                         before_expiry_secs: 30,

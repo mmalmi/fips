@@ -129,6 +129,7 @@ fn rejected_forwarding_earns_nothing_and_paid_reverse_routes_keep_their_accounti
         seller
             .open_channel_verified(
                 ChannelTerms {
+                    refund_after_unix: None,
                     id: id.clone(),
                     buyer: *peer(source).node_addr(),
                     mint_url: "http://test.invalid".into(),

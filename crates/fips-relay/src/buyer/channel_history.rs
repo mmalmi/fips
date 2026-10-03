@@ -141,8 +141,8 @@ impl History {
 impl State {
     pub(super) fn validate_channel_history(&self) -> Result<(), BuyerError> {
         match &self.history {
-            Some(h) if self.version == 4 && h.valid() => Ok(()),
-            None if self.version < 4 => Ok(()),
+            Some(h) if self.history_version() == 4 && h.valid() => Ok(()),
+            None if self.history_version() < 4 => Ok(()),
             _ => Err(BuyerError::Format),
         }
     }
@@ -238,7 +238,7 @@ impl BuyerAuthorizer {
                 state.channels.remove(&c.terms().id);
             }
             state.history = Some(plan.after.clone());
-            state.version = 4;
+            state.version = (state.version & REFUND_DEADLINE_VERSION) | 4;
             state.clone()
         };
         self.persist(&snapshot, &mut ready)

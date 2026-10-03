@@ -16,6 +16,8 @@ pub(super) struct SellerHistory {
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Totals {
     accounting: LedgerHistory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refund_through_unix: Option<u64>,
     value_sat: u64,
     signed_sat: u64,
     paid_sat: u64,
@@ -43,8 +45,18 @@ impl SellerHistory {
 }
 
 impl Totals {
+    fn refund_deadline(&self) -> Option<u64> {
+        crate::ledger::refund_deadline(
+            self.accounting.expires_through_unix,
+            self.refund_through_unix,
+        )
+    }
+
     fn valid(&self, mint: &str) -> bool {
         self.accounting.valid(MAX_CHANNELS)
+            && self
+                .refund_deadline()
+                .is_some_and(|refund| refund >= self.accounting.expires_through_unix)
             && self.accounting.capacity_sat <= self.value_sat
             && self
                 .paid_sat
@@ -66,9 +78,20 @@ impl Totals {
                     })
     }
 
-    fn added(&self, report: &SettlementReport) -> Result<Self, String> {
+    fn added(&self, report: &SettlementReport, channel: &ChannelTerms) -> Result<Self, String> {
         Ok(Self {
             accounting: self.accounting.clone(),
+            refund_through_unix: if self.refund_through_unix.is_some()
+                || channel.refund_after_unix.is_some()
+            {
+                Some(
+                    self.refund_deadline()
+                        .ok_or("retired refund overflow")?
+                        .max(channel.refund_deadline().ok_or("channel refund overflow")?),
+                )
+            } else {
+                None
+            },
             value_sat: add(self.value_sat, report.value_after_stage1_sat)?,
             signed_sat: add(self.signed_sat, report.signed_sat)?,
             paid_sat: add(self.paid_sat, report.paid_sat)?,
@@ -89,8 +112,7 @@ fn completed(j: &Journal, sale: &SellerSettlement, timestamp: u64) -> bool {
     sale.report.is_some()
         && sale
             .channel
-            .expires_unix
-            .checked_add(60)
+            .refund_deadline()
             .is_some_and(|e| e < timestamp)
         && !j.incoming.values().any(|i| i.channel.id == sale.channel.id)
 }
@@ -124,7 +146,7 @@ impl Plan {
             {
                 return Err("retiring sale changed".into());
             }
-            after = after.added(s.report.as_ref().unwrap())?;
+            after = after.added(s.report.as_ref().unwrap(), &s.channel)?;
         }
         after.accounting = self.ledger.after.clone();
         self.validate_receiver(j)?;
@@ -161,6 +183,8 @@ impl Controller {
         };
         if !matches!(j.history_version(), 5 | 6)
             || !h.totals.valid(&j.policy.mint_url)
+            || (h.totals.refund_through_unix.is_some()
+                && j.version & journal::FUNDING_DEADLINES_VERSION == 0)
             || (j.history_version() == 6) != h.totals.receiver.is_some()
         {
             return Err("invalid seller history".into());
@@ -221,8 +245,10 @@ impl Store {
                     .unwrap_or_default();
                 let mut after = before.clone();
                 for id in &ids {
-                    after = after
-                        .added(self.journal.seller_settlements[id].report.as_ref().unwrap())?;
+                    after = after.added(
+                        self.journal.seller_settlements[id].report.as_ref().unwrap(),
+                        &self.journal.seller_settlements[id].channel,
+                    )?;
                 }
                 after.accounting = ledger.after.clone();
                 let plan = Plan {

@@ -494,6 +494,7 @@ mod tests {
         let mut purchase = Purchase {
             provider: offer.provider,
             channel: ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: offer.buyer,
                 mint_url: offer.mint_url.clone(),

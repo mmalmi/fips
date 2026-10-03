@@ -8,6 +8,7 @@ fn peer(n: u8) -> PeerIdentity {
 
 fn terms(n: u64, buyer: u8) -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: None,
         id: format!("channel-{n}"),
         buyer: *peer(buyer).node_addr(),
         mint_url: "http://test.invalid".into(),

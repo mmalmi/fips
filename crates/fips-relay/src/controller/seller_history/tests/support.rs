@@ -33,7 +33,7 @@ pub(super) fn receiver_plan(j: &Journal, ids: &[String]) -> Result<ReceiverPlan,
             "signed_amount":report.signed_sat, "closed_amount":report.paid_sat, "value_after_stage1":report.value_after_stage1_sat,
             "receiver_sum":report.receiver_value_sat().unwrap(), "sender_sum":report.refunded_sat,
             "usage":{"fixture_requests":1}});
-        let expiry = sale.channel.expires_unix + 60;
+        let expiry = sale.channel.refund_deadline().unwrap();
         let previous = after["expires_through_unix"].as_u64().unwrap();
         after["expires_through_unix"] = previous.max(expiry).into();
         if after["totals"].as_array().unwrap().is_empty() {

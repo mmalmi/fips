@@ -250,7 +250,10 @@ async fn inspect_send(
     if request.client_request_id.as_ref() != Some(&id)
         || request.route_created_at_unix != intent["created_unix"].as_u64()
         || request.max_total_amount_sat != intent["max_wallet_debit_sat"].as_u64()
-        || request.expiry_unix != intent["expires_unix"].as_u64().unwrap() + 60
+        || request.expiry_unix
+            != intent["refund_after_unix"]
+                .as_u64()
+                .unwrap_or_else(|| intent["expires_unix"].as_u64().unwrap() + 60)
         || request.capacity_sat != intent["capacity_sat"].as_u64().unwrap()
         || Some(request.receiver_pubkey_hex.as_str()) != intent["receiver_pubkey_hex"].as_str()
     {

@@ -124,6 +124,7 @@ impl Controller {
                 .map_err(|e| e.to_string())?
                 .request_id();
                 j.advance_history_version(4);
+                j.version |= journal::FUNDING_DEADLINES_VERSION;
                 j.history
                     .get_or_insert_with(History::default)
                     .channels
@@ -143,8 +144,13 @@ impl Controller {
                     grace_msat: grace,
                     created_unix: created,
                     expires_unix: created
-                        .checked_add(j.policy.channel_lifetime_secs)
+                        .checked_add(j.policy.service_lifetime_secs())
                         .ok_or("expiry overflow")?,
+                    refund_after_unix: Some(
+                        created
+                            .checked_add(j.policy.channel_lifetime_secs)
+                            .ok_or("expiry overflow")?,
+                    ),
                     funded: None,
                     reclaim: None,
                 };

@@ -27,6 +27,7 @@ fn address(n: u8) -> NodeAddr {
 }
 fn terms() -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: *peer().node_addr(),
         mint_url: "http://test.invalid".into(),

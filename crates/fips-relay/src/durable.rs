@@ -111,7 +111,15 @@ impl DurableRelay {
             return Err(DurableError::Format);
         }
         let journal: Journal = serde_json::from_slice(&bytes).map_err(|_| DurableError::Format)?;
-        if journal.version != 1 || journal.window_msat == 0 {
+        if !matches!(journal.version, 1 | 2)
+            || journal.window_msat == 0
+            || (journal.version == 1
+                && journal
+                    .ledger
+                    .channels
+                    .iter()
+                    .any(|c| c.terms.refund_after_unix.is_some()))
+        {
             return Err(DurableError::Format);
         }
         let relay = Self {
@@ -411,7 +419,7 @@ impl DurableRelay {
                 .iter()
                 .any(|(id, ceiling)| *ceiling > previous.get(id).copied().unwrap_or(0));
         let journal = Journal {
-            version: 1,
+            version: 2,
             window_msat: self.window_msat,
             ledger,
             ceilings: ceilings.clone(),
@@ -505,6 +513,7 @@ mod tests {
         );
         let identity = Identity::from_secret_bytes(&[1; 32]).unwrap();
         let terms = ChannelTerms {
+            refund_after_unix: None,
             id: "channel".into(),
             buyer: *identity.node_addr(),
             mint_url: "http://test.invalid".into(),

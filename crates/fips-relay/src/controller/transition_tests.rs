@@ -7,6 +7,7 @@ pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
     funding.created_unix = now().unwrap();
     funding.expires_unix = funding.created_unix + j.policy.channel_lifetime_secs;
     let channel = ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: j.local,
         mint_url: j.policy.mint_url.clone(),

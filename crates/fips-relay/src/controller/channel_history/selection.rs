@@ -1,10 +1,7 @@
 use super::*;
 
 pub(super) fn completed(j: &Journal, f: &FundingIntent, now: u64) -> bool {
-    if f.expires_unix
-        .checked_add(60)
-        .is_none_or(|expiry| expiry >= now)
-    {
+    if f.refund_deadline().map_or(true, |expiry| expiry >= now) {
         return false;
     }
     if f.reclaim_terminal() {
@@ -32,9 +29,7 @@ pub(super) fn accumulate(
     f: &FundingIntent,
 ) -> Result<Totals, String> {
     total.through = sequence(j, &f.id).ok_or("funding sequence missing")?;
-    total.expires_through_unix = total
-        .expires_through_unix
-        .max(f.expires_unix.checked_add(60).ok_or("expiry overflow")?);
+    total.expires_through_unix = total.expires_through_unix.max(f.refund_deadline()?);
     if f.cancelled() {
         total.cancelled_requests = add(total.cancelled_requests, 1)?;
         return Ok(total);

@@ -250,6 +250,7 @@ async fn quote_scenario(free: bool) {
             assert!(downstream.expires_unix >= offer.expires_unix);
             assert!(quotes[provider].route_still_matches(&offer).await.unwrap());
             let channel = ChannelTerms {
+                refund_after_unix: None,
                 id: format!("test-channel-{source}"),
                 buyer: *peers[source].node_addr(),
                 mint_url: offer.mint_url.clone(),

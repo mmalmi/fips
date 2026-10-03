@@ -112,6 +112,7 @@ async fn persistent_neighbor_channels_settle_multiple_routes_and_preserve_every_
             .await
             .unwrap();
             let channel = ChannelTerms {
+                refund_after_unix: None,
                 id: opened.channel.channel_id,
                 buyer: *identities[i].node_addr(),
                 mint_url: mint.url().to_string(),

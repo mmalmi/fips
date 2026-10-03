@@ -26,6 +26,7 @@ fn now() -> u64 {
 
 fn channel(id: &str) -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: Some(now() + 1200),
         id: id.into(),
         buyer: address(1),
         mint_url: "http://test.invalid".into(),

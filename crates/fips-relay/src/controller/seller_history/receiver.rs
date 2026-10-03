@@ -4,9 +4,7 @@ use super::*;
 pub(super) fn valid_history(r: &ReceiverHistory, t: &Totals, mint: &str) -> bool {
     r.validate().is_ok()
         && r.totals.len() <= 1
-        && t.accounting
-            .expires_through_unix
-            .checked_add(60)
+        && t.refund_deadline()
             .is_some_and(|expiry| r.expires_through_unix <= expiry)
         && r.totals.first().is_none_or(|s| {
             s.mint == mint
@@ -88,7 +86,7 @@ impl Plan {
                 .and_then(|s| s.report.as_ref())
                 .ok_or("receiver retirement report missing")?;
             let t = &saved.totals;
-            if c.terms.expires_unix.checked_add(60) != Some(saved.expires_unix)
+            if c.terms.refund_deadline() != Some(saved.expires_unix)
                 || t.mint != c.terms.mint_url
                 || t.unit != "sat"
                 || t.capacity != c.terms.capacity_sat

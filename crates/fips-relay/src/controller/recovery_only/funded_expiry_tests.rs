@@ -79,6 +79,7 @@ async fn exercise(installed: bool, lost_completion: bool) {
             grace_msat: 8_000,
             created_unix: sdk_expiry - 120,
             expires_unix: sdk_expiry - 60,
+            refund_after_unix: None,
             funded: None,
             reclaim: None,
         };

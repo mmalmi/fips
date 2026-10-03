@@ -181,6 +181,7 @@ fn service_forwarder_preserves_readiness_and_temporary_admission() {
     seller
         .open_channel_verified(
             ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: *ingress.node_addr(),
                 mint_url: "http://test.invalid".into(),

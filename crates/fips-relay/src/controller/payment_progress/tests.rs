@@ -24,6 +24,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
     let buyer =
         BuyerAuthorizer::create(&root.path().join("buyer"), local, 10, Limits::default()).unwrap();
     let terms = ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: local,
         mint_url: "http://test.invalid".into(),

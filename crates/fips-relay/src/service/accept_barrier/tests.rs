@@ -52,6 +52,7 @@ impl Fixture {
 
     fn purchase(&self) -> Purchase {
         let channel = ChannelTerms {
+            refund_after_unix: None,
             id: "original-channel".into(),
             buyer: *self.buyer.node_addr(),
             mint_url: "http://127.0.0.1:1234".into(),

@@ -9,6 +9,8 @@ mod agreements;
 pub(crate) mod channel_history;
 mod forwarding;
 mod retirement;
+const REFUND_DEADLINE_VERSION: u16 = 0x100;
+
 pub use forwarding::{PaidForwarder, RouteObserver};
 
 use crate::{
@@ -139,8 +141,12 @@ impl State {
             })
     }
 
+    fn history_version(&self) -> u16 {
+        self.version & !REFUND_DEADLINE_VERSION
+    }
+
     fn validate_and_recover(&mut self) -> Result<(), BuyerError> {
-        if !matches!(self.version, 1..=4)
+        if !matches!(self.history_version(), 1..=4)
             || self.total_budget_sat == 0
             || self.next_token == 0
             || self.channels.len() > self.limits.max_channels
@@ -148,10 +154,15 @@ impl State {
         {
             return Err(BuyerError::Format);
         }
+        let history_version = self.history_version();
         for c in self.channels.values_mut() {
             c.retired = Some(
-                RetiredRouteEvidence::recovered(c.retired, self.version >= 3, c.terms.expires_unix)
-                    .ok_or(BuyerError::Format)?,
+                RetiredRouteEvidence::recovered(
+                    c.retired,
+                    history_version >= 3,
+                    c.terms.expires_unix,
+                )
+                .ok_or(BuyerError::Format)?,
             );
         }
         self.validate_channel_history()?;
@@ -164,7 +175,8 @@ impl State {
         let mut total = self.history.as_ref().map_or(0, |h| h.authorized_sat);
         for (id, c) in &self.channels {
             let capacity = validate_channel(&c.terms).map_err(|_| BuyerError::Format)?;
-            if id != &c.terms.id
+            if (c.terms.refund_after_unix.is_some() && self.version & REFUND_DEADLINE_VERSION == 0)
+                || id != &c.terms.id
                 || c.terms.buyer != self.local
                 || c.provider == self.local
                 || c.advance_msat > capacity
@@ -193,7 +205,7 @@ impl State {
                 || id != &q.contract.id
                 || q.contract.destination == c.provider
                 || (legacy && q.attempts.len() > self.limits.max_packets_per_contract)
-                || (self.version == 1 && !legacy)
+                || (self.history_version() == 1 && !legacy)
                 || q.completed.submitted_units > q.completed.observed_units
                 || (legacy && q.completed.observed_units != 0)
                 || (q.active

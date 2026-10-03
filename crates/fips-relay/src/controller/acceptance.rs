@@ -148,6 +148,9 @@ impl Controller {
     ) -> Result<Incoming, String> {
         Self::check_incoming(j, &saved)?;
         saved.verified_paid_msat = verify(&saved.channel)?;
+        if saved.channel.refund_after_unix.is_some() {
+            j.version |= journal::FUNDING_DEADLINES_VERSION;
+        }
         if !j.incoming.contains_key(&saved.contract.id) {
             if let Some(previous) = &saved.replaces {
                 j.incoming

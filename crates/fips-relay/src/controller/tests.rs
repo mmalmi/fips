@@ -158,6 +158,7 @@ pub(super) fn unresolved_journal() -> Journal {
         grace_msat: 8_000,
         created_unix: 100,
         expires_unix: 700,
+        refund_after_unix: None,
         funded: None,
         reclaim: None,
     };
@@ -190,6 +191,7 @@ fn repurchase_rejects_unfinished_refunds_stale_offers_and_competing_renewal() {
     let mut journal = unresolved_journal();
     let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let terms = ChannelTerms {
+        refund_after_unix: None,
         id: "closed".into(),
         buyer: journal.local,
         mint_url: journal.policy.mint_url.clone(),

@@ -19,6 +19,7 @@ fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
         .accept_channel(
             provider,
             ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: local,
                 mint_url: "http://test.invalid".into(),
@@ -84,6 +85,7 @@ fn suspended_writer_still_closes_exact_packet_authority() {
         .accept_channel(
             provider,
             ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: local,
                 mint_url: "http://test.invalid".into(),

@@ -89,6 +89,9 @@ async fn recover(seller_misses_deadline: bool) {
             .unwrap()
             .to_owned();
         let expiry = original["expires_unix"].as_u64().unwrap();
+        let refund = original["refund_after_unix"]
+            .as_u64()
+            .unwrap_or(expiry + 60);
         assert_eq!(opened["outgoing"].as_object().unwrap().len(), 2);
         assert!(
             opened["outgoing"]
@@ -140,7 +143,7 @@ async fn recover(seller_misses_deadline: bool) {
         let budget = stopped["total_budget_sat"].as_u64().unwrap();
 
         let refunded = if seller_misses_deadline {
-            while restore::now() <= expiry + 60 {
+            while restore::now() <= refund {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             // All buyers recover while this provider is still stopped. Its
@@ -212,7 +215,7 @@ async fn recover(seller_misses_deadline: bool) {
                 })
                 .await;
             }
-            assert!(restore::now() > expiry + 60);
+            assert!(restore::now() > refund);
             stop(&mut children[1]).await;
             report["refunded_sat"].clone()
         };

@@ -42,6 +42,9 @@ impl BuyerAuthorizer {
             {
                 return Err(BuyerError::InvalidAgreement);
             }
+            if terms.refund_after_unix.is_some() {
+                state.version = state.version.max(3) | REFUND_DEADLINE_VERSION;
+            }
             state.channels.insert(
                 terms.id.clone(),
                 PurchaseChannel {

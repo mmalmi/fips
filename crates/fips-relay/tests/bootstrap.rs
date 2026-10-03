@@ -42,6 +42,7 @@ fn only_the_explicit_new_tariff_excludes_handshakes_from_both_ledgers() {
         let buyer =
             BuyerAuthorizer::create(&buyer_path, address(1), 10, Limits::default()).unwrap();
         let terms = ChannelTerms {
+            refund_after_unix: None,
             id: "channel".into(),
             buyer: *peer(1).node_addr(),
             mint_url: "http://test.invalid".into(),

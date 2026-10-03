@@ -40,6 +40,7 @@ mod capital;
 mod channel_history;
 mod control_obligations;
 pub(crate) use control_obligations::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
+mod channel_timing;
 mod funding;
 mod funding_ownership;
 #[cfg(feature = "testbench")]
@@ -95,6 +96,8 @@ pub struct ControllerPolicy {
     pub max_funding_overhead_sat: u64,
     /// Lifetime wallet debits minus verified refunds, including pending reservations.
     pub max_wallet_spend_sat: u64,
+    /// Funding lifetime for new channels; service ends halfway, at most 12 hours.
+    #[serde(default = "ControllerPolicy::default_channel_lifetime_secs")]
     pub channel_lifetime_secs: u64,
     pub renewal: Option<RenewalPolicy>,
 }
@@ -147,6 +150,8 @@ struct FundingIntent {
     grace_msat: u64,
     created_unix: u64,
     expires_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refund_after_unix: Option<u64>,
     funded: Option<Funded>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reclaim: Option<FundingReclaim>,
@@ -456,7 +461,7 @@ impl Controller {
         if policy.renewal.as_ref().is_some_and(|r| {
             !(1..=100).contains(&r.at_capacity_percent)
                 || r.before_expiry_secs == 0
-                || r.before_expiry_secs > policy.channel_lifetime_secs / 2
+                || r.before_expiry_secs > policy.service_lifetime_secs() / 2
         }) {
             return Err("invalid renewal policy".into());
         }
@@ -467,7 +472,8 @@ impl Controller {
                 .channel_capacity_sat
                 .checked_add(policy.max_funding_overhead_sat)
                 .is_none_or(|max| max > policy.max_locked_sat || max > policy.max_wallet_spend_sat)
-            || !(60..=86_400).contains(&policy.channel_lifetime_secs)
+            || !(60..=ControllerPolicy::DEFAULT_CHANNEL_LIFETIME_SECS)
+                .contains(&policy.channel_lifetime_secs)
             || policy.mint_url.is_empty()
             || policy.mint_url.len() > 512
             || policy.mint_url.ends_with('/')

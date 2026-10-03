@@ -167,7 +167,7 @@ impl Controller {
         if let Some(report) = sale.report {
             return Ok(report);
         }
-        if sale.payment.is_none() && now()? <= sale.channel.expires_unix {
+        if sale.payment.is_none() && now()? < sale.channel.expires_unix {
             return Err("final signed payment missing before channel expiry".into());
         }
         let usage = sale.usage.ok_or("seal channel before mint settlement")?;
@@ -483,7 +483,7 @@ impl Controller {
         for (id, sale) in snapshot.seller_settlements {
             if sale.usage.is_some()
                 && sale.report.is_none()
-                && (sale.payment.is_some() || now()? > sale.channel.expires_unix)
+                && (sale.payment.is_some() || now()? >= sale.channel.expires_unix)
             {
                 let Some(_claim) = self.settlement_claim(&id) else {
                     continue;

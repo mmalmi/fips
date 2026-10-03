@@ -293,3 +293,47 @@ fn retained_expiry_intent_can_finish_after_new_unfunded_onward_selection() {
     );
     assert_eq!(serde_json::to_value(&store.journal).unwrap(), completed);
 }
+
+#[test]
+fn explicit_refund_deadline_fences_recovery_after_service_stops() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old, buyer, _, _) = withdrawn(root.path());
+    store
+        .change(|j| {
+            j.policy.channel_lifetime_secs *= 2;
+            j.version |= journal::FUNDING_DEADLINES_VERSION;
+            let f = j.funding.get_mut(&old.funding_id).unwrap();
+            let refund = f.created_unix + j.policy.channel_lifetime_secs;
+            f.refund_after_unix = Some(refund);
+            let funded = f.funded.as_mut().unwrap();
+            funded.terms.refund_after_unix = Some(refund);
+            funded.opening.params = Some(serde_json::json!({"expiry_timestamp":refund}));
+            Ok(())
+        })
+        .unwrap();
+    let mut store = reload(store);
+    let intent = store.journal.funding[&old.funding_id].clone();
+    let refund = intent.refund_deadline().unwrap();
+    let before = serde_json::to_value(&store.journal).unwrap();
+    for timestamp in [intent.expires_unix, intent.expires_unix + 61, refund] {
+        assert!(
+            store
+                .prepare_expiry_refund(&buyer, &intent, timestamp)
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
+    }
+    store
+        .prepare_expiry_refund(&buyer, &intent, refund + 1)
+        .unwrap();
+    let mut store = reload(store);
+    let retained = serde_json::to_value(&store.journal).unwrap();
+    store
+        .prepare_expiry_refund(&buyer, &intent, refund + 2)
+        .unwrap();
+    assert_eq!(serde_json::to_value(&store.journal).unwrap(), retained);
+    assert_eq!(
+        store.journal.funding[&intent.id].refund_deadline().unwrap(),
+        refund
+    );
+}

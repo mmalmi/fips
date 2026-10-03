@@ -2,6 +2,7 @@
 use super::*;
 
 // Authorization-format fence independent of the existing accounting checkpoints.
+pub(super) const FUNDING_DEADLINES_VERSION: u16 = 0x80;
 pub(super) const RECOVERY_ONLY_VERSION: u16 = 0x100;
 pub(super) const EXPIRY_RECOVERY_VERSION: u16 = 0x200;
 pub(super) const SELECTED_TRIAL_VERSION: u16 = 0x400;
@@ -10,7 +11,8 @@ pub(super) const UNINSTALLED_RETIREMENT_VERSION: u16 = 0x1000;
 pub(super) const FUNDING_CANCELLED_VERSION: u16 = 0x2000;
 pub(super) const RECEIVER_PROOF_RELEASE_VERSION: u16 = 0x4000;
 pub(super) const PREPARED_CANCELLED_VERSION: u16 = 0x8000;
-const FORMAT_FLAGS: u16 = RECOVERY_ONLY_VERSION
+const FORMAT_FLAGS: u16 = FUNDING_DEADLINES_VERSION
+    | RECOVERY_ONLY_VERSION
     | EXPIRY_RECOVERY_VERSION
     | SELECTED_TRIAL_VERSION
     | FUNDING_RECLAIM_VERSION
@@ -48,6 +50,7 @@ impl Controller {
         {
             return Err("invalid controller journal bindings".into());
         }
+        Self::validate_channel_deadlines(j)?;
         Self::validate_recovery_only(j)?;
         Self::validate_funding_reclaims(j)?;
         Self::validate_history(j)?;
@@ -73,8 +76,7 @@ impl Controller {
                 || (!Self::funding_released(j, f) && !providers.insert(f.provider))
                 || f.capacity_sat == 0
                 || f.capacity_sat > policy.channel_capacity_sat
-                || f.expires_unix <= f.created_unix
-                || f.expires_unix - f.created_unix != policy.channel_lifetime_secs
+                || !f.valid_deadlines(policy)
                 || f.receiver_pubkey_hex.len() != 66
                 || f.grace_msat > f.capacity_sat * 1_000
             {
@@ -85,6 +87,9 @@ impl Controller {
                 if funded.terms.buyer != local
                     || funded.terms.mint_url != policy.mint_url
                     || funded.terms.expires_unix != f.expires_unix
+                    || funded.terms.refund_after_unix != f.refund_after_unix
+                    || (f.refund_after_unix.is_some()
+                        && !f.matches_refund_deadline(&funded.opening))
                     || funded.terms.capacity_sat != f.capacity_sat
                     || funded.terms.grace_msat != f.grace_msat
                     || funded.opening.channel_id != funded.terms.id

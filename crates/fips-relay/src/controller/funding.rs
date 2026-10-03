@@ -16,7 +16,7 @@ impl FundingIntent {
             receiver_pubkey_hex: self.receiver_pubkey_hex.clone(),
             capacity_sat: self.capacity_sat,
             max_total_amount_sat: Some(self.max_wallet_debit_sat),
-            expiry_unix: self.expires_unix.checked_add(60).ok_or("expiry overflow")?,
+            expiry_unix: self.refund_deadline()?,
             max_amount_per_output: 0,
             unit: "sat".into(),
             opening_paid_msat: 0,
@@ -38,6 +38,7 @@ impl FundingIntent {
             || opened.capacity_sat != self.capacity_sat
             || opened.receiver_pubkey_hex != self.receiver_pubkey_hex
             || opened.unit != "sat"
+            || !self.matches_refund_deadline(&opened.payment)
         {
             return Err("wallet funding differs from approved channel".into());
         }
@@ -47,6 +48,7 @@ impl FundingIntent {
                 .wallet_cost
                 .ok_or("wallet funding cost unavailable")?,
             terms: ChannelTerms {
+                refund_after_unix: self.refund_after_unix,
                 id: opened.channel_id,
                 buyer: local,
                 mint_url: policy.mint_url.clone(),
