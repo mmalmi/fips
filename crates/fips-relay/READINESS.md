@@ -162,6 +162,44 @@ conserved. Five focused timeline checks also pass. The closed receipt is
 bundle. This extends simulation coverage; it does not explain or resolve the
 longer blackout observed on the physical return path.
 
+Core revision `699840f52` fixes a separately reproduced FSP recovery failure:
+after lost key-change confirmation, both endpoints could derive the same keys
+but disagree about the epoch flag. Authentication now selects between at most
+two keys during a transition, with replay accounting tied to the actual key.
+Late draining packets cannot replace the current path or update its reports.
+Stalled pending-key traffic cannot indefinitely suppress the existing recovery
+retry when application traffic remains unanswered. The wire format, messages
+and recovery timeouts are unchanged; normal steady-state traffic uses one key.
+
+The candidate passes 723 focused core checks, including all 198 session checks,
+the lost-confirmation regression and existing sparse/session-loss recovery cases;
+one pre-existing unit test remains ignored. The source-file length gate passes.
+The paid recovery simulation and five timeline checks also pass: 89/128 payloads
+arrive during edge loss and 256/256 after return, using the original channels and
+conserving all 259 test sats. The optimized static ARM64 build and emulated
+startup pass. The closed receipt is
+`work/payment-reply-recovery/epoch-recovery-green-r5/closure.json` in the private
+recovery bundle. An earlier broad core run reached its 900-second bound during
+lengthy neighbor-population scenarios; this result does not claim a complete
+core-suite pass or production acceptance.
+
+That candidate then passes the guarded three-Cudy provider-switching trial.
+Delivery is 32/32 initially, 61/96 during the active cut and 32/32 after the
+cheaper path returns. The return phase now completes in two bursts, compared
+with ten bursts and 80/160 delivered on the earlier executable. A complete
+return burst is observed 4.13 seconds after return probing starts, with fresh
+quality/payment confirmation by 14.64 seconds (previously 54.17/94.71 seconds).
+These bounds include paced probing and observations; this single comparison
+does not isolate performance or prove a general roaming latency guarantee.
+
+Failover still loses 35 packets and confirmation still takes up to 49.76 seconds.
+The original channels and 128-sat budget remain intact: providers recover 5/4
+test sats, the source recovers 119, and all funds are collected. All 426 management
+checks pass. Independent closure verifies restored normal router state, stopped
+test processes/mint, and removed temporary executables and filters. See
+`work/hardware-current-r1/diamond-epoch-r1/closure.json` in the private recovery
+bundle. Further failover disruption and the remaining production gates are open.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial
