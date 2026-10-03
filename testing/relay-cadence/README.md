@@ -489,6 +489,36 @@ loss counts. The extra station read and short queue-lock hold add observation
 overhead; this diagnostic neither changes delivery acceptance nor establishes
 where an individual FIPS packet was lost.
 
+### Extended router load and process recovery
+
+`sim.wifi_restart_load` reuses the guarded three-router inventory, fresh
+384-test-sat mint, persistent profiles and existing probes. It sends six rounds
+of 4,000 × 1,000-byte payloads in each direction at 200 packets/s. Each finite
+stream lasts twenty seconds and is submitted once; observations separate the
+streams. After round three, it kills only the ownership-checked middle relay,
+reads its stopped journal and restarts the same profile. Fresh delivery and
+automatic payments must continue on the original channels. The test checks the
+exact recovered unbilled exposure against the stopped durable ceilings, then
+settles and collects all funds even after a workload failure when recovery is
+possible.
+
+```sh
+PYTHONPATH=testing/chaos python3 -m sim.wifi_restart_load \
+  --inventory /private/routers.json --binary /private/verified/fips-relay \
+  --mint-binary /private/verified/fips-relay-test-mint \
+  --mint-host /private/mint-host.json --mint-address <private-mint-address> \
+  --output /private/new-restart-load-run
+```
+
+Use a verified ARM64 measurements build. Channel capacity, wallet and buyer
+budgets, grace and durable windows retain the original paid Wi-Fi fixture limits.
+The declared tariff is one msat/KiB and the quote permits at most 32 MiB. The
+workload deadline is fifteen minutes; financial recovery retains its existing
+per-operation bounds. This is a finite 48-MB workload with process recovery,
+not physical power loss, maximum throughput, uninterrupted traffic across the
+restart, or a matched cadence comparison. Raw failed streams remain evidence;
+only the separately recorded session warmup can try fresh probes.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
