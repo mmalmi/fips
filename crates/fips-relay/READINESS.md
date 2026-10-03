@@ -154,10 +154,34 @@ timeout and verifies HTTPS/DNS through another site with every device-state
 equality check unchanged. This accepts the recorded paid phone session, not
 Android crash/reopen recovery, physical power loss, throughput or an Internet VPN.
 
+A second named APK, from `0323492960a3` with the same app/runtime code, passes
+the same build gates and a physical Pixel force-stop/reopen session. The eight
+payloads are split into two cohorts, each with two packets in each direction.
+After the first cohort and automatic payments complete, Android force-stops
+the app without its settlement or Stop actions. Reopening creates a new process
+with the original identity and profile. Connect resumes forwarding without a
+second purchase: all four later payloads arrive, all four payments advance,
+and the original channels and spending budgets remain intact.
+
+All four channels settle and all 512 test sats are collected. All 1,017
+management checks pass; all three prior phone accounts and the original router
+configuration and financial state remain unchanged. Normal phone Wi-Fi and
+Internet access are restored. The original harness reports a restoration failure
+because two original routers rediscover their mutual link, adding peers to the
+initially incomplete connected-peer list. That failed result is retained.
+Independent closure uses the regression-tested check at `7200514ea`: fixed
+state and every prior link must match; additional native links must match another
+original router's identity and verified mesh address. Eleven restoration/acceptance
+checks pass, including the regression that fails before this correction; 57
+focused phone-harness checks also pass. The consolidated receipt is
+`work/android-restart-r1/acceptance.json` in the private recovery bundle. This
+accepts one Android process restart with a pause in offered traffic, not physical
+power loss, continuous traffic during recovery, throughput or an Internet VPN.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted current default-limit SSD cadence matrix and finite router workload pilot; see [cadence results](CADENCE-RESULTS.md). | Characterize and qualify slow-storage limits, sustained and impaired current-build hardware workloads, and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid session through three routers. | Current-build Android crash/reopen and broader router regression, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
