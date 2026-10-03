@@ -85,6 +85,11 @@ async fn temporary_allowance_waits_in_the_running_service() {
         let (a, b) = (&before["data"]["forwarding"], &after["data"]["forwarding"]);
         let deferred = b["deferred_policy_packets"].as_u64().unwrap()
             - a["deferred_policy_packets"].as_u64().unwrap();
+        eprintln!("service admission deferred={deferred}, delivered=16, duplicates=0");
+        if deferred == 0 || b["drop_policy_denied_packets"] != a["drop_policy_denied_packets"] {
+            eprintln!("admission counters before={a}, after={b}");
+            bench.delivery_failure(0, 2).await;
+        }
         assert!(
             deferred > 0,
             "the installed service policy must actually defer packets"
@@ -93,7 +98,6 @@ async fn temporary_allowance_waits_in_the_running_service() {
             b["drop_policy_denied_packets"],
             a["drop_policy_denied_packets"]
         );
-        eprintln!("service admission deferred={deferred}, delivered=16, duplicates=0");
         bench
             .wait_paid(bought["purchase"]["channel"]["id"].as_str().unwrap())
             .await;
