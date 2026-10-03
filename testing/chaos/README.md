@@ -301,7 +301,11 @@ python3 -m sim.paid_diamond \
 ```
 
 Only the source receives 128 test sats, with at most two 64-sat channels and no
-renewal. The owned mint uses private SSH loopback forwards. A single watch
+renewal. The owned local mint uses private SSH loopback forwards. Alternatively,
+pass both `--mint-host /private/operator/mint-host.json` (the shared remote-mint
+host specification) and `--mint-address` with that host's assigned private LAN
+IPv4 address. This runs the supplied ARM64 mint there with a 128-sat issuance cap;
+all three routers must reach it before the single source grant. A single watch
 compares provider tariffs of 128/160 msat per KiB under a 192-msat ceiling. The
 normal selector defaults remain intact, including the 32-KiB trial and 60-second
 retry cooldown. Each phase allows at most sixteen 16-packet, 256-byte bursts,

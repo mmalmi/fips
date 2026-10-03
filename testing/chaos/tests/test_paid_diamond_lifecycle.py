@@ -22,7 +22,7 @@ def runner():
     run.root = Path("/unused-mocked-diamond")
     run.nodes = {name: SimpleNamespace(
         host=name, npub="identity-" + name, state="/tmp/bench-state",
-        stop=Mock(), mesh_down=Mock(), mesh_up=Mock(), control=Mock(return_value={
+        stop=Mock(), mesh_down=Mock(), mesh_up=Mock(), remote=Mock(), control=Mock(return_value={
             "mint_url": URL, "unit": "sat", "balance_sat": 0}))
         for name in ("n01", "n02", "n03")}
     run.source = SimpleNamespace(owner=run.nodes["n03"], state="/tmp/bench-state",
@@ -34,6 +34,7 @@ def runner():
     run.mint.grant.return_value = "private-test-token"
     run.mint.request.return_value = {"issued_sat": 128, "collected_sat": 0, "conserved": True}
     run.forwards = None
+    run.remote_mint = False
     run.monitor = Mock()
     run.watch_started = run.collection_attempted = False
     run.active_failover = False
@@ -79,6 +80,55 @@ class LifecycleTests(unittest.TestCase):
             node.control.assert_called_once_with("balance", action="wallet")
         self.assertEqual(run.evidence["source_funding_stage"], "verified")
         self.assertNotIn("private-test-token", repr(run.evidence))
+
+    def test_remote_mint_options_are_paired_before_preparing_devices(self):
+        for host, address in ((Path("host.json"), None), (None, "192.168.1.10")):
+            with self.subTest(host=host, address=address), patch(MODULE + ".DiamondRun.__init__") as base:
+                with self.assertRaisesRegex(ValueError, "supplied together"):
+                    PaidDiamondRun(SimpleNamespace(mint_host=host, mint_address=address))
+                base.assert_not_called()
+
+    def test_remote_mint_issuance_is_capped_at_the_source_budget(self):
+        run = runner()
+        run.run = "0123456789ab"
+        run.evidence["harness_sha256"] = {}
+        args = SimpleNamespace(mint_host=Mock(), mint_address="192.168.1.10",
+                               mint_binary=Path("mint"), active_failover=True)
+        args.mint_host.read_text.return_value = '{"host":"mint-test"}'
+        with patch(MODULE + ".DiamondRun.__init__", return_value=None), \
+                patch(MODULE + ".RemoteMint") as mint, patch(MODULE + ".LocalMint") as local:
+            run.__init__(args)
+        mint.assert_called_once_with({"host": "mint-test"}, args.mint_binary, run.run,
+                                     run.root, args.mint_address, max_issued_sat=128)
+        local.assert_not_called()
+
+    def test_remote_reachability_precedes_single_source_grant(self):
+        for failed in (False, True):
+            with self.subTest(unreachable=failed):
+                run = runner()
+                run.remote_mint = True
+                if failed:
+                    run.nodes["n03"].remote.side_effect = RuntimeError("unreachable mint")
+                events = Mock()
+                for name, node in run.nodes.items():
+                    events.attach_mock(node.remote, name)
+                events.attach_mock(run.mint.grant, "grant")
+                with patch(MODULE + ".MintForwards") as forwards:
+                    if failed:
+                        with self.assertRaisesRegex(RuntimeError, "unreachable mint"):
+                            run.before_launch()
+                        run.mint.grant.assert_not_called()
+                        run.source.control.assert_not_called()
+                    else:
+                        run.before_launch()
+                        run.mint.grant.assert_called_once_with("source")
+                        self.assertEqual(run.evidence["source_funding_stage"], "verified")
+                    forwards.assert_not_called()
+                self.assertEqual([event[0] for event in events.mock_calls],
+                                 ["n01", "n02", "n03"] + ([] if failed else ["grant"]))
+                for node in run.nodes.values():
+                    node.remote.assert_called_once_with(
+                        ["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null", URL + "/v1/info"], timeout=10)
 
     def test_uncertain_grant_or_import_is_never_replayed_by_cleanup(self):
         for operation in ("grant", "import"):

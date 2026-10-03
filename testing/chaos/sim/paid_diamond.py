@@ -18,6 +18,7 @@ from .paid_relay import eventually
 from .paid_settlement import require, settle_and_collect
 from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards, finish_mint
+from .remote_mint import RemoteMint
 from .wifi_diamond import DiamondRun, parser as topology_parser
 from .wifi_diamond_checks import require_same_process, transitional_adjacency
 from .wifi_diamond_finances import freeze_fixture
@@ -78,9 +79,14 @@ class Accounts:
 
 class PaidDiamondRun(DiamondRun):
     def __init__(self, args):
+        self.remote_mint = bool(getattr(args, "mint_host", None))
+        if self.remote_mint != bool(getattr(args, "mint_address", None)):
+            raise ValueError("--mint-host and --mint-address must be supplied together")
         super().__init__(args)
         self.active_failover = args.active_failover
-        self.mint = LocalMint(args.mint_binary, "127.0.0.1", self.root)
+        self.mint = (RemoteMint(json.loads(args.mint_host.read_text()), args.mint_binary,
+                                self.run, self.root, args.mint_address, max_issued_sat=128)
+                     if self.remote_mint else LocalMint(args.mint_binary, "127.0.0.1", self.root))
         self.forwards = None
         self.accounts = Accounts(self)
         self.fixture = self.journal_anchor = None
@@ -94,6 +100,7 @@ class PaidDiamondRun(DiamondRun):
         self.evidence["active_failover_enabled"] = self.active_failover
         for name in ("paid_diamond.py", "wifi_diamond_finances.py", "wifi_diamond_selection.py",
                      "paid_finances.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
+                     "remote_mint.py", "mint_host.py",
                      "wifi_probes.py", "wifi_priority_checks.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
@@ -119,9 +126,14 @@ class PaidDiamondRun(DiamondRun):
     def before_launch(self):
         self.prepare_source()
         self.offline_empty()
-        self.forwards = MintForwards(self.nodes, self.mint_url, self.root)
-        self.evidence["mint_forwards"] = self.forwards.info
-        self.forwards.start()
+        if self.remote_mint:
+            for node in self.nodes.values():
+                node.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null",
+                             self.mint_url + "/v1/info"], timeout=10)
+        else:
+            self.forwards = MintForwards(self.nodes, self.mint_url, self.root)
+            self.evidence["mint_forwards"] = self.forwards.info
+            self.forwards.start()
         self.evidence["source_funding_stage"] = "grant_attempted"
         self.save()
         token = self.mint.grant("source")
@@ -371,6 +383,9 @@ def parser():
     result = topology_parser()
     result.description = __doc__
     result.add_argument("--mint-binary", type=Path, required=True)
+    result.add_argument("--mint-host", type=Path,
+                        help="explicit isolated ARM64 Linux mint host specification")
+    result.add_argument("--mint-address", help="private LAN IPv4 of --mint-host")
     result.add_argument("--active-failover", action="store_true",
                         help="cut the selected provider during paid traffic and drive recovery before eviction")
     return result
