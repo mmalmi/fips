@@ -158,7 +158,7 @@ class Router(RelayCommands, SshCommands):
                 raise RuntimeError("an original access point is unavailable")
             aps.extend(item["ifname"] for item in interfaces)
         self.management_check(heartbeat=False)
-        self.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null", "https://openwrt.org"], timeout=10)
+        self.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null", "https://example.com"], timeout=10)
         return {"hashes": hashes, "identity": status["npub"], "history": status["history"],
                 "remaining_budget_sat": status["remaining_budget_sat"],
                 "purchases": status["purchases"], "locked_sat": status["locked_sat"],
