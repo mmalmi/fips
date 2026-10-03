@@ -1,5 +1,42 @@
 # Paid-relay cadence measurements
 
+## Credit headroom diagnostic — 3 October 2026
+
+A fixed A–B–B–A experiment compares 8,000 and 16,000 msat of unpaid allowance
+with the same standalone runtime (`6f97dfb03a41`) and driver (`31bd4ca6f82d`).
+The payment trigger remains 4,000 msat, the maximum delay 500 ms and the durable
+window 4,000 msat. Each invocation repeats the unchanged five-node native UDP
+workloads twice. High-rate traffic sends 32,000 payloads of 1,000 bytes at
+4,000 packets/s, followed by the original bounded drain and payment tail.
+
+| Unpaid allowance | High-rate delivered / submitted | Delivery | Mean delivered-packet latency | Credit / durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 8 sats | 80,108 / 128,000 | 62.58% | 21.10 ms | 62,525 / 21,061 |
+| 16 sats | 113,595 / 128,000 | 88.75% | 6.18 ms | 12,164 / 17,555 |
+
+Individual high-rate delivery percentages, in execution order, are
+67.80/66.95, 92.81/98.78, 86.40/76.99 and 56.43/59.15. Bursty and steady
+delivery is complete. Every diagnostic passes its existing cost-boundary checks;
+all 48 channels settle and all 40,960 test sats are collected. The high-rate
+diagnostic retains its explicit treatment of local evidence for undelivered
+packets; this does not accept the stricter clean-link cadence matrix.
+
+Measured payment CPU is 11.21 versus 7.02 ms per delivered MiB; total process CPU
+is 229.52 versus 179.72 ms per delivered MiB. These are observations from lossy
+runs, not accepted performance improvements. All 163 host samples are
+compiler-free and show no cgroup CPU throttling, but background I/O-full averages
+vary between runs (8.14%, 14.77%, 15.19%, 15.34%). No scheduling reservation or
+repeat selected for a better result is used.
+
+Increasing headroom reduces observed credit refusals and loss, but does not
+resolve high-rate delivery. Native queue counters include control traffic and
+cannot attribute individual probe loss. Exact allowance-publication-to-resumption
+latency is still unmeasured. The next diagnosis must distinguish payment refill
+delay from durable-window delay; neither production defaults nor readiness
+change. All source/executable hashes and terminal process/lock checks pass.
+The private recovery bundle retains the four raw runs and
+`work/payment-reply-recovery/headroom-abba-r1-summary.json`.
+
 ## Service admission wrapper diagnostic — 3 October 2026
 
 Two sequential 500-ms diagnostics compare the pre-wait daemon with the bounded
