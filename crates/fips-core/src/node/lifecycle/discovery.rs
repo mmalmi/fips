@@ -13,6 +13,7 @@ impl Node {
     /// drains their discovery buffers, and initiates connections to
     /// newly discovered peers (if auto_connect is enabled).
     pub(in crate::node) async fn poll_transport_discovery(&mut self) {
+        self.prune_deferred_ethernet_hints();
         let connected_root = (self.peers.len() > 0).then_some(*self.tree_state().root());
         for transport in self.transports.values() {
             transport.publish_discovery_root(connected_root);
@@ -109,6 +110,20 @@ impl Node {
                             std::slice::from_ref(&candidate),
                         )
                     {
+                        // A restarted Ethernet peer can announce before the
+                        // old owner goes quiet. Retain that hint for a bounded
+                        // later challenge, preserving the authenticated owner.
+                        if transport_name == "ethernet"
+                            && let Some(hint) = self.deferred_ethernet_hint(
+                                &node_addr,
+                                candidate_transport_id,
+                                &remote_addr,
+                            )
+                        {
+                            self.deferred_ethernet_hints
+                                .entry(node_addr)
+                                .or_insert(hint);
+                        }
                         continue;
                     }
                     let connecting = if confirms_new_connection {
@@ -233,6 +248,7 @@ impl Node {
         {
             self.yield_empty_neighbor_discovery_turn(Self::now_ms());
         }
+        let rotation_scheduled = connect_budget > 0 && rotation_candidate.is_some();
         if connect_budget > 0
             && let Some((transport_id, remote_addr, identity, hint)) = rotation_candidate
         {
@@ -250,6 +266,21 @@ impl Node {
             );
             to_connect.extend(deferred_refreshes.into_iter().take(budget));
         }
+        let remaining = self
+            .discovery_connect_budget()
+            .saturating_sub(to_connect.len());
+        let scheduled = to_connect
+            .iter()
+            .map(|(_, _, identity, _, _)| *identity.node_addr())
+            .collect();
+        let allow_rotation_refresh = !rotation_scheduled
+            && !self.neighbor_rotation_discovery_turn_reserved(Self::now_ms())
+            && self.has_neighbor_rotation_opportunity(Self::now_ms());
+        to_connect.extend(
+            self.take_deferred_ethernet_refreshes(remaining, &scheduled, allow_rotation_refresh)
+                .into_iter()
+                .map(|(transport, addr, identity)| (transport, addr, identity, false, None)),
+        );
         for (transport_id, remote_addr, identity, carrier_replaced, hint) in to_connect {
             info!(
                 node = %self.node_addr(),

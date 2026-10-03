@@ -223,6 +223,17 @@ restored device state and stopped test services. See [the failed active-restart
 result](CADENCE-RESULTS.md#active-stream-during-process-restart). Passing tests
 that paused offered traffic during restart do not close this recovery gap.
 
+The startup-discovery failure now has a native Linux reproduction and fix.
+An Ethernet beacon received while the previous authenticated owner still looks
+fresh was discarded before a retry became eligible. One expiring hint per current
+neighbor now waits for a heartbeat opportunity plus a maintenance tick, uses the
+existing admission limits, and is cancelled by authenticated link activity or an
+owner/path change. The original connection remains until fresh authentication.
+All 113 focused discovery/liveness/ownership checks and five real-veth Ethernet
+tests pass on the frozen `discovery-restart-green-r3` source. These include a full
+link budget and delayed healthy heartbeats. The corresponding router rerun is
+still pending; this native evidence does not close the physical recovery gap.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial

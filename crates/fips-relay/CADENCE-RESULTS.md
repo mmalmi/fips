@@ -88,6 +88,21 @@ the private recovery bundle. The harness's 31 focused Linux checks pass,
 including rejection of late/stale delivery and preservation of the exact sender
 and receiver results after an uncertain crash. No runtime behavior was changed.
 
+The subsequent native regression reproduces one concrete cause: a single real
+Ethernet startup beacon is drained while the old authenticated owner is fresh,
+then no recovery starts before another periodic beacon. Retaining a bounded hint
+fixes that case. The candidate also discards hints after authenticated link
+activity and waits one heartbeat opportunity plus a maintenance tick, avoiding
+unnecessary handshakes when a healthy heartbeat arrives slightly late. Retry and
+expiry use monotonic time; current-owner receive counters identify activity.
+
+On frozen `discovery-restart-green-r3`, five real-veth tests pass in an isolated
+Linux network namespace, including mixed UDP/Ethernet, the restart case with a
+temporarily full link budget, and healthy heartbeat jitter. Another 113 focused
+discovery, liveness, same-path ownership and replay checks pass. Both new failures
+were observed before their fixes. Formatting and file-length checks pass. These
+are native functional checks; the same physical active-stream rerun is pending.
+
 ## Default-limit native matrix on SSD — 3 October 2026
 
 The complete untraced matrix passes on the frozen `060f12a56bac` standalone

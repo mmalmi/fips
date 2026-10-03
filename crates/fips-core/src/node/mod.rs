@@ -405,6 +405,9 @@ pub struct Node {
     /// connection_state() and initiates the handshake when connected.
     pending_connects: Vec<PendingConnect>,
 
+    /// At most one same-path discovery hint per authenticated Ethernet peer.
+    deferred_ethernet_hints: HashMap<NodeAddr, lifecycle::DeferredEthernetHint>,
+
     // === Connection Retry ===
     /// Retry state for peers whose outbound connections have failed.
     /// Keyed by NodeAddr. Entries are created when a handshake times out

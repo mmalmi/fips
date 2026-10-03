@@ -341,6 +341,8 @@ fn interface_flags_allow_route_scope(flags: i32) -> bool {
 
 mod candidate_connect;
 mod control;
+mod deferred_ethernet;
+pub(in crate::node) use deferred_ethernet::DeferredEthernetHint;
 mod discovery;
 mod network;
 pub(in crate::node) use network::{NetworkRebindCompletion, NetworkRebindRequest};
