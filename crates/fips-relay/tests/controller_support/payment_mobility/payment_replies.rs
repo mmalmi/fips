@@ -35,6 +35,7 @@ pub(super) struct ReplyGate {
 
 struct HeldUpdate {
     balance: u64,
+    request_index: usize,
     release: oneshot::Sender<()>,
     expired: oneshot::Receiver<Duration>,
 }
@@ -65,6 +66,7 @@ impl Drop for ReplyGate {
 async fn hold_reply(
     capture: oneshot::Sender<HeldUpdate>,
     balance: u64,
+    request_index: usize,
     mut respond: oneshot::Sender<Vec<u8>>,
 ) -> oneshot::Sender<Vec<u8>> {
     let started = tokio::time::Instant::now();
@@ -74,6 +76,7 @@ async fn hold_reply(
         capture
             .send(HeldUpdate {
                 balance,
+                request_index,
                 release,
                 expired: expiry
             })
@@ -121,10 +124,10 @@ pub(super) fn proxy(
                     }) if state.channel.as_ref() == Some(&channel_id) => {
                         assert!(state.requests.len() < 32, "bounded payment observation");
                         state.requests.push(Request::Update(payment.balance));
-                        state
-                            .capture
-                            .take()
-                            .map(|(point, capture)| (point, capture, channel_id, payment.balance))
+                        let request_index = state.requests.len() - 1;
+                        state.capture.take().map(|(point, capture)| {
+                            (point, capture, channel_id, payment.balance, request_index)
+                        })
                     }
                     Ok(PaymentRequest::Usage { channel_id })
                         if state.channel.as_ref() == Some(&channel_id) =>
@@ -138,7 +141,7 @@ pub(super) fn proxy(
             } else {
                 None
             };
-            let Some((point, capture, channel_id, balance)) = captured else {
+            let Some((point, capture, channel_id, balance, request_index)) = captured else {
                 if send.send(request).await.is_err() {
                     return;
                 }
@@ -147,7 +150,8 @@ pub(super) fn proxy(
             if point != Interception::LoseReply {
                 let send = send.clone();
                 replies.spawn(async move {
-                    let respond = hold_reply(capture, balance, request.respond).await;
+                    let respond =
+                        hold_reply(capture, balance, request_index, request.respond).await;
                     if point == Interception::HoldUpdate {
                         assert!(
                             !respond.is_closed(),
@@ -184,7 +188,7 @@ pub(super) fn proxy(
                 };
                 assert_eq!(actual, channel_id);
                 assert_eq!(usage.paid_msat, balance * 1_000);
-                drop(hold_reply(capture, balance, request.respond).await);
+                drop(hold_reply(capture, balance, request_index, request.respond).await);
             });
         }
     });
@@ -230,7 +234,6 @@ async fn newer_reply_usage_skips_the_next_query(
         buyer.authorized_sat(channel).unwrap() * 1_000,
     )
     .await;
-    let requests_before = gate.observed().len();
     let held = gate.arm(channel, Interception::HoldUpdate);
     let source = if provider == 1 { 4 } else { 0 };
     traffic.send(source, 168).await;
@@ -252,13 +255,8 @@ async fn newer_reply_usage_skips_the_next_query(
     held.release.send(()).unwrap();
     acknowledged(&controller, channel, due).await;
     let requests = gate.observed();
-    let first_update = requests[requests_before..]
-        .iter()
-        .position(|r| *r == Request::Update(held.balance))
-        .expect("held update was observed")
-        + requests_before;
     assert!(
-        matches!(requests.get(first_update + 1), Some(Request::Update(balance)) if balance * 1_000 >= due),
+        matches!(requests.get(held.request_index + 1), Some(Request::Update(balance)) if balance * 1_000 >= due),
         "new unpaid reply usage must avoid another Usage request: {requests:?}"
     );
     assert!(
@@ -297,7 +295,6 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     let buyer = &buyers[2];
     let sellers = traffic.sellers;
     newer_reply_usage_skips_the_next_query(traffic, gate, purchase, buyer, slow).await;
-    let recovery_start = gate.observed().len();
     let funding = journal(root, "controller-2/controller.json")["funding"].clone();
     let budget = controller.funding_budget().await.unwrap();
     let prior = buyer.authorized_sat(channel).unwrap();
@@ -366,7 +363,8 @@ pub(super) async fn lost_updates_and_replies_recover_automatically(
     );
     let updates: Vec<_> = requests
         .iter()
-        .skip(recovery_start)
+        // Rekey preparation can pay new background evidence before interception.
+        .skip(applied.request_index)
         .filter_map(|request| match request {
             Request::Update(balance) => Some(*balance),
             Request::Usage => None,
