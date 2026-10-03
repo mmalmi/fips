@@ -192,6 +192,16 @@ impl DataplaneLiveNode {
         self.crypto_worker.readiness_notify()
     }
 
+    #[cfg(test)]
+    pub(crate) fn hold_crypto_submissions(&mut self) {
+        self.crypto_worker.hold_submissions();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_crypto_submissions(&mut self) {
+        self.crypto_worker.release_submissions();
+    }
+
     pub(crate) fn has_deferred_raw_ingress(&self) -> bool {
         !self.deferred_raw_ingress.is_empty()
     }

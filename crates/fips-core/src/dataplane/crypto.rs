@@ -493,6 +493,8 @@ pub(crate) struct DataplaneAeadWorkerPool {
     native_executor: Option<Arc<NativeExecutor>>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
+    #[cfg(test)]
+    held_submissions: Option<Vec<PreparedCryptoOwnerRun>>,
 }
 
 impl DataplaneAeadWorkerPool {
@@ -502,6 +504,8 @@ impl DataplaneAeadWorkerPool {
             native_executor: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight: max_in_flight.max(1),
+            #[cfg(test)]
+            held_submissions: None,
         }
     }
 
@@ -576,12 +580,29 @@ impl DataplaneAeadWorkerPool {
     }
 
     fn submit_owner_run(&mut self, run: PreparedCryptoOwnerRun) {
+        #[cfg(test)]
+        if let Some(held) = &mut self.held_submissions {
+            held.push(run);
+            return;
+        }
         let run_len = run.slot.len();
         self.native_executor
             .get_or_insert_with(acquire_native_executor)
             .worker_queue
             .push(run);
         crate::perf_profile::record_dataplane_aead_prepared_job(run_len);
+    }
+
+    #[cfg(test)]
+    fn hold_submissions(&mut self) {
+        assert!(self.held_submissions.replace(Vec::new()).is_none());
+    }
+
+    #[cfg(test)]
+    fn release_submissions(&mut self) {
+        for run in self.held_submissions.take().expect("submissions held") {
+            self.submit_owner_run(run);
+        }
     }
 
     fn submit_prepared_chunk(

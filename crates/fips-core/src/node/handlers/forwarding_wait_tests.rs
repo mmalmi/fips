@@ -26,6 +26,100 @@ impl ForwardingPolicy for ReplenishedAdmission {
 }
 
 #[tokio::test]
+async fn readmitted_forward_keeps_accounting_until_delayed_crypto_completes() {
+    use crate::dataplane::{
+        DataplaneLiveOwnerRoutes, OwnerConfig, OwnerCryptoKeys, OwnerId, TransportPath,
+    };
+    use crate::transport::{TransportAddr, TransportHandle, TransportId};
+
+    let (mut node, ingress, next) = fixture();
+    let policy = std::sync::Arc::new(ReplenishedAdmission::default());
+    node.set_forwarding_policy(Some(policy.clone()));
+    let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let transport_id = TransportId::new(183);
+    let (send_tx, _send_rx) = crate::transport::packet_channel(8);
+    let mut sender = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+        transport_id,
+        None,
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            mtu: Some(1400),
+            ..Default::default()
+        },
+        send_tx,
+    ));
+    sender.start().await.unwrap();
+    node.transports.insert(transport_id, sender);
+    let key = std::sync::Arc::new(ring::aead::LessSafeKey::new(
+        ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[9; 32]).unwrap(),
+    ));
+    let owner = OwnerId::fmp_node(next);
+    let owner_config = OwnerConfig::new(1, 8)
+        .with_fmp_session_start_ms(0)
+        .with_fmp_send_headers(183, 0);
+    node.dataplane.register_owner(owner, owner_config.clone());
+    node.dataplane
+        .install_owner_fmp_session_routes(
+            owner,
+            owner_config,
+            OwnerCryptoKeys::new(key.clone(), key),
+            TransportPath::live(
+                transport_id,
+                TransportAddr::from_string(&receiver.local_addr().unwrap().to_string()),
+            ),
+            DataplaneLiveOwnerRoutes::new(),
+        )
+        .unwrap();
+    let encoded = SessionDatagram::new(*ingress.node_addr(), next, vec![0x42; 1000]).encode();
+    node.handle_session_datagram(AuthenticatedSessionDatagram::new(
+        ingress,
+        &encoded[1..],
+        false,
+    ))
+    .await;
+    assert_eq!(node.waiting_admissions.packets.len(), 1);
+    assert_eq!(policy.0.lock().unwrap().1, 0);
+    node.waiting_admissions.packets[0].due = tokio::time::Instant::now();
+    policy.0.lock().unwrap().0 = true;
+    node.dataplane.hold_crypto_submissions();
+    tokio::time::pause();
+    node.retry_forwarding_admissions().await;
+    tokio::time::resume();
+
+    assert!(node.waiting_admissions.packets.is_empty());
+    assert_eq!(policy.0.lock().unwrap().1, 1);
+    assert!(
+        policy.0.lock().unwrap().2.is_empty(),
+        "an unfinished crypto job must retain accounting ownership"
+    );
+    assert_eq!(node.stats().forwarding.drop_send_error_packets, 0);
+    assert_eq!(node.deferred_session_forwards.pending_len(), 1);
+    node.dataplane.release_crypto_submissions();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while node.has_deferred_session_forwards() {
+            node.drain_one_deferred_session_forward_turn().await;
+        }
+    })
+    .await
+    .expect("released crypto job must complete");
+    assert_eq!(policy.0.lock().unwrap().2, [ForwardingOutcome::Submitted]);
+    let mut packet = [0; 1400];
+    let received = tokio::time::timeout(Duration::from_secs(1), receiver.recv(&mut packet))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(received > 1000);
+    assert_eq!(node.stats().forwarding.forwarded_packets, 1);
+    assert_eq!(node.stats().forwarding.drop_send_error_packets, 0);
+    node.transports
+        .get_mut(&transport_id)
+        .unwrap()
+        .stop()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn temporary_admission_wait_rechecks_without_reserving_or_rewriting() {
     let (mut node, ingress, next) = fixture();
     let policy = std::sync::Arc::new(ReplenishedAdmission::default());
