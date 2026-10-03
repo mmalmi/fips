@@ -126,6 +126,27 @@ and partial-cleanup failures. This accepts bounded injected frame loss around a
 process restart; it does not simulate physical radio interference, power loss,
 traffic during the stopped interval, maximum throughput or a long soak.
 
+The same workload also passes on the current `80bf5baec` ARM64 executable
+(`4a53448ae49162f7643e0c47de2b4bea0ca45806ca34ab8e73442d75e130c0d6`),
+using unchanged harness inputs at `d8a4dc7a6`. All eight healthy/recovery streams
+deliver 32,000/32,000 payloads. The four impaired streams deliver 3,799, 3,798,
+3,800 and 3,804: 15,201/16,000 (95.01%). No payloads are duplicated, invalid or
+reordered. The filters count 818 dropped test frames during those observations,
+including control traffic; 799 missing payloads cannot be attributed individually.
+
+Both original channels advance payments while each loss phase remains enabled.
+Fresh probes and financial reconciliation finish within 16.77 seconds of the
+restart attempt, retaining exactly 4,000 msat of unbilled exposure per channel.
+Loss is disabled during the restart itself; this does not test discovery recovery
+while impairment remains active. All 384 test sats are collected, all 612
+management checks pass, and independent closure verifies restored device state,
+removed test filters/executables and stopped candidate/guard/mint processes.
+The receipt is `work/hardware-current-r1/restart-loss-r2/closure.json` in the
+private recovery bundle, SHA-256
+`140e1aa8b54a8ffe5319d8fb20f69dca54f42efebca5181e34e8c578e867c0f9`.
+This accepts the recorded finite loss/restart case on the newer runtime; it does
+not extend the sustained-capacity, renewal, mobility or power-loss claims.
+
 ### Active stream during process restart
 
 The newer `699840f52` ARM64 runtime fails the `603942bc9` active-restart
