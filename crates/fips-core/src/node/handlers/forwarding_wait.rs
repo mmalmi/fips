@@ -109,6 +109,12 @@ impl Node {
             .await
         {
             PreparedSessionDatagram::Forward(route) => {
+                if let Some(expires) = expires {
+                    let queued_at = expires - ADMISSION_WAIT_LIMIT;
+                    tracing::trace!(target: "fips_admission", event = "readmitted",
+                        wait_us = queued_at.elapsed().as_micros() as u64,
+                        bytes = payload.len(), "Queued forwarding admission");
+                }
                 let plaintext = {
                     let _timer = crate::perf_profile::Timer::start(
                         crate::perf_profile::Stage::TransitEncode,
@@ -180,6 +186,9 @@ impl Node {
             expires,
         });
         if accepted && is_new {
+            tracing::trace!(target: "fips_admission", event = "queued",
+                packets = self.waiting_admissions.packets.len(),
+                bytes = self.waiting_admissions.bytes, "Forwarding admission wait");
             self.stats_mut()
                 .forwarding
                 .record_deferred_policy(payload.len());
@@ -197,6 +206,8 @@ impl Node {
     }
 
     pub(in crate::node) fn wake_waiting_admissions(&mut self) {
+        tracing::trace!(target: "fips_admission", event = "wake",
+            packets = self.waiting_admissions.packets.len(), "Forwarding allowance wake");
         let now = tokio::time::Instant::now();
         for packet in &mut self.waiting_admissions.packets {
             // Taking the minimum preserves queue order and the original expiry.

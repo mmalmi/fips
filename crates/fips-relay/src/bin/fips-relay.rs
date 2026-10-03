@@ -1,13 +1,28 @@
 #[cfg(unix)]
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
-    tracing_subscriber::fmt()
+    let logging = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
+        );
+    if std::env::var("FIPS_LOG_UPTIME").as_deref() == Ok("1") {
+        let epoch = std::time::Instant::now();
+        let epoch_unix_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_micros() as u64;
+        let uncertainty_us = epoch.elapsed().as_micros() as u64;
+        logging
+            .with_timer(tracing_subscriber::fmt::time::Uptime::from(epoch))
+            .init();
+        tracing::trace!(target: "fips_admission", event = "clock",
+            epoch_unix_us, uncertainty_us,
+            "Process clock anchor");
+    } else {
+        logging.init();
+    }
     if let Err(error) = run().await {
         eprintln!("fips-relay: {error}");
         std::process::exit(1);

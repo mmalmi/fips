@@ -126,6 +126,11 @@ async fn stream(
 }
 
 async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u64) -> Value {
+    let clock_started = Instant::now();
+    let started_unix_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
     let before_guard = sample(configs).await;
     let before = sample(configs).await;
     let started = Instant::now();
@@ -152,7 +157,14 @@ async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u
     // sequential status pass. A second full pass must show no deferred work,
     // including after the final workload where there is no next gap check.
     let after_guard = sample(configs).await;
+    let finished_unix_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let clock_span_us = clock_started.elapsed().as_micros();
     json!({"workload":name, "offered_elapsed_ms":offered_elapsed_ms,
+        "started_unix_us":started_unix_us, "finished_unix_us":finished_unix_us,
+        "clock_span_us":clock_span_us,
         "observation_elapsed_ms":observation_elapsed_ms,
         "before_guard":before_guard, "before":before, "after":after,
         "after_guard":after_guard, "probes":probes})
@@ -239,7 +251,21 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     let mut children = Vec::new();
     for path in &paths {
         let child = if mode == TrialMode::ForwardingDrops {
-            start_with_env(path, &[("RUST_LOG", OsStr::new(forwarding::LOG_FILTER))]).await
+            start_with_env(
+                path,
+                &[
+                    ("RUST_LOG", OsStr::new(forwarding::log_filter())),
+                    (
+                        "FIPS_LOG_UPTIME",
+                        OsStr::new(if forwarding::trace_admission() {
+                            "1"
+                        } else {
+                            "0"
+                        }),
+                    ),
+                ],
+            )
+            .await
         } else {
             start(path).await
         };
@@ -330,12 +356,13 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
         retain_logs(
             &paths,
             &PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap()),
+            65_536,
         );
     } else if mode == TrialMode::ForwardingDrops {
         let directory = PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap())
             .join(format!("trial-{trial_id}"));
         std::fs::create_dir(&directory).unwrap();
-        retain_logs(&paths, &directory);
+        retain_logs(&paths, &directory, forwarding::log_limit());
     }
     let redeemed = root.path().join("redeemed");
     let mut total = 0;
@@ -382,15 +409,14 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     output.flush().unwrap();
 }
 
-fn retain_logs(paths: &[PathBuf], directory: &Path) {
+fn retain_logs(paths: &[PathBuf], directory: &Path, max_bytes: u64) {
     use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;
 
-    const MAX_BYTES: u64 = 64 * 1024;
     for (node, path) in paths.iter().enumerate() {
         let mut input = std::fs::File::open(path.with_extension("log")).unwrap();
         let bytes = input.metadata().unwrap().len();
-        let omitted = bytes.saturating_sub(MAX_BYTES);
+        let omitted = bytes.saturating_sub(max_bytes);
         input.seek(SeekFrom::Start(omitted)).unwrap();
         let mut output = OpenOptions::new()
             .create_new(true)
@@ -403,7 +429,7 @@ fn retain_logs(paths: &[PathBuf], directory: &Path) {
             "# original_bytes={bytes} omitted_prefix_bytes={omitted}"
         )
         .unwrap();
-        std::io::copy(&mut input.take(MAX_BYTES), &mut output).unwrap();
+        std::io::copy(&mut input.take(max_bytes), &mut output).unwrap();
     }
 }
 
@@ -416,7 +442,7 @@ fn diagnostic_log_retention_keeps_a_bounded_private_tail() {
     let mut log = vec![b'x'; 70_000];
     log.extend_from_slice(b"\nlast forwarding error\n");
     std::fs::write(config.with_extension("log"), &log).unwrap();
-    retain_logs(&[config], root.path());
+    retain_logs(&[config], root.path(), 65_536);
     let path = root.path().join("node-0.log");
     let saved = std::fs::read(&path).unwrap();
     assert!(saved.starts_with(b"# original_bytes=70023 omitted_prefix_bytes=4487\n"));

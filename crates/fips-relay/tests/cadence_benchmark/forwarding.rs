@@ -2,7 +2,27 @@
 use super::*;
 use fips_relay::service::native_request;
 
-pub(super) const LOG_FILTER: &str = "warn,fips_core::forwarding_error=debug";
+pub(super) fn trace_admission() -> bool {
+    let enabled = benchmark_amount("FIPS_CADENCE_ADMISSION_TRACE", 0);
+    assert!(enabled <= 1);
+    enabled == 1
+}
+
+pub(super) fn log_filter() -> &'static str {
+    if trace_admission() {
+        "warn,fips_admission=trace"
+    } else {
+        "warn,fips_core::forwarding_error=debug"
+    }
+}
+
+pub(super) fn log_limit() -> u64 {
+    if trace_admission() {
+        4 * 1024 * 1024
+    } else {
+        65_536
+    }
+}
 
 pub(super) async fn snapshot(configs: &[ServiceConfig]) -> Vec<Value> {
     let mut nodes = Vec::new();
@@ -34,7 +54,8 @@ async fn observe_forwarding_drops() {
         json!({"diagnostic": "native-forwarding-drops", "comparison_complete": false,
             "max_delay_ms": 500, "repeats": 2,
             "grace_msat": grace_msat, "unpaid_percent": unpaid_percent, "window_msat": window_msat,
-            "log_filter": LOG_FILTER, "retained_log_tail_bytes_per_node": 65_536,
+            "log_filter": log_filter(), "retained_log_tail_bytes_per_node": log_limit(),
+            "admission_timing": trace_admission(),
             "scope": "native forwarding counters around unchanged workload and service snapshots"})
     )
     .unwrap();

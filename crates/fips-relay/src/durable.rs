@@ -367,6 +367,8 @@ impl DurableRelay {
         &self,
         allow_next_window: bool,
     ) -> Result<BTreeMap<String, ChannelUsage>, DurableError> {
+        let trace_started = tracing::enabled!(target: "fips_admission", tracing::Level::TRACE)
+            .then(std::time::Instant::now);
         // Any failure leaves admission suspended, even if rename succeeded but
         // the final directory sync failed. Recovery resolves the durable state.
         // Admissions continue against their PREVIOUSLY durable ceiling during
@@ -434,6 +436,11 @@ impl DurableRelay {
         published.ceilings = ceilings;
         published.ready = allow_next_window;
         drop(published);
+        if let Some(started) = trace_started {
+            tracing::trace!(target: "fips_admission", event = "published",
+                persist_us = started.elapsed().as_micros() as u64,
+                increased, "Forwarding allowance publication");
+        }
         if increased {
             self.admission_changed.notify_one();
         }

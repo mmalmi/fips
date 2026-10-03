@@ -171,6 +171,23 @@ exceeds the configured window. Other rejection reasons remain unclassified.
 Compare matching process identities and sampling intervals before relating
 these counters to native policy refusals; they have no accounting authority.
 
+For queue timing, add `FIPS_CADENCE_ADMISSION_TRACE=1` to the forwarding
+diagnostic command. It selects `warn,fips_admission=trace`, monotonic process
+log timestamps (`FIPS_LOG_UPTIME=1`) and a private 4-MiB log limit per node.
+The normal logging mode and forwarding behavior remain unchanged. Analyze with:
+
+```sh
+python3 testing/relay-cadence/admission_timing.py /absolute/new-forwarding-drops.jsonl /absolute/new-forwarding-logs
+```
+
+The timing reader rejects truncated logs and reports allowance-persistence
+duration and queue residence until readmission, before transport submission.
+Persistence includes serialization, disk I/O and publication of the new ceiling.
+Durations use monotonic clocks; approximate workload alignment uses local wall
+clocks and excludes a margin around boundaries. Wakeups coalesce, so these logs
+do not prove a one-to-one causal refill-to-packet latency. Logging adds overhead;
+delivery, financial conservation and cost-boundary validation remain separate.
+
 ## Hardware report contract (schema 3)
 
 The hardware runner uses three router service processes, one paid relay, two
