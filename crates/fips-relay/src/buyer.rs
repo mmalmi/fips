@@ -205,7 +205,7 @@ impl State {
                 || id != &q.contract.id
                 || q.contract.destination == c.provider
                 || (legacy && q.attempts.len() > self.limits.max_packets_per_contract)
-                || (self.history_version() == 1 && !legacy)
+                || (history_version == 1 && !legacy)
                 || q.completed.submitted_units > q.completed.observed_units
                 || (legacy && q.completed.observed_units != 0)
                 || (q.active

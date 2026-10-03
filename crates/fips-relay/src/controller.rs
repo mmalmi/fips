@@ -461,7 +461,7 @@ impl Controller {
         if policy.renewal.as_ref().is_some_and(|r| {
             !(1..=100).contains(&r.at_capacity_percent)
                 || r.before_expiry_secs == 0
-                || r.before_expiry_secs > policy.service_lifetime_secs() / 2
+                || r.before_expiry_secs > policy.channel_lifetime_secs / 2
         }) {
             return Err("invalid renewal policy".into());
         }

@@ -23,7 +23,16 @@ impl RenewalPolicy {
         observed_units: u64,
         timestamp: u64,
     ) -> bool {
-        let nearing = timestamp.saturating_add(self.before_expiry_secs);
+        // Preserve saved renewal settings, but keep the lead below the shorter
+        // service window of newly funded channels.
+        let lead = purchase
+            .channel
+            .refund_after_unix
+            .map_or(self.before_expiry_secs, |refund| {
+                self.before_expiry_secs
+                    .min(refund.saturating_sub(purchase.channel.expires_unix) / 2)
+            });
+        let nearing = timestamp.saturating_add(lead);
         purchase.channel.expires_unix <= nearing
             || purchase.contract.expires_unix <= nearing
             || self.capacity_due(&purchase.channel, evidence_msat)
@@ -524,6 +533,9 @@ mod tests {
         purchase.contract.expires_unix = 600;
         assert!(!policy.due(&purchase, 0, 0, 569));
         assert!(policy.due(&purchase, 0, 0, 570));
+        purchase.channel.refund_after_unix = Some(640);
+        assert!(!policy.due(&purchase, 0, 0, 579));
+        assert!(policy.due(&purchase, 0, 0, 580));
     }
 
     #[test]
@@ -546,6 +558,8 @@ mod tests {
         policy.renewal.as_mut().unwrap().at_capacity_percent = 101;
         assert!(Controller::validate_policy(&policy).is_err());
         policy.renewal.as_mut().unwrap().at_capacity_percent = 100;
+        policy.renewal.as_mut().unwrap().before_expiry_secs = 300;
+        Controller::validate_policy(&policy).unwrap();
         policy.renewal.as_mut().unwrap().before_expiry_secs = 301;
         assert!(Controller::validate_policy(&policy).is_err());
     }
