@@ -605,7 +605,7 @@ impl MixedBench {
                     Ok(Ok(status)) => {
                         let mut safe = selected(&status, &[
                             "peers", "funding_budget", "remaining_budget_sat", "locked_sat",
-                            "probe", "data_carrier", "control_traffic", "payment_progress", "bootstrap", "return_allowance",
+                            "probe", "data_carrier", "control_traffic", "payment_progress", "bootstrap", "return_allowance", "measurements",
                         ]);
                         safe["last_error_present"] = json!(!status["last_error"].is_null());
                         // Emit only known labels, never an arbitrary error that
