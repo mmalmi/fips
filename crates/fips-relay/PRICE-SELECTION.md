@@ -177,9 +177,10 @@ the ordinary outbound queue capacity and are additionally capped at 512 packets 
 1 MiB of payload globally and 256 packets / 512 KiB per next hop. Woken packets
 remain charged to these bounds until admission or drop. Other owners and direct
 neighbor control traffic continue; owner or policy replacement cancels holds.
-The pause is volatile and ends with the controller operation, including errors
-or cancellation. A closed agreement then rejects unless replacement authority
-exists. No sequence, sent metric or financial token is reserved while waiting.
+The pause is volatile. It ends once every replacement is accepted by its provider,
+saved locally and activated, before the final renewal-completion write. Errors
+or cancellation also release it; a closed agreement then rejects unless replacement
+authority exists. No sequence, sent metric or financial token is reserved while waiting.
 Already submitted packets are never replayed or charged to the successor by this
 mechanism. Slow renewals, full queues and packets already in flight can still
 lose traffic; this is bounded source continuity, not a delivery guarantee.

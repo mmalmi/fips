@@ -1,8 +1,12 @@
-//! Automatic renewal across a committed refund, offline provider and two crashes.
+//! Automatic renewal across refund/acceptance completion and repeated crashes.
 use super::restore::{read, wait_journal};
-use super::wallet_crash::{arm, kill, kill_at};
+use super::wallet_crash::{arm, kill, kill_at, wait_at};
 use super::*;
-use fips_relay::{controller::RenewalPolicy, service::ServiceConfig};
+use fips_relay::{
+    controller::RenewalPolicy,
+    probe::{ReceiveProbe, SendProbe},
+    service::{ServiceConfig, native_request},
+};
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::atomic::Ordering};
 
@@ -69,7 +73,7 @@ async fn scenario(root: &Path) {
         .unwrap();
     }
     for round in 0..10 {
-        deliver(&configs, &npubs[2], round).await;
+        assert!(deliver(&configs, &npubs[2], round).await);
     }
     let journals: Vec<_> = configs
         .iter()
@@ -150,7 +154,41 @@ async fn scenario(root: &Path) {
     kill(&mut children[0]).await;
     assert_eq!(read(&journals[0]), recovered);
 
+    let marker = arm(&wallet, id, "renewal-complete");
     children[1] = start(&paths[1]).await;
+    children[0] = start(&paths[0]).await;
+    ready(&configs, &paths, &npubs, &mut children).await;
+    wait_at(&mut children[0], &marker, id).await;
+    let accepted = read(&journals[0]);
+    assert_eq!(accepted["renewals"][id]["completed"], false);
+    for offer in accepted["renewals"][id]["replacements"].as_array().unwrap() {
+        assert!(accepted["outgoing"].as_object().unwrap().values().any(|o| {
+            o["offer"] == *offer && o["accepted"] == true && o["purchase"]["channel"]["id"] != id
+        }));
+    }
+    let buyer_path = configs[0].state_directory.join("buyer/buyer.json");
+    let buyer_before = read(&buyer_path);
+    let seller_before = read(&journals[1])["seller_settlements"][id].clone();
+    let probe = traffic_before_completion(&configs, &npubs).await;
+    assert_eq!(read(&journals[0])["renewals"][id]["completed"], false);
+    let buyer_after = read(&buyer_path);
+    assert!(buyer_after["channels"][id] == buyer_before["channels"][id]);
+    for (quote, saved) in buyer_before["quotes"].as_object().unwrap() {
+        if saved["contract"]["channel_id"] == id {
+            assert!(buyer_after["quotes"][quote] == *saved);
+        }
+    }
+    assert!(read(&journals[1])["seller_settlements"][id] == seller_before);
+    eprintln!(
+        "renewal completion observation: unique={}, missing={}, duplicate={}",
+        probe["unique_packets"], probe["missing_packets"], probe["duplicate_packets"]
+    );
+    // Delivered traffic can promote a new key epoch after the previous restart.
+    // Keep the financial completion barrier held, but let that old epoch drain
+    // before a third restart; rapid successive rekeys are a separate boundary.
+    wait_for_session_drain(&configs[2], &npubs[0]).await;
+    assert_eq!(read(&journals[0])["renewals"][id]["completed"], false);
+    kill(&mut children[0]).await;
     children[0] = start(&paths[0]).await;
     ready(&configs, &paths, &npubs, &mut children).await;
     let renewed = wait_journal(&journals[0], 40, |j| j["renewals"][id]["completed"] == true).await;
@@ -158,6 +196,9 @@ async fn scenario(root: &Path) {
         .await
         .unwrap();
     assert_eq!(renewed["policy"], before["policy"]);
+    for field in ["funding", "next_funding", "policy"] {
+        assert!(renewed[field] == accepted[field]);
+    }
     assert_eq!(renewed["funding"].as_object().unwrap().len(), 2);
     assert_eq!(renewed["funding"][funding_id], *original);
     assert_eq!(
@@ -186,7 +227,7 @@ async fn scenario(root: &Path) {
         status["remaining_budget_sat"].as_u64().unwrap()
             <= budget_before["remaining_budget_sat"].as_u64().unwrap()
     );
-    deliver(&configs, &npubs[2], 100).await;
+    let recovered_delivery = deliver(&configs, &npubs[2], 100).await;
     // Observe automatic payment before final settlement can collect it.
     wait_journal(
         &configs[1].state_directory.join("seller/ledger.json"),
@@ -250,9 +291,102 @@ async fn scenario(root: &Path) {
         available + proxy.state.fees_collected.load(Ordering::SeqCst),
         384
     );
+    eprintln!(
+        "renewal completion cohort: unique={}, missing={}, duplicate={}, conserved=384",
+        probe["unique_packets"], probe["missing_packets"], probe["duplicate_packets"]
+    );
+    assert_eq!(
+        probe["unique_packets"], 8,
+        "accepted replacement must carry originals before renewal completion"
+    );
+    assert_eq!(probe["missing_packets"], 0);
+    assert_eq!(probe["duplicate_packets"], 0);
+    assert_eq!(probe["unique_bytes"], 8 * 80);
+    assert!(recovered_delivery, "fresh paid payload after recovery");
 }
 
-async fn deliver(configs: &[ServiceConfig], destination: &str, round: u8) {
+async fn traffic_before_completion(
+    configs: &[ServiceConfig],
+    npubs: &[String],
+) -> serde_json::Value {
+    let stream_id = "00000000000000000000000000009627".to_owned();
+    request(
+        &configs[2],
+        &AdminRequest::ReceiveProbe {
+            probe: ReceiveProbe {
+                source: npubs[0].clone(),
+                stream_id: stream_id.clone(),
+                packet_count: 8,
+                payload_bytes: 80,
+                lifetime_secs: None,
+                measure_one_way_latency: false,
+                reflect: false,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let sent = request(
+        &configs[0],
+        &AdminRequest::SendProbe {
+            probe: SendProbe {
+                destination: npubs[2].clone(),
+                stream_id,
+                packet_count: 8,
+                payload_bytes: 80,
+                packets_per_second: 10,
+                max_duration_secs: None,
+                measure_round_trip: false,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(sent["probe"]["submitted_packets"], 8);
+    assert!(sent["probe"]["stopped_reason"].is_null());
+    // Keep completion pending beyond the bounded source queue's lifetime. Do
+    // not retry missing originals; check delivery after financial collection.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    request(&configs[2], &AdminRequest::Status).await.unwrap()["probe"].clone()
+}
+
+async fn wait_for_session_drain(config: &ServiceConfig, source: &str) {
+    let started = tokio::time::Instant::now();
+    let mut observed_drain = false;
+    let mut initial = None;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let status = native_request(config, &serde_json::json!({"command":"show_sessions"}))
+                .await
+                .unwrap();
+            assert_eq!(status["status"], "ok");
+            let session = status["data"]["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|session| session["npub"] == source)
+                .expect("retained source session");
+            initial.get_or_insert_with(|| session.clone());
+            observed_drain |= session["is_draining"] == true;
+            if session["state"] == "established" && session["is_draining"] == false {
+                eprintln!(
+                    "renewal restart session: initial={}, final={session}",
+                    initial.as_ref().unwrap()
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("previous key epoch drains before the next financial-state crash");
+    eprintln!(
+        "renewal restart readiness: observed_drain={observed_drain}, elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+}
+
+async fn deliver(configs: &[ServiceConfig], destination: &str, round: u8) -> bool {
     let payload = format!("renewal-restart-{round}:{}", "x".repeat(700));
     let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
     request(
@@ -274,5 +408,5 @@ async fn deliver(configs: &[ServiceConfig], destination: &str, round: u8) {
         }
     })
     .await
-    .expect("fresh paid payload must reach its destination");
+    .is_ok()
 }

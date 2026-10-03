@@ -221,6 +221,27 @@ fourteen-packet loss. At 140 packets/s, the 256-packet next-hop cap covers about
 1.83 seconds, less than the two-second age limit; capacity is a possible cause,
 not an established attribution. Repeated/slow-renewal qualification remains open.
 
+A subsequent change releases the source pause after all replacements have durable
+provider acceptance and active routes, before the final renewal-completion write.
+The existing three-process recovery fixture holds that last write and offers eight
+original packets once. With the same fixture, the prior runtime delivers 0/8 and
+the candidate delivers 8/8 without duplicates. Both recover the same replacement
+after another buyer crash, preserve predecessor evidence and funding limits, and
+conserve all 384 test sats across wallet balances and mint fees. Six buyer admission
+checks and the earlier pre-acceptance eight-packet regression also pass. Core source
+and queue bounds are unchanged; the preceding seven core checks remain applicable.
+
+An initial candidate run failed its later one-shot delivery check after a rapid
+restart, before financial conservation was verified; its stopped process fixture
+and saved state remain retained. The updated fixture freezes the original delivery
+report, then requires the destination's existing key epoch to finish draining before
+the next crash. FIPS may drain for 45 seconds, longer than that delivery check's
+20-second deadline. However, the passing comparison reports no active drain, so it
+does **not** establish the cause of the earlier failure or qualify rapid successive
+restarts. Native evidence is under `renewal-completion-red-r1` and
+`renewal-completion-green-r1`/`r2` in the private payment-recovery bundle. This change
+does not attribute the previous fourteen-packet physical loss.
+
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted
