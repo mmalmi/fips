@@ -123,6 +123,13 @@ checks pass. Independent closure confirms restoration of the normal router
 setup. See [router load and recovery](CADENCE-RESULTS.md#router-load-and-process-recovery--3-october-2026).
 This does not test physical power loss or offer traffic during the restart.
 
+A follow-up on that executable passes the same load/restart workload with
+deterministic frame loss in two stream pairs. Automatic payments continue while
+loss is enabled, and all healthy/recovery streams deliver fully. Channels,
+budgets and bounded unbilled exposure survive; all test funds are collected and
+normal router state is restored. See [the injected-loss results](CADENCE-RESULTS.md#injected-frame-loss-before-and-after-restart)
+for the delivery counts, exact impairment and scope limits.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial

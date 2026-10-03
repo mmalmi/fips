@@ -32,6 +32,38 @@ before and after one process crash. Physical power loss, uninterrupted traffic
 during restart, maximum throughput, long-running operation and Pixel acceptance
 remain separate requirements.
 
+### Injected frame loss before and after restart
+
+A follow-up on the identical ARM64 executable uses harness `26c6d7656` and the
+same twelve-stream workload, financial limits and persistent storage. During
+the second and fifth stream pairs, each receiving endpoint drops every twentieth
+test-EtherType frame from the middle router. The owned ingress rules exclude
+ordinary traffic and are removed before the next healthy pair.
+
+All 32,000 payloads in the eight healthy/recovery streams arrive. The four
+impaired streams deliver 3,804, 3,800, 3,806 and 3,800 of 4,000 payloads:
+15,210/16,000 (95.06%) overall. There are no duplicates, invalid payloads or
+reordered payloads. The rules count 818 dropped frames during those stream
+observations, against 790 missing payloads. Those counters include control
+traffic and do not establish individual missing-payload attribution.
+
+Both original channels advance automatic payments while each impairment is
+still enabled. The middle process restart retains the original accounts,
+channels, quote agreements and budgets; its stopped journal again yields
+exactly 4,000 msat of unbilled exposure per channel. Fresh probes and financial
+reconciliation complete within 30.07 seconds of the restart attempt. The
+subsequent healthy, impaired and recovery pairs pass without new purchases.
+
+Both channels settle, all 384 test sats are collected and all 633 management
+checks pass. Independent closure checks the actual loss-rule selectors,
+unchanged original state and prior links, removed filters/executables, and
+terminal candidate/guard/mint exit. The receipt is
+`work/hardware-current-r1/restart-loss-r1/closure.json` in the private recovery
+bundle. Eighteen focused harness checks pass, including uncertain installation
+and partial-cleanup failures. This accepts bounded injected frame loss around a
+process restart; it does not simulate physical radio interference, power loss,
+traffic during the stopped interval, maximum throughput or a long soak.
+
 ## Default-limit native matrix on SSD — 3 October 2026
 
 The complete untraced matrix passes on the frozen `060f12a56bac` standalone
