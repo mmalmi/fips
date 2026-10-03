@@ -29,6 +29,26 @@ in the local recovery bundle. The later wrapper correction has separate
 [finite daemon acceptance](READINESS.md); high-rate and cadence-overhead
 acceptance still require new measurements. These failed runs remain preserved.
 
+### Corrected service under load
+
+The subsequent `ab2d76916a1d` daemon repeats the same two-trial diagnostic with
+the unchanged driver, 500-ms policy and financial limits. Its high-rate trials
+lose 2,805 and 1,158 of 32,000 packets respectively. All 3,963 native policy drops
+occur at the first relay, matching application loss in this run; other recorded
+native drop/error counters stay zero. The service now records 1,447 deferred
+packets, so the waiting path is active. Its 2,937 credit and 4,794 durable-window
+refusal counts include repeated attempts and are not unique packet losses.
+Aggregate policy drops do not distinguish a full waiting queue, expired wait,
+changed peer/policy or permanent refusal; that distinction remains unresolved.
+
+Bursty and steady delivery is complete. All 12 channels settle and 10,240 test
+sats reconcile, but both high-rate payment-boundary checks still reject the
+report. All samples are compiler-free; sampled I/O-full averages 8.20%, with
+ordinary apps and VMs running. This is not a speedup, cadence comparison or
+device acceptance. All 36,141 source inputs and frozen executable hashes verify,
+and process groups, cgroup and build locks close. The retained evidence is
+`work/admission-service/load-r1/review.json` in the local recovery bundle.
+
 ## Superseded window checkpoints — 2 October 2026
 
 At `6d678ea9923b`, a scheduled window checkpoint rechecks whether it is due after

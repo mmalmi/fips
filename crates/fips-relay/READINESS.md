@@ -191,6 +191,10 @@ hashes; owned process groups, cgroup and build locks close. The wrapper regressi
 reuses its recorded pass only after every relay library-source hash matches.
 Evidence is `work/admission-service/green-r2/acceptance.json` in the local recovery
 bundle. The payment-reply cache candidate and r57 hardware package are unchanged.
+The subsequent unchanged 500-ms load diagnostic confirms active deferral but
+still rejects high-rate delivery and payment boundaries. See
+[the corrected-service load result](CADENCE-RESULTS.md#corrected-service-under-load);
+finite service acceptance does not resolve those failures.
 
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
