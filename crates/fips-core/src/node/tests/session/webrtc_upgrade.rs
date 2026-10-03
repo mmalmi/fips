@@ -9,6 +9,270 @@ use crate::transport::{ConnectionState, TransportHandle, packet_channel};
 const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
+async fn take_webrtc_signal(
+    node: &mut Node,
+) -> crate::transport::link_negotiation::OutboundLinkNegotiation {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            node.poll_pending_connects().await;
+            let signals = node
+                .transports
+                .get_mut(&TransportId::new(WEBRTC_TRANSPORT_NUMBER))
+                .unwrap()
+                .drain_link_negotiations(1);
+            if let Some(signal) = signals.into_iter().next() {
+                return signal;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("fresh offer must be queued before the original five-second deadline")
+}
+
+#[test]
+fn ordinary_fsp_rekey_preserves_an_unanswered_webrtc_offer() {
+    run_large_stack_async_test("fips-webrtc-signaling-normal-rekey", || async {
+        let mut nodes = vec![
+            make_dual_transport_node(fixed_identity(6, 0x03)).await,
+            make_dual_transport_node(fixed_identity(1, 0x02)).await,
+        ];
+        establish_websocket_adjacency(&mut nodes).await;
+        let identity_a = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        let identity_b = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+        let addr_b = identity_transport_addr(nodes[1].node.identity());
+        let mut endpoint_b = nodes[1].node.attach_endpoint_data_io(8).unwrap();
+        send_endpoint_data_via_dataplane(&mut nodes[0].node, identity_b, b"initial".to_vec())
+            .await
+            .unwrap();
+        let _ = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint_b.event_rx,
+            Duration::from_secs(5),
+            "initial session",
+        )
+        .await;
+        nodes[0]
+            .node
+            .initiate_connection(
+                TransportId::new(WEBRTC_TRANSPORT_NUMBER),
+                addr_b.clone(),
+                identity_b,
+            )
+            .await
+            .unwrap();
+        let _ = take_webrtc_signal(&mut nodes[0].node).await;
+        assert!(
+            nodes[0]
+                .node
+                .initiate_session_rekey(identity_b.node_addr())
+                .await
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                process_available_packets(&mut nodes).await;
+                let left = nodes[0].node.get_session(identity_b.node_addr()).unwrap();
+                let right = nodes[1].node.get_session(identity_a.node_addr()).unwrap();
+                if left.pending_new_session().is_some() && right.pending_new_session().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("ordinary same-startup-epoch rekey completed on both peers");
+        let transport = nodes[0]
+            .node
+            .transports
+            .get_mut(&TransportId::new(WEBRTC_TRANSPORT_NUMBER))
+            .unwrap();
+        assert_eq!(
+            transport.connection_state(&addr_b),
+            ConnectionState::Connecting
+        );
+        assert!(
+            transport.drain_link_negotiations(8).is_empty(),
+            "ordinary renewal must not queue another offer"
+        );
+        match transport {
+            TransportHandle::WebRtc(transport) => {
+                assert_eq!(transport.resource_snapshot().created_total, 1);
+                assert_eq!(transport.resource_snapshot().closed_total, 0);
+            }
+            _ => unreachable!(),
+        }
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
+fn authenticated_fsp_restart_retries_a_lost_webrtc_offer_before_its_deadline() {
+    run_large_stack_async_test("fips-webrtc-signaling-restart", || async {
+        use crate::SessionMessageType;
+        use crate::transport::link_negotiation::{
+            LINK_NEGOTIATION_SERVICE_PORT, LinkNegotiationMessage,
+        };
+
+        let mut nodes = vec![
+            make_dual_transport_node(fixed_identity(6, 0x03)).await,
+            make_dual_transport_node(fixed_identity(1, 0x02)).await,
+        ];
+        establish_websocket_adjacency(&mut nodes).await;
+        let identity_a = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        let identity_b = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+        let addr_a = identity_transport_addr(nodes[0].node.identity());
+        let addr_b = identity_transport_addr(nodes[1].node.identity());
+        let mut endpoint_b = nodes[1].node.attach_endpoint_data_io(8).unwrap();
+        send_endpoint_data_via_dataplane(
+            &mut nodes[0].node,
+            identity_b,
+            b"before-restart".to_vec(),
+        )
+        .await
+        .unwrap();
+        let _ = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint_b.event_rx,
+            Duration::from_secs(5),
+            "initial session",
+        )
+        .await;
+        let old_hash = *nodes[0]
+            .node
+            .get_session(identity_b.node_addr())
+            .unwrap()
+            .handshake_hash()
+            .unwrap();
+        nodes[0]
+            .node
+            .initiate_connection(
+                TransportId::new(WEBRTC_TRANSPORT_NUMBER),
+                addr_b.clone(),
+                identity_b,
+            )
+            .await
+            .expect("start direct upgrade");
+
+        // The original encrypted offer was sent through stale FSP state and
+        // never reached the reloaded peer. No SDP answer was received.
+        let lost = take_webrtc_signal(&mut nodes[0].node).await;
+        let lost = LinkNegotiationMessage::decode(&lost.payload).unwrap();
+        nodes[1]
+            .node
+            .remove_dataplane_fsp_owner(identity_a.node_addr());
+        assert!(
+            nodes[1]
+                .node
+                .remove_session(identity_a.node_addr())
+                .is_some()
+        );
+        nodes[1].node.startup_epoch[0] ^= 0xff;
+        assert!(
+            nodes[0]
+                .node
+                .initiate_session_rekey(identity_b.node_addr())
+                .await
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                process_available_packets(&mut nodes).await;
+                if nodes[0]
+                    .node
+                    .get_session(identity_b.node_addr())
+                    .and_then(|session| session.handshake_hash())
+                    .is_some_and(|hash| hash != &old_hash)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("authenticated FSP restart");
+        let fresh = take_webrtc_signal(&mut nodes[0].node).await;
+        let fresh_message = LinkNegotiationMessage::decode(&fresh.payload).unwrap();
+        assert_ne!(fresh_message.negotiation_id, lost.negotiation_id);
+        assert!(
+            fresh_message.expires_at_ms <= lost.expires_at_ms + 2,
+            "recovery preserves the original negotiation deadline"
+        );
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&LINK_NEGOTIATION_SERVICE_PORT.to_le_bytes());
+        payload.extend_from_slice(&LINK_NEGOTIATION_SERVICE_PORT.to_le_bytes());
+        payload.extend_from_slice(&fresh.payload);
+        nodes[0]
+            .node
+            .send_session_msg(
+                identity_b.node_addr(),
+                SessionMessageType::DataPacket.to_byte(),
+                &payload,
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                drive_webrtc_negotiation(&mut nodes).await;
+                if physical_path_is_connected(&nodes[0].node, &addr_b)
+                    && physical_path_is_connected(&nodes[1].node, &addr_a)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("direct carrier opens promptly over the recovered session");
+        let created = match nodes[0]
+            .node
+            .transports
+            .get(&TransportId::new(WEBRTC_TRANSPORT_NUMBER))
+            .unwrap()
+        {
+            TransportHandle::WebRtc(transport) => transport.resource_snapshot().created_total,
+            _ => unreachable!(),
+        };
+        nodes[0]
+            .node
+            .transports
+            .get(&TransportId::new(WEBRTC_TRANSPORT_NUMBER))
+            .unwrap()
+            .authenticated_session_restarted(identity_b.pubkey_full())
+            .await;
+        assert!(physical_path_is_connected(&nodes[0].node, &addr_b));
+        match nodes[0]
+            .node
+            .transports
+            .get(&TransportId::new(WEBRTC_TRANSPORT_NUMBER))
+            .unwrap()
+        {
+            TransportHandle::WebRtc(transport) => {
+                assert_eq!(transport.resource_snapshot().created_total, created)
+            }
+            _ => unreachable!(),
+        }
+        for node in &mut nodes {
+            node.node.poll_pending_connects().await;
+        }
+        process_available_packets(&mut nodes).await;
+        send_endpoint_data_via_dataplane(&mut nodes[0].node, identity_b, b"after-restart".to_vec())
+            .await
+            .unwrap();
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut endpoint_b.event_rx,
+            Duration::from_secs(5),
+            "data after recovered negotiation",
+        )
+        .await;
+        assert_eq!(
+            expect_single_endpoint_data_event(event).payload.as_slice(),
+            b"after-restart"
+        );
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
 #[test]
 fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
     run_large_stack_async_test("fips-webrtc-admission", || async {

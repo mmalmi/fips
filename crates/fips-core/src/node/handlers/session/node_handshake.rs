@@ -1,4 +1,14 @@
 impl Node {
+    #[cfg(feature = "webrtc-transport")]
+    async fn retry_webrtc_after_session_restart(&self, peer: &NodeAddr) {
+        let Some(identity) = self.sessions.get(peer).map(|session| *session.remote_pubkey()) else {
+            return;
+        };
+        for transport in self.transports.values() {
+            transport.authenticated_session_restarted(identity).await;
+        }
+    }
+
     /// Handle an incoming SessionSetup (Noise XK msg1).
     ///
     /// The remote node wants to establish an end-to-end session with us.
@@ -472,6 +482,8 @@ impl Node {
             }
             if remote_restarted {
                 self.flush_pending_packets(src_addr).await;
+                #[cfg(feature = "webrtc-transport")]
+                self.retry_webrtc_after_session_restart(src_addr).await;
                 info!(
                     src = %self.peer_display_name(src_addr),
                     "Remote FSP restart detected during rekey; replaced stale session"
@@ -705,6 +717,8 @@ impl Node {
                     self.config.node.session.coords_warmup_packets,
                 );
                 self.flush_pending_packets(src_addr).await;
+                #[cfg(feature = "webrtc-transport")]
+                self.retry_webrtc_after_session_restart(src_addr).await;
                 info!(
                     src = %self.peer_display_name(src_addr),
                     "Remote FSP restart authenticated by rekey msg3; replaced stale session"

@@ -221,6 +221,7 @@ async fn mismatched_answer_does_not_remove_the_newer_pending_session() {
             pc,
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
@@ -367,6 +368,7 @@ async fn expired_handler_cleanup_cannot_remove_a_newer_pending_generation() {
             pc,
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Remote,
+            awaiting_answer: false,
             deadline,
         },
     );
@@ -444,6 +446,7 @@ async fn cleanup_winning_during_gather_prevents_a_stale_signal_queue() {
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
@@ -538,6 +541,7 @@ async fn pending_lock_contention_cannot_queue_a_signal_after_its_deadline() {
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline,
         },
     );

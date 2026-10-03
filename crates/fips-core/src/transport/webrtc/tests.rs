@@ -784,6 +784,7 @@ async fn invalid_answer_immediately_removes_and_closes_its_pending_session() {
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
@@ -854,6 +855,7 @@ async fn outbound_post_attach_error_immediately_closes_its_pending_session() {
                 reservation,
                 tokio::time::Instant::now()
                     + Duration::from_millis(runtime.config.connect_timeout_ms()),
+                None,
                 None,
             )
             .await

@@ -285,8 +285,8 @@ impl WebRtcRuntime {
         recipient: PublicKey,
         signal: &WebRtcSignal,
     ) -> Result<(), TransportError> {
-        let pending = self.pending.lock().await;
-        let Some(dial) = pending.get(addr) else {
+        let mut pending = self.pending.lock().await;
+        let Some(dial) = pending.get_mut(addr) else {
             return Err(TransportError::ConnectionRefused);
         };
         if dial.session_id != session_id || !Arc::ptr_eq(&dial.pc, pc) {
@@ -304,7 +304,11 @@ impl WebRtcRuntime {
         // Queueing is synchronous while the exact pending generation is
         // locked, so cleanup or replacement orders before or after this
         // signal instead of racing through its liveness check.
-        self.signaling.send_signal(recipient, signal)
+        self.signaling.send_signal(recipient, signal)?;
+        if signal.kind == LinkNegotiationKind::Offer {
+            dial.awaiting_answer = true;
+        }
+        Ok(())
     }
 
     async fn session_generation_is_active_or_pooled(

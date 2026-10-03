@@ -55,6 +55,7 @@ impl WebRtcRuntime {
         reservation: PhysicalReservation,
         deadline: tokio::time::Instant,
         phase_owner_id: Option<String>,
+        recovery: Option<WebRtcRecoveryGuard>,
     ) -> Result<(), TransportError> {
         let remote_pubkey_hex = remote_addr.as_str().unwrap_or_default().to_string();
         let remote_xonly = xonly_from_compressed_hex(&remote_pubkey_hex)?;
@@ -106,8 +107,10 @@ impl WebRtcRuntime {
                     pc: Arc::clone(&pc),
                     created_at_ms: now_ms(),
                     origin: PendingDialOrigin::Local,
+                    awaiting_answer: false,
                     deadline,
                 },
+                recovery.as_ref(),
             )
             .await
         {
@@ -479,7 +482,7 @@ impl WebRtcRuntime {
                 .send_reject(sender_xonly, signal.negotiation_id)
                 .await;
             return self
-                .start_outbound(remote_addr, reservation, deadline, Some(phase_owner_id))
+                .start_outbound(remote_addr, reservation, deadline, Some(phase_owner_id), None)
                 .await;
         }
 
@@ -541,8 +544,10 @@ impl WebRtcRuntime {
                     pc: Arc::clone(&pc),
                     created_at_ms: signal.created_at_ms,
                     origin: PendingDialOrigin::Remote,
+                    awaiting_answer: false,
                     deadline,
                 },
+                None,
             )
             .await
         {
@@ -686,6 +691,7 @@ impl WebRtcRuntime {
         &self,
         addr: &TransportAddr,
         dial: PendingDial,
+        recovery: Option<&WebRtcRecoveryGuard>,
     ) -> bool {
         if !self.physical.is_accepting()
             || self.physical.phase(addr) != Some(PhysicalPhase::Active)
@@ -694,7 +700,10 @@ impl WebRtcRuntime {
         }
         let pool = self.pool.lock().await;
         let mut pending = self.pending.lock().await;
-        if pool.contains_key(addr) || pending.contains_key(addr) {
+        if pool.contains_key(addr)
+            || pending.contains_key(addr)
+            || recovery.is_some_and(|guard| !guard.is_current())
+        {
             return false;
         }
         pending.insert(addr.clone(), dial);
@@ -710,8 +719,11 @@ impl WebRtcRuntime {
         let remote_addr =
             canonical_webrtc_addr(&TransportAddr::from_string(sender_full_hex))?;
         let pending_session = {
-            let pending = self.pending.lock().await;
-            pending.get(&remote_addr).map(|pending| {
+            let mut pending = self.pending.lock().await;
+            pending.get_mut(&remote_addr).map(|pending| {
+                if pending.session_id == signal.negotiation_id {
+                    pending.awaiting_answer = false;
+                }
                 (
                     pending.session_id.clone(),
                     Arc::clone(&pending.pc),
@@ -893,6 +905,10 @@ mod drop_tests;
 #[cfg(test)]
 #[path = "webrtc/signal_tests.rs"]
 mod signal_tests;
+
+#[cfg(test)]
+#[path = "webrtc/restart_tests.rs"]
+mod restart_tests;
 
 #[cfg(test)]
 #[path = "webrtc/replacement_tests.rs"]

@@ -89,6 +89,14 @@ impl TransportHandle {
         }
     }
 
+    /// Notify adapters after a verified peer startup epoch replaces stale FSP state.
+    #[cfg(feature = "webrtc-transport")]
+    pub(crate) async fn authenticated_session_restarted(&self, peer: secp256k1::PublicKey) {
+        if let TransportHandle::WebRtc(transport) = self {
+            transport.authenticated_session_restarted(peer).await;
+        }
+    }
+
     /// Deliver an authenticated negotiation to the enabled matching adapter.
     #[cfg(feature = "webrtc-transport")]
     pub(crate) fn ingest_link_negotiation(

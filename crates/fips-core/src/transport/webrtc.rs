@@ -116,7 +116,35 @@ struct PendingDial {
     pc: ManagedPeer,
     created_at_ms: u64,
     origin: PendingDialOrigin,
+    awaiting_answer: bool,
     deadline: tokio::time::Instant,
+}
+
+type RecoveryPool = Arc<StdMutex<HashMap<TransportAddr, String>>>;
+
+struct WebRtcRecoveryGuard {
+    recovering: RecoveryPool,
+    addr: TransportAddr,
+    session_id: String,
+}
+
+impl WebRtcRecoveryGuard {
+    fn is_current(&self) -> bool {
+        self.recovering
+            .lock()
+            .expect("WebRTC recoveries")
+            .get(&self.addr)
+            == Some(&self.session_id)
+    }
+}
+
+impl Drop for WebRtcRecoveryGuard {
+    fn drop(&mut self) {
+        let mut recovering = self.recovering.lock().expect("WebRTC recoveries");
+        if recovering.get(&self.addr) == Some(&self.session_id) {
+            recovering.remove(&self.addr);
+        }
+    }
 }
 
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, WebRtcConnection>>>;
@@ -167,6 +195,7 @@ pub struct WebRtcTransport {
     packet_tx: PacketTx,
     pool: ConnectionPool,
     pending: PendingPool,
+    recovering: RecoveryPool,
     failed: FailedPool,
     ready: ReadyPool,
     seen_sessions: SeenSessionPool,
@@ -225,6 +254,7 @@ impl WebRtcTransport {
             packet_tx,
             pool: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            recovering: Arc::new(StdMutex::new(HashMap::new())),
             failed: Arc::new(Mutex::new(HashMap::new())),
             ready: Arc::new(Mutex::new(HashSet::new())),
             seen_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -436,6 +466,14 @@ impl WebRtcTransport {
     /// Initiate a non-blocking WebRTC dial.
     pub async fn connect_async(&self, addr: &TransportAddr) -> Result<(), TransportError> {
         let addr = canonical_webrtc_addr(addr)?;
+        if self
+            .recovering
+            .lock()
+            .expect("WebRTC recoveries")
+            .contains_key(&addr)
+        {
+            return Ok(());
+        }
         if self.pool.lock().await.contains_key(&addr) {
             return Ok(());
         }
@@ -461,7 +499,7 @@ impl WebRtcTransport {
             tokio::time::Instant::now() + Duration::from_millis(self.config.connect_timeout_ms());
         let task = tokio::spawn(async move {
             let result = runtime
-                .start_outbound(remote_addr, reservation, deadline, None)
+                .start_outbound(remote_addr, reservation, deadline, None, None)
                 .await;
             if let Err(error) = &result {
                 trace!(error = %error, "WebRTC outbound setup failed");
@@ -472,6 +510,70 @@ impl WebRtcTransport {
         tasks.retain(|task| !task.is_finished());
         tasks.push(task);
         Ok(())
+    }
+
+    /// A verified remote startup epoch invalidates offers sent on the old FSP
+    /// session. Retry only an unanswered local offer, retaining its deadline.
+    pub(crate) async fn authenticated_session_restarted(&self, peer: secp256k1::PublicKey) {
+        if !self.state.is_operational() {
+            return;
+        }
+        let addr = TransportAddr::from_string(&canonical_webrtc_pubkey_hex(peer));
+        let stale = {
+            let pool = self.pool.lock().await;
+            let mut pending = self.pending.lock().await;
+            if pool.contains_key(&addr)
+                || !pending.get(&addr).is_some_and(|dial| {
+                    dial.origin == PendingDialOrigin::Local
+                        && dial.awaiting_answer
+                        && dial.deadline > tokio::time::Instant::now()
+                })
+            {
+                return;
+            }
+            // This claim orders atomically with an authenticated answer or
+            // promotion. No late callback may remove the replacement owner.
+            let stale = pending.remove(&addr).expect("matching pending offer");
+            self.recovering
+                .lock()
+                .expect("WebRTC recoveries")
+                .insert(addr.clone(), stale.session_id.clone());
+            stale
+        };
+        let deadline = stale.deadline;
+        let guard = WebRtcRecoveryGuard {
+            recovering: Arc::clone(&self.recovering),
+            addr: addr.clone(),
+            session_id: stale.session_id,
+        };
+        let completion = start_peer_connection_cleanup(stale.pc);
+        let runtime = self.runtime();
+        let task = tokio::spawn(async move {
+            tokio::time::timeout_at(deadline, completion.wait())
+                .await
+                .map_err(|_| TransportError::Timeout)?;
+            if !guard.is_current() {
+                return Ok(());
+            }
+            let reservation = match runtime.physical.reserve(&addr) {
+                Ok(reservation) => reservation,
+                // A simultaneous incoming negotiation can already own the peer.
+                Err(PhysicalReserveError::PeerBusy(
+                    PhysicalPhase::Creating | PhysicalPhase::Active,
+                )) => return Ok(()),
+                Err(_) => return Err(TransportError::ConnectionRefused),
+            };
+            if !guard.is_current() {
+                return Ok(());
+            }
+            debug!(remote_addr = %addr, "Retrying unanswered WebRTC offer after authenticated FSP restart");
+            runtime
+                .start_outbound(addr, reservation, deadline, None, Some(guard))
+                .await
+        });
+        let mut tasks = self.dial_tasks.lock().expect("WebRTC dial tasks");
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
     }
 
     /// Return physical peer-connection conservation counters.
@@ -546,6 +648,15 @@ impl WebRtcTransport {
 
         match self.pending.try_lock() {
             Ok(pending) if pending.contains_key(&addr) => ConnectionState::Connecting,
+            Ok(_)
+                if self
+                    .recovering
+                    .lock()
+                    .expect("WebRTC recoveries")
+                    .contains_key(&addr) =>
+            {
+                ConnectionState::Connecting
+            }
             Ok(_) => ConnectionState::None,
             Err(_) => ConnectionState::Connecting,
         }
@@ -556,6 +667,7 @@ impl WebRtcTransport {
         let Ok(addr) = canonical_webrtc_addr(addr) else {
             return;
         };
+        self.recovering.lock().expect("WebRTC recoveries").remove(&addr);
         let owners =
             WebRtcSessionOwners::from_refs(&self.pool, &self.pending, &self.failed, &self.ready);
         cleanup_webrtc_session(&owners, &addr, None, None, CleanupWait::Bounded).await;
@@ -570,6 +682,7 @@ impl WebRtcTransport {
 
     fn close_connection_detached_task(&self, addr: &TransportAddr) -> Option<JoinHandle<()>> {
         let addr = canonical_webrtc_addr(addr).ok()?;
+        self.recovering.lock().expect("WebRTC recoveries").remove(&addr);
         let generation = self.physical.generation(&addr)?;
         Some(spawn_webrtc_session_cleanup(
             Arc::clone(&self.pool),

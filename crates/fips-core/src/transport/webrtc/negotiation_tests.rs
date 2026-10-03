@@ -241,6 +241,7 @@ async fn inherited_outbound_deadline_is_never_restarted() {
             reservation,
             inherited_deadline,
             None,
+            None,
         )
         .await;
 
@@ -311,6 +312,7 @@ async fn old_connect_timeout_cannot_remove_same_id_successor() {
             pc: Arc::clone(&old_pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Remote,
+            awaiting_answer: false,
             deadline: old_deadline,
         },
     );
@@ -334,6 +336,7 @@ async fn old_connect_timeout_cannot_remove_same_id_successor() {
                 pc: Arc::clone(&successor_pc),
                 created_at_ms: now_ms(),
                 origin: PendingDialOrigin::Remote,
+                awaiting_answer: false,
                 deadline: successor_deadline,
             },
         )
@@ -400,6 +403,7 @@ async fn expired_answer_after_connect_timer_counts_one_phase_timeout() {
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline,
         },
     );

@@ -127,6 +127,7 @@ async fn session_failure_bookkeeping_precedes_physical_permit_release() {
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );

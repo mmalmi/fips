@@ -285,6 +285,7 @@ async fn pending_handoff_transport(
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
+            awaiting_answer: false,
             deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
