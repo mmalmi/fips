@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.93] - 2026-10-03
+
+### Fixed
+
+- Preserve an end-to-end session already recovered through a transit peer when
+  a delayed direct connection authenticates the same restarted peer. Continue
+  discarding stale or unestablished sessions and dampening repeated restarts.
+- Release the reusable core and matching endpoint libraries as 0.4.93. Identity
+  remains 0.3.3; protocol messages and wire layouts are unchanged.
+
 ## [0.4.92] - 2026-10-03
 
 ### Fixed
