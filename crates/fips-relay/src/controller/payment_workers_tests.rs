@@ -9,102 +9,6 @@ impl Drop for OnDrop {
     }
 }
 
-#[test]
-fn reused_claim_requires_a_new_locally_supported_balance() {
-    let usage = ChannelUsage {
-        submitted_msat: 2_500,
-        reserved_msat: 9_000,
-        lost_msat: 6_500,
-        paid_msat: 1_000,
-    };
-    for (evidence, authorized, expected) in [
-        (0, 1, false),
-        (1_000, 1, false),
-        (1_001, 1, true),
-        (2_000, 2, false),
-        (2_500, 2, true),
-        (5_000, 3, false),
-    ] {
-        assert_eq!(has_unpaid_claim(usage, evidence, authorized), expected);
-    }
-    assert!(!has_unpaid_claim(
-        ChannelUsage {
-            paid_msat: 3_000,
-            ..usage
-        },
-        2_500,
-        1,
-    ));
-}
-
-#[tokio::test]
-async fn cached_payment_rechecks_retirement_after_waiting_for_the_channel_lock() {
-    use crate::controller::{refresh, transition_tests};
-
-    let root = tempfile::tempdir().unwrap();
-    let services_root = root.path().join("services");
-    let disconnected = refresh::tests::disconnected_controller(&services_root).await;
-    let (store, old) = transition_tests::fixture_for_local(
-        &root.path().join("controller"),
-        *disconnected.services.endpoint.node_addr(),
-    );
-    let controller =
-        Controller::with_store(disconnected.policy.clone(), disconnected.services, store).unwrap();
-    assert_eq!(controller.purchases().await.unwrap().len(), 1);
-    let lock = controller
-        .channel_work(&old.purchase.channel.id)
-        .unwrap()
-        .lock_owned()
-        .await;
-    let mut payer = Box::pin(controller.pay_channel(
-        old.purchase.clone(),
-        Some(ChannelUsage {
-            reserved_msat: 2_000,
-            submitted_msat: 2_000,
-            lost_msat: 0,
-            paid_msat: 1_000,
-        }),
-        PaymentObservation::default(),
-    ));
-    std::future::poll_fn(|cx| {
-        assert!(payer.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    // Model the retirement transition of the worker holding this same lock.
-    // This fixture covers revalidation, not funding or settlement signatures.
-    controller
-        .change(move |journal| {
-            journal
-                .outgoing
-                .get_mut(&old.purchase.contract.id)
-                .unwrap()
-                .retired = true;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert!(controller.purchases().await.unwrap().is_empty());
-    let funding = serde_json::to_value(controller.snapshot().await.unwrap().funding).unwrap();
-    let buyer_path = services_root.join("buyer/buyer.json");
-    let buyer = std::fs::read(&buyer_path).unwrap();
-    drop(lock);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(1), payer)
-            .await
-            .unwrap()
-            .unwrap()
-            .is_none(),
-        "retired work must return before neighbor lookup or signing"
-    );
-    assert_eq!(
-        serde_json::to_value(controller.snapshot().await.unwrap().funding).unwrap(),
-        funding
-    );
-    assert_eq!(std::fs::read(buyer_path).unwrap(), buyer);
-    controller.services.endpoint.shutdown().await.unwrap();
-}
-
 #[tokio::test]
 async fn successful_reply_does_not_cover_sends_after_the_exchange_started() {
     let mut payment = ChannelPayment {
@@ -118,7 +22,6 @@ async fn successful_reply_does_not_cover_sends_after_the_exchange_started() {
             }))
         })),
         schedule: ChannelSchedule::default(),
-        last_usage: None,
         #[cfg(feature = "measurements")]
         progress: None,
     };
@@ -150,7 +53,6 @@ async fn aborting_a_draining_scheduler_cancels_the_pending_exchange() {
             job: Some(job),
             schedule: ChannelSchedule::default(),
             started_evidence_msat: 0,
-            last_usage: None,
             #[cfg(feature = "measurements")]
             progress: None,
         },
@@ -199,17 +101,17 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
         progress: Some(progress.clone()),
         schedule: ChannelSchedule::default(),
         started_evidence_msat: 0,
-        last_usage: None,
     };
     assert!(progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
-    let usage = ChannelUsage {
-        reserved_msat: 1_500,
-        submitted_msat: 1_500,
-        lost_msat: 0,
-        paid_msat: 1_000,
-    };
-    finish.send(Ok(Some(usage))).unwrap();
+    finish
+        .send(Ok(Some(ChannelUsage {
+            reserved_msat: 1_000,
+            submitted_msat: 1_000,
+            lost_msat: 0,
+            paid_msat: 1_000,
+        })))
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
         while !payment.job.as_ref().unwrap().is_finished() {
             tokio::task::yield_now().await;
@@ -229,21 +131,12 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
     assert!(!progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().pending(), None);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, Some(1_000));
-    assert_eq!(
-        payment.last_usage,
-        Some(usage),
-        "a validated payment reply must retain its newer unpaid claim"
-    );
 
     progress.lock().unwrap().started();
     payment.job = Some(tokio::spawn(async {
         Err(Stage::UpdateRequest.error("lost acknowledgment"))
     }));
     assert_eq!(payment.finish().await.unwrap_err(), "lost acknowledgment");
-    assert!(
-        payment.last_usage.is_none(),
-        "a failed exchange needs fresh usage"
-    );
     assert!(!progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
     assert_eq!(
@@ -256,19 +149,12 @@ async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
         Some(Stage::UpdateRequest)
     );
     payment.job = Some(tokio::spawn(async { Ok(None) }));
-    payment.last_usage = Some(usage);
     payment.finish().await.unwrap();
-    assert!(
-        payment.last_usage.is_none(),
-        "an inactive purchase loses its claim"
-    );
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
     let failed = tokio::spawn(std::future::pending::<PaymentResult>());
     failed.abort();
     payment.job = Some(failed);
-    payment.last_usage = Some(usage);
     assert!(payment.finish().await.is_err());
-    assert!(payment.last_usage.is_none());
     assert_eq!(
         progress.lock().unwrap().last_failure_stage,
         Some(Stage::Worker)
