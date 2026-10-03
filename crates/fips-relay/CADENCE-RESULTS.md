@@ -1,5 +1,34 @@
 # Paid-relay cadence measurements
 
+## Service admission wrapper diagnostic — 3 October 2026
+
+Two sequential 500-ms diagnostics compare the pre-wait daemon with the bounded
+admission-wait daemon using the identical frozen driver, workload and limits.
+All samples are compiler-free, but background I/O pressure differs: sampled
+I/O-full averages are 13.11% for the baseline and 5.03% for the candidate.
+Neither run accepts performance or a change to the 500-ms default.
+
+| Runtime revision | High-rate submitted | Missing packets | Deferred packets |
+| --- | ---: | ---: | ---: |
+| `6d678ea9923b` | 64,000 | 2,074 | Not instrumented |
+| `c3ebe10ce63c` | 64,000 | 3,911 | 0 |
+
+Bursty and steady delivery is complete. Each run settles 12 channels and
+reconciles 10,240 test sats, but both high-rate rows in each run fail the existing
+payment-boundary validator. This conservation result does not accept delivery,
+payment-overhead attribution or exact per-packet charging.
+
+The zero deferrals exposed an integration gap: `ServiceForwarder` inherited the
+default decision method, whose optional-admission interface collapsed the inner
+policy's `Retry` into `Reject`. The earlier controller/core tests bypassed that
+wrapper. A wrapper regression and a real UDP/TCP daemon regression both reproduce
+the failure on the unchanged `c3ebe10ce63c` executable. Sources and executable
+hashes verify; owned processes and locks are closed. The raw comparison and
+closure evidence is retained in `work/admission-wait/comparison-r2-review.json`
+in the local recovery bundle. The later wrapper correction has separate
+[finite daemon acceptance](READINESS.md); high-rate and cadence-overhead
+acceptance still require new measurements. These failed runs remain preserved.
+
 ## Superseded window checkpoints — 2 October 2026
 
 At `6d678ea9923b`, a scheduled window checkpoint rechecks whether it is due after

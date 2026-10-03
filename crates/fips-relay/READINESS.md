@@ -161,6 +161,37 @@ The payment-reply cache candidate is excluded. This establishes scoped
 functional correctness; high-rate delivery, cadence overhead and current-device
 acceptance still require measurement and testing. The r57 package is unchanged.
 
+A subsequent real-daemon diagnostic finds that `ServiceForwarder` collapses the
+inner policy's temporary `Retry` into rejection. Its high-rate delivery and
+payment-boundary checks remain rejected; the earlier 25 checks cover the inner
+policies and controller paths, not this wrapper. Both a wrapper regression and
+a real UDP/TCP daemon cohort reproduce the gap. See the
+[service-wrapper diagnostic](CADENCE-RESULTS.md#service-admission-wrapper-diagnostic--3-october-2026).
+
+The adapter correction at `ab2d76916a1d` delegates the full decision after the
+existing readiness gate. Its wrapper regression checks temporary credit and
+window shortages without reservations, replenishment, permanent rejection and
+completion after readiness closes. The actual-daemon fixture at `450a9bb0b6c9`
+buys both directions before measuring: opaque reverse session control also
+needs its sender's paid route. The earlier one-way fixture could not establish
+zero aggregate policy drops; its four observed drops remain unattributed.
+
+The same corrected harness fails delivery on the old frozen daemon and passes
+on the corrected daemon: 15 packets wait, all 16 original packets arrive, and
+there are no duplicates, invalid packets or new policy drops after a further
+2.1-second drain. It retains the 512-msat window, five-second receive deadline
+and original one-way burst, with no application resend or explicit flush.
+Recorded debt is paid and all 384 test sats reconcile; conservation does not
+independently prove exact per-packet charging. The existing mixed UDP/TCP
+exhaustion, renewal, restart and settlement scenario also passes. This is finite
+service-path correctness, not high-rate, cadence-overhead or device acceptance.
+Strict all-feature library/test and default-library lint, formatting and source
+size checks pass. All 36,141 exported inputs and frozen executables retain their
+hashes; owned process groups, cgroup and build locks close. The wrapper regression
+reuses its recorded pass only after every relay library-source hash matches.
+Evidence is `work/admission-service/green-r2/acceptance.json` in the local recovery
+bundle. The payment-reply cache candidate and r57 hardware package are unchanged.
+
 Payment replies at `18110c330` now reuse the usage captured when verified credit
 is durably saved. The former reply path immediately wrote a second checkpoint.
 The existing mixed UDP/TCP service regression reproduces four ledger commits
