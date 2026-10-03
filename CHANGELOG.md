@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.92] - 2026-10-03
+
+### Fixed
+
+- Move established sessions from a degraded direct connection to an authenticated
+  fallback discovered afterward. Preserve working transit paths and the bounded
+  direct validation send after authenticated connection recovery.
+- Release the reusable core and matching endpoint libraries as 0.4.92. Identity
+  remains 0.3.3; protocol messages and wire layouts are unchanged.
+
 ## [0.4.91] - 2026-10-03
 
 ### Fixed
