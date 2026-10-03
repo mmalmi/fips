@@ -44,7 +44,10 @@ async fn cached_payment_rechecks_retirement_after_waiting_for_the_channel_lock()
     let root = tempfile::tempdir().unwrap();
     let services_root = root.path().join("services");
     let disconnected = refresh::tests::disconnected_controller(&services_root).await;
-    let (store, old) = transition_tests::fixture(&root.path().join("controller"));
+    let (store, old) = transition_tests::fixture_for_local(
+        &root.path().join("controller"),
+        *disconnected.services.endpoint.node_addr(),
+    );
     let controller =
         Controller::with_store(disconnected.policy.clone(), disconnected.services, store).unwrap();
     assert_eq!(controller.purchases().await.unwrap().len(), 1);
