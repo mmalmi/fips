@@ -42,19 +42,25 @@ async fn temporary_allowance_waits_in_the_running_service() {
         // One finite burst fits the channel and waiting queue, but crosses
         // several durable windows. No application resend or explicit flush.
         bench.send_probe(0, 2, 16, 256, 10_000).await;
-        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let status = request(&bench.configs[2], &AdminRequest::Status)
                     .await
                     .unwrap();
                 if status["probe"]["unique_packets"] == 16 {
-                    break status["probe"].clone();
+                    break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("the original waiting packets must resume without an application retry");
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
+        let status = request(&bench.configs[2], &AdminRequest::Status)
+            .await
+            .unwrap();
+        let delivered = &status["probe"];
+        assert_eq!(delivered["unique_packets"], 16);
         assert_eq!(delivered["unique_bytes"], 4_096);
         assert_eq!(delivered["duplicate_packets"], 0);
         assert_eq!(delivered["invalid_packets"], 0);
