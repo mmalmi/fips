@@ -81,6 +81,14 @@ fixture uses a 2-second feedback window. The continuously watched recovery fixtu
 uses 10-second feedback and retry windows across the 5-second automatic scans.
 These are test settings, not deployment defaults.
 
+The feedback window also limits the age of usable loss samples. Shortening it
+can detect a failed path earlier while making sparse quality evidence expire
+between observations. It is not a recovery deadline: automatic checks run every
+five seconds, and quote negotiation, paid acceptance and trial qualification
+take additional time. [The router comparison](READINESS.md#scope-and-outstanding-acceptance)
+records a five-second window with less packet loss but similar full-confirmation
+time; it does not change the default or establish a general latency guarantee.
+
 Wire peers on the quote path must support `requested_max_units` and the `trial`
 offer marker. A capped request propagates downstream; oversized caps or an
 incorrect trial marker are rejected. Old strict decoders reject this optional

@@ -200,6 +200,19 @@ test processes/mint, and removed temporary executables and filters. See
 `work/hardware-current-r1/diamond-epoch-r1/closure.json` in the private recovery
 bundle. Further failover disruption and the remaining production gates are open.
 
+A follow-up on the identical executable changes only the selector feedback
+window from 15 to 5 seconds. Initial and return phases both deliver 32/32;
+failover delivers 80/96 instead of 61/96 in the preceding default-window trial.
+Its three failover batches deliver 16/32, 32/32 and 32/32. The second batch is
+complete but has no sufficiently fresh loss estimate at its observation, so full
+quality/payment confirmation still takes 49.32 seconds. This is a confirmation
+bound, not the duration of interrupted delivery. The same two channels and
+128-sat limit survive; all funds are collected, all 426 management checks pass,
+and independent closure verifies restored router state and stopped test services.
+The receipt is `work/hardware-current-r1/diamond-feedback5-r1/closure.json` in
+the private recovery bundle. This single local Wi-Fi comparison does not qualify
+a shorter window for slow or impaired links; production defaults remain unchanged.
+
 The newer `060f12a56bac` native runtime also passes the complete untraced
 250/500/1000/2000-ms matrix on persistent SSD/ext4 at the default financial
 limits. All 285,696 packets arrive; strict payment-boundary and whole-trial
