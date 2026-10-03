@@ -20,6 +20,7 @@ async fn funding_requires_original_wallet_and_recovers_without_another_debit() {
     .unwrap();
     let mut policy = unresolved_journal().policy;
     policy.mint_url = mint.url().into();
+    policy.channel_lifetime_secs = 24 * 60 * 60;
     let controller = refresh::tests::disconnected_controller_with_policy(root.path(), policy).await;
     let directory = &controller.services.wallet_directory;
     const MAXIMUM: u64 = 16 * 1024 * 1024;
@@ -76,9 +77,43 @@ async fn funding_requires_original_wallet_and_recovers_without_another_debit() {
         std::fs::rename(saved, original).unwrap();
     }
     let (id, funded) = controller.fund(&offer).await.unwrap();
+    let saved: Journal = serde_json::from_slice(
+        &std::fs::read(root.path().join("controller/controller.json")).unwrap(),
+    )
+    .unwrap();
+    let intent = &saved.funding[&id];
+    assert_eq!(
+        funded.terms.expires_unix,
+        intent.created_unix + 12 * 60 * 60
+    );
+    let refund_at = intent.created_unix + 24 * 60 * 60;
+    assert_eq!(
+        intent.wallet_request(&saved.policy).unwrap().expiry_unix,
+        refund_at
+    );
+    assert_eq!(
+        funded.opening.params.as_ref().unwrap()["expiry_timestamp"],
+        refund_at
+    );
     let (repeated_id, repeated) = controller.fund(&offer).await.unwrap();
     assert_eq!(id, repeated_id);
     assert!(funded == repeated);
+    // Recover the original wallet opening after losing its controller commit.
+    let lost = id.clone();
+    controller
+        .change(move |j| {
+            j.funding.get_mut(&lost).unwrap().funded = None;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    controller.recover_funding().await.unwrap();
+    let recovered = controller.snapshot().await.unwrap().funding[&id]
+        .funded
+        .clone()
+        .unwrap();
+    assert_eq!(recovered.terms, funded.terms);
+    assert_eq!(recovered.opening.params, funded.opening.params);
     let wallet = CashuWalletService::open_existing_file_backed(directory)
         .await
         .unwrap();
