@@ -83,14 +83,20 @@ payments continue. Full peer eviction is observed 95.13 seconds after the cut;
 the rejoin-to-completed-probe bound is 20.68 seconds, including controller
 observations and paced probing. This is recovery evidence, not fast roaming.
 
-Both channels settle, all 384 test sats are collected, and all 423 management
-checks pass. Independent final checks confirm restored router baselines, stopped
-candidate services and mint, and removed temporary executables and filters.
-The closed receipt is `work/hardware-current-r1/paid-current-r2/closure.json`
+A second trial restores the radio after 16.96 seconds of absence, before peer
+eviction. It retains the original authenticated peers, processes and channels.
+All eight fresh round trips complete within 4.91 seconds of the rejoin request;
+bidirectional automatic payments then advance on the original channels.
+
+Each trial settles both channels and collects all 384 test sats. All 423 and 294
+management checks pass respectively. Independent final checks confirm restored
+router baselines, stopped candidate services and mints, and removed temporary
+executables and filters. Closed receipts are under
+`work/hardware-current-r1/{paid-current-r2,paid-current-brief-r1}/closure.json`
 in the private recovery bundle. The initial failed attempt and its complete
 test-fund recovery remain recorded separately. Current Pixel, sustained
 throughput, arbitrary mobile encounters and physical power-loss acceptance remain
-outstanding; this standalone test does not replace the packaged-build evidence.
+outstanding; these standalone tests do not replace the packaged-build evidence.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |

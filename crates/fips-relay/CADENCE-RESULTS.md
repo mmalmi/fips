@@ -1,5 +1,39 @@
 # Paid-relay cadence measurements
 
+## Durable-window diagnostic — 3 October 2026
+
+A fixed A–B–B–A sequence compares 4,000 and 8,000 msat durable windows with
+the same standalone runtime (`6f97dfb03a41`) and driver (`d39bfeb338c2`).
+Unpaid allowance stays at 16,000 msat, the debt trigger at 4,000 msat and the
+maximum payment delay at 500 ms. The five-node UDP workloads, two trials per
+invocation, fixed drains and payment tails are unchanged.
+
+| Durable window | High-rate delivered / submitted | Delivery | Mean delivered-packet latency | Credit / durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 4 sats | 90,128 / 128,000 | 70.41% | 15.02 ms | 18,129 / 48,612 |
+| 8 sats | 125,294 / 128,000 | 97.89% | 1.23 ms | 2,190 / 3,032 |
+
+Individual delivery percentages in execution order are 79.01/78.51,
+99.56/100, 91.98/100 and 79.45/44.67. Bursty and steady delivery is complete.
+All 48 channels settle and all 40,960 test sats are collected. The final
+4-sat invocation fails the unchanged cost validator: payment work remains in
+flight at fixed high-rate and steady sample boundaries. No payment failure
+stage is reported, and later settlement completes; the earlier measurement
+boundaries remain rejected. Therefore no aggregate CPU-cost comparison is
+accepted. The 8-sat observations alone are 8.21 ms payment CPU and 176.63 ms
+total process CPU per delivered MiB.
+
+All 159 host samples are compiler-free with no cgroup CPU throttling. Ordinary
+background I/O varies: mean sampled I/O-full averages are 9.04%, 15.99%, 20.35%
+and 20.63%. Larger windows reduce observed refusals and loss in this sequence,
+but still lose 2,706 high-rate packets and increase permitted unbilled crash
+exposure. Native counters include control traffic; exact refill-to-resumption
+latency remains unmeasured. Defaults and production readiness are unchanged.
+All four runs are closed and rehashed; raw evidence and the summary remain in
+`work/payment-reply-recovery/window-abba-r1-summary.json` in the private recovery
+bundle. Further diagnosis must measure allowance refill and queue delay rather
+than infer timing from aggregate refusal counts.
+
 ## Credit headroom diagnostic — 3 October 2026
 
 A fixed A–B–B–A experiment compares 8,000 and 16,000 msat of unpaid allowance
