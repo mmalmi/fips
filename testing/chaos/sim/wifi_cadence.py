@@ -32,9 +32,18 @@ def metadata(args):
     relay_sha = digest(args.binary.read_bytes())
     provenance = json.loads(args.provenance.read_text())
     verified = provenance["verification"]
+    command = verified["build"]["command"]
+    profile = verified["build"].get("profile") or {}
+    # Router builds use the size-optimized release profile. Require the
+    # compiler artifact's actual settings rather than trust the profile name.
+    openwrt = (any(command[i:i + 2] == ["--profile", "openwrt"]
+                   for i in range(len(command) - 1))
+               and profile.get("opt_level") == "s"
+               and profile.get("debug_assertions") is False
+               and profile.get("test") is False)
     require(verified["artifact"]["sha256"] == relay_sha
             and verified["build"]["exit_code"] == 0
-            and "--release" in verified["build"]["command"]
+            and ("--release" in command or openwrt)
             and verified["features"] == ["measurements"]
             and verified["target"] == "aarch64-unknown-linux-musl"
             and verified["source_changes_during_build"] == [],

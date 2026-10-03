@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sim.wifi_cadence import CadenceRun, metadata, policies, run
+from sim.wifi_remote import digest
 from sim.cadence_workloads import perform, stream
 
 
@@ -59,6 +60,38 @@ class CadenceTests(unittest.TestCase):
         for pilot, delay in ((False, 2000), (True, 10), (True, True), (True, "250")):
             with self.subTest(pilot=pilot, delay=delay), self.assertRaises(ValueError):
                 policies(argparse.Namespace(pilot=pilot, pilot_delay_ms=delay))
+
+    def test_metadata_accepts_verified_openwrt_optimization_and_rejects_debug_builds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary, provenance = (Path(directory) / name for name in ("relay", "build.json"))
+            binary.write_bytes(b"router executable")
+            args = argparse.Namespace(binary=binary, mint_binary=binary, provenance=provenance,
+                                      pilot=True, mint_ssh_forward=False)
+            verified = {"artifact": {"sha256": digest(binary.read_bytes())},
+                        "features": ["measurements"], "target": "aarch64-unknown-linux-musl",
+                        "source_changes_during_build": [], "build": {"exit_code": 0}}
+            for command, profile, accepted in (
+                (["cargo", "build", "--release"], None, True),
+                (["cargo", "build", "--profile", "openwrt"],
+                 {"opt_level": "s", "debug_assertions": False, "test": False}, True),
+                (["cargo", "build", "--profile", "openwrt"], None, False),
+                (["cargo", "build", "--profile", "openwrt"],
+                 {"opt_level": "0", "debug_assertions": False, "test": False}, False),
+                (["cargo", "build", "--profile", "openwrt"],
+                 {"opt_level": "s", "debug_assertions": True, "test": False}, False),
+                (["cargo", "build", "--profile", "openwrt"],
+                 {"opt_level": "s", "debug_assertions": False, "test": True}, False),
+                (["cargo", "build"],
+                 {"opt_level": "s", "debug_assertions": False, "test": False}, False),
+            ):
+                verified["build"].update(command=command, profile=profile)
+                provenance.write_text(json.dumps({"verification": verified}))
+                with self.subTest(command=command, profile=profile):
+                    if accepted:
+                        self.assertTrue(metadata(args)["optimized"])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "optimized measurement build"):
+                            metadata(args)
 
     def service(self):
         service = object.__new__(CadenceRun)

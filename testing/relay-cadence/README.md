@@ -215,7 +215,10 @@ The mint-host JSON supplies `host`, `state_parent`, and optional `ssh_config` fo
 the existing guarded `RemoteMint` adapter. Its assigned LAN address must be
 reachable from every router. The release provenance must bind the supplied
 binary digest to a successful, unchanged-source ARM64 musl build with
-`--release` and the `measurements` feature. The runner retains this provenance,
+`--release` or `--profile openwrt`, and the `measurements` feature. For the
+OpenWrt profile, `verification.build.profile` must retain the compiler artifact's
+`opt_level: "s"`, `debug_assertions: false` and `test: false` settings.
+The runner retains this provenance,
 platform/load information and exact harness hashes beside private evidence.
 
 Alternatively, run the mint on the controller: replace `--mint-host` and its
