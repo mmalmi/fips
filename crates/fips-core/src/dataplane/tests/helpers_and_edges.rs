@@ -677,6 +677,7 @@
             let report = driver
                 .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 DataplaneLivePumpRequest {
+                    recover_ingress: false,
                     summary,
                     crypto_worker: &mut pool,
                     fast_ingress: None,

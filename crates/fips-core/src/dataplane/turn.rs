@@ -678,13 +678,6 @@ impl DataplaneFspAuthenticatedIngress {
         self.runs.is_empty()
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.runs.clear();
-        self.endpoint_data_batches.clear();
-        self.endpoint_data_packet_count = 0;
-        self.sessions.clear();
-    }
-
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.endpoint_data_packet_count = self
             .endpoint_data_packet_count

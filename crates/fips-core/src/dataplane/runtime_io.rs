@@ -171,6 +171,7 @@ impl DataplaneTurnDriver {
         request: DataplaneLiveFinishRequest<'_>,
     ) -> DataplaneLiveNodeTurn {
         let DataplaneLiveFinishRequest {
+            recover_ingress,
             admission,
             routes,
             endpoint_tx,
@@ -189,8 +190,15 @@ impl DataplaneTurnDriver {
             endpoint_drained,
             tun_drained,
         } = admission;
-        let mut report = self
-            .finish_aead_live_node_output_turn(DataplaneLiveOutputRequest {
+        let mut report = if recover_ingress {
+            DataplaneLiveNodeTurn {
+                summary,
+                raw_ingress_drops: std::mem::take(&mut self.raw_ingress_drops),
+                drops: std::mem::take(&mut self.drops),
+                ..Default::default()
+            }
+        } else {
+            self.finish_aead_live_node_output_turn(DataplaneLiveOutputRequest {
                 summary,
                 routes,
                 endpoint_tx,
@@ -201,7 +209,8 @@ impl DataplaneTurnDriver {
                 crypto_worker,
                 transport_send_batch_packets,
             })
-            .await;
+            .await
+        };
         let endpoint_deferred_count = outbound_buffers.deferred_endpoint_data_batches.len();
         deferred_endpoint_data_batches.append(&mut outbound_buffers.deferred_endpoint_data_batches);
         let tun_deferred_count = outbound_buffers.tun_deferred_packets.len();
@@ -224,11 +233,6 @@ impl DataplaneTurnDriver {
         self.drops.clear();
         self.raw_ingress_drops.clear();
         self.output_drops.clear();
-        self.fmp_ingress_receipts.clear();
-        self.fmp_link_ingress.clear();
-        self.fsp_coord_warmups.clear();
-        self.fsp_local_session_ingress.clear();
-        self.fsp_authenticated_ingress.clear();
     }
 
     fn raw_ingress_socket_packet<R>(
@@ -722,7 +726,11 @@ impl DataplaneTurnDriver {
             if !bulk.has_direct_packet_runs() {
                 continue;
             }
-            let count = bulk.len();
+            let count: usize = bulk
+                .packet_runs
+                .iter()
+                .map(FipsEndpointDirectPacketRun::len)
+                .sum();
             if sink_failed {
                 let _ = bulk.take_direct_packet_batch();
                 dropped = dropped.saturating_add(count);

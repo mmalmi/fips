@@ -1,6 +1,8 @@
 include!("helpers_and_edges.rs");
 include!("helpers_wire.rs");
 mod fmp_reports;
+#[cfg(feature = "sim-transport")]
+mod ingress_cancellation;
 mod service_carrier;
 mod source_admission;
 include!("aead_runtime_owner_fairness.rs");

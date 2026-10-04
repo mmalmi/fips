@@ -721,6 +721,7 @@ impl DataplaneLiveNode {
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneLiveTurn);
         self.crypto_worker.record_perf_depths();
         let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
+        let recover_ingress = self.driver.has_pending_ingress();
         let summary = self
             .driver
             .start_aead_completion_turn(
@@ -730,6 +731,7 @@ impl DataplaneLiveNode {
         let turn = self.driver
             .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 DataplaneLivePumpRequest {
+                    recover_ingress,
                     summary,
                     crypto_worker: &mut self.crypto_worker,
                     fast_ingress,

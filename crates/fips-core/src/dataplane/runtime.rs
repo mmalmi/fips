@@ -66,6 +66,7 @@ struct DataplaneLiveOutputRequest<'a> {
 }
 
 struct DataplaneLiveFinishRequest<'a> {
+    recover_ingress: bool,
     admission: DataplaneLiveAdmissionResult,
     routes: &'a mut DataplaneLiveRouteTable,
     endpoint_tx: &'a EndpointEventSender,
@@ -80,6 +81,7 @@ struct DataplaneLiveFinishRequest<'a> {
 }
 
 struct DataplaneLivePumpRequest<'a, RI> {
+    recover_ingress: bool,
     summary: DataplaneRuntimeSummary,
     crypto_worker: &'a mut DataplaneAeadWorkerPool,
     fast_ingress: Option<DataplaneFastIngressBatch>,
@@ -132,7 +134,23 @@ impl DataplaneTurnDriver {
     }
 
     pub(crate) fn has_runnable_work(&self) -> bool {
-        self.mover.has_runnable_work()
+        self.has_pending_ingress() || self.mover.has_runnable_work()
+    }
+
+    fn has_pending_ingress(&self) -> bool {
+        !self.fmp_ingress_receipts.is_empty()
+            || !self.fmp_link_ingress.is_empty()
+            || !self.fsp_coord_warmups.is_empty()
+            || !self.fsp_local_session_ingress.is_empty()
+            || !self.fsp_authenticated_ingress.is_empty()
+    }
+
+    fn hand_off_ingress(&mut self, report: &mut DataplaneLiveNodeTurn) {
+        report.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
+        report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
+        report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
+        report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
+        report.fsp_authenticated_ingress = std::mem::take(&mut self.fsp_authenticated_ingress);
     }
 
     pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
@@ -350,10 +368,6 @@ impl DataplaneTurnDriver {
             DataplaneLiveNodeTurn::from_runtime_turn(&turn)
         };
         self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
-        report.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
-        report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
-        report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
-        report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
         let mut transport_sent_receipts = if collect_transport_sent_receipts {
@@ -388,7 +402,6 @@ impl DataplaneTurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
-        report.fsp_authenticated_ingress = std::mem::take(&mut self.fsp_authenticated_ingress);
         self.transport_output = transport_output;
         report
     }
@@ -399,6 +412,11 @@ impl DataplaneTurnDriver {
         compact_endpoint_data: bool,
     ) -> DataplaneRuntimeSummary {
         self.reset_turn_buffers();
+        // A cancelled send may have left authenticated work to hand back. Do
+        // not drain another batch or await another send before its handoff.
+        if self.has_pending_ingress() {
+            return DataplaneRuntimeSummary::default();
+        }
         self.drain_aead_completion_turn_into_summary(
             DataplaneRuntimeSummary::default(),
             completion_limit,
@@ -436,6 +454,7 @@ impl DataplaneTurnDriver {
         RI: DataplaneRawIngressSource,
     {
         let DataplaneLivePumpRequest {
+            recover_ingress,
             summary,
             crypto_worker,
             fast_ingress,
@@ -499,32 +518,33 @@ impl DataplaneTurnDriver {
             },
         );
         deferred_raw_ingress.append(&mut completion_deferred_raw_ingress);
-        if let Some(mut completion_report) = completion_report {
-            if !admission.has_activity() {
-                return completion_report;
+        let mut report = if let Some(mut completion_report) = completion_report {
+            if admission.has_activity() {
+                let report = self
+                    .finish_live_node_turn_after_admission(
+                        DataplaneLiveFinishRequest {
+                            recover_ingress,
+                            admission,
+                            routes,
+                            endpoint_tx,
+                            transports,
+                            crypto_limit: remaining_crypto_limit,
+                            collect_transport_sent_receipts,
+                            crypto_worker,
+                            transport_send_batch_packets,
+                            deferred_raw_ingress,
+                            deferred_endpoint_data_batches,
+                            deferred_tun_packets,
+                        },
+                    )
+                    .await;
+                completion_report.absorb(report);
             }
-            let report = self
-                .finish_live_node_turn_after_admission(
-                    DataplaneLiveFinishRequest {
-                        admission,
-                        routes,
-                        endpoint_tx,
-                        transports,
-                        crypto_limit: remaining_crypto_limit,
-                        collect_transport_sent_receipts,
-                        crypto_worker,
-                        transport_send_batch_packets,
-                        deferred_raw_ingress,
-                        deferred_endpoint_data_batches,
-                        deferred_tun_packets,
-                    },
-                )
-                .await;
-            completion_report.absorb(report);
             completion_report
         } else {
             self.finish_live_node_turn_after_admission(
                 DataplaneLiveFinishRequest {
+                    recover_ingress,
                     admission,
                     routes,
                     endpoint_tx,
@@ -539,6 +559,10 @@ impl DataplaneTurnDriver {
                 },
             )
             .await
-        }
+        };
+        // This is the outer pump's final synchronous handoff. Neither subturn
+        // may own authenticated ingress across an unrelated transport await.
+        self.hand_off_ingress(&mut report);
+        report
     }
 }
