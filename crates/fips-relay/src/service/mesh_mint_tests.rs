@@ -73,7 +73,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             identities.push(PeerIdentity::from_npub(&npub).unwrap());
             configs.push(config);
         }
-        // Create the immutable customer profile before configuring its bootstrap prices.
+        // The customer identity has no bootstrap entry in any relay's tariff.
         let customer_root = root.path().join("phone");
         let mut phone = CustomerClient::open(&customer_root).unwrap();
         let profile: CustomerProfile = serde_json::from_value(json!({
@@ -92,7 +92,6 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             })
             .await
             .unwrap();
-        let phone_identity = PeerIdentity::from_npub(setup["npub"].as_str().unwrap()).unwrap();
         let mut changed = profile.clone();
         changed.mint_mesh.as_mut().unwrap().npub = identities[1].npub();
         assert!(
@@ -101,10 +100,10 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 .await
                 .is_err()
         );
-        // Only this mint/client pair has a free tariff. Other destinations keep
-        // the configured positive fee; both directions share the relay's cap.
+        // Only the mint has a free tariff. Replies must use the existing bounded
+        // allowance earned by forwarded requests, with no client return watch.
         configs[1].destination_fees = serde_json::from_value(json!({
-            identities[0].npub(): 0, identities[2].npub(): 0, phone_identity.npub(): 0
+            identities[2].npub(): 0
         }))
         .unwrap();
         configs[1].free_bandwidth = Some(FreeBandwidthPolicy {
@@ -114,11 +113,14 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             peer_burst_bytes: 65_536,
         });
         configs[0].destination_fees = serde_json::from_value(json!({
-            identities[2].npub(): 0, phone_identity.npub(): 0
+            identities[2].npub(): 0
         }))
         .unwrap();
         configs[0].free_bandwidth = configs[1].free_bandwidth.clone();
-        configs[0].customer_network = Some("127.0.0.1/32".parse().unwrap());
+        configs[0].neighbor_admission =
+            crate::control_transport::NeighborAdmission::AuthenticatedAdjacent;
+        configs[0].return_allowance = true;
+        configs[1].return_allowance = true;
         for (i, config) in configs.iter_mut().enumerate() {
             config.neighbors = identities
                 .iter()
@@ -172,16 +174,10 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 untouched.push((path.clone(), std::fs::read(path).unwrap()));
             }
         }
-        for (source, destination) in [(0, 2), (2, 0)] {
-            assert!(matches!(
-                nodes[source]
-                    .controller
-                    .open_route(identities[destination])
-                    .await
-                    .unwrap(),
-                RouteAccess::Free(_)
-            ));
-        }
+        assert!(matches!(
+            nodes[0].controller.open_route(identities[2]).await.unwrap(),
+            RouteAccess::Free(_)
+        ));
         let client =
             MeshMintBridge::connect(nodes[0].endpoint.clone(), PORT, identities[2], listener)
                 .await
@@ -259,19 +255,12 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         assert!(guarded.contains("stop the customer service"));
         phone.execute(CustomerCommand::Stop).await.unwrap();
         assert!(TcpStream::connect(address).await.is_err());
-        let return_controller = nodes[2].controller.clone();
-        let return_route =
-            tokio::spawn(async move { return_controller.watch_route(phone_identity, 0).await });
         phone
             .execute(CustomerCommand::Import {
                 token: payment.token,
             })
             .await
             .unwrap();
-        assert!(matches!(
-            return_route.await.unwrap().unwrap(),
-            RouteAccess::Free(_)
-        ));
         assert!(TcpStream::connect(address).await.is_err());
         assert_eq!(
             phone.execute(CustomerCommand::Balance).await.unwrap()["balance_sat"],
@@ -373,6 +362,18 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         assert!(stats.bandwidth.unwrap().admitted_packets > 0);
         for node in &nodes {
             assert!(node.controller.purchases().await.unwrap().is_empty());
+            assert!(node.controller.watched_routes().await.unwrap().is_empty());
+        }
+        for node in &nodes[..2] {
+            assert!(
+                node.forwarding
+                    .relay
+                    .return_stats()
+                    .unwrap()
+                    .traffic
+                    .admitted_packets
+                    > 0
+            );
         }
         for (path, bytes) in untouched {
             if !path.starts_with(&configs[0].state_directory) {
