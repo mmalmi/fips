@@ -2,6 +2,7 @@
 use super::restore::{read, wait_journal};
 use super::wallet_crash::{arm, kill, kill_at, wait_at};
 use super::*;
+use cdk_common::database::WalletDatabase;
 use fips_relay::{
     controller::RenewalPolicy,
     probe::{ReceiveProbe, SendProbe},
@@ -29,6 +30,7 @@ async fn renewal_recovers_refund_and_replaces_once_after_repeated_restart() {
 }
 
 async fn scenario(root: &Path) {
+    const WALLET_CAPACITY: u64 = 16 * 1024 * 1024;
     let (mint, network) = setup::start_mint(root, 9627).await;
     let proxy = MintProxy::start(mint.url()).await;
     let setup::Bench {
@@ -48,6 +50,7 @@ async fn scenario(root: &Path) {
             funding_limits: &[80, 40, 40],
         },
         |index, config| {
+            config.terms.wallet_capacity_bytes = Some(WALLET_CAPACITY);
             if index == 0 {
                 config.terms.controller.max_locked_sat = 40;
                 config.terms.controller.max_funding_overhead_sat = 8;
@@ -90,6 +93,9 @@ async fn scenario(root: &Path) {
         .unwrap()
         .balance_sat;
     let budget_before = request(&configs[0], &AdminRequest::Status).await.unwrap();
+    // Admitted refund recovery owns its completion allowance before unrelated
+    // records consume every remaining logical byte.
+    let wallet_db = setup::fill_wallet_capacity(&configs[0]).await;
     let marker = arm(&wallet, id, "refund");
     request(&configs[0], &AdminRequest::ResumeRenewals)
         .await
@@ -151,9 +157,18 @@ async fn scenario(root: &Path) {
             .balance_sat,
         recovered_balance
     );
+    let capacity = wallet_db.storage_capacity().await.unwrap().unwrap();
+    assert_eq!(capacity.maximum_bytes, WALLET_CAPACITY);
+    assert!(capacity.charged_bytes <= WALLET_CAPACITY);
     kill(&mut children[0]).await;
     assert_eq!(read(&journals[0]), recovered);
 
+    // A replacement is new financial work, unlike the already-admitted refund.
+    // Release only test ballast before admitting its new completion reservation.
+    wallet_db
+        .kv_remove("capacity-test", "", "ballast")
+        .await
+        .unwrap();
     let marker = arm(&wallet, id, "renewal-complete");
     children[1] = start(&paths[1]).await;
     children[0] = start(&paths[0]).await;
@@ -188,6 +203,7 @@ async fn scenario(root: &Path) {
     // before a third restart; rapid successive rekeys are a separate boundary.
     wait_for_session_drain(&configs[2], &npubs[0]).await;
     assert_eq!(read(&journals[0])["renewals"][id]["completed"], false);
+    setup::fill_wallet_capacity(&configs[0]).await;
     kill(&mut children[0]).await;
     children[0] = start(&paths[0]).await;
     ready(&configs, &paths, &npubs, &mut children).await;
@@ -290,6 +306,13 @@ async fn scenario(root: &Path) {
     assert_eq!(
         available + proxy.state.fees_collected.load(Ordering::SeqCst),
         384
+    );
+    let capacity = wallet_db.storage_capacity().await.unwrap().unwrap();
+    assert_eq!(capacity.maximum_bytes, WALLET_CAPACITY);
+    assert!(capacity.charged_bytes <= WALLET_CAPACITY);
+    eprintln!(
+        "renewal wallet capacity: maximum={}, final_charged={}, full-capacity recovery checkpoints=2",
+        capacity.maximum_bytes, capacity.charged_bytes
     );
     eprintln!(
         "renewal completion cohort: unique={}, missing={}, duplicate={}, conserved=384",
