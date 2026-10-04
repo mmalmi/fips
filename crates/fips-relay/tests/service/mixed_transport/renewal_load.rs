@@ -29,14 +29,18 @@ async fn scenario() {
     .await
     .unwrap();
     let proxy = MintProxy::start(mint.url()).await;
-    let mut bench =
-        MixedBench::start_configured(&proxy.url, &network, SecondHop::WebSocketTls, |_, cfg| {
+    let mut bench = MixedBench::start_configured(
+        &proxy.url,
+        &network,
+        SecondHop::WebSocketSelfSigned,
+        |_, cfg| {
             cfg.funding_request_budget = Some(FundingRequestBudget {
                 burst: NonZeroU32::new(128).unwrap(),
                 requests_per_minute: NonZeroU32::new(60_000).unwrap(),
             });
-        })
-        .await;
+        },
+    )
+    .await;
     bench.assert_carriers().await;
     bench.set_stage("turnover-initial-purchase");
     let mut rotated_keyset = None;
