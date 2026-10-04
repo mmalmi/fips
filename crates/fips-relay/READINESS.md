@@ -673,6 +673,33 @@ Wi-Fi-bound Internet probe, unchanged prior accounts, and the stopped empty test
 account. The source-bound receipt is `work/android-current-r3/acceptance.json`;
 the same finite-workload limits apply.
 
+The first longer Pixel trial (`android-current-r4`) fails before any load: its
+new harness used ADB `exec-out`, which reads replies but did not transmit the
+binary request. A controlled read-only comparison returns a service timeout
+through that command and valid live status through `shell -T`. The corrected
+harness uses the latter and checks the connection on an empty account before
+issuing funds. Fifty-nine phone harness checks pass; production app/native code
+is unchanged. All four originally funded channels had zero authorization and
+were cooperatively settled without new funding. Independent closure verifies
+all 512 test sats collected, restored router/phone networking and unchanged
+prior accounts. Recovery also reconciles a stale handle from its deliberately
+recreated owned UDP rule; both failed attempts remain recorded. Evidence is
+`work/android-current-r4/failed-acceptance-closure.json`. This failed setup does
+not establish sustained phone acceptance.
+
+The corrected harness then completes its empty-account preflight and the first
+100-second bidirectional Pixel window (`android-current-r5`). Each endpoint
+submits 4,000 originals of 1,000 bytes at 40 packets/s. The phone-to-leaf path
+delivers 3,992 and the reverse delivers all 4,000, with no duplicate or invalid
+payloads and no deliberately injected loss. All four paying directions advance,
+but the complete-delivery check fails, so the impaired and recovery windows do
+not run. Saved diagnostics do not locate the eight missing originals; local
+submission is not proof of transmission. The exact four channels subsequently
+settle, all 512 test sats are collected, and independent checks verify restored
+networking and unchanged prior accounts. Evidence is
+`work/android-current-r5/failed-acceptance-closure.json`. This adds a failed
+sustained workload and verified recovery, not a forwarding fix or acceptance.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |

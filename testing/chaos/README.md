@@ -799,8 +799,8 @@ input without importing it. Use the matching explicit `billing` in the
 The [physical phone acceptance](../../crates/fips-relay/READINESS.md#physical-phone-customer-across-the-wireless-mesh)
 using these composed helpers delivered eight packets, advanced all four paying
 hops, and recovered all 512 test sats after the recorded checker correction.
-The generic CLI wrapper below has focused tests; it has not been rerun on new
-accounts.
+Later runs and their exact source/workload limits are recorded in that readiness
+document; use the matching artifact and private scenario for each run.
 
 `sim.paid_phone` composes these helpers for one acceptance phone and the same
 three-router inventory. Install the verified isolated acceptance APK first,
@@ -839,6 +839,21 @@ lifetime budgets, followed by the same settlement and collection checks. An
 uncertain force-stop is retained and never dispatched again. This tests an
 Android process interruption, not physical power loss or traffic during the stop.
 
+Use `--load` instead of `--phone-restart` for three simultaneous bidirectional
+100-second windows at 40 packets/s, with 4,000 originals of 1,000 bytes per
+direction in each window. The middle window drops every twentieth experimental
+EtherType frame from the middle router at each leaf; the surrounding healthy
+and recovery windows require complete delivery. All windows require delivery,
+buyer authorization and provider credit to advance while sending. The existing
+app-private diagnostic socket is checked on the empty account before issuance;
+it uses a non-PTY ADB shell for binary input/output. No app or protocol extension
+is needed. Existing router status, routing, transport and session diagnostics
+are retained before and after every window, including failed windows, so loss
+can be investigated after cleanup. Router fees are 1 msat/KiB with 32-MiB quote
+limits; the same channel capacity and lifetime buyer budgets apply. Whole-app
+CPU/RSS observations include control sampling. This finite workload does not measure maximum throughput or
+payment-specific phone CPU cost, and failed originals are never replayed.
+
 Add `--open-mesh` for the existing guarded temporary open profile and late third
 router join. Before issuance, the phone must reach the exact mint before and
 after the explicit denied TCP probes. A missing completion marker, ADB failure,
@@ -848,7 +863,7 @@ They do not prove that a denied target's service was listening or establish an
 exhaustive firewall policy.
 
 This fixed fixture issues 128 test sats to each of four fresh accounts, uses
-32-sat channels and 64-sat lifetime buyer budgets, and checks four fresh
+32-sat channels and 64-sat lifetime buyer budgets. The default case checks four fresh
 1,000-byte payloads in each direction along phone → entry → middle → leaf.
 Automatic payments must advance at all four paying hops before settlement.
 The separate journal validator matches original funding operations, buyer and
@@ -861,7 +876,7 @@ This phone fixture does not add a radio partition or prove general Internet
 access. Its reusable lifecycle/probe/financial tests are:
 
 ```sh
-python3 -m unittest discover -s testing/chaos/tests -p 'test_paid_phone*.py' -v
+python3 -m unittest discover -s testing/chaos/tests -p 'test_*phone*.py' -v
 ```
 
 ## Available Scenarios
