@@ -115,6 +115,18 @@ existing LAN: this does not accept radio-mesh discovery, Android wiring, paid
 payloads on this device run, or interrupted financial HTTP recovery. Existing
 saved accounts and the earlier retained phone test mint are unchanged.
 
+A second two-router wallet check on `d532a4e0b` removes every known-client
+return tariff and the mint's return watch. Only the mint destination has a free
+offer; relays reuse the existing `return_allowance` without changing its credit,
+rate or state limits. Eight test sats again traverse both FIPS hops for offline
+import/export and are collected in full. Return-admission counters confirm use
+of earned reply credit, and monetary relay journals stay unchanged. All 94
+management checks and independent router/process cleanup checks pass. Evidence
+is in `work/mesh-mint-physical-r2`, with its exact static ARM64 build in
+`work/mesh-mint-arm-r2`. This accepts wallet bootstrap on the configured UDP
+links; it does not establish paid settlement, radio discovery, arbitrary
+asymmetry or mobile handover for this revision.
+
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent

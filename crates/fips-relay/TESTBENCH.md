@@ -40,7 +40,8 @@ fips-relay-test-mint run /absolute/path/mint.json
 For a hardware bench, choose an assigned private LAN address reachable from the
 routers. Wildcard, multicast and public binds are rejected. The TCP proxy has a
 fixed loopback CDK upstream, at most 32 active connections, and a 45-second
-connection limit. Funding controls use a separate private Unix socket. All
+inactivity limit. Active HTTP connections can carry successive refund requests.
+Funding controls use a separate private Unix socket. All
 participants must use the same advertised mint URL, including its port.
 
 Each mint process requires a new state directory. The simulated Lightning
@@ -57,14 +58,15 @@ a loopback client listener to that server's authenticated FIPS identity. It
 carries ordinary HTTP bytes over existing TCP/FIPS, without HTTP request replay,
 new payment messages, remote proxy destinations or access to the issuance socket.
 Each adapter has eight connection slots, four TCP connections per peer, 16 KiB
-buffers per direction and a 45-second connection lifetime. Local sockets wait
+buffers per direction and a 45-second inactivity limit. Useful byte progress
+extends that limit; empty packets do not. Local sockets wait
 up to three seconds for a TCP slot before any request bytes are read.
 Shutdown explicitly resets retained streams before stopping the native endpoint,
 so reopening the same identity does not inherit abandoned TCP connections.
 
 The adapter grants no forwarding exemption. An operator must explicitly arrange
-bounded bootstrap access in **both** directions using existing route pricing
-and free-bandwidth controls. An empty customer wallet must be able to reach the
+bounded bootstrap access using existing route pricing and free-bandwidth
+controls. An empty customer wallet must be able to reach the
 mint before buying paid service. A client requests a zero-price route when an
 HTTP connection arrives, through the existing bounded quote cache. It never
 opens a paid channel to obtain mint access and does not poll for routes while
@@ -123,14 +125,22 @@ a fixed loopback TCP backend and a distinct, non-reserved FIPS service port. It
 shares the relay endpoint and its shutdown; the mint's private issuance socket
 is never exported. No additional proxy process or mint protocol is needed.
 
-This configuration does not grant bootstrap traffic automatically. Arrange
-bounded zero-price offers to the mint and the known client identities, and use
-the existing zero-ceiling route watch on the mint host for the response path.
-Automatic permissionless return bootstrap remains pending. A fresh two-router
-UDP check verifies offline import/export through the mesh mint and restores the
-original devices afterward. Saved hardware accounts retain their LAN-mint URLs;
-radio-mesh and Android acceptance for this configuration remain pending. Current
-acceptance is recorded in [READINESS.md](READINESS.md).
+This configuration does not grant bootstrap traffic automatically. Give the mint
+destination a zero-price offer with bounded `free_bandwidth` on forwarding
+relays. Enable `return_allowance` on those relays to let admitted requests earn
+small replies along the reverse path. No client-specific tariff or mint-side
+return watch is then needed. The existing [return limits](RETURN-ALLOWANCE.md)
+remain unchanged, including the shared 1,024-unit/s neighbor budget. The adapter
+uses small TCP segments so acknowledgments can sustain that earned credit.
+This is a deliberately slow bootstrap tier, without a delivery or fairness
+guarantee under contention. A changed or asymmetric response path needs matching
+forward admission on its edges; this does not establish general mobile bootstrap.
+
+A fresh two-router UDP check verifies offline import/export without known-client
+return entries and restores the original devices afterward. Saved hardware
+accounts retain their LAN-mint URLs; radio-mesh and Android acceptance for this
+configuration remain pending. Current acceptance is recorded in
+[READINESS.md](READINESS.md).
 
 ## Fund a relay
 

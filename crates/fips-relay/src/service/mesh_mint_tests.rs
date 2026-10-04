@@ -32,7 +32,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
     let checkpoint =
         |phase| eprintln!("mesh mint {:.2}s: {phase}", started.elapsed().as_secs_f64());
     // The complete financial lifecycle shares the unchanged 1 KiB/s reply tier.
-    tokio::time::timeout(Duration::from_secs(300), async {
+    tokio::time::timeout(Duration::from_secs(420), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
