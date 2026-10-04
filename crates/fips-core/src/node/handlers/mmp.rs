@@ -200,17 +200,17 @@ impl Node {
             "Processed ReceiverReport"
         );
 
-        // A smaller authenticated identity must advertise a root smaller than
-        // ours. Before and on its first valid RTT, let its missing declaration
-        // arrive before spending our send interval on the old root. This cannot
-        // defer both ends; later measured reports still repair a lost declaration.
+        // Before the first RTT, a better root's declaration may arrive before
+        // the measurement that lets us adopt it. Do not spend our send interval
+        // repairing the old root in between. For missing declarations, comparing
+        // authenticated identities prevents mutual deferral.
         let peer_coords = self.tree_state.peer_coords(from);
-        let defer_initial_missing = (processed.first_rtt || processed.srtt_ms.is_none())
-            && peer_coords.is_none()
-            && from < self.tree_state.root();
-        // A successful local announcement can still be lost. Later measured
-        // missing-state reports and all root disagreements retain normal repair.
-        if !defer_initial_missing
+        let defer_initial_better_root = (processed.first_rtt || processed.srtt_ms.is_none())
+            && peer_coords.map_or(from < self.tree_state.root(), |coords| {
+                coords.root_id() < self.tree_state.root()
+            });
+        // Later measured reports still repair missing or disagreeing state.
+        if !defer_initial_better_root
             && peer_coords.is_none_or(|coords| coords.root_id() != self.tree_state.root())
         {
             self.mark_tree_announce_pending(from);

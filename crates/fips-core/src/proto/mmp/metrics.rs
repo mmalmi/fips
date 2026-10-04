@@ -195,8 +195,10 @@ impl MmpMetrics {
                 .and_then(|send_done_ms| our_timestamp_ms.checked_sub(send_done_ms));
 
             match rtt_sample_ms {
-                Some(rtt_ms) if rtt_ms > 0 => {
-                    let rtt_us = (rtt_ms as i64) * 1000;
+                Some(rtt_ms) => {
+                    // A fast round trip can quantize to zero at the wire's
+                    // millisecond resolution. Keep it measurable at that floor.
+                    let rtt_us = i64::from(rtt_ms.max(1)) * 1000;
                     trace!(
                         our_ts = our_timestamp_ms,
                         echo = echo_ms,
@@ -209,7 +211,7 @@ impl MmpMetrics {
                     self.last_srtt_update = Some(now);
                     self.rtt_trend.update(rtt_us as f64);
                 }
-                _ => {
+                None => {
                     trace!(
                         our_ts = our_timestamp_ms,
                         echo = echo_ms,
@@ -472,6 +474,27 @@ mod tests {
         // RTT = 1050 - 1000 - 5 = 45ms
         let srtt_ms = m.srtt_ms().unwrap();
         assert!((srtt_ms - 45.0).abs() < 1.0, "srtt={srtt_ms}, expected ~45");
+    }
+
+    #[test]
+    fn sub_millisecond_echo_initializes_rtt_at_wire_resolution() {
+        for dwell in [0, 5] {
+            let mut metrics = MmpMetrics::new();
+            let now = Instant::now();
+            let report = make_rr(10, 10, 5000, 1000, dwell, 0);
+            // Both clock readings can land in the same millisecond after dwell.
+            assert!(metrics.process_receiver_report(&report, 1000 + u32::from(dwell), now));
+            assert_eq!(metrics.srtt_ms(), Some(1.0));
+            assert_eq!(metrics.srtt_age_ms(now), Some(0));
+
+            let future = make_rr(11, 11, 5100, 2000, dwell, 0);
+            assert!(!metrics.process_receiver_report(&future, 1006, now + Duration::from_secs(1)));
+            assert_eq!(metrics.srtt_ms(), Some(1.0));
+            assert_eq!(
+                metrics.srtt_age_ms(now + Duration::from_secs(1)),
+                Some(1000)
+            );
+        }
     }
 
     #[test]
