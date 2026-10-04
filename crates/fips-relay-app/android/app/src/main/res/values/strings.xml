@@ -26,6 +26,7 @@
     <string name="billing_note">Payments buy forwarding attempts. Delivery is best effort. Routing continues when you leave this app. Use Stop here or in the notification.</string>
     <string name="routing_channel">Mesh routing</string>
     <string name="routing_active">Routing is active. Tap Stop to end the session.</string>
+    <string name="routing_working">Updating the mesh connection…</string>
+    <string name="routing_attention">Connection needs attention. Tap Stop to end the session.</string>
     <string name="notifications_needed">Allow notifications to keep Stop available while the app is closed.</string>
-    <string name="stop_pending">The account is still stopping. Its network binding is retained.</string>
 </resources>

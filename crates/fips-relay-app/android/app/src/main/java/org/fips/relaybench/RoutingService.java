@@ -40,7 +40,7 @@ public final class RoutingService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         latestStart = startId;
         // Promote before queuing any native or wallet work, which may take time.
-        startForeground(NOTIFICATION, notification(R.string.routing_active), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        startForeground(NOTIFICATION, notification(R.string.routing_working), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
         String requested = intent == null ? null : intent.getStringExtra(ACTION);
         String operation = requested == null ? "stop" : requested;
         ResultReceiver reply = receiver(intent);
@@ -85,12 +85,13 @@ public final class RoutingService extends Service {
             }
             boolean stopService = end;
             main.post(() -> {
-                if (latestStart == startId) {
+                if (GENERATION.get() == generation && latestStart == startId) {
                     if (stopService) {
                         stopForeground(STOP_FOREGROUND_REMOVE);
                         stopSelfResult(startId);
-                    } else if (result.containsKey("error")) {
-                        getSystemService(NotificationManager.class).notify(NOTIFICATION, notification(R.string.stop_pending));
+                    } else {
+                        getSystemService(NotificationManager.class).notify(NOTIFICATION,
+                            notification(result.containsKey("error") ? R.string.routing_attention : R.string.routing_active));
                     }
                 }
                 if (reply != null) reply.send(result.containsKey("error") ? 1 : 0, result);

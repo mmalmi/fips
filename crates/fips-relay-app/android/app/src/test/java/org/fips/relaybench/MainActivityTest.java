@@ -47,7 +47,10 @@ import org.robolectric.util.ReflectionHelpers;
 @LooperMode(LooperMode.Mode.PAUSED)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public final class MainActivityTest {
-    @Before public void resetWallet() {
+    @Before public void resetWallet() throws Exception {
+        drain();
+        // Robolectric replaces the Application between tests within one JVM.
+        ReflectionHelpers.setStaticField(BenchClient.class, "instance", null);
         Wallet.balance = 16;
         Wallet.original = null;
         Wallet.latest = null;
