@@ -528,21 +528,29 @@ def main():
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--mint-binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--phone-restart', action='store_true',
-                        help='force-stop and reopen the app between two paid cohorts')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--phone-restart', action='store_true',
+                      help='force-stop and reopen the app between two paid cohorts')
+    mode.add_argument('--load', action='store_true',
+                      help='five minutes of bidirectional traffic with a controlled loss window')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
     )
     args = parser.parse_args()
     os.umask(0o077)
+    seconds = 1500 if args.load else 1200
 
     def deadline(_signal, _frame):
-        raise TimeoutError('phone mesh acceptance exceeded 1200 seconds')
+        raise TimeoutError(f'phone mesh acceptance exceeded {seconds} seconds')
 
     signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(1200)
-    run = PaidPhoneRun(args)
+    signal.alarm(seconds)
+    if args.load:
+        from .paid_phone_load import PhoneLoadRun
+        run = PhoneLoadRun(args)
+    else:
+        run = PaidPhoneRun(args)
     try:
         run.execute()
     except Exception:
