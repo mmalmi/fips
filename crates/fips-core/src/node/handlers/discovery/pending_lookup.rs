@@ -17,6 +17,7 @@ pub struct PendingLookup {
     /// This lookup was initiated because an established direct payload path
     /// stopped returning authenticated traffic.
     path_recovery: bool,
+    route_query_only: bool,
     first_request_attempt: Option<u8>,
     origin_request_ids: Vec<u64>,
 }
@@ -48,9 +49,24 @@ impl PendingLookup {
             last_sent_ms: now_ms,
             attempt: 1,
             path_recovery: false,
+            route_query_only: false,
             first_request_attempt: None,
             origin_request_ids: Vec::new(),
         }
+    }
+
+    /// Give the first queued payload its own bounded lookup budget. Later
+    /// payloads share that deadline; already in-flight replies remain usable.
+    pub(crate) fn claim_route_query(&mut self, now_ms: u64) -> bool {
+        if !self.route_query_only {
+            return false;
+        }
+        self.route_query_only = false;
+        self.initiated_ms = now_ms;
+        self.last_sent_ms = now_ms;
+        self.attempt = 1;
+        self.first_request_attempt = None;
+        true
     }
 
     fn record_origin_request(&mut self, request_id: u64) {
@@ -131,8 +147,15 @@ impl PendingDiscoveryLookups {
         }
     }
 
-    pub(crate) fn insert_new(&mut self, dest: NodeAddr, now_ms: u64) -> Option<PendingLookup> {
-        self.entries.insert(dest, PendingLookup::new(now_ms))
+    pub(crate) fn insert_new(
+        &mut self,
+        dest: NodeAddr,
+        now_ms: u64,
+        route_query_only: bool,
+    ) -> Option<PendingLookup> {
+        let mut lookup = PendingLookup::new(now_ms);
+        lookup.route_query_only = route_query_only;
+        self.entries.insert(dest, lookup)
     }
 
     #[cfg(test)]

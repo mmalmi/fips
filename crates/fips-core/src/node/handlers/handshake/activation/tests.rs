@@ -47,7 +47,7 @@ fn queue(node: &mut Node, destination: NodeAddr) -> u64 {
             now,
         );
     assert!(!result.destination_dropped() && !result.dropped_oldest());
-    node.pending_lookups.insert_new(destination, now);
+    node.pending_lookups.insert_new(destination, now, false);
     now
 }
 
@@ -120,7 +120,8 @@ fn install_existing(node: &mut Node, remote: &Identity, established: bool) {
 async fn no_queue_does_not_start_session_or_clear_lookup() {
     let (mut node, remote) = fixture();
     let destination = *remote.node_addr();
-    node.pending_lookups.insert_new(destination, Node::now_ms());
+    node.pending_lookups
+        .insert_new(destination, Node::now_ms(), false);
     let original = lookup(&node, &destination);
     node.resume_queued_direct_session(&destination).await;
     assert_eq!(node.session_count(), 0);

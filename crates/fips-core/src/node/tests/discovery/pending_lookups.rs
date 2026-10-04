@@ -49,7 +49,7 @@ fn pending_discovery_lookup_queue_owns_dedup_and_capacity() {
     let second = NodeAddr::from_bytes([2u8; 16]);
 
     assert!(lookups.admission_for(&first, 1).accepted());
-    assert!(lookups.insert_new(first, 123).is_none());
+    assert!(lookups.insert_new(first, 123, false).is_none());
     assert_eq!(lookups.len(), 1);
     assert_eq!(
         lookups.get(&first).map(|lookup| lookup.initiated_ms),

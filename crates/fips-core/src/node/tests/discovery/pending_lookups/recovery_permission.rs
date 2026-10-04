@@ -112,7 +112,8 @@ async fn pending_capacity_and_dedup_preserve_unsent_failure_retry() {
             make_node_addr(0xa2)
         };
         let admitted_ms = Node::now_ms();
-        node.pending_lookups.insert_new(occupied, admitted_ms);
+        node.pending_lookups
+            .insert_new(occupied, admitted_ms, false);
         let initiated = node.stats().discovery.req_initiated;
         for _ in 0..2 {
             node.maybe_initiate_route_query_lookup(&target).await;

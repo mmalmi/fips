@@ -225,11 +225,23 @@ impl Node {
     ) {
         let now_ms = Self::now_ms();
 
+        let has_queued_traffic = self.pending_session_traffic.has_traffic_for(dest);
         let max_pending = self.config.node.session.pending_max_destinations;
         let admission = self.pending_lookups.admission_for(dest, max_pending);
         if admission.deduplicated() {
             if path_recovery {
                 self.pending_lookups.mark_path_recovery(dest);
+            }
+            if has_queued_traffic
+                && self
+                    .pending_lookups
+                    .get_mut(dest)
+                    .is_some_and(|entry| entry.claim_route_query(now_ms))
+            {
+                self.refresh_pending_lookup_deadline();
+                self.initiate_lookup(dest, self.config.node.discovery.ttl)
+                    .await;
+                return;
             }
             self.stats_mut().discovery.req_deduplicated += 1;
             debug!(
@@ -282,7 +294,7 @@ impl Node {
         // Queued traffic needs bounded lookup retries while reachability
         // converges, including when an existing session loses its route.
         // Lookup exhaustion leaves session-owned traffic to that lifecycle.
-        let queued_lookup = route_query || self.pending_session_traffic.has_traffic_for(dest);
+        let queued_lookup = route_query || has_queued_traffic;
 
         // Bloom filter pre-check: original routing skips if no peer's filter
         // contains the target. Reply-learned mode intentionally allows a
@@ -291,7 +303,8 @@ impl Node {
         if !reachable && self.config.node.routing.mode != RoutingMode::ReplyLearned {
             self.stats_mut().discovery.req_bloom_miss += 1;
             if queued_lookup {
-                self.pending_lookups.insert_new(*dest, now_ms);
+                self.pending_lookups
+                    .insert_new(*dest, now_ms, route_query && !has_queued_traffic);
                 self.note_pending_lookup_deadline(dest);
                 if path_recovery {
                     self.pending_lookups.mark_path_recovery(dest);
@@ -310,7 +323,8 @@ impl Node {
             return;
         }
 
-        self.pending_lookups.insert_new(*dest, now_ms);
+        self.pending_lookups
+            .insert_new(*dest, now_ms, route_query && !has_queued_traffic);
         self.note_pending_lookup_deadline(dest);
         if path_recovery {
             self.pending_lookups.mark_path_recovery(dest);
