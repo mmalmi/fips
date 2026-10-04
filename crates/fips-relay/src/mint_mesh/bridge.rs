@@ -14,6 +14,7 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
+    sync::oneshot,
     task::{JoinHandle, JoinSet},
     time::{Instant, MissedTickBehavior},
 };
@@ -30,6 +31,7 @@ pub(super) fn validate_port(port: u16) -> Result<(), String> {
 }
 
 pub struct MeshMintBridge {
+    stop: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), String>>,
 }
 
@@ -105,24 +107,35 @@ impl MeshMintBridge {
         let tcp = FipsTcpEndpoint::bind(endpoint, port, config, seed)
             .await
             .map_err(|e| e.to_string())?;
+        let (stop, stopped) = oneshot::channel();
         Ok(Self {
-            task: tokio::spawn(drive(tcp, mode)),
+            stop: Some(stop),
+            task: tokio::spawn(drive(tcp, mode, stopped)),
         })
     }
 
     pub async fn shutdown(mut self) -> Result<(), String> {
-        self.task.abort();
-        match (&mut self.task).await {
-            Ok(result) => result,
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(error.to_string()),
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        match tokio::time::timeout(Duration::from_secs(5), &mut self.task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_) => {
+                self.task.abort();
+                let _ = (&mut self.task).await;
+                Err("mesh mint shutdown deadline".into())
+            }
         }
     }
 }
 
 impl Drop for MeshMintBridge {
     fn drop(&mut self) {
-        self.task.abort();
+        // The task owns bounded network cleanup even when its caller is cancelled.
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
     }
 }
 
@@ -230,7 +243,11 @@ impl Connection {
     }
 }
 
-async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
+async fn drive(
+    mut tcp: FipsTcpEndpoint,
+    mode: Mode,
+    mut stop: oneshot::Receiver<()>,
+) -> Result<(), String> {
     let mut connections = HashMap::<ConnectionId, Connection>::new();
     let mut waiting = VecDeque::new();
     let mut pending = JoinSet::new();
@@ -241,6 +258,7 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
     loop {
         let now = started.elapsed().as_millis() as u64;
         tokio::select! {
+            _ = &mut stop => break,
             result = tcp.receive_report_filtered(now, |peer| match &mode {
                 Mode::Client { mint, .. } => peer.pubkey() == mint.pubkey(),
                 Mode::Server(_) => true,
@@ -336,4 +354,21 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
             let _ = tcp.abort(id).await;
         }
     }
+    preparing.abort_all();
+    pending.abort_all();
+    // A stopped-wallet operation reuses this identity and service port later.
+    // Reset retained streams before the endpoint stops; abandoning them leaves
+    // stale tuples at the mint when the next adapter opens its first TCP port.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        if let Mode::Client { mint, .. } = mode {
+            tcp.abort_peer(mint).await.map_err(|e| e.to_string())?;
+        } else {
+            for id in connections.keys() {
+                let _ = tcp.abort(*id).await;
+            }
+        }
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|_| "mesh mint stream cleanup deadline".to_string())?
 }

@@ -178,16 +178,9 @@ impl RouteQuotes {
     /// Mint bootstrap never creates a payment obligation or accepts a priced
     /// route. Request only when opening a connection; reuse the bounded cache.
     pub(crate) async fn require_free_route(&self, destination: PeerIdentity) -> Result<(), String> {
-        if self
-            .endpoint
-            .resolve_next_hop(destination, None)
-            .await
-            .map_err(|e| e.to_string())?
-            .is_some_and(|peer| peer.node_addr() == destination.node_addr())
-        {
+        let Some(offer) = self.request_native_route(destination, true).await? else {
             return Ok(());
-        }
-        let offer = self.refresh_route(destination).await?;
+        };
         if offer.price.msat != 0 {
             return Err("mint bootstrap requires an explicitly free route".into());
         }
@@ -225,10 +218,21 @@ impl RouteQuotes {
                 .select_priced_route(destination, selection, reuse_unchanged)
                 .await;
         }
+        self.request_native_route(destination, reuse_unchanged)
+            .await?
+            .ok_or_else(|| "destination is a direct neighbor".into())
+    }
+
+    // Bootstrap follows native routing without invoking the paid source selector.
+    async fn request_native_route(
+        &self,
+        destination: PeerIdentity,
+        reuse_unchanged: bool,
+    ) -> Result<Option<RouteOffer>, String> {
         let deadline_unix = unix_now()?.checked_add(20).ok_or("clock overflow")?;
         let provider = self.resolve(destination, None, deadline_unix).await?;
         if provider.node_addr() == destination.node_addr() {
-            return Err("destination is a direct neighbor".into());
+            return Ok(None);
         }
         self.request_from(
             provider,
@@ -241,6 +245,7 @@ impl RouteQuotes {
             },
         )
         .await
+        .map(Some)
     }
 
     /// Renewal retains its provider and financial service. It must not invoke
