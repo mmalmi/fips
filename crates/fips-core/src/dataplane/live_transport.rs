@@ -137,7 +137,7 @@ impl crate::transport::udp::UdpPayloadBatch for DataplaneTransportPayloadBatch {
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
         match self.items[index] {
             DataplaneTransportPayloadItem::Whole { record_index } => match &self.records[record_index] {
