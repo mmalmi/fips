@@ -746,6 +746,18 @@ reservation is released. The closed failed-run receipt is
 `work/android-current-r10/failed-acceptance-closure.json`; packet observations
 remain diagnostic evidence rather than successful delivery acceptance.
 
+A separate scalar UDP send-error fix (`55eba04a6`) now preserves the successful
+prefix assumed by forwarding/accounting completion. Previously Android/Windows
+could send later packets after an earlier failure, making a total failure count
+misidentify which packets were submitted. The loop now stops at the first error
+and reports the remaining suffix as unsent. One real-socket regression covers
+first failure, middle failure and all-success, including payloads and counters;
+it fails before the fix and passes afterward. All fifteen UDP socket tests and
+strict all-target/all-feature core lint pass. Linux executes the same scalar
+helper for this check; there is no new Android device acceptance. This conditional
+send-error fix does not explain the `r10` run's zero-error loss. Evidence is
+`work/udp-prefix/acceptance.json` in the private recovery bundle.
+
 Preparatory failures remain distinct. The `r4` harness failed to transmit its
 binary request through ADB `exec-out`; a controlled comparison justified
 switching to `shell -T`. The first `r6` attempt and `r7` were interrupted by other
