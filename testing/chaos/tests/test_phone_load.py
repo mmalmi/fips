@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 import struct
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sim.phone_diagnostics import decode_record
+from sim.phone_diagnostics import control, decode_native, decode_record, native
 from sim.paid_phone_load import BYTES, PACKETS, SECONDS, PhoneLoadRun, validate_window
 
 
@@ -47,6 +48,7 @@ class PhoneLoadTests(unittest.TestCase):
             return {'status': 'ok', 'data': {'counter': 7}}
         run.nodes = {name: Mock(npub=name, native=Mock(side_effect=native))
                      for name in ('n01', 'n02', 'n03')}
+        run.phone = Mock()
         run.participants = lambda: run.nodes
         run.journals = Mock(return_value={})
         failure = RuntimeError('original delivery failure')
@@ -55,18 +57,57 @@ class PhoneLoadTests(unittest.TestCase):
         run.save = lambda: saved.append(copy.deepcopy(run.evidence))
         loss = Mock()
         loss.clear.return_value = {'enabled': False}
-        with patch('sim.paid_phone_load.FrameLoss', return_value=loss):
+        with patch('sim.paid_phone_load.FrameLoss', return_value=loss), \
+             patch('sim.paid_phone_load.phone_diagnostics.native',
+                   side_effect=lambda phone, command: native({'command': command})):
             with self.assertRaises(RuntimeError) as caught:
                 run.transfer('load', 1, {})
         self.assertIs(caught.exception, failure)
         row = saved[-1]['phone_load']['windows'][0]
         for boundary in ('before', 'after'):
-            self.assertEqual(set(row['native'][boundary]), set(run.nodes))
+            self.assertEqual(set(row['native'][boundary]), {*run.nodes, 'phone'})
             for reports in row['native'][boundary].values():
                 self.assertEqual(reports['show_routing']['error'], 'OSError')
                 for command in ('show_status', 'show_transports', 'show_sessions'):
                     self.assertEqual(reports[command]['data']['counter'], 7)
         self.assertEqual(row['loss_cleared'], {'n01': {'enabled': False}, 'n03': {'enabled': False}})
+
+    def test_native_read_preserves_framing_and_durable_failures(self):
+        with tempfile.TemporaryDirectory() as folder:
+            phone = Mock(root=Path(folder), package='selected.app')
+            reply = {'status': 'ok', 'data': {'sessions': []}}
+            phone.adb.return_value = json.dumps(reply).encode() + b'\n'
+            self.assertEqual(native(phone, 'show_sessions'), reply)
+            args, kwargs = phone.adb.call_args
+            self.assertEqual(args[:4], ('shell', '-T', 'run-as', 'selected.app'))
+            self.assertEqual(args[-1], 'files/client/state/native.sock')
+            self.assertEqual(kwargs, {'data': b'{"command":"show_sessions"}\n', 'timeout': 20})
+            intent = json.loads(next(phone.root.glob('*-intent.json')).read_text())
+            self.assertEqual(intent['request'], {'command': 'show_sessions'})
+            self.assertEqual(intent['socket'], 'native.sock')
+            with self.assertRaises(RuntimeError):
+                native(phone, 'connect')
+            self.assertEqual(phone.adb.call_count, 1)
+            phone.adb.return_value = b'{"status":"error","message":"query timeout"}\n'
+            with self.assertRaisesRegex(RuntimeError, 'query timeout'):
+                native(phone, 'show_routing')
+            failure = json.loads(next(phone.root.glob('*-failure.json')).read_text())
+            self.assertIn('query timeout', failure['reason'])
+            self.assertEqual(len(list(phone.root.glob('*-intent.json'))), 2)
+            self.assertEqual(len(list(phone.root.glob('*-result.json'))), 1)
+            payload = b'{"ok":{"probe":null}}'
+            phone.adb.return_value = struct.pack('!I', len(payload)) + payload
+            self.assertEqual(control(phone, 'status'), {'probe': None})
+            args, kwargs = phone.adb.call_args
+            self.assertEqual(args[-1], 'files/client/state/control.sock')
+            self.assertEqual(kwargs['data'], b'\x00\x00\x00\x11{"type":"status"}')
+
+    def test_native_reply_rejects_missing_trailing_or_oversized_records(self):
+        wire = b'{"status":"ok","data":{}}\n'
+        for invalid in (wire[:-1], wire + b'\n', wire + wire, b'\0' * (1024 * 1024 + 1),
+                        b'{"status":"ok"}\n', b'{"status":"ok","data":{},"message":"bad"}\n'):
+            with self.subTest(size=len(invalid)), self.assertRaises(RuntimeError):
+                decode_native(invalid)
 
     def test_framed_reply_requires_one_complete_record(self):
         payload = json.dumps({'ok': {'probe': 'observed'}}).encode()

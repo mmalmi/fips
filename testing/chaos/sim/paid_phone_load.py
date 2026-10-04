@@ -158,11 +158,12 @@ class PhoneLoadRun(PaidPhoneRun):
     def capture_native(self, row, boundary):
         # Retain volatile counters before cleanup, even if one query fails.
         snapshot = row.setdefault('native', {})[boundary] = {}
-        for name, node in self.nodes.items():
+        for name in (*self.nodes, 'phone'):
             reports = snapshot[name] = {}
-            for command in ('show_status', 'show_routing', 'show_transports', 'show_sessions'):
+            for command in phone_diagnostics.NATIVE_COMMANDS:
                 try:
-                    reports[command] = node.native({'command': command})
+                    reports[command] = (phone_diagnostics.native(self.phone, command) if name == 'phone'
+                                        else self.nodes[name].native({'command': command}))
                 except Exception as error:
                     reports[command] = {'error': type(error).__name__, 'message': str(error)[:240]}
 
