@@ -1,6 +1,6 @@
 """Existing bounded relay diagnostics inside the explicitly selected debug app.
 
-No intents, wallet operations or new phone API. Each mutation has a durable local
+No Android intents, wallet operations or new phone API. Each mutation has a durable local
 intent and is dispatched once; an uncertain reply is never retried here.
 """
 
@@ -43,7 +43,7 @@ def decode_native(data):
 
 def native(phone, command):
     require(command in NATIVE_COMMANDS, 'phone native command is not allowed')
-    return _dispatch(phone, {'command': command}, 'native.sock', decode_native, 20)
+    return _dispatch(phone, {'command': command}, 'native.sock', decode_native, 20, read_only=True)
 
 
 def control(phone, kind, *, probe=None, operation_timeout=20):
@@ -55,12 +55,16 @@ def control(phone, kind, *, probe=None, operation_timeout=20):
     request = {'type': kind}
     if probe is not None:
         request['probe'] = probe
-    return _dispatch(phone, request, 'control.sock', decode_record, operation_timeout)
+    return _dispatch(phone, request, 'control.sock', decode_record, operation_timeout,
+                     read_only=kind == 'status')
 
 
-def _dispatch(phone, request, socket, decode, operation_timeout):
+def _dispatch(phone, request, socket, decode, operation_timeout, *, read_only=False):
     phone.ensure_ready()
-    phone.check()
+    if read_only:
+        phone.check_device()
+    else:
+        phone.check()
     data = json.dumps(request, separators=(',', ':')).encode()
     require(len(data) <= 4096, 'phone diagnostic request exceeds bound')
     wire = data + b'\n' if socket == 'native.sock' else struct.pack('!I', len(data)) + data
@@ -87,6 +91,7 @@ def _dispatch(phone, request, socket, decode, operation_timeout):
 
 
 def resources(phone):
+    phone.check_device()
     identity = process(phone)
     require(identity is not None, 'phone candidate process is absent')
     base = '/proc/' + str(identity['pid'])

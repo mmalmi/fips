@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.phone_diagnostics import control, decode_native, decode_record, native
 from sim.paid_phone_load import BYTES, PACKETS, SECONDS, PhoneLoadRun, validate_window
+from sim.paid_phone_transit import PhoneTransitRun, validate_stream
 
 
 def fixture():
@@ -39,6 +40,30 @@ def fixture():
 
 
 class PhoneLoadTests(unittest.TestCase):
+    def test_transit_requires_exact_adjacency_and_fully_acknowledged_stream(self):
+        # Recorded native acceptance digest; a matching length alone is insufficient.
+        shape = {'stream_id': '75' * 16, 'bytes': 131072, 'duration_secs': 6}
+        report = dict(shape=shape, ready=True, connected=True, finished=True,
+                      stopped_reason=None, completed_us=2560819, elapsed_us=6000436,
+                      accepted_bytes=131072, received_bytes=131072, acknowledged_bytes=131072,
+                      received_sha256='cbbeefbdf8eb65abddf5bf7eb6edf4553c8a8159e197c12e3a7b50257dda1aaf')
+        validate_stream(report, shape)
+        for field, value in [('acknowledged_bytes', 131071), ('received_sha256', '0' * 64),
+                             ('completed_us', None), ('stopped_reason', 'timeout')]:
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                validate_stream({**report, field: value}, shape)
+        run = PhoneTransitRun.__new__(PhoneTransitRun)
+        line = ('n01', 'phone', 'n02', 'n03')
+        run.nodes = {n: Mock(npub=n) for n in line if n != 'phone'}
+        states = {name: {'peers': [{'npub': other, 'connected': True, 'transport': 'udp'}
+                                  for j, other in enumerate(line) if abs(i-j) == 1]}
+                  for i, name in enumerate(line)}
+        run.accounts = Mock(ctl=lambda name, _: states[name])
+        run.evidence, run.save = {'phone_npub': 'phone'}, Mock()
+        self.assertEqual(run.topology(), states)
+        states['n01']['peers'].append({'npub': 'n03', 'connected': False, 'transport': 'udp'})
+        self.assertIsNone(run.topology())
+
     def test_failed_window_retains_native_counters_despite_query_failure(self):
         run = PhoneLoadRun.__new__(PhoneLoadRun)
         run.evidence = {'phone_load': {'windows': []}}

@@ -107,6 +107,21 @@ class PaidPhoneCheckTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             installed_apk_hash(phone, "a" * 64)
 
+    def test_transit_scenario_is_explicit_and_cannot_claim_customer_isolation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'scenario.json'
+            value = profile()
+            value['customer'].pop('denied_tcp')
+            value['router_addresses'] = dict(n01='192.0.2.1', n02='192.0.2.3', n03='192.0.2.4')
+            path.write_text(json.dumps(value))
+            self.assertEqual(scenario(path, transit=True), value)
+            with self.assertRaises(RuntimeError):
+                scenario(path)
+            value['router_addresses']['n02'] = '198.51.100.2'
+            path.write_text(json.dumps(value))
+            with self.assertRaises(RuntimeError):
+                scenario(path, transit=True)
+
     def test_scenario_preserves_explicit_inputs_and_rejects_unbounded_or_ambiguous_targets(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "scenario.json"

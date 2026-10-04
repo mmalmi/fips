@@ -829,6 +829,27 @@ The private scenario JSON has `version: 1` and these required objects:
 - `mint`: `address` assigned to the explicit Linux host, plus `ssh_spec` with
   `host`, `state_parent`, and optional `ssh_config`, as used by `RemoteMint`.
 
+Use `--transit` for Cudy → phone → Cudy → Cudy over UDP on the existing LAN.
+Supply `customer.interface` as the entry's management bridge, its existing LAN
+address/prefix as `customer.cidr`, and the phone's current `ssid`. Omit
+`denied_tcp` and add `router_addresses`, mapping `n01`, `n02` and `n03` to their
+distinct numeric addresses on that LAN. The verified APK and router executable
+must both enable `measurements`. This mode uses the same capped mint, durable
+accounts, settlement, collection and router restoration helpers. It makes no
+network configuration changes and does not test public customer isolation.
+
+Transit checks the exact authenticated four-node line, unpaid denial, then
+512 KiB of acknowledged, digest-verified traffic in each direction at 32 KiB/s
+within each 30-second foreground/background window. The phone must earn provider
+credit and buy onward forwarding within its immutable budget. Read-only status
+and journal observations work while the app is hidden; UI and probe mutations
+still require the unlocked foreground app. Add `--screen-off` only with an
+operator available to unlock afterward for settlement. The recorded Android
+state distinguishes sleep from the always-on ambient display. USB/ADB observations
+and process CPU include diagnostic overhead; they do not measure unplugged
+battery life, Android deep idle or payment-specific CPU. Physical results remain
+separate from harness tests.
+
 Add `--phone-restart` to split the same eight-packet workload into two cohorts,
 each with two packets in each direction. After the first cohort is delivered
 and paid, the harness records the app process identity, force-stops that exact

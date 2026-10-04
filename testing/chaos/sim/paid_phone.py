@@ -1,6 +1,6 @@
-"""Paid acceptance phone through three fresh, guarded OpenWrt mesh accounts.
+"""Paid phone acceptance with three fresh, guarded OpenWrt accounts.
 
-The operator selects the guest Wi-Fi and installs a verified isolated acceptance
+The operator selects the scenario's Wi-Fi and installs a verified isolated acceptance
 APK. This harness never installs apps, changes phone networks, or replays an
 uncertain funding/UI action. Private scenario/evidence paths are explicit inputs.
 """
@@ -25,6 +25,7 @@ from .paid_relay import eventually, relay_config
 from .paid_settlement import require, validate_report
 from .phone_customer import PhoneCustomer, LABELS, save
 from .phone_restart import force_stop, process
+from .phone_diagnostics import control as phone_control
 from .remote_mint import RemoteMint
 from .wifi_customer import CustomerAccess
 from .wifi_discovery import WifiRun
@@ -38,10 +39,8 @@ class Accounts:
 
     def ctl(self, name, kind):
         if name == 'phone':
-            require(kind == 'status', 'phone only exposes actual UI status')
-            state = self.run.phone.status()['customer']
-            require(state['running'] and state['relay'], 'phone live status unavailable')
-            return state['relay']
+            require(kind == 'status', 'phone account observation only accepts status')
+            return phone_control(self.run.phone, 'status')
         return self.run.ctl(name, kind)
 
     def state_json(self, name, relative):
@@ -53,7 +52,7 @@ class Accounts:
 
 class PaidPhoneRun(WifiRun):
     def __init__(self, args):
-        self.scenario = scenario(args.scenario)
+        self.scenario = scenario(args.scenario, transit=bool(getattr(args, 'transit', False)))
         self.customer = self.scenario['customer']
         guest = ipaddress.IPv4Interface(self.customer['cidr'])
         self.entry_address = f"{guest.ip}:{self.customer['entry_port']}"
@@ -140,19 +139,15 @@ class PaidPhoneRun(WifiRun):
         })
         super().setup()
 
-    def before_launch(self):
+    def configure_access(self):
         self.access = CustomerAccess(
             self.nodes['n01'], self.customer['interface'], self.customer['cidr'],
             self.customer['entry_port'], self.mint_url,
         )
         self.evidence['customer_access'] = self.access.enable()
-        for node in self.nodes.values():
-            node.remote([
-                'uclient-fetch', '-q', '-T', '5', '-O', '/dev/null',
-                self.mint_url + '/v1/info',
-            ], timeout=10)
-        self.check_customer_access()
-        profile = {
+
+    def customer_profile(self):
+        return {
             'version': 1, 'test_only': True, 'billing': 'forwarding_data',
             'entry_npub': self.nodes['n01'].npub,
             'entry_address': self.entry_address,
@@ -160,6 +155,19 @@ class PaidPhoneRun(WifiRun):
             'mint_url': self.mint_url, 'budget_sat': 64,
             'channel_capacity_sat': 32, 'max_rate_msat_per_kib': 8192,
         }
+
+    def expected_edges(self):
+        return [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')]
+
+    def before_launch(self):
+        self.configure_access()
+        for node in self.nodes.values():
+            node.remote([
+                'uclient-fetch', '-q', '-T', '5', '-O', '/dev/null',
+                self.mint_url + '/v1/info',
+            ], timeout=10)
+        self.check_customer_access()
+        profile = self.customer_profile()
         save(self.root / 'profile.json', profile)
         self.phone.open_setup(profile)
         status = self.ui('setup')
@@ -309,7 +317,7 @@ class PaidPhoneRun(WifiRun):
             eventually('reopened phone authenticated at the original entry', joined, 90)
             final = self.transfer('after-restart', 2, final)
             validate_reopened(self.journals('after-restart'), before, self.mint_url,
-                              [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')])
+                              self.expected_edges())
             self.phase('phone process reopened; original channels and budgets retained')
         save(self.root / 'paid-finances.json', final)
         self.journals('paid')
@@ -405,7 +413,7 @@ class PaidPhoneRun(WifiRun):
         checks = validate_settled(
             journals, json.loads((self.root / 'paid-journals.json').read_text()),
             balances, report,
-            [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')],
+            self.expected_edges(),
         )
         self.phase(
             'all four accounts settled and all 512 test sats conserved',
@@ -533,11 +541,17 @@ def main():
                       help='force-stop and reopen the app between two paid cohorts')
     mode.add_argument('--load', action='store_true',
                       help='five minutes of bidirectional traffic with a controlled loss window')
+    mode.add_argument('--transit', action='store_true',
+                      help='paid router → phone → router → router on the existing LAN')
+    parser.add_argument('--screen-off', action='store_true',
+                        help='also test transit with the screen off; operator unlock is needed afterward')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
     )
     args = parser.parse_args()
+    if args.screen_off and not args.transit:
+        parser.error('--screen-off requires --transit')
     os.umask(0o077)
     seconds = 1500 if args.load else 1200
 
@@ -546,7 +560,10 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(seconds)
-    if args.load:
+    if args.transit:
+        from .paid_phone_transit import PhoneTransitRun
+        run = PhoneTransitRun(args)
+    elif args.load:
         from .paid_phone_load import PhoneLoadRun
         run = PhoneLoadRun(args)
     else:

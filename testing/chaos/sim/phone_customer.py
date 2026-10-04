@@ -1,7 +1,8 @@
 """Exact-device acceptance UI actions with durable, non-replayed tap intents.
 
 The app has no request IDs. Use one operator/adapter per phone, keep it in the
-foreground, and reconcile an uncertain attempt before any further UI action.
+foreground for UI actions, and reconcile uncertain attempts without replay.
+Read-only diagnostics may observe the same app while it is hidden or locked.
 Only verification markers are archived; account files are never changed here.
 """
 
@@ -107,18 +108,22 @@ class PhoneCustomer:
         # stdin also keeps a secret setup URI out of host process arguments.
         return self.adb("shell", "sh", data=(shlex.join(args) + "\n").encode(), timeout=timeout)
 
-    def check(self, foreground=True):
+    def check_device(self):
+        """Read-only diagnostics may observe the exact app while it is backgrounded."""
         if (self.adb("get-serialno").strip().decode() != self.serial
                 or self.adb("get-state").strip() != b"device"):
             raise RuntimeError("authorized phone identity or connection changed")
+        if not self.shell("pm", "path", self.package).strip().startswith(b"package:"):
+            raise RuntimeError("acceptance package is not installed")
+        self.shell("run-as", self.package, "id", "-u")
+
+    def check(self, foreground=True):
+        self.check_device()
         policy = self.shell("dumpsys", "window", "policy").decode()
         for key in ("showing", "inputRestricted"):
             values = re.findall(r"\b" + key + r"=(true|false)\b", policy)
             if not values or any(value != "false" for value in values):
                 raise RuntimeError("phone must be freshly observed unlocked")
-        if not self.shell("pm", "path", self.package).strip().startswith(b"package:"):
-            raise RuntimeError("acceptance package is not installed")
-        self.shell("run-as", self.package, "id", "-u")
         if foreground:
             activity = self.shell("dumpsys", "activity", "activities").decode()
             components = re.findall(r"(?:topResumedActivity|mResumedActivity)[^\n]*?\bu\d+\s+(\S+/\S+)", activity)
@@ -142,7 +147,7 @@ class PhoneCustomer:
         if relative not in ("buyer/buyer.json", "controller/controller.json", "seller/ledger.json"):
             if not re.fullmatch(r"exports/[A-Za-z0-9_-]{1,32}\.json", relative):
                 raise ValueError("unsupported candidate account file")
-        self.check()
+        self.check_device()
         return self.read_file("files/client/state/" + relative)
 
     def ensure_ready(self):

@@ -239,6 +239,34 @@ class PhoneCustomerTests(unittest.TestCase):
         self.assertEqual(self.taps, [])
         self.assertEqual(self.archived, [])
 
+    def test_locked_background_diagnostics_preserve_ui_and_device_boundaries(self):
+        from sim.phone_diagnostics import control
+        import struct
+
+        self.policy = b"showing=true inputRestricted=true"
+        self.foreground = "launcher/Launcher"
+        reply = b'{"ok":{"peers":[]}}'
+        original_adb = self.phone.adb
+
+        def diagnostic_adb(*args, **kwargs):
+            if args[:3] == ('shell', '-T', 'run-as'):
+                self.assertEqual(kwargs['data'], b'\x00\x00\x00\x11{"type":"status"}')
+                return struct.pack('!I', len(reply)) + reply
+            return original_adb(*args, **kwargs)
+
+        with patch.object(self.phone, 'adb', side_effect=diagnostic_adb):
+            self.assertEqual(control(self.phone, 'status'), {'peers': []})
+            self.assertEqual(self.phone.account_file('buyer/buyer.json'), self.account)
+            with self.assertRaisesRegex(RuntimeError, 'unlocked'):
+                control(self.phone, 'send_probe', probe={})
+            with self.assertRaisesRegex(RuntimeError, 'unlocked'):
+                self.phone.click('Buy forwarding', 'buy', timeout=0)
+            self.serial = 'another-device'
+            with self.assertRaisesRegex(RuntimeError, 'identity'):
+                control(self.phone, 'status')
+        self.assertEqual(self.taps, [])
+        self.assertEqual(self.archived, [])
+
     def test_foreground_change_after_archiving_retains_intent_without_tap(self):
         self.after_archive_foreground = "other.app/other.app.MainActivity"
         with self.assertRaisesRegex(RuntimeError, "foreground"):

@@ -16,7 +16,7 @@ from .wifi_remote import checked_name
 ORIGINAL_PACKAGE = "org.fips.relaybench"
 
 
-def scenario(path):
+def scenario(path, *, transit=False):
     value = json.loads(Path(path).read_text())
     require(value.get("version") == 1, "unsupported phone scenario version")
     phone, customer, mint = (value[key] for key in ("phone", "customer", "mint"))
@@ -36,8 +36,19 @@ def scenario(path):
             "invalid customer entry port")
     require(isinstance(customer["ssid"], str) and 1 <= len(customer["ssid"]) <= 32,
             "operator-selected customer SSID is required")
-    denied = customer["denied_tcp"]
-    require(isinstance(denied, list) and 1 <= len(denied) <= 4, "provide one to four explicit denied targets")
+    if transit:
+        addresses = value.get('router_addresses', {})
+        require(set(addresses) == {'n01', 'n02', 'n03'} and len(set(addresses.values())) == 3,
+                'transit requires three explicit distinct router addresses')
+        require(all(ipaddress.IPv4Address(address) in guest.network
+                    and ipaddress.IPv4Address(address) not in
+                    (guest.network.network_address, guest.network.broadcast_address)
+                    for address in addresses.values()) and addresses['n01'] == str(guest.ip),
+                'transit routers must share the existing phone LAN')
+        require(not customer.get('denied_tcp'), 'LAN transit does not test customer isolation')
+    denied = customer.get("denied_tcp", [])
+    require(isinstance(denied, list) and (transit or 1 <= len(denied) <= 4),
+            "provide one to four explicit denied targets")
     labels, endpoints = set(), set()
     for target in denied:
         label, address, port = target["label"], ipaddress.IPv4Address(target["address"]), target["port"]
