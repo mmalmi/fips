@@ -21,7 +21,7 @@ use tokio::net::{TcpListener, TcpStream};
 const PORT: u16 = 44_745;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_url() {
+async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -78,6 +78,7 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
             peer_bytes_per_second: 32_768,
             peer_burst_bytes: 65_536,
         });
+        configs[0].customer_network = Some("127.0.0.1/32".parse().unwrap());
         for (i, config) in configs.iter_mut().enumerate() {
             config.neighbors = identities
                 .iter()
@@ -197,6 +198,9 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
         );
         let payment = send_payment_token(&wallet, &url, 16).await.unwrap();
         assert_eq!(payment.mint_url, url);
+        for (path, bytes) in &untouched {
+            assert_eq!(std::fs::read(path).unwrap(), *bytes);
+        }
 
         // Exercise the real phone account lifecycle with mint connectivity
         // independent of the account's exclusive running/stopped wallet lock.
@@ -237,7 +241,26 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
             16
         );
         phone.execute(CustomerCommand::Start).await.unwrap();
-        phone.execute(CustomerCommand::Stop).await.unwrap();
+        // Opening and closing a real Spilman channel also uses the mesh mint.
+        // No application payload is sent: all eight locked sats must return.
+        phone.execute(CustomerCommand::Buy).await.unwrap();
+        let funded = phone.execute(CustomerCommand::Status).await.unwrap();
+        assert_eq!(funded["relay"]["locked_sat"], 8);
+        assert_eq!(funded["relay"]["funding_budget"]["wallet_debited_sat"], 8);
+        assert_eq!(
+            phone.execute(CustomerCommand::Finish).await.unwrap()["balance_sat"],
+            16
+        );
+        let journal: Value =
+            read_json(&customer_root.join("state/controller/controller.json")).unwrap();
+        let settlements = journal["buyer_settlements"].as_object().unwrap();
+        assert_eq!(settlements.len(), 1);
+        let settlement = settlements.values().next().unwrap();
+        assert_eq!(settlement["released"], true);
+        assert_eq!(settlement["refunded"], true);
+        assert_eq!(settlement["report"]["paid_sat"], 0);
+        assert_eq!(settlement["report"]["refunded_sat"], 8);
+        assert_eq!(settlement["wallet_refund_sat"], 8);
         drop(phone);
         let mut phone = CustomerClient::open(&customer_root).unwrap();
         let reopened = phone.execute(CustomerCommand::Status).await.unwrap();
@@ -289,7 +312,9 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
             assert!(node.controller.purchases().await.unwrap().is_empty());
         }
         for (path, bytes) in untouched {
-            assert_eq!(std::fs::read(path).unwrap(), bytes);
+            if !path.starts_with(&configs[0].state_directory) {
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+            }
         }
         client.shutdown().await.unwrap();
         server.shutdown().await.unwrap();
