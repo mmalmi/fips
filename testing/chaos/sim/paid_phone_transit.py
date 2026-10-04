@@ -5,12 +5,9 @@ FIPS hops over UDP, not phone 802.11s participation or customer-network isolatio
 Screen-off samples use ADB and USB power; they are not a battery-life benchmark.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from pathlib import Path
 import re
-import secrets
-import time
 from urllib.parse import urlsplit
 
 from .paid_finances import financial_snapshot, payments_credited
@@ -20,24 +17,8 @@ from .paid_relay import eventually, relay_config
 from .paid_settlement import require
 from .phone_customer import ACTIVITY, save
 from .phone_diagnostics import control, native, resources
+from .stream_probe import duplex, validate_stream
 from .wifi_profiles import configure_stopped
-
-
-def validate_stream(report, shape):
-    require(report['shape'] == shape and report['ready'] and report['connected']
-            and report['finished'] and report['stopped_reason'] is None
-            and report['completed_us'] is not None
-            and 0 <= report['completed_us'] <= report['elapsed_us']
-            <= (shape['duration_secs'] + 5) * 1_000_000,
-            'stream shape or completion differs')
-    require(all(report[key] == shape['bytes'] for key in
-                ('accepted_bytes', 'received_bytes', 'acknowledged_bytes')),
-            'stream did not deliver and acknowledge every byte')
-    identifier = bytes.fromhex(shape['stream_id'])
-    block = bytes((pos % 251) ^ identifier[pos % 16] for pos in range(251 * 16))
-    complete, tail = divmod(shape['bytes'], len(block))
-    expected = hashlib.sha256(block * complete + block[:tail]).hexdigest()
-    require(report['received_sha256'] == expected, 'stream payload digest differs')
 
 
 class PhoneTransitRun(PaidPhoneRun):
@@ -50,8 +31,9 @@ class PhoneTransitRun(PaidPhoneRun):
         self.evidence.update(radio_mode='existing_lan_udp', customer_isolation_tested=False,
                              physical_phone_transit=True,
                              screen_off_requested=bool(getattr(args, 'screen_off', False)), windows=[])
-        self.evidence['harness_sha256']['paid_phone_transit.py'] = hashlib.sha256(
-            Path(__file__).read_bytes()).hexdigest()
+        for name in ('paid_phone_transit.py', 'stream_probe.py'):
+            self.evidence['harness_sha256'][name] = hashlib.sha256(
+                Path(__file__).with_name(name).read_bytes()).hexdigest()
         self.background = False
 
     def endpoint(self, name):
@@ -145,30 +127,17 @@ class PhoneTransitRun(PaidPhoneRun):
         return {'wakefulness': awake[1], 'activities': components, 'foreground_service': True}
 
     def stream(self, mode, *, unpaid=False):
-        identifier = secrets.token_hex(16)
         count, duration = (1024, 4) if unpaid else (512 * 1024, 30)
-        shapes = {name: {'peer': self.nodes[other].npub, 'stream_id': identifier,
-                         'bytes': count, 'bytes_per_second': 32 * 1024,
-                         'duration_secs': duration, 'connect': name == 'n01'}
-                  for name, other in (('n01', 'n03'), ('n03', 'n01'))}
-        row = {'mode': mode, 'unpaid': unpaid, 'shapes': shapes, 'samples': [],
+        row = {'mode': mode, 'unpaid': unpaid,
                'before': resources(self.phone), 'battery_before':
                    self.phone.shell('dumpsys', 'battery').decode()}
         self.evidence['windows'].append(row)
         self.save()
-        def run(name):
-            return self.once(('unpaid-' if unpaid else '') + mode + '-stream-' + name,
-                             lambda: self.ctl(name, 'stream_probe', probe=shapes[name],
-                                              operation_timeout=duration + 20))
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            jobs = {name: pool.submit(run, name) for name in shapes}
-            while not all(job.done() for job in jobs.values()):
-                self.monitor.check()
-                require(self.topology() is not None, 'transit topology changed during transfer')
-                row['samples'].append({'at': time.monotonic(), 'line_verified': True, **self.screen(mode)})
-                self.save()
-                time.sleep(3)
-            row['results'] = {name: job.result()['probe'] for name, job in jobs.items()}
+        def observe():
+            require(self.topology() is not None, 'transit topology changed during transfer')
+            return {'line_verified': True, **self.screen(mode)}
+        duplex(self, row, label=('unpaid-' if unpaid else '') + mode,
+               count=count, duration=duration, rate=32 * 1024, observe=observe)
         row['after'] = resources(self.phone)
         require(row['before']['process'] == row['after']['process'], 'phone process changed')
         row['cpu_seconds'] = (row['after']['cpu_ticks'] - row['before']['cpu_ticks']) / row['before']['ticks_per_second']
@@ -178,7 +147,7 @@ class PhoneTransitRun(PaidPhoneRun):
                         for result in row['results'].values()), 'unpaid payload was delivered')
         else:
             for name, result in row['results'].items():
-                validate_stream(result, shapes[name])
+                validate_stream(result, row['shapes'][name])
             row['cpu_seconds_per_delivered_mib'] = row['cpu_seconds'] / (2 * count / 1024 ** 2)
         row['passed'] = True
         self.phase('unpaid denial verified' if unpaid else mode + ' paid duplex delivered')

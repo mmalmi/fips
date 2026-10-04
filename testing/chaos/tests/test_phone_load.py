@@ -12,7 +12,8 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.phone_diagnostics import control, decode_native, decode_record, native
 from sim.paid_phone_load import BYTES, PACKETS, SECONDS, PhoneLoadRun, validate_window
-from sim.paid_phone_transit import PhoneTransitRun, validate_stream
+from sim.paid_phone_transit import PhoneTransitRun
+from sim.stream_probe import validate_stream
 
 
 def fixture():

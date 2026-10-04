@@ -269,6 +269,8 @@ def main():
                         help="use dedicated inventory SSH forwards instead of controller LAN access")
     parser.add_argument("--open-mesh", action="store_true",
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
+    parser.add_argument("--streams", action="store_true",
+                        help="exact paid TCP/FIPS streams before, during and after bounded frame loss")
     parser.add_argument("--interrupted-promotion", action="store_true",
                         help="hold real full acceptance, withdraw the middle radio and recover one Watch")
     parser.add_argument("--promotion-provenance", type=Path,
@@ -300,7 +302,11 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    PaidWifiRun(args).execute()
+    if args.streams:
+        from .wifi_stream import WifiStreamRun
+        WifiStreamRun(args).execute()
+    else:
+        PaidWifiRun(args).execute()
 
 
 if __name__ == "__main__":
