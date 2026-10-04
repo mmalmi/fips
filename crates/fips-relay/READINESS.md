@@ -39,6 +39,17 @@ size check pass. Evidence is under `work/mesh-mint-r1` (failure) and
 permissionless bootstrap policy, interrupted financial recovery or Spilman
 settlement over mesh. Those remain required before accepting mesh-only mint access.
 
+The extended native case on `8881ace09` also passes after holding its original
+HTTP request across 600 ms of denied forwarding at the intermediate relay. The
+mint listener stays live; no response arrives during that outage, then the same
+request returns a complete parsed mint-info document. The actual `CustomerClient`
+refuses import while running, imports after stopping, survives start/stop and
+reopen with the same identity and profile, and retains the original export for a
+repeated operation ID. Both source and phone wallets end empty and the collector
+holds all 16 test sats. Its mint adapter belongs to the independent network
+fixture; this proves that lifecycle arrangement, not Android wiring. The focused
+case, lint and normal build pass, with evidence in `work/mesh-mint-r3`.
+
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
