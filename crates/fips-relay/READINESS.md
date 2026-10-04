@@ -295,6 +295,18 @@ router-state restoration, stopped test processes and removed filters. Evidence i
 under `work/hardware-current-r1/renewal-load-r5`; closure SHA-256 is
 `f708fbf23ff76956cadcba931863ec3e74121b3b79e9b332f64c2df022dd85d7`.
 
+Source waiting now derives packet limits from each priority lane's existing
+admission capacity, preserving at least half its slots for progressing traffic.
+At normal capacities, the bulk allowance is 2,048 packets overall and 1,024 per
+next hop; priority and background retain independent smaller allowances. The
+1 MiB total/512 KiB per-next-hop payload limits, two-second original age and
+financial bounds remain unchanged. Eight focused checks pass, covering small
+capacities, peer shares, healthy traffic, mixed-priority release, expiry and
+cancellation. The old fixed 256-packet next-hop limit fails the same bulk-bound
+regression. Evidence is in `source-wait-budget-red-r1` and
+`source-wait-budget-green-r3` in the private payment-recovery bundle. This native
+result does not yet qualify the new bounds on hardware or attribute earlier loss.
+
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted

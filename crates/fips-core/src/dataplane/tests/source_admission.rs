@@ -186,15 +186,15 @@ fn accepted_cancellation_is_uncertain_and_free_or_deferred_modes_are_distinct() 
     );
 }
 
-fn waiting_driver(capacity: usize) -> (DataplaneTurnDriver, Arc<Policy>, OwnerId) {
+fn waiting_driver(config: AdmissionConfig) -> (DataplaneTurnDriver, Arc<Policy>, OwnerId) {
     let owner = fsp_owner(980);
     let policy = Arc::new(Policy::default());
     policy.mode.store(4, Ordering::Relaxed);
-    let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, capacity));
+    let mut driver = DataplaneTurnDriver::new(config);
     driver.originated_session_observer = Some(policy.clone());
     driver.register_owner(
         owner,
-        OwnerConfig::new(1, capacity.max(8))
+        OwnerConfig::new(1, config.total_capacity().max(8))
             .with_next_send_counter(7)
             .with_fsp_session_start_ms(0)
             .with_fsp_coords_warmup(2, empty_fsp_coords_prefix()),
@@ -214,7 +214,7 @@ fn waiting_driver(capacity: usize) -> (DataplaneTurnDriver, Arc<Policy>, OwnerId
 
 #[tokio::test(start_paused = true)]
 async fn source_retry_keeps_original_without_sequence_or_accounting_until_resumed() {
-    let (mut driver, policy, owner) = waiting_driver(2);
+    let (mut driver, policy, owner) = waiting_driver(AdmissionConfig::new(4, 2));
     let mut summary = DataplaneRuntimeSummary::default();
     let original = packet(owner);
     let payload_pointer = original.payload.as_slice().as_ptr();
@@ -281,11 +281,17 @@ async fn source_retry_keeps_original_without_sequence_or_accounting_until_resume
 
 #[tokio::test(start_paused = true)]
 async fn source_retry_expires_from_original_queue_age_and_releases_capacity() {
-    let (mut driver, policy, owner) = waiting_driver(1);
+    let (mut driver, policy, owner) = waiting_driver(AdmissionConfig::new(4, 2));
+    let healthy = fsp_owner(982);
+    driver.register_owner(healthy, OwnerConfig::new(1, 8));
     let mut summary = DataplaneRuntimeSummary::default();
     driver.admit_outbound_packet(packet(owner), &mut summary);
     tokio::time::advance(SOURCE_ADMISSION_MAX_AGE / 2).await;
     assert!(dispatch_outbound_available(&mut driver.mover, 8).is_empty());
+    driver
+        .mover
+        .submit_outbound_packet(packet(healthy))
+        .unwrap();
     assert!(driver.mover.submit_outbound_packet(packet(owner)).is_err());
     assert_eq!(
         driver.mover.drain_drops().len(),
@@ -293,7 +299,10 @@ async fn source_retry_expires_from_original_queue_age_and_releases_capacity() {
         "ordinary queue capacity still applies"
     );
     tokio::time::advance(SOURCE_ADMISSION_RETRY_DELAY).await;
-    assert!(dispatch_outbound_available(&mut driver.mover, 8).is_empty());
+    let work = dispatch_outbound_available(&mut driver.mover, 8);
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].packet.owner, healthy);
+    drop(work);
     assert_eq!(policy.intents.lock().unwrap().len(), 2);
     tokio::time::advance(SOURCE_ADMISSION_MAX_AGE / 2).await;
     assert!(dispatch_outbound_available(&mut driver.mover, 8).is_empty());
@@ -313,7 +322,7 @@ async fn source_retry_expires_from_original_queue_age_and_releases_capacity() {
 #[tokio::test(start_paused = true)]
 async fn source_retry_rejection_and_replacement_cancel_parked_or_woken_originals() {
     for action in 0..5 {
-        let (mut driver, policy, owner) = waiting_driver(2);
+        let (mut driver, policy, owner) = waiting_driver(AdmissionConfig::new(4, 2));
         let mut summary = DataplaneRuntimeSummary::default();
         driver.admit_outbound_packet(packet(owner), &mut summary);
         assert!(dispatch_outbound_available(&mut driver.mover, 8).is_empty());
@@ -342,58 +351,148 @@ async fn source_retry_rejection_and_replacement_cancel_parked_or_woken_originals
     }
 }
 
-#[test]
-fn source_retry_wait_bounds_packets_bytes_and_next_hop_share() {
-    for payload_bytes in [100, 4096] {
-        let (mut driver, policy, owner) = waiting_driver(1024);
-        let mut summary = DataplaneRuntimeSummary::default();
-        let per_peer =
-            SOURCE_ADMISSION_PEER_PACKETS.min(SOURCE_ADMISSION_PEER_BYTES / payload_bytes);
-        for offset in 0..3 {
-            let owner = if offset == 0 {
-                owner
-            } else {
-                fsp_owner(990 + offset)
-            };
-            if offset != 0 {
-                driver.register_owner(owner, OwnerConfig::new(1, 1024));
-                driver.owner_mut(owner).unwrap().set_fsp_wrap_route(Some(
-                    DataplaneFspWrapRoute::new(
-                        fmp_owner(995 + offset),
-                        1,
-                        1,
-                        test_node_addr(979),
-                        owner.node_addr(),
-                    ),
-                ));
-            }
-            let packets = (0..=per_peer)
-                .map(|_| {
-                    let mut packet = packet(owner);
-                    packet.payload = PacketBuffer::new(vec![7; payload_bytes]);
-                    packet
-                })
-                .collect();
-            driver.admit_outbound_packet_batch(packets, &mut summary);
-            assert!(dispatch_outbound_available(&mut driver.mover, 1024).is_empty());
-            let retained = (per_peer * (offset as usize + 1))
-                .min(SOURCE_ADMISSION_MAX_PACKETS.min(SOURCE_ADMISSION_MAX_BYTES / payload_bytes));
-            assert_eq!(driver.mover.source_wait.tracked.len(), retained);
-            assert_eq!(driver.mover.outbound_admission_lens.bulk, retained);
-            assert_eq!(driver.mover.source_wait.bytes, retained * payload_bytes);
+#[tokio::test(start_paused = true)]
+async fn source_retry_wait_bounds_packets_bytes_and_next_hop_share() {
+    let production = AdmissionConfig::new(1024, 4096);
+    let mut cases: Vec<(AdmissionConfig, PacketClass, usize, usize)> = vec![
+        (production, PacketClass::Control, 512, 256),
+        (production, PacketClass::Bulk, 2048, 1024),
+        (production, PacketClass::Background, 32, 16),
+    ];
+    for (capacity, total, peer) in [(0, 0, 0), (1, 0, 0), (2, 1, 1), (3, 1, 1), (8, 4, 2)] {
+        for class in [
+            PacketClass::Control,
+            PacketClass::Bulk,
+            PacketClass::Background,
+        ] {
+            cases.push((AdmissionConfig::new(capacity, capacity), class, total, peer));
         }
-        assert!(policy.completions.lock().unwrap().is_empty());
-        driver.mover.cancel_source_admissions(None);
-        assert_eq!(driver.mover.source_wait.bytes, 0);
-        assert!(driver.mover.source_wait.peers.is_empty());
-        assert_eq!(driver.mover.outbound_admission_lens.bulk, 0);
     }
+    for (config, class, total_packets, peer_packets) in cases {
+        for payload_bytes in [100, 4096] {
+            let (mut driver, policy, owner) = waiting_driver(config);
+            let mut summary = DataplaneRuntimeSummary::default();
+            let per_peer = peer_packets.min(SOURCE_ADMISSION_PEER_BYTES / payload_bytes);
+            for offset in 0..3 {
+                let owner = if offset == 0 {
+                    owner
+                } else {
+                    fsp_owner(990 + offset)
+                };
+                if offset != 0 {
+                    driver.register_owner(owner, OwnerConfig::new(1, 4096));
+                    driver.owner_mut(owner).unwrap().set_fsp_wrap_route(Some(
+                        DataplaneFspWrapRoute::new(
+                            fmp_owner(995 + offset),
+                            1,
+                            1,
+                            test_node_addr(979),
+                            owner.node_addr(),
+                        ),
+                    ));
+                }
+                let packets = (0..=per_peer)
+                    .map(|_| {
+                        let mut packet = packet(owner);
+                        packet.class = class;
+                        packet.payload = PacketBuffer::new(vec![7; payload_bytes]);
+                        packet
+                    })
+                    .collect();
+                driver.admit_outbound_packet_batch(packets, &mut summary);
+                assert!(dispatch_outbound_available(&mut driver.mover, 4096).is_empty());
+                let retained = (per_peer * (offset as usize + 1))
+                    .min(total_packets.min(SOURCE_ADMISSION_MAX_BYTES / payload_bytes));
+                assert_eq!(
+                    driver.mover.source_wait.tracked.len(),
+                    retained,
+                    "{config:?} {class:?}, payload {payload_bytes}, peer {offset}"
+                );
+                assert_eq!(
+                    driver.mover.outbound_admission_lens.lane(class.lane()),
+                    retained
+                );
+                assert_eq!(driver.mover.source_wait.bytes, retained * payload_bytes);
+            }
+            // A healthy owner in the same lane still reaches crypto with waits full.
+            if config.lane_capacity(class.lane()) > 0 {
+                let healthy = fsp_owner(999);
+                driver.register_owner(healthy, OwnerConfig::new(1, 8));
+                let mut healthy_packet = packet(healthy);
+                healthy_packet.class = class;
+                driver.admit_outbound_packet(healthy_packet, &mut summary);
+                let work = dispatch_outbound_available(&mut driver.mover, 4096);
+                assert_eq!(work.len(), 1);
+                assert_eq!(work[0].packet.owner, healthy);
+                drop(work);
+            }
+            assert!(policy.completions.lock().unwrap().is_empty());
+            driver.mover.cancel_source_admissions(None);
+            assert_eq!(driver.mover.source_wait.bytes, 0);
+            assert!(driver.mover.source_wait.peers.is_empty());
+            assert_eq!(driver.mover.outbound_admission_lens, LaneLens::default());
+            // Cancellation returns the wait allowance for a later renewal too.
+            let mut next = packet(owner);
+            next.class = class;
+            driver.admit_outbound_packet(next, &mut summary);
+            assert!(dispatch_outbound_available(&mut driver.mover, 4096).is_empty());
+            assert_eq!(
+                driver.mover.source_wait.tracked.len(),
+                usize::from(total_packets > 0)
+            );
+            driver.mover.cancel_source_admissions(None);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn source_retry_shares_a_peer_without_sharing_lane_allowances() {
+    let (mut driver, policy, owner) = waiting_driver(AdmissionConfig::new(8, 8));
+    let mut summary = DataplaneRuntimeSummary::default();
+    for class in [
+        PacketClass::Control,
+        PacketClass::Bulk,
+        PacketClass::Background,
+    ] {
+        for _ in 0..3 {
+            let mut original = packet(owner);
+            original.class = class;
+            driver.admit_outbound_packet(original, &mut summary);
+        }
+        assert!(dispatch_outbound_available(&mut driver.mover, 8).is_empty());
+        assert_eq!(driver.mover.outbound_admission_lens.lane(class.lane()), 2);
+    }
+    assert_eq!(driver.mover.source_wait.tracked.len(), 6);
+    assert_eq!(driver.mover.source_wait.peers.len(), 1);
+    assert_eq!(driver.mover.drain_drops().len(), 3);
+    policy.mode.store(1, Ordering::Relaxed);
+    tokio::time::advance(SOURCE_ADMISSION_RETRY_DELAY).await;
+    let mut counters = Vec::new();
+    // Background admits one in-flight packet per owner. Complete each batch
+    // before the next dispatch so all lanes release their peer charges.
+    for _ in 0..2 {
+        let work = dispatch_outbound_available(&mut driver.mover, 8);
+        for work in work {
+            counters.push(work.reservation.counter);
+            driver
+                .mover
+                .stage_retire_slot(CryptoReadySlot::completed(complete_test_seal_work(work, 7)));
+        }
+        driver.retire_ready_aead_outputs(8, false);
+    }
+    counters.sort_unstable();
+    assert_eq!(counters, (7..13).collect::<Vec<_>>());
+    assert!(driver.mover.source_wait.tracked.is_empty());
+    assert!(driver.mover.source_wait.peers.is_empty());
+    assert_eq!(driver.mover.source_wait.bytes, 0);
+    assert_eq!(driver.mover.source_wait.counts, LaneLens::default());
+    assert_eq!(driver.mover.outbound_admission_lens, LaneLens::default());
 }
 
 #[tokio::test(start_paused = true)]
 async fn source_retry_policy_replacement_and_shutdown_drop_without_accounting() {
     for replace_policy in [false, true] {
-        let (mut driver, policy, owner) = waiting_driver(2);
+        let (mut driver, policy, owner) = waiting_driver(AdmissionConfig::new(4, 2));
         let mut summary = DataplaneRuntimeSummary::default();
         driver.admit_outbound_packet(packet(owner), &mut summary);
         assert!(dispatch_outbound_available(&mut driver.mover, 8).is_empty());

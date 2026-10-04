@@ -54,7 +54,7 @@ impl Dataplane {
             shards,
             admission_lens: LaneLens::default(),
             outbound_admission_lens: LaneLens::default(),
-            source_wait: SourceAdmissionWait::default(),
+            source_wait: SourceAdmissionWait::new(config),
             drops: Vec::new(),
             orphaned_slots: VecDeque::new(),
             next_ingress_seq: 0,

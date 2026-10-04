@@ -173,9 +173,13 @@ An active automatic renewal may hold new source records before that reservation.
 The controller pauses only its exact retained agreements while settling and
 replacing their channel. FIPS retains the original unsealed packet for at most
 two seconds from its first enqueue, checking admission every 50 ms. Holds share
-the ordinary outbound queue capacity and are additionally capped at 512 packets /
-1 MiB of payload globally and 256 packets / 512 KiB per next hop. Woken packets
-remain charged to these bounds until admission or drop. Other owners and direct
+the ordinary outbound queue capacity. Each priority lane permits waits in at most
+half its packet slots, with half that allowance per next hop (at least one when
+the lane has two or more slots). Lanes with zero or one slot cannot retain waits.
+The normal total/per-next-hop limits are 512/256 priority packets, 2,048/1,024
+bulk packets and 32/16 background packets. All lanes share the unchanged 1 MiB
+payload limit and 512 KiB per-next-hop limit. Woken packets remain charged to
+these bounds until admission or drop. Other owners and direct
 neighbor control traffic continue; owner or policy replacement cancels holds.
 The pause is volatile. It ends once every replacement is accepted by its provider,
 saved locally and activated, before the final renewal-completion write. Errors

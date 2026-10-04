@@ -1,9 +1,7 @@
 // Only original, unsealed source records may wait here. A tracked entry keeps
 // charging both the existing admission capacity and these narrower wait bounds,
 // including after its packet wakes into the ordinary owner queue.
-const SOURCE_ADMISSION_MAX_PACKETS: usize = 512;
 const SOURCE_ADMISSION_MAX_BYTES: usize = 1024 * 1024;
-const SOURCE_ADMISSION_PEER_PACKETS: usize = 256;
 const SOURCE_ADMISSION_PEER_BYTES: usize = 512 * 1024;
 const SOURCE_ADMISSION_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(2);
 const SOURCE_ADMISSION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
@@ -12,6 +10,7 @@ const SOURCE_ADMISSION_RETRY_DELAY: std::time::Duration = std::time::Duration::f
 struct SourceAdmissionCharge {
     owner: OwnerId,
     next_hop: NodeAddr,
+    lane: Lane,
     bytes: usize,
     expires: tokio::time::Instant,
 }
@@ -24,20 +23,36 @@ struct WaitingSourceAdmission {
 
 #[derive(Debug, Default)]
 struct SourceAdmissionWait {
+    limits: LaneLens,
+    counts: LaneLens,
     packets: VecDeque<WaitingSourceAdmission>,
     tracked: HashMap<u64, SourceAdmissionCharge>,
     bytes: usize,
-    peers: HashMap<NodeAddr, (usize, usize)>,
+    peers: HashMap<NodeAddr, (LaneLens, usize)>,
     next_due: Option<tokio::time::Instant>,
 }
 
 impl SourceAdmissionWait {
+    fn new(config: AdmissionConfig) -> Self {
+        // Reserve at least half of every lane for progressing traffic. FSP
+        // control can also wait, so a bulk-only limit could starve Priority.
+        Self {
+            limits: LaneLens::from_tuple((
+                config.priority_capacity / 2,
+                config.bulk_capacity / 2,
+                config.background_capacity / 2,
+            )),
+            ..Self::default()
+        }
+    }
+
     fn retain(&mut self, queued: QueuedOutboundPacket) -> Option<QueuedOutboundPacket> {
         let now = tokio::time::Instant::now();
         let expires = queued.enqueued_at + SOURCE_ADMISSION_MAX_AGE;
         let Some(next_hop) = queued.packet.fsp_next_hop() else {
             return Some(queued);
         };
+        let lane = queued.packet.lane();
         if now >= expires {
             tracing::debug!(target: "fips_core::dataplane::source_wait",
                 reason = "expired", packets = 1, "Source admission wait dropped");
@@ -46,32 +61,39 @@ impl SourceAdmissionWait {
         if self
             .tracked
             .get(&queued.ingress_seq)
-            .is_some_and(|charge| charge.next_hop != next_hop)
+            .is_some_and(|charge| charge.next_hop != next_hop || charge.lane != lane)
         {
             self.release(queued.ingress_seq);
         }
         if !self.tracked.contains_key(&queued.ingress_seq) {
             let bytes = queued.packet.payload.len();
-            let (peer_packets, peer_bytes) = self.peers.get(&next_hop).copied().unwrap_or_default();
-            if self.tracked.len() >= SOURCE_ADMISSION_MAX_PACKETS
+            let (peer_counts, peer_bytes) = self.peers.get(&next_hop).copied().unwrap_or_default();
+            let lane_limit = self.limits.lane(lane);
+            let peer_lane_limit = (lane_limit / 2).max(1);
+            if self.counts.lane(lane) >= lane_limit
                 || bytes > SOURCE_ADMISSION_MAX_BYTES.saturating_sub(self.bytes)
-                || peer_packets >= SOURCE_ADMISSION_PEER_PACKETS
+                || peer_counts.lane(lane) >= peer_lane_limit
                 || bytes > SOURCE_ADMISSION_PEER_BYTES.saturating_sub(peer_bytes)
             {
                 tracing::debug!(target: "fips_core::dataplane::source_wait",
                     reason = "capacity", packets = 1,
                     held_packets = self.tracked.len(), held_bytes = self.bytes,
-                    peer_packets, peer_bytes, "Source admission wait dropped");
+                    lane = ?lane, lane_packets = self.counts.lane(lane), lane_limit,
+                    peer_lane_packets = peer_counts.lane(lane), peer_lane_limit,
+                    peer_bytes, "Source admission wait dropped");
                 return Some(queued);
             }
             self.bytes += bytes;
-            self.peers
-                .insert(next_hop, (peer_packets + 1, peer_bytes + bytes));
+            self.counts.increment(lane);
+            let peer = self.peers.entry(next_hop).or_default();
+            peer.0.increment(lane);
+            peer.1 += bytes;
             self.tracked.insert(
                 queued.ingress_seq,
                 SourceAdmissionCharge {
                     owner: queued.packet.owner,
                     next_hop,
+                    lane,
                     bytes,
                     expires,
                 },
@@ -88,6 +110,9 @@ impl SourceAdmissionWait {
         let Some(charge) = self.tracked.remove(&sequence) else {
             return;
         };
+        let mut removed = LaneLens::default();
+        removed.increment(charge.lane);
+        self.counts.saturating_sub_assign(removed);
         self.bytes -= charge.bytes;
         if self.tracked.is_empty() {
             self.next_due = None;
@@ -96,9 +121,9 @@ impl SourceAdmissionWait {
             .peers
             .get_mut(&charge.next_hop)
             .expect("source wait peer charge");
-        peer.0 -= 1;
+        peer.0.saturating_sub_assign(removed);
         peer.1 -= charge.bytes;
-        if peer.0 == 0 {
+        if peer.0 == LaneLens::default() {
             self.peers.remove(&charge.next_hop);
         }
     }
