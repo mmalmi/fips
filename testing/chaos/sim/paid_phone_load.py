@@ -113,6 +113,19 @@ class PhoneLoadRun(PaidPhoneRun):
         # UI refresh here would race the sender's pending-UI-action guard.
         return financial_snapshot(self.accounts, wallet=None)
 
+    def before_funding(self):
+        try:
+            self.ui('start')
+            status = self.ctl('phone', 'status')
+            require(status['npub'] == self.evidence['phone_npub']
+                    and not status['purchases'] and not any(status['funding_budget'].values()),
+                    'empty phone diagnostic preflight changed financial authority')
+        finally:
+            stopped = self.ui('stop')
+            require(not stopped['customer']['running'] and stopped['balance_sat'] == 0,
+                    'empty diagnostic preflight did not stop cleanly')
+        self.phase('binary phone status verified before issuing any test funds')
+
     def transfer(self, label, count, initial):
         baseline = self.journals('before-load')
         filters = {name: FrameLoss(self.nodes[name], self.nodes['n02'].mac)

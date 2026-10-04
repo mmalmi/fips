@@ -171,6 +171,7 @@ class PaidPhoneRun(WifiRun):
         )
         self.evidence['phone_npub'] = status['customer']['npub']
         self.phase('customer entry and shared mint access configured; all accounts still empty')
+        self.before_funding()
         balances = {}
         for name, node in self.nodes.items():
             token = self.mint.grant(name)
@@ -194,6 +195,9 @@ class PaidPhoneRun(WifiRun):
         require(status['balance_sat'] == 128, 'phone initial funding differs')
         balances['phone'] = 128
         self.phase('four stopped accounts funded with 128 test sats each', balances=balances)
+
+    def before_funding(self):
+        """Optional local diagnostic preflight while every account is still empty."""
 
     def check_customer_access(self):
         checks = check_customer_access(self.phone, self.customer, self.mint_url, self.root)
