@@ -327,6 +327,11 @@ async fn drive(
             while let Some((socket, accepted, queued)) = waiting.pop_front() {
                 if queued.elapsed() >= Duration::from_secs(3) || accepted.elapsed() >= IDLE_TIMEOUT
                 {
+                    tracing::debug!(
+                        active = connections.len(),
+                        queued_ms = queued.elapsed().as_millis(),
+                        "mesh mint connection slot deadline"
+                    );
                     continue;
                 }
                 match tcp.connect(*mint, now).await {

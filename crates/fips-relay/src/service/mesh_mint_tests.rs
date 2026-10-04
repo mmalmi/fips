@@ -233,6 +233,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let info: Value =
             serde_json::from_slice(&response[body..]).expect("complete mint JSON after recovery");
         assert!(info["nuts"].is_object());
+        drop(request);
         checkpoint("original HTTP response recovered");
         let quote = create_topup_quote(&wallet, &url, 16).await.unwrap();
         network
