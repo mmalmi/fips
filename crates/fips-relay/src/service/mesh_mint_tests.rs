@@ -48,6 +48,10 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         .await
         .unwrap();
         let backend = mint.url().strip_prefix("http://").unwrap().parse().unwrap();
+        // Exercise the same fixed-upstream proxy used by the hardware test mint.
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_backend = upstream.local_addr().unwrap();
+        let proxy = crate::testbench::proxy::spawn(upstream, backend);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let url = format!("http://{address}");
@@ -65,7 +69,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             config.terms.controller.mint_url = url.clone();
             if i == 2 {
                 config.mint_export = Some(crate::mint_mesh::MintExport {
-                    backend,
+                    backend: mint_backend,
                     service_port: PORT,
                 });
             }
@@ -460,6 +464,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         for node in nodes {
             node.shutdown().await.unwrap();
         }
+        proxy.abort();
+        assert!(proxy.await.unwrap_err().is_cancelled());
     })
     .await
     .expect("mesh mint acceptance deadline");

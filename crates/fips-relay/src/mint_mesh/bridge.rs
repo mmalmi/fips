@@ -21,7 +21,7 @@ use tokio::{
 
 const CONNECTIONS: usize = 8;
 const BUFFER: usize = 16 * 1024;
-const LIFETIME: Duration = Duration::from_secs(45);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub(super) fn validate_port(port: u16) -> Result<(), String> {
     if port == 0 || (44_740..=44_744).contains(&port) {
@@ -105,7 +105,7 @@ impl MeshMintBridge {
             max_connections_per_peer: 4,
             // Closing the request half must not shorten the response's lifetime
             // on a bandwidth-limited return path. Shutdown explicitly resets it.
-            fin_wait_2_ms: LIFETIME.as_millis() as u64,
+            fin_wait_2_ms: IDLE_TIMEOUT.as_millis() as u64,
             time_wait_ms: 1_000,
             ..Config::default()
         };
@@ -162,7 +162,7 @@ enum Mode {
 
 struct Connection {
     socket: TcpStream,
-    started: Instant,
+    last_progress: Instant,
     to_mesh: Vec<u8>,
     to_socket: Vec<u8>,
     read_closed: bool,
@@ -174,7 +174,7 @@ impl Connection {
     fn new(socket: TcpStream, started: Instant) -> Self {
         Self {
             socket,
-            started,
+            last_progress: started,
             to_mesh: Vec::new(),
             to_socket: Vec::new(),
             read_closed: false,
@@ -189,13 +189,13 @@ impl Connection {
         id: ConnectionId,
         now: u64,
     ) -> Result<bool, String> {
-        if self.started.elapsed() >= LIFETIME {
+        if self.last_progress.elapsed() >= IDLE_TIMEOUT {
             tracing::debug!(
-                elapsed_ms = self.started.elapsed().as_millis(),
+                idle_ms = self.last_progress.elapsed().as_millis(),
                 state = ?tcp.state(id),
                 to_mesh = self.to_mesh.len(),
                 to_socket = self.to_socket.len(),
-                "mesh mint stream lifetime reached"
+                "mesh mint stream idle deadline"
             );
             return Ok(false);
         }
@@ -230,9 +230,15 @@ impl Connection {
                 .await
                 .map_err(|e| e.to_string())?;
             self.to_mesh.drain(..count);
+            if count > 0 {
+                self.last_progress = Instant::now();
+            }
         }
         if self.to_socket.is_empty() && !self.write_closed {
             self.to_socket = tcp.read(id, BUFFER, now).await.map_err(|e| e.to_string())?;
+            if !self.to_socket.is_empty() {
+                self.last_progress = Instant::now();
+            }
             if self.to_socket.is_empty() && tcp.is_read_closed(id) {
                 self.socket.shutdown().await.map_err(|e| e.to_string())?;
                 self.write_closed = true;
@@ -319,7 +325,8 @@ async fn drive(
         // recreate a connection that already accepted application data.
         if let Mode::Client { mint, .. } = &mode {
             while let Some((socket, accepted, queued)) = waiting.pop_front() {
-                if queued.elapsed() >= Duration::from_secs(3) || accepted.elapsed() >= LIFETIME {
+                if queued.elapsed() >= Duration::from_secs(3) || accepted.elapsed() >= IDLE_TIMEOUT
+                {
                     continue;
                 }
                 match tcp.connect(*mint, now).await {

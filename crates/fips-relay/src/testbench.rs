@@ -23,9 +23,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    net::{TcpListener, TcpStream, UnixListener, UnixStream},
-    task::{JoinHandle, JoinSet},
+    net::{TcpListener, UnixListener, UnixStream},
+    task::JoinHandle,
 };
+
+pub(crate) mod proxy;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -135,23 +137,7 @@ impl BenchMint {
             listener.local_addr().map_err(|e| e.to_string())?
         );
         // Fixed loopback upstream only. No client-provided proxy destinations.
-        let proxy = tokio::spawn(async move {
-            let mut jobs = JoinSet::new();
-            loop {
-                tokio::select! {
-                    connection = listener.accept(), if jobs.len() < 32 => {
-                        let Ok((mut incoming, _)) = connection else { break; };
-                        jobs.spawn(async move {
-                            let _ = tokio::time::timeout(Duration::from_secs(45), async {
-                                let mut upstream = TcpStream::connect(backend).await?;
-                                tokio::io::copy_bidirectional(&mut incoming, &mut upstream).await
-                            }).await;
-                        });
-                    }
-                    _ = jobs.join_next(), if !jobs.is_empty() => {}
-                }
-            }
-        });
+        let proxy = proxy::spawn(listener, backend);
         let service = Self {
             config,
             url,
