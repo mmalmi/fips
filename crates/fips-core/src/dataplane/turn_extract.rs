@@ -1,4 +1,18 @@
 impl DataplaneLiveNodeTurn {
+    pub(crate) fn has_control_side_effects(&self) -> bool {
+        !self.fmp_control_ingress.is_empty()
+            || !self.fmp_ingress_receipts.is_empty()
+            || !self.fmp_link_ingress.is_empty()
+            || !self.fsp_coord_warmups.is_empty()
+            || !self.fsp_local_session_ingress.is_empty()
+            || !self.fsp_authenticated_ingress.is_empty()
+            || !self.raw_ingress_drops.is_empty()
+            || !self.tun_outbound_drops.is_empty()
+            || !self.endpoint_data_drops.is_empty()
+            || !self.output_drops.is_empty()
+            || !self.drops.is_empty()
+    }
+
     pub(crate) fn consume_transport_sent_receipts(
         &mut self,
         consume: impl FnMut(&DataplaneTransportSentReceipt) -> bool,

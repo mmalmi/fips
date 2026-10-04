@@ -48,6 +48,8 @@ mod sim_harness;
 mod source_coords_recovery;
 mod source_routes;
 mod sparse_recovery;
+#[cfg(feature = "sim-transport")]
+mod terminal_turn_retention;
 mod tun_deferred_ownership;
 mod tun_outbound_core;
 mod tun_outbound_tail;

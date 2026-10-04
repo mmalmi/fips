@@ -72,13 +72,10 @@ struct DataplaneFspOwnerRouteUpdate {
     next_hop: Option<NodeAddr>,
 }
 
-enum DataplanePendingOutboundFailure {
-    TurnFailed(DataplaneLiveNodeTurn),
-    Stopped {
-        turn: DataplaneLiveNodeTurn,
-        reason: &'static str,
-    },
-    Exhausted(DataplaneLiveNodeTurn),
+pub(in crate::node) struct DataplanePendingOutboundFailure {
+    reason: String,
+    output_drop: Option<DataplaneOutputDrop>,
+    source_policy_rejected: bool,
 }
 
 #[derive(Debug)]
@@ -87,18 +84,6 @@ pub(in crate::node) struct CachedEndpointSendFailure {
     // Only actual deferred payloads are safe to retry. A generic failure may
     // follow successful submissions from the same batch.
     pub(in crate::node) unsent: Vec<EndpointDataPayload>,
-}
-
-impl DataplanePendingOutboundFailure {
-    fn source_policy_rejected(&self, send_token: u64) -> bool {
-        let turn = match self {
-            Self::TurnFailed(turn) | Self::Stopped { turn, .. } | Self::Exhausted(turn) => turn,
-        };
-        turn.drops().iter().any(|drop| {
-            drop.send_token() == Some(send_token)
-                && drop.reason() == crate::dataplane::PacketDropReason::SourcePolicy
-        })
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -185,7 +170,7 @@ impl Node {
         let turn = self
             .pump_dataplane_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
-        let (receipt, pending_turn) = match self
+        let receipt = match self
             .drive_dataplane_pending_outbound_token_receipts(
                 turn,
                 send_token,
@@ -195,18 +180,9 @@ impl Node {
             )
             .await
         {
-            Ok(turn) => turn,
+            Ok(receipt) => receipt,
             Err(failure) => {
-                let failure_turn = match &failure {
-                    DataplanePendingOutboundFailure::TurnFailed(turn)
-                    | DataplanePendingOutboundFailure::Exhausted(turn) => turn,
-                    DataplanePendingOutboundFailure::Stopped { turn, .. } => turn,
-                };
-                if let Some(drop) = failure_turn
-                    .output_drops()
-                    .iter()
-                    .find(|drop| drop.send_token() == Some(send_token))
-                {
+                if let Some(drop) = &failure.output_drop {
                     return Err(self.dataplane_fmp_output_drop_error(*node_addr, drop));
                 }
                 return Err(NodeError::SendFailed {
@@ -218,7 +194,6 @@ impl Node {
                 });
             }
         };
-        self.defer_dataplane_control_turn(pending_turn);
         let timestamp_ms = receipt
             .fmp_timestamp_ms
             .ok_or_else(|| NodeError::SendFailed {
@@ -334,27 +309,13 @@ impl Node {
         self.requeue_deferred_dataplane_endpoint_batches();
         // These are local transport receipts, not end-to-end delivery proofs.
         // Failure or cancellation after admission cannot authorize a replay.
-        let (turn, result) = match result {
-            Ok((_, turn)) => (turn, Ok(())),
-            Err(failure) => {
-                let error = NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: Self::dataplane_pending_outbound_failure_from_stop(
-                        "queued TUN packet",
-                        &failure,
-                    ),
-                };
-                let turn = match failure {
-                    DataplanePendingOutboundFailure::TurnFailed(turn)
-                    | DataplanePendingOutboundFailure::Stopped { turn, .. }
-                    | DataplanePendingOutboundFailure::Exhausted(turn) => turn,
-                };
-                (turn, Err(error))
-            }
-        };
-        // This completion may also contain unrelated control ingress.
-        self.defer_dataplane_control_turn(turn);
-        result
+        result.map(|_| ()).map_err(|failure| NodeError::SendFailed {
+            node_addr: *dest_addr,
+            reason: Self::dataplane_pending_outbound_failure_from_stop(
+                "queued TUN packet",
+                &failure,
+            ),
+        })
     }
 
     pub(in crate::node) async fn send_dataplane_cached_endpoint_payloads(
@@ -546,7 +507,7 @@ impl Node {
     }
 
     pub(in crate::node) fn defer_dataplane_control_turn(&mut self, turn: DataplaneLiveNodeTurn) {
-        if Self::dataplane_turn_has_control_side_effects(&turn) {
+        if turn.has_control_side_effects() {
             self.deferred_dataplane_control_turns.push_back(turn);
         }
     }
@@ -569,20 +530,6 @@ impl Node {
             self.dataplane.readiness_notify().notify_one();
         }
         processed
-    }
-
-    fn dataplane_turn_has_control_side_effects(turn: &DataplaneLiveNodeTurn) -> bool {
-        !turn.fmp_control_ingress().is_empty()
-            || !turn.fmp_link_ingress().is_empty()
-            || !turn.fsp_coord_warmups().is_empty()
-            || !turn.fsp_local_session_ingress().is_empty()
-            || turn.endpoint_data_packet_count() > 0
-            || turn.fsp_session_ingress_count() > 0
-            || !turn.raw_ingress_drops().is_empty()
-            || !turn.tun_outbound_drops().is_empty()
-            || !turn.endpoint_data_drops().is_empty()
-            || !turn.output_drops().is_empty()
-            || !turn.drops().is_empty()
     }
 
     async fn send_dataplane_fsp_control_outbound(
@@ -661,23 +608,19 @@ impl Node {
             )
             .await;
         self.requeue_deferred_dataplane_endpoint_batches();
-        let (_, turn) = match result {
-            Ok(completed) => completed,
-            Err(failure) => {
-                let error = NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: Self::dataplane_pending_outbound_failure_from_stop(label, &failure),
-                };
-                // A local allowance refusal says nothing about carrier health.
-                // Only the drop belonging to this control send can exempt it.
-                if !failure.source_policy_rejected(send_token) {
-                    self.record_route_failure(*dest_addr, next_hop);
-                    self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
-                }
-                return Err(error);
+        if let Err(failure) = result {
+            let error = NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: Self::dataplane_pending_outbound_failure_from_stop(label, &failure),
+            };
+            // A local allowance refusal says nothing about carrier health.
+            // Only the drop belonging to this control send can exempt it.
+            if !failure.source_policy_rejected {
+                self.record_route_failure(*dest_addr, next_hop);
+                self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
             }
-        };
-        self.defer_dataplane_control_turn(turn);
+            return Err(error);
+        }
         let frame_bytes = crate::node::session_wire::FSP_INNER_HEADER_SIZE
             .saturating_add(payload.len())
             .saturating_add(crate::noise::TAG_SIZE);
@@ -699,51 +642,63 @@ impl Node {
         self.config.node.limits.max_pending_inbound.max(1)
     }
 
-    async fn drive_dataplane_pending_outbound_token_receipts(
+    pub(in crate::node) async fn drive_dataplane_pending_outbound_token_receipts(
         &mut self,
         mut turn: DataplaneLiveNodeTurn,
         send_token: u64,
         expected_receipts: usize,
         continuation_turns: usize,
         continuation_crypto_limit: usize,
-    ) -> Result<
-        (DataplaneTransportSentReceipt, DataplaneLiveNodeTurn),
-        DataplanePendingOutboundFailure,
-    > {
+    ) -> Result<DataplaneTransportSentReceipt, DataplanePendingOutboundFailure> {
         let mut pending = DataplanePendingSendTokenReceipts::new(send_token, expected_receipts);
         for continuation in 0..=continuation_turns {
-            if let Some(receipt) = pending.consume(turn.take_transport_sent_receipts()) {
-                return Ok((receipt, turn));
-            }
-
+            let receipt = pending.consume(turn.take_transport_sent_receipts());
             let summary = turn.summary();
-            let deferred = turn.deferred_endpoint_data_batches_count() > 0;
-            let failed = turn
+            let reason = if receipt.is_some() {
+                None
+            } else if turn
                 .drops()
                 .iter()
                 .any(|drop| drop.send_token() == Some(send_token))
                 || turn
                     .output_drops()
                     .iter()
-                    .any(|drop| drop.send_token() == Some(send_token));
-
-            if failed {
-                return Err(DataplanePendingOutboundFailure::TurnFailed(turn));
+                    .any(|drop| drop.send_token() == Some(send_token))
+            {
+                Some(Self::dataplane_pending_outbound_failure(&turn))
+            } else if turn.deferred_endpoint_data_batches_count() > 0 {
+                Some(format!("deferred without transport output: {summary:?}"))
+            } else if continuation == continuation_turns {
+                Some(format!(
+                    "exhausted pending outbound continuation turns: {summary:?}"
+                ))
+            } else {
+                None
+            };
+            let failure = reason.map(|reason| DataplanePendingOutboundFailure {
+                reason,
+                output_drop: turn
+                    .output_drops()
+                    .iter()
+                    .find(|drop| drop.send_token() == Some(send_token))
+                    .cloned(),
+                source_policy_rejected: turn.drops().iter().any(|drop| {
+                    drop.send_token() == Some(send_token)
+                        && drop.reason() == crate::dataplane::PacketDropReason::SourcePolicy
+                }),
+            });
+            // Any send turn can also own unrelated authenticated ingress. Retain
+            // it before returning a terminal result or awaiting more progress.
+            self.defer_dataplane_control_turn(turn);
+            if let Some(receipt) = receipt {
+                return Ok(receipt);
             }
-            if deferred {
-                return Err(DataplanePendingOutboundFailure::Stopped {
-                    turn,
-                    reason: "deferred without transport output",
-                });
+            if let Some(failure) = failure {
+                return Err(failure);
             }
-            if continuation == continuation_turns {
-                return Err(DataplanePendingOutboundFailure::Exhausted(turn));
-            }
-
             if summary.outputs() == 0 {
                 self.wait_for_dataplane_completion().await;
             }
-            self.defer_dataplane_control_turn(turn);
             turn = self
                 .pump_dataplane_pending_outbound_firsts(
                     DataplaneLiveOutboundFirsts {
@@ -774,53 +729,28 @@ impl Node {
         }
     }
 
-    fn dataplane_pending_outbound_failure(label: &str, turn: &DataplaneLiveNodeTurn) -> String {
+    fn dataplane_pending_outbound_failure(turn: &DataplaneLiveNodeTurn) -> String {
         let summary = turn.summary();
         if let Some(drop) = turn.tun_outbound_drops().first() {
-            return format!(
-                "dataplane {label} TUN route drop: {:?} ({summary:?})",
-                drop.reason()
-            );
+            return format!("TUN route drop: {:?} ({summary:?})", drop.reason());
         }
         if let Some(drop) = turn.endpoint_data_drops().first() {
-            return format!(
-                "dataplane {label} endpoint route drop: {:?} ({summary:?})",
-                drop.reason()
-            );
+            return format!("endpoint route drop: {:?} ({summary:?})", drop.reason());
         }
         if let Some(drop) = turn.output_drops().first() {
-            return format!(
-                "dataplane {label} output drop: {:?} ({summary:?})",
-                drop.reason()
-            );
+            return format!("output drop: {:?} ({summary:?})", drop.reason());
         }
         if let Some(drop) = turn.drops().first() {
-            return format!(
-                "dataplane {label} packet drop: {:?} ({summary:?})",
-                drop.reason()
-            );
+            return format!("packet drop: {:?} ({summary:?})", drop.reason());
         }
-        format!("dataplane {label} failed: {summary:?}")
+        format!("failed: {summary:?}")
     }
 
     fn dataplane_pending_outbound_failure_from_stop(
         label: &str,
         failure: &DataplanePendingOutboundFailure,
     ) -> String {
-        match failure {
-            DataplanePendingOutboundFailure::TurnFailed(turn) => {
-                Self::dataplane_pending_outbound_failure(label, turn)
-            }
-            DataplanePendingOutboundFailure::Stopped { turn, reason } => {
-                format!("dataplane {label} {reason}: {:?}", turn.summary())
-            }
-            DataplanePendingOutboundFailure::Exhausted(turn) => {
-                format!(
-                    "dataplane {label} exhausted pending outbound continuation turns: {:?}",
-                    turn.summary()
-                )
-            }
-        }
+        format!("dataplane {label} {}", failure.reason)
     }
 }
 

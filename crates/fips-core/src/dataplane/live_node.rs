@@ -203,6 +203,20 @@ impl DataplaneLiveNode {
         self.crypto_worker.release_submissions();
     }
 
+    #[cfg(test)]
+    pub(crate) async fn release_crypto_submissions_and_wait(&mut self) -> usize {
+        let slots = self.crypto_worker.held_submissions.as_ref().expect("submissions held")
+            .iter().map(|run| Arc::clone(&run.slot)).collect::<Vec<_>>();
+        let packets = slots.iter().map(|slot| slot.len()).sum();
+        self.release_crypto_submissions();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while slots.iter().any(|slot| !slot.is_ready()) {
+                self.readiness_notify().notified().await;
+            }
+        }).await.expect("held crypto completes before owner retirement");
+        packets
+    }
+
     pub(crate) fn has_deferred_raw_ingress(&self) -> bool {
         !self.deferred_raw_ingress.is_empty()
     }
