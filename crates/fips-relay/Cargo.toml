@@ -8,6 +8,7 @@ description = "Experimental sender-funded native FIPS forwarding service"
 
 [features]
 testbench = ["cashu-service/simulation"]
+test-native-roots = ["nvpn-fips-core/test-native-roots"]
 measurements = ["dep:libc"]
 
 [[bin]]

@@ -176,6 +176,21 @@ certificate and a mismatched name; a forged handshake signature is rejected
 before admission or spending. These are local checks; remote TLS proxy deployment
 remains unverified.
 
+The generated-CA fixture requires `test-native-roots` on both the harness and
+relay executable. This opt-in test build reads the child process's `SSL_CERT_FILE`;
+default production builds keep bundled Web PKI roots. It does not rely on another
+dependency enabling native trust. Run the unchanged issuer/name rejection and
+paid-path assertions with:
+
+```sh
+cargo test -p fips-relay --features test-native-roots --test service mixed_udp_websocket_tls
+```
+
+Without that feature the CA-specific test is explicitly ignored. The self-signed
+FIPS-authentication and repeated-renewal cases use the ordinary production trust
+configuration and retain their forged-signature rejection check. If supplying
+`FIPS_RELAY_TEST_PROGRAM`, build that executable with the same fixture feature.
+
 An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their
 identities. It requires a specific UDP bind address inside that subnet. In the

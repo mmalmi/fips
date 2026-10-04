@@ -1,5 +1,6 @@
 //! A loopback TLS terminator in front of the relay's ordinary WS listener.
-//! Only the child client trusts the generated CA; system trust stays untouched.
+//! CA validation requires the explicit test-native-roots build feature. Only the
+//! child client trusts the generated CA; system trust stays untouched.
 
 use fips_core::config::{TransportInstances, WebSocketConfig, WebSocketTlsVerification};
 use fips_relay::service::{AdminRequest, ServiceConfig, request};

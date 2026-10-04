@@ -61,6 +61,10 @@ async fn mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websock
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(feature = "test-native-roots"),
+    ignore = "requires test-native-roots on both the test harness and relay executable"
+)]
 async fn mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid_limits() {
     mixed_daemons_preserve_paid_limits(SecondHop::WebSocketTls).await;
 }

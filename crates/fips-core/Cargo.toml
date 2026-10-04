@@ -14,6 +14,8 @@ name = "fips_core"
 [features]
 default = []
 sim-transport = []
+# Opt-in fixture trust for generated certificate authorities; production keeps bundled roots.
+test-native-roots = ["tokio-tungstenite/rustls-tls-native-roots"]
 webrtc-transport = ["dep:bytes", "dep:if-addrs", "dep:webrtc"]
 host-ble-transport = []
 
