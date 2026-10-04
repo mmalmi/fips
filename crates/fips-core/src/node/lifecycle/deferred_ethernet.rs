@@ -127,7 +127,7 @@ impl Node {
                 ready.push((
                     hint.transport_id,
                     hint.remote_addr.clone(),
-                    peer.identity().clone(),
+                    *peer.identity(),
                 ));
             }
             false
