@@ -506,6 +506,18 @@ impl BuyerAuthorizer {
         &self,
         change: impl FnOnce(&mut State) -> Result<(), BuyerError>,
     ) -> Result<(), BuyerError> {
+        self.change_if_needed(|state| {
+            change(state)?;
+            Ok(true)
+        })
+    }
+
+    // A false result must leave state unchanged. Check the writer first: memory
+    // may contain an identical agreement whose earlier persistence failed.
+    fn change_if_needed(
+        &self,
+        change: impl FnOnce(&mut State) -> Result<bool, BuyerError>,
+    ) -> Result<(), BuyerError> {
         let mut ready = self
             .writer_ready
             .lock()
@@ -515,7 +527,9 @@ impl BuyerAuthorizer {
         }
         let snapshot = {
             let mut state = self.state.lock().map_err(|_| DurableError::Suspended)?;
-            change(&mut state)?;
+            if !change(&mut state)? {
+                return Ok(());
+            }
             state.clone()
         };
         self.persist(&snapshot, &mut ready)

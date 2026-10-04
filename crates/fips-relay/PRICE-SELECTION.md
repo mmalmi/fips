@@ -186,6 +186,11 @@ mechanism. Slow renewals, full queues and packets already in flight can still
 lose traffic; this is bounded source continuity, not a delivery guarantee.
 For a diagnostic run, `RUST_LOG=warn,fips_core::dataplane::source_wait=debug`
 reports hold drops caused by capacity, expiry or invalidation, without payloads.
+Adding `fips_relay::controller::renewal=debug` reports monotonic elapsed time at
+pause, settlement, replacement preparation and resume. Identical already-durable
+buyer channels and quotes skip duplicate journal writes. The persistence health
+check still runs first, so an earlier failed write suspends these calls too;
+explicit accounting checkpoints continue to persist normally.
 
 Unknown/unpurchased routes and direct endpoints retain their original admission
 paths, so bounded bootstrap and earned return traffic can still reach the relay's

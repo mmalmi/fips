@@ -598,7 +598,9 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("buyer");
     let buyer = BuyerAuthorizer::create(&directory, address(1), 10, Limits::default()).unwrap();
-    approve(&buyer, &channel("one"), "quote");
+    let terms = channel("one");
+    let contract = quote("quote", &terms);
+    approve(&buyer, &terms, "quote");
     let token = observe(&buyer, b"bytes").unwrap();
     buyer.complete(token, ForwardingOutcome::Submitted);
     // Keep the last usable journal while making its target unwritable.
@@ -608,6 +610,12 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
     )
     .unwrap();
     std::fs::create_dir(directory.join("buyer.json")).unwrap();
+    buyer
+        .accept_channel(address(2), terms.clone(), 0)
+        .expect("identical durable channel does not rewrite its journal");
+    buyer
+        .accept_quote(contract.clone())
+        .expect("identical durable quote does not rewrite its journal");
     let signer = FailingSigner::default();
     assert!(matches!(
         buyer.sign_claim(&signer, address(2), "one", 500, now()),
@@ -620,6 +628,14 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
         directory.join("buyer.json"),
     )
     .unwrap();
+    assert!(matches!(
+        buyer.accept_channel(address(2), terms, 0),
+        Err(BuyerError::Journal(_))
+    ));
+    assert!(matches!(
+        buyer.accept_quote(contract),
+        Err(BuyerError::Journal(_))
+    ));
     assert!(matches!(
         buyer.sign_claim(&signer, address(2), "one", 500, now()),
         Err(BuyerError::Journal(_))

@@ -367,6 +367,13 @@ impl Controller {
             .buyer
             .pause_for_renewal(renewal.previous.iter().map(|old| &old.purchase.contract))
             .map_err(|error| error.to_string())?;
+        let started = std::time::Instant::now();
+        let progress = |phase| {
+            tracing::debug!(target: "fips_relay::controller::renewal",
+            channel_id = id, phase, elapsed_us = started.elapsed().as_micros(),
+            "Renewal pause progress")
+        };
+        progress("paused");
         if !self
             .snapshot()
             .await?
@@ -376,6 +383,7 @@ impl Controller {
         {
             self.settle_channel(id).await?;
         }
+        progress("settled");
         if self
             .services
             .buyer
@@ -434,6 +442,7 @@ impl Controller {
             .await?;
             renewal.replacements = Some(offers);
         }
+        progress("replacements_ready");
         for offer in renewal.replacements.ok_or("replacement offers missing")? {
             let purchase = self.purchase_offer(offer).await?;
             if purchase.channel.id == id {
@@ -443,6 +452,7 @@ impl Controller {
         // Each replacement is accepted, saved and active. The completion marker
         // only closes recovery bookkeeping; fresh traffic can use its own credit.
         drop(source_pause);
+        progress("resumed");
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "renewal-complete").await?;
         let id = id.to_string();

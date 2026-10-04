@@ -262,6 +262,19 @@ test filters, stopped test processes and empty test wallets. Evidence is
 under `work/hardware-current-r1/renewal-load-r4`; closure SHA-256 is
 `44d691aa0161143694fb176538e32265672544ad10105e64d2ab121c93e0eabf`.
 
+Buyer acceptance now skips journal writes for identical already-durable channels
+and quotes. Funding previously saved the buyer channel, then purchase acceptance
+saved it again. The existing filesystem-failure regression rejects that duplicate
+write on the old implementation and passes on the candidate; after a genuine
+write failure, both duplicate acceptance and signing still fail closed. All twelve
+buyer integration tests, six source-admission checks and the real three-process
+renewal/restart case pass. The latter delivers all eight held originals once and
+conserves 384 test sats. Queue, financial and explicit checkpoint bounds are
+unchanged. Opt-in monotonic phase logs measure the renewal pause; native evidence
+is in `renewal-journal-red-r1` and `renewal-journal-green-r2` in the private
+payment-recovery bundle. These checks do not attribute earlier physical loss or
+the separate rapid-restart failure.
+
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted
