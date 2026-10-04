@@ -32,7 +32,7 @@ codegen-units = 1
 strip = "symbols"
 
 [dependencies]
-nvpn-fips-core = { version = "=0.4.93", path = "crates/fips-core", features = ["webrtc-transport"] }
+nvpn-fips-core = { version = "=0.4.94", path = "crates/fips-core", features = ["webrtc-transport"] }
 
 ratatui = "0.30"
 serde_json = "1.0"
