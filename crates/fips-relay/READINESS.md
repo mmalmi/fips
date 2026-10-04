@@ -772,9 +772,8 @@ The phone transport counts 4,777 successful kernel UDP submissions across data
 and control traffic, with zero send errors. Its session count of 4,000 advances
 before encryption/output, and profiler output totals describe a different stage
 and sampling interval. These aggregates cannot identify every submitted payload.
-The next useful observation is each phone-side FMP header and its scalar send
-result, matched to the entry capture; finer mesh captures would not resolve this
-remaining distinction.
+This motivated the phone-side FMP send-result observation below; finer mesh
+captures would not resolve this remaining distinction.
 
 All four captures close normally with zero kernel capture drops, verifying the
 integer-only supervisor polling on the routers. All 759 management checks pass.
@@ -801,6 +800,54 @@ strict all-target/all-feature core lint pass. Linux executes the same scalar
 helper for this check; there is no new Android device acceptance. This conditional
 send-error fix does not explain the `r10` run's zero-error loss. Evidence is
 `work/udp-prefix/acceptance.json` in the private recovery bundle.
+
+The opt-in send diagnostic (`241bc6765`) records the public FMP header and actual
+kernel result after each scalar UDP send, sharing one synchronous recorder across
+both send paths. It adds no wire messages or delivery receipts. Android enables
+the logger only through an explicit `RUST_LOG`; normal runs remain silent. The
+two real-socket regressions fail before the change, and all 60 UDP tests pass
+afterward, together with strict core lint, formatting and file-length checks.
+The fresh Android JNI build passes strict Android lint, Rust lint and both
+activity tests. Evidence is `work/udp-send-diagnostics-r13/closure.json` and
+`work/android-current-r13/closure.json` in the private recovery bundle.
+
+The `r14` device trial uses that JNI unchanged, with a fresh package/account and
+the accepted `180c52312` router runtime. Its first healthy window delivers
+3,996/4,000 phone-to-leaf originals and 4,000/4,000 in reverse. The original
+complete-delivery assertion remains failed; later windows do not run. The phone
+records 4,000 data-sized kernel submissions with no send errors. Exactly four
+distinct 1,110-byte FMP headers are absent from the complete entry guest capture.
+The comparison binds the destination endpoint and source socket port, retains
+duplicates and uses process-bound log byte fences. There are no partial-fence or
+opaque guest records, and every selected guest header has a matching phone send.
+
+The guest capture, pre-fast-ingress log and first mesh egress each contain 3,996
+data-sized records. All four directed mesh comparisons match; entry socket drops
+and host UDP error counters do not increase. This locates the observed missing
+datagrams after phone kernel acceptance and before entry capture. It does not
+identify a kernel/driver/radio/AP cause or exclude capture blind spots: kernel
+acceptance is not transmission, and public headers do not authenticate application identity. Instrumentation can
+change timing; this is not a performance result or proof of lossless Wi-Fi.
+
+Automatic authorization and provider credit advance on all four paying
+directions. All four channels settle immediately after the failed window, all
+512 test sats are collected, and all four wallets are empty. All 765 management
+checks pass. Independent closure verifies restored router state, normal phone
+Wi-Fi and Wi-Fi-bound Internet, unchanged prior accounts and an absent diagnostic
+process; the actual phone claim is released. Evidence is under
+`work/android-current-r14`: `send-analysis.json`, `receive-analysis.json`,
+`packet-analysis.json`, `packet-review.json`, `payment-progress.json`, `device-closure.json` and
+`physical-session-closure.json`. These results narrow the remaining client-link
+investigation; they do not establish production readiness.
+
+The preceding `r13` attempt verifies the live logger but stops before funding
+because retained captures consume its temporary-storage reserve. It closes with
+zero issuance and restores the devices. Removing only two inactive remote PCAP
+copies, verified against their retained local hashes, frees about 10.8 MiB.
+The unchanged reserves then pass on every router in `r14`; all four captures
+close normally with zero kernel capture drops. After closure, the same checks
+permit removal of `r14`'s redundant entry capture copies, freeing another
+10.8 MiB while retaining the complete local evidence. Both attempts remain recorded.
 
 Preparatory failures remain distinct. The `r4` harness failed to transmit its
 binary request through ADB `exec-out`; a controlled comparison justified
