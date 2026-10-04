@@ -1,7 +1,10 @@
 //! Real wallet HTTP through a paid relay's bounded, explicitly free route.
 use super::*;
 use crate::{
-    controller::RouteAccess, free_routes::FreeBandwidthPolicy, testbench::mesh::MeshMintBridge,
+    controller::RouteAccess,
+    customer::{CustomerClient, CustomerCommand, CustomerProfile},
+    free_routes::FreeBandwidthPolicy,
+    testbench::mesh::MeshMintBridge,
 };
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -145,8 +148,9 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
             MeshMintBridge::connect(nodes[0].endpoint.clone(), PORT, identities[2], listener)
                 .await
                 .unwrap();
-        // Exercise request EOF and complete response delivery before wallet
-        // operations. Neither HTTP bytes nor funding commands go over the LAN.
+        // Hold the original request across a relay outage. The mint's HTTP
+        // listener stays alive, so any direct fallback would violate this check.
+        nodes[1].forwarding.ready.store(false, Ordering::Release);
         let mut request = TcpStream::connect(address).await.unwrap();
         request
             .write_all(b"GET /v1/info HTTP/1.1\r\nHost: mint\r\nConnection: close\r\n\r\n")
@@ -154,6 +158,19 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
             .unwrap();
         request.shutdown().await.unwrap();
         let mut response = Vec::new();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(600),
+                request.read_to_end(&mut response)
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            response.is_empty(),
+            "mint HTTP bypassed the unavailable relay"
+        );
+        nodes[1].forwarding.ready.store(true, Ordering::Release);
         tokio::time::timeout(Duration::from_secs(10), request.read_to_end(&mut response))
             .await
             .unwrap()
@@ -163,6 +180,10 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
             "mint response: {}",
             String::from_utf8_lossy(&response)
         );
+        let body = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+        let info: Value =
+            serde_json::from_slice(&response[body..]).expect("complete mint JSON after recovery");
+        assert!(info["nuts"].is_object());
         let quote = create_topup_quote(&wallet, &url, 16).await.unwrap();
         network
             .orchestrator_funding()
@@ -176,12 +197,82 @@ async fn empty_wallet_funds_over_two_hops_without_a_paid_channel_or_direct_mint_
         );
         let payment = send_payment_token(&wallet, &url, 16).await.unwrap();
         assert_eq!(payment.mint_url, url);
+
+        // Exercise the real phone account lifecycle with mint connectivity
+        // independent of the account's exclusive running/stopped wallet lock.
+        let customer_root = root.path().join("phone");
+        let mut phone = CustomerClient::open(&customer_root).unwrap();
+        let profile: CustomerProfile = serde_json::from_value(json!({
+            "version": 1, "test_only": true,
+            "entry_npub": identities[0].npub(),
+            "entry_address": nodes[0].endpoint.bound_udp_listen_addrs().await.unwrap()[0],
+            "destination_npub": identities[2].npub(), "mint_url": url,
+            "budget_sat": 16, "channel_capacity_sat": 8,
+            "max_rate_msat_per_kib": 8_192, "billing": "forwarding_data"
+        }))
+        .unwrap();
+        let setup = phone
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        phone.execute(CustomerCommand::Start).await.unwrap();
+        let guarded = phone
+            .execute(CustomerCommand::Import {
+                token: payment.token.clone(),
+            })
+            .await
+            .unwrap_err();
+        assert!(guarded.contains("stop the customer service"));
+        phone.execute(CustomerCommand::Stop).await.unwrap();
+        phone
+            .execute(CustomerCommand::Import {
+                token: payment.token,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            phone.execute(CustomerCommand::Balance).await.unwrap()["balance_sat"],
+            16
+        );
+        phone.execute(CustomerCommand::Start).await.unwrap();
+        phone.execute(CustomerCommand::Stop).await.unwrap();
+        drop(phone);
+        let mut phone = CustomerClient::open(&customer_root).unwrap();
+        let reopened = phone.execute(CustomerCommand::Status).await.unwrap();
+        assert_eq!(reopened["npub"], setup["npub"]);
+        assert_eq!(reopened["profile"], serde_json::to_value(profile).unwrap());
+        let exported = phone
+            .execute(CustomerCommand::Export {
+                id: 1,
+                amount_sat: 16,
+            })
+            .await
+            .unwrap();
+        let retained = phone
+            .execute(CustomerCommand::Export {
+                id: 1,
+                amount_sat: 16,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            exported, retained,
+            "export recovery must retain the original operation"
+        );
+        let payment: cashu_service::CashuSentPayment =
+            read_json(Path::new(exported["path"].as_str().unwrap())).unwrap();
         let collected = root.path().join("collected");
         receive_payment_token(&collected, &payment.token)
             .await
             .unwrap();
         assert_eq!(
             load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
+            0
+        );
+        assert_eq!(
+            phone.execute(CustomerCommand::Balance).await.unwrap()["balance_sat"],
             0
         );
         assert_eq!(
