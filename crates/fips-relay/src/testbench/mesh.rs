@@ -1,9 +1,15 @@
 //! Fixed loopback mint sockets carried as ordinary TCP/FIPS data. This adapter
 //! grants no forwarding permission and never retries an HTTP request.
 use fips_core::{FipsEndpoint, Identity, PeerIdentity};
-use fips_tcp::{Config, ConnectionId, State};
-use fips_tcp_endpoint::FipsTcpEndpoint;
-use std::{collections::HashMap, io, net::SocketAddr, sync::Arc, time::Duration};
+use fips_tcp::{Config, ConnectionId, StackError, State};
+use fips_tcp_endpoint::{AdapterError, FipsTcpEndpoint};
+use std::{
+    collections::{HashMap, VecDeque},
+    io,
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -190,6 +196,7 @@ impl Connection {
 
 async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
     let mut connections = HashMap::<ConnectionId, Connection>::new();
+    let mut waiting = VecDeque::new();
     let mut pending = JoinSet::new();
     let started = Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(10));
@@ -209,13 +216,9 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
                     Mode::Client { listener, .. } => listener.accept().await,
                     Mode::Server(_) => std::future::pending().await,
                 }
-            }, if connections.len() + pending.len() < CONNECTIONS => {
+            }, if connections.len() + pending.len() + waiting.len() < CONNECTIONS => {
                 let (socket, _) = socket.map_err(|e| e.to_string())?;
-                if let Mode::Client { mint, .. } = &mode {
-                    if let Ok(id) = tcp.connect(*mint, now).await {
-                        connections.insert(id, Connection::new(socket));
-                    }
-                }
+                waiting.push_back((socket, Instant::now()));
             }
             Some(result) = pending.join_next(), if !pending.is_empty() => {
                 let (id, socket) = result.map_err(|e| e.to_string())?;
@@ -225,6 +228,30 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
             }
         }
         let now = started.elapsed().as_millis() as u64;
+        // A wallet can open several short HTTP connections while earlier TCP
+        // entries finish closing. Wait before reading any request bytes; never
+        // recreate a connection that already accepted application data.
+        if let Mode::Client { mint, .. } = &mode {
+            while let Some((socket, queued)) = waiting.pop_front() {
+                if queued.elapsed() >= Duration::from_secs(3) {
+                    continue;
+                }
+                match tcp.connect(*mint, now).await {
+                    Ok(id) => {
+                        connections.insert(id, Connection::new(socket));
+                    }
+                    Err(AdapterError::Tcp(
+                        StackError::ConnectionLimit | StackError::NoEphemeralPort,
+                    )) => {
+                        waiting.push_front((socket, queued));
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "mesh mint connection failed");
+                    }
+                }
+            }
+        }
         while let Some(id) = tcp.accept() {
             if let Mode::Server(backend) = mode
                 && connections.len() + pending.len() < CONNECTIONS
@@ -242,8 +269,13 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
         }
         let mut closed = Vec::new();
         for (&id, connection) in &mut connections {
-            if !matches!(connection.step(&mut tcp, id, now).await, Ok(true)) {
-                closed.push(id);
+            match connection.step(&mut tcp, id, now).await {
+                Ok(true) => {}
+                Ok(false) => closed.push(id),
+                Err(error) => {
+                    tracing::debug!(%error, "mesh mint stream failed");
+                    closed.push(id);
+                }
             }
         }
         for id in closed {
