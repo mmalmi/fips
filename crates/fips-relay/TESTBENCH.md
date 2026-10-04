@@ -69,6 +69,12 @@ mint before buying paid service. The focused native check is:
 cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
 ```
 
+The case funds an empty wallet across two FIPS hops, holds an HTTP request across
+a relay outage, and exercises the real customer account's start/stop/reopen
+guards. It also opens and settles an eight-sat zero-use Spilman channel through
+the adapter, then collects all 16 originally issued test sats. The network
+fixture keeps mint access alive while the customer service is stopped.
+
 This library experiment uses fresh isolated accounts and one immutable test mint
 URL. The device runner, Android profile and mint executable are not yet wired to
 it; their existing LAN-mint setup remains the hardware baseline. Integration must

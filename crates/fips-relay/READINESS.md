@@ -50,6 +50,16 @@ holds all 16 test sats. Its mint adapter belongs to the independent network
 fixture; this proves that lifecycle arrangement, not Android wiring. The focused
 case, lint and normal build pass, with evidence in `work/mesh-mint-r3`.
 
+On `dd8256871`, the same native case additionally opens an eight-sat Spilman
+channel from the funded customer to its entry relay, then cooperatively settles
+it through the mesh mint. The saved buyer settlement is released and refunded;
+all eight locked sats return, and the existing export/reopen checks collect the
+original 16 sats. This is a zero-use channel: it verifies funding and refund HTTP
+over FIPS, without claiming paid-payload settlement or interruption during a
+financial request. The focused case passes in 16.61 seconds; evidence is in
+`work/mesh-mint-r4`. Device integration and permissionless bootstrap policy remain
+outstanding.
+
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
@@ -938,13 +948,40 @@ The shared stream helper now accepts an expected denial only after reading fresh
 final native counters with the exact probe identity, zero received/acknowledged
 bytes and the expected deadline. It never resends the probe; paid probes still
 require complete delivery. Both helper regressions and all 65 phone-harness
-checks pass. The same helper supports the Cudy reliable-stream loss scenario;
-neither corrected hardware scenario has passed yet.
+checks pass. The same helper supports the Cudy reliable-stream loss scenario,
+whose corrected physical run remains outstanding.
 
-These checks establish local native transit, actual Android startup and the
-physical peer graph.
-Funded physical phone transit, background/screen-off delivery, radio recovery,
-CPU and battery cost remain outstanding.
+The second physical phone run verifies unpaid denial and delivers/acknowledges
+512 KiB in each direction in each of three windows: foreground, background and
+screen-off. All six stream digests match, for 3 MiB of application payload over
+the exact router → phone → router → router line. The phone has two credited
+provider channels, one onward buyer channel and zero ordinary application-receive
+packets. Its routing foreground service survives all windows without a process
+change. Screen-off is observed as `Dozing` with USB/ADB attached; this does not
+establish deep-idle reliability or battery cost.
+
+The r16 APK uses the exact accepted r15 packaged JNI bytes, with a fresh test
+account/package identity. Assembly, strict Android lint, signature/manifest
+verification and an empty-account physical preflight pass; native/JVM provenance
+remains r15's. Evidence is in `work/android-current-r16` and
+`work/phone-transit-physical-r2`.
+
+The physical run exceeds its operator-unlock deadline before settlement, so its
+overall result remains failed. Recovery preserves the original four accounts and
+mint. The first recovery cannot restore the former inbound-only entry link;
+explicitly reconnecting that same authenticated peer restores the original line.
+All four original channels then settle through existing local control APIs while
+the phone remains locked, with payments of 5, 3, 5 and 3 test sats. Router wallets
+hold 123, 133 and 123 sats. All original router baselines pass after cleanup, and
+the settled phone app is stopped with unchanged financial journals. No funding,
+purchase or payload probe is replayed. The phone balance and collection of all
+512 test sats still require the unlocked wallet UI; the original mint and accounts
+are retained. Separate recovery evidence is in `background-settlement-r2`.
+
+These checks establish physical paid transit in the three observed phone states,
+but not a completely closed hardware acceptance run. Collection, mobile/radio
+recovery, representative CPU and battery costs, and mesh-only device mint access
+remain outstanding. The physical run still uses the management-LAN mint.
 
 The preceding `r13` attempt verifies the live logger but stops before funding
 because retained captures consume its temporary-storage reserve. It closes with
