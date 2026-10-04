@@ -311,8 +311,7 @@ test "$age" -le 35
                     f"cut -d . -f 1 /proc/uptime >{self.temporary}/heartbeat; "
                     f"setsid sh {self.temporary}/guard.sh </dev/null "
                     f">{self.temporary}/guard.log 2>&1 &")
-        self.remote(f"set -eu; for attempt in $(seq 1 10); do "
-                    f"[ ! -f {self.temporary}/guard-ready ] || break; sleep 0.1; done; "
+        self.remote(f"set -eu; if [ ! -f {self.temporary}/guard-ready ]; then sleep 1; fi; "
                     f"test -f {self.temporary}/guard-ready")
         self.guarded(":")
         self.guard_ready = True

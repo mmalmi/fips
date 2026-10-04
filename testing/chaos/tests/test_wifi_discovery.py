@@ -407,6 +407,44 @@ class GuardTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_guard_startup_accepts_integer_only_sleep_and_requires_ack(self):
+        class Prepared(Exception):
+            pass
+
+        for acknowledge in (False, True):
+            with self.subTest(acknowledge=acknowledge), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                spec = {"host": "lab1", "interface": "mesh0", "management_interface": "br-lan",
+                        "original_binary": "/usr/sbin/original", "original_config": "/etc/original.json",
+                        "state_parent": "/etc/bench"}
+                node = Router(spec, "123456789abc", root)
+                node.temporary = str(root)
+                node.write = Mock()
+                node.guard_script = Mock(return_value=b"")
+                node.guarded = Mock()
+                sleeper = root / "sleep"
+                sleeper.write_text('#!/bin/sh\ncase "$1" in *[!0-9]*|"") exit 2;; esac\n'
+                                   '[ "$ACK" != 1 ] || touch "$READY"\n')
+                sleeper.chmod(0o700)
+                env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"],
+                           ACK=str(int(acknowledge)), READY=str(root / "guard-ready"))
+
+                def remote(command, *args, **kwargs):
+                    if isinstance(command, str) and "guard-ready" in command:
+                        result = subprocess.run(["sh", "-c", command], env=env, capture_output=True)
+                        if result.returncode:
+                            raise RuntimeError("guard readiness failed")
+                    elif command == ["mkdir", "-m", "700", node.parent]:
+                        raise Prepared()
+                    return b""
+
+                node.remote = remote
+                with patch("sim.wifi_remote.mesh_helpers", return_value=""):
+                    with self.assertRaises(Prepared if acknowledge else RuntimeError):
+                        node.prepare(b"binary", {})
+                self.assertEqual(node.guard_ready, acknowledge)
+                self.assertEqual(node.guarded.call_count, int(acknowledge))
+
     def test_restoration_allows_known_mesh_links_without_losing_saved_state(self):
         original = {
             name: {'identity': name, 'hashes': 'saved config and accounts',
