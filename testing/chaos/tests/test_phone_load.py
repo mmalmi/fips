@@ -6,10 +6,11 @@ from pathlib import Path
 import struct
 import sys
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.phone_diagnostics import decode_record
-from sim.paid_phone_load import BYTES, PACKETS, SECONDS, validate_window
+from sim.paid_phone_load import BYTES, PACKETS, SECONDS, PhoneLoadRun, validate_window
 
 
 def fixture():
@@ -37,6 +38,36 @@ def fixture():
 
 
 class PhoneLoadTests(unittest.TestCase):
+    def test_failed_window_retains_native_counters_despite_query_failure(self):
+        run = PhoneLoadRun.__new__(PhoneLoadRun)
+        run.evidence = {'phone_load': {'windows': []}}
+        def native(request):
+            if request['command'] == 'show_routing':
+                raise OSError('diagnostic unavailable')
+            return {'status': 'ok', 'data': {'counter': 7}}
+        run.nodes = {name: Mock(npub=name, native=Mock(side_effect=native))
+                     for name in ('n01', 'n02', 'n03')}
+        run.participants = lambda: run.nodes
+        run.journals = Mock(return_value={})
+        failure = RuntimeError('original delivery failure')
+        run.window = Mock(side_effect=failure)
+        saved = []
+        run.save = lambda: saved.append(copy.deepcopy(run.evidence))
+        loss = Mock()
+        loss.clear.return_value = {'enabled': False}
+        with patch('sim.paid_phone_load.FrameLoss', return_value=loss):
+            with self.assertRaises(RuntimeError) as caught:
+                run.transfer('load', 1, {})
+        self.assertIs(caught.exception, failure)
+        row = saved[-1]['phone_load']['windows'][0]
+        for boundary in ('before', 'after'):
+            self.assertEqual(set(row['native'][boundary]), set(run.nodes))
+            for reports in row['native'][boundary].values():
+                self.assertEqual(reports['show_routing']['error'], 'OSError')
+                for command in ('show_status', 'show_transports', 'show_sessions'):
+                    self.assertEqual(reports[command]['data']['counter'], 7)
+        self.assertEqual(row['loss_cleared'], {'n01': {'enabled': False}, 'n03': {'enabled': False}})
+
     def test_framed_reply_requires_one_complete_record(self):
         payload = json.dumps({'ok': {'probe': 'observed'}}).encode()
         wire = struct.pack('!I', len(payload)) + payload

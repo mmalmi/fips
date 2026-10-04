@@ -138,11 +138,13 @@ class PhoneLoadRun(PaidPhoneRun):
             try:
                 if row['impaired']:
                     row['loss_before'] = {name: fault.enable() for name, fault in filters.items()}
+                self.capture_native(row, 'before')
                 self.window(row)
                 if row['impaired']:
                     row['loss_after'] = {name: fault.observe() for name, fault in filters.items()}
                 validate_window(row, identities)
             finally:
+                self.capture_native(row, 'after')
                 row['loss_cleared'] = {name: fault.clear() for name, fault in filters.items()}
                 self.save()
             validate_reopened(self.journals('after-' + name), baseline, self.mint_url, EDGES)
@@ -152,6 +154,17 @@ class PhoneLoadRun(PaidPhoneRun):
         self.evidence['phone_load']['passed'] = True
         self.save()
         return final
+
+    def capture_native(self, row, boundary):
+        # Retain volatile counters before cleanup, even if one query fails.
+        snapshot = row.setdefault('native', {})[boundary] = {}
+        for name, node in self.nodes.items():
+            reports = snapshot[name] = {}
+            for command in ('show_status', 'show_routing', 'show_transports', 'show_sessions'):
+                try:
+                    reports[command] = node.native({'command': command})
+                except Exception as error:
+                    reports[command] = {'error': type(error).__name__, 'message': str(error)[:240]}
 
     def credited(self, initial):
         current = self.finances()
