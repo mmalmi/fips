@@ -49,6 +49,34 @@ resumed. Keep this mint process alive across the relay restart tests. Settle and
 collect the run's balances before ending it. SIGTERM/Ctrl-C ends the fixture;
 this tool does not claim production mint restart support.
 
+## Mint HTTP over FIPS
+
+The test-feature library exposes `testbench::mesh::MeshMintBridge`: `serve`
+connects one FIPS service port to a fixed loopback mint socket; `connect` binds
+a loopback client listener to that server's authenticated FIPS identity. It
+carries ordinary HTTP bytes over existing TCP/FIPS, without HTTP request replay,
+new payment messages, remote proxy destinations or access to the issuance socket.
+Each adapter has eight connection slots, four TCP connections per peer, 16 KiB
+buffers per direction and a 45-second connection lifetime. Local sockets wait
+up to three seconds for a TCP slot before any request bytes are read.
+
+The adapter grants no forwarding exemption. An operator must explicitly arrange
+bounded bootstrap access in **both** directions using existing route pricing
+and free-bandwidth controls. An empty customer wallet must be able to reach the
+mint before buying paid service. The focused native check is:
+
+```sh
+cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
+```
+
+This library experiment uses fresh isolated accounts and one immutable test mint
+URL. The device runner, Android profile and mint executable are not yet wired to
+it; their existing LAN-mint setup remains the hardware baseline. Integration must
+also retain mesh access during wallet import, settlement and recovery, including
+operations that stop the paid-relay service to obtain exclusive wallet ownership.
+Do not rewrite an existing wallet's mint URL to point at a new adapter. Current
+evidence and outstanding acceptance are recorded in [READINESS.md](READINESS.md).
+
 ## Fund a relay
 
 Initialize the relay as described in SERVICE.md, then leave it stopped. Request

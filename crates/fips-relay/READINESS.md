@@ -14,6 +14,31 @@ requirement to the current milestone. Existing accounts remain untouched.
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
+Mint access must also work through FIPS, independently of a management-LAN HTTP
+route. Acceptance must start with an empty client wallet, exercise funding and
+settlement across intermediate relays, and cover interruption/recovery with no
+direct-network fallback or duplicate financial operation. Bootstrap access is an
+explicit bounded operator policy, including the response direction; it must not
+require the credit it is needed to obtain. A stable mint identity and URL must
+survive path changes. Ordinary TCP/FIPS and existing forwarding limits should
+carry these requests without a new payment-message family.
+
+The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
+funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
+and collects all 16 in the isolated collection wallet. Only the client adapter's
+URL reaches wallet code. Both directions use explicit zero-price destination
+offers under the middle relay's shared bandwidth limits; no paid channel opens
+and its buyer/seller journals remain unchanged. A request with write-half closure
+also returns the complete mint response. The initial candidate reached the mint
+but refused a later wallet connection while prior TCP entries were closing;
+bounded pre-request queuing fixes that case without replaying HTTP requests.
+Strict affected-target lint, a normal build without test features, and the source
+size check pass. Evidence is under `work/mesh-mint-r1` (failure) and
+`work/mesh-mint-r2` (pass) in the private recovery bundle. This verifies the
+[test-library adapter](TESTBENCH.md#mint-http-over-fips), not device configuration,
+permissionless bootstrap policy, interrupted financial recovery or Spilman
+settlement over mesh. Those remain required before accepting mesh-only mint access.
+
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
@@ -887,8 +912,26 @@ correctly had no onward purchase to a final recipient. Evidence is under
 `work/phone-transit-r1` and `work/phone-transit-r2`.
 
 A static ARM64 router build of `98750c929` also passes, recorded in
-`work/phone-transit-arm-r1/result.json`; it is not yet installed on the routers.
-These checks establish local native transit and actual Android startup.
+`work/phone-transit-arm-r1/result.json`. The first physical transit attempt with
+that runtime and the r15 APK observes the exact four-node authenticated graph,
+including the phone as an intermediate router. It stops at the unpaid probe:
+the native diagnostic reports its expected incomplete-delivery deadline, but
+the harness incorrectly requires a successful response. Final delivery counters
+were not captured, so this run does not prove zero unpaid delivery. No route was
+purchased. Recovery collects all 512 test sats, verifies four empty wallets and
+restores the routers, phone and prior accounts. Evidence is under
+`work/phone-transit-physical-r1`, including the original failure and separate
+`collection/closure.json`.
+
+The shared stream helper now accepts an expected denial only after reading fresh
+final native counters with the exact probe identity, zero received/acknowledged
+bytes and the expected deadline. It never resends the probe; paid probes still
+require complete delivery. Both helper regressions and all 65 phone-harness
+checks pass. The same helper supports the Cudy reliable-stream loss scenario;
+neither corrected hardware scenario has passed yet.
+
+These checks establish local native transit, actual Android startup and the
+physical peer graph.
 Funded physical phone transit, background/screen-off delivery, radio recovery,
 CPU and battery cost remain outstanding.
 
