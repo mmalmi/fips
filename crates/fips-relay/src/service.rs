@@ -113,6 +113,8 @@ pub struct RelayService {
     quote_server: QuoteServer,
     received: Arc<Mutex<Received>>,
     probe_receiver: Arc<Mutex<Option<ProbeReceiver>>>,
+    #[cfg(feature = "measurements")]
+    stream_probe: Mutex<Option<probe::stream::StreamReport>>,
     probe_sender: tokio::sync::Semaphore,
     probe_stop: tokio::sync::watch::Sender<bool>,
     control_statistics: Vec<(u16, Arc<ControlStatistics>)>,
@@ -336,7 +338,7 @@ impl RelayService {
         // Register once, before any service traffic; status only samples these
         // stable handles. Normal builds leave endpoint diagnostics disabled.
         #[cfg(feature = "measurements")]
-        let service_carriers = [PAYMENT_CONTROL_PORT, DATA_PORT]
+        let service_carriers = [PAYMENT_CONTROL_PORT, DATA_PORT, probe::stream::PORT]
             .into_iter()
             .map(|port| {
                 endpoint
@@ -476,6 +478,8 @@ impl RelayService {
             quote_server,
             received,
             probe_receiver,
+            #[cfg(feature = "measurements")]
+            stream_probe: Mutex::new(None),
             probe_sender: tokio::sync::Semaphore::new(1),
             probe_stop: tokio::sync::watch::channel(false).0,
             control_statistics,

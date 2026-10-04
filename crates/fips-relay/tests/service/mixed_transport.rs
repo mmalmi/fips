@@ -42,6 +42,9 @@ mod seller_storage;
 mod service_carrier;
 #[path = "mixed_transport/signer_storage.rs"]
 mod signer_storage;
+#[cfg(feature = "measurements")]
+#[path = "mixed_transport/stream_probe.rs"]
+mod stream_probe;
 #[path = "mixed_transport/tls.rs"]
 mod tls;
 

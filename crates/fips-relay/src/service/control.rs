@@ -70,6 +70,12 @@ impl RelayService {
                 #[cfg(feature = "measurements")]
                 let status = {
                     let mut status = status;
+                    status["stream_probe"] = json!(*self.stream_probe.lock().unwrap());
+                    status["stream_carrier"] = json!(
+                        service_carriers
+                            .iter()
+                            .find(|c| c.service_port == probe::stream::PORT)
+                    );
                     status["payment_progress"] = serde_json::to_value(payment_progress)
                         .map_err(|error| error.to_string())?;
                     status
@@ -139,6 +145,17 @@ impl RelayService {
                 Ok(
                     json!({"probe": probe::send(&self.endpoint, probe, &self.probe_receiver,
                         self.probe_stop.subscribe()).await?}),
+                )
+            }
+            #[cfg(feature = "measurements")]
+            AdminRequest::StreamProbe { probe } => {
+                let _permit = self
+                    .probe_sender
+                    .try_acquire()
+                    .map_err(|_| "a probe sender is already running")?;
+                Ok(
+                    json!({"probe": probe::stream::run(self.endpoint.clone(), probe,
+                    &self.stream_probe, self.probe_stop.subscribe()).await?}),
                 )
             }
             AdminRequest::PauseRenewals => {
@@ -234,6 +251,10 @@ pub enum AdminRequest {
     },
     SendProbe {
         probe: SendProbe,
+    },
+    #[cfg(feature = "measurements")]
+    StreamProbe {
+        probe: probe::stream::StreamProbe,
     },
     Settle,
     PauseRenewals,

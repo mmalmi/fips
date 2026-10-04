@@ -8,6 +8,10 @@ use fips_core::{
 use fips_tcp::{MarkerStatus, State};
 use fips_tcp_endpoint::FipsTcpEndpoint;
 
+#[cfg(feature = "measurements")]
+#[path = "stream_probe.rs"]
+mod stream_probe;
+
 const PORT: u16 = 44_743;
 
 struct Network(String);

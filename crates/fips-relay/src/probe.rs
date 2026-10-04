@@ -1,6 +1,9 @@
 //! Bounded operator traffic measurements at the local diagnostic service.
 //! Explicitly armed echoes use ordinary priced data and never authorize payments.
 
+#[cfg(feature = "measurements")]
+pub mod stream;
+
 use fips_core::{FipsEndpoint, FipsEndpointOutboundDatagram, PeerIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
