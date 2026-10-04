@@ -61,6 +61,40 @@ maximum capacity of the link. Per-application duplicate sequence detection is
 not a test of encrypted FIPS wire replay rejection; exercise wire replay
 separately when verifying billing under duplicated traffic.
 
+## Reliable duplex stream
+
+The optional `measurements` feature also enables `stream_probe` on the private
+operator socket. It uses TCP over FIPS on ordinary paid application port 44744;
+both endpoints require their normal paid routes. This adds no relay delivery
+receipts or special free application traffic.
+
+Arm both endpoints with the same fresh stream ID and byte count, each naming the
+other's npub. Set `connect` to `true` on exactly one endpoint:
+
+```json
+{"type":"stream_probe","probe":{"peer":"REPLACE_WITH_PEER_NPUB","stream_id":"3be81368471f470ebc95079d2213e0f2","bytes":1048576,"bytes_per_second":65536,"duration_secs":30,"connect":false}}
+```
+
+Each side sends and verifies the deterministic byte range independently. The
+command holds its adapter open for the full requested window, including after
+local completion, so the other endpoint can recover lost acknowledgements.
+Only the named authenticated peer can open its one TCP connection. Accepted
+application prefixes are never resubmitted by the diagnostic; TCP handles loss
+and backpressure on that original connection.
+
+Limits are 1 byte–64 MiB each way, a target of 1 byte/s–16 MiB/s and 1–300 seconds including
+setup, transfer and acknowledgement drain. The count cannot exceed target rate
+times duration. Writes are paced in bounded batches with a 64 KiB send buffer;
+scheduling and transport limits can reduce the achieved rate. At the deadline,
+success requires exact accepted, received and acknowledged counts. A disconnect,
+mismatch, cancellation or incomplete count fails the original run.
+
+`status.stream_probe` exposes progress, final stop reason, received SHA-256 and
+completion time. `status.stream_carrier` separately counts native submissions.
+Only one raw sender or stream probe can run at a time; service shutdown cancels
+the probe. A failed run must retain its original verdict before settlement or
+another explicitly armed experiment.
+
 ## Latency and overhead
 
 The optional `measurements` build feature adds process CPU, synchronous payment

@@ -1,9 +1,10 @@
 # FIPS Bench for Android
 
-A foreground customer for the paid-relay prototype. The app embeds the same
+A test customer for the paid-relay prototype. The app embeds the same
 `fips-relay` service used by the routers. `CustomerClient` owns account lifecycle,
 wallet operations and the existing private service controls; JNI serializes UI
-commands. Java owns Wi-Fi selection and the screen. There is no second payment,
+commands. Java owns Wi-Fi selection, the screen and a user-started foreground
+service. There is no second payment,
 voucher, forwarding or recovery implementation.
 
 This is a local test tool, not an Internet VPN or a production wallet. It installs
@@ -145,7 +146,20 @@ tokens through N or redeeming them. Saving a phone summary does **not** acknowle
 custody and the activity never automatically discards those wallet records. See
 [collection and acknowledgement](../fips-relay/TESTBENCH.md#collect-and-verify).
 
-**Stop**, leaving the foreground and ordinary app restarts preserve the account.
+**Connect** starts a foreground service with a persistent notification and
+**Stop** action. On Android 13 or later it first requests notification permission
+so that control remains visible. Leaving or recreating the screen keeps the
+session running, with its existing purchases and limits. The process-wide Wi-Fi
+binding stays in place; losing Wi-Fi does not switch traffic to cellular.
+**Stop** ends the session without settling; **Settle and stop** closes channels
+first. Neither action deletes the account.
+
+The service does not automatically restart after process death or on boot.
+Reopen the app and explicitly connect to resume through the existing recovery
+path. Background operation still requires physical screen-off, radio-recovery
+and battery testing; a foreground service alone is not proof of continuous
+delivery while Android manages power.
+
 Wallet imports/exports run only while the relay service is stopped. A stop timeout
 retains the live task, account ownership and Wi-Fi binding; retry joins that same
 task. Do not erase app data, uninstall it or start a replacement account to work
@@ -162,7 +176,9 @@ Cloud backup and device transfer of account state are disabled.
 The Android activity tests exercise the real screen lifecycle and private files
 with a simulated native wallet and Wi-Fi binding. They cover an interrupted return,
 restart at zero balance, atomic-file backup recovery, incomplete saved requests,
-later funds and a failed balance refresh after export. They do not execute JNI,
+later funds and a failed balance refresh after export. Service checks cover
+screen recreation, the notification's Stop action, stop failure, service
+destruction, replacement races and notification permission. They do not execute JNI,
 contact a mint or prove physical power-loss behavior. Run with Java 17 and the
 Android SDK available:
 

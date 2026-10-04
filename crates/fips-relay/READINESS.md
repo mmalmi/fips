@@ -840,6 +840,32 @@ process; the actual phone claim is released. Evidence is under
 `physical-session-closure.json`. These results narrow the remaining client-link
 investigation; they do not establish production readiness.
 
+Phone transit is a separate required acceptance from those customer results.
+Use isolated FIPS profiles to force Cudy → phone → Cudy, with the application
+sender and recipient on the routers. Verify the phone's actual forwarded bytes,
+provider credit and onward payments, then repeat while the app is backgrounded
+and the screen is off. Check link interruption/recovery, bounded spending,
+settlement, CPU and battery cost without changing the management LAN. Direct
+802.11s radio participation requires separate device support and verification;
+FIPS forwarding over the phone's Wi-Fi connection does not prove it.
+
+Android source `904a7f6aa` now keeps the native session in a user-started
+`connectedDevice` foreground service. Screen destruction preserves the shared
+session and Wi-Fi binding; notification Stop ends it. Failed stop retains the
+binding and visible control, delayed old-service cleanup cannot stop its
+replacement, and process death does not automatically restart spending.
+All six JVM tests pass, including the existing wallet-return recovery cases,
+screen recreation, notification Stop, permission refusal, stop failure and
+service replacement. APK assembly and strict Android lint pass, and rendered
+running/return screens were inspected. Evidence is in `work/android-background-r2`;
+result digest is `47b51416493fde19e32fcff66b3976f042561c332031f0a0e900fbc72c1cb69d`.
+
+This Android lifecycle check reuses the closed `241bc6765` JNI byte-for-byte;
+it does not qualify newer native changes on Android. The JVM tests isolate
+native commands and Wi-Fi. No phone installation, background transit, screen-off
+delivery, radio recovery or battery result is claimed. A fresh combined native
+build and those physical checks remain prerequisites for phone-transit acceptance.
+
 The preceding `r13` attempt verifies the live logger but stops before funding
 because retained captures consume its temporary-storage reserve. It closes with
 zero issuance and restores the devices. Removing only two inactive remote PCAP
@@ -7465,6 +7491,27 @@ This verifies reliable application bytes over a simulated paid lossy carrier,
 independently of payment control. It adds no delivery-receipt protocol. The
 physical phone raw-datagram loss result remains failed; sustained reliable
 application-byte acceptance on the phone/router route is still required.
+
+The private stream diagnostic at `c02ead9e1` now supports that next experiment.
+It arms one authenticated peer on ordinary paid port 44744, bounds duration,
+buffers and offered bytes, and verifies exact duplex delivery plus TCP
+acknowledgements without replaying accepted application prefixes. In the real
+three-daemon UDP/TCP fixture, unfunded streams deliver no application data;
+paid streams accept, receive and acknowledge all 131,072 bytes each way in
+2.846 seconds, within their original six-second windows. Original channels and
+funding budgets remain unchanged, cumulative payments advance, and settlement
+reconciles all 384 test sats with no locked or pending funds.
+
+Three lower-level carrier tests also pass, including a directed two-second loss
+window with backpressure, exact 512 KiB duplex recovery, odd-parity peer keys,
+cancellation/rebind and unrelated-peer rejection. Strict lint for both affected
+integration targets and compilation without `measurements` pass. The immutable
+test executables and actual spawned daemon are bound to the same source archive;
+source and frozen dependency manifests remain unchanged. Evidence is in
+`work/reliable-stream-probe-r3`; result digest is
+`1ffd59dd59fd4b30a6e39ca916780073faad420602961197750004828c238fe9`.
+The first two failed attempts remain recorded. These are host-side checks, with
+no physical device changes or new delivery-receipt protocol.
 
 All eight original channels separately recover the required usage, cumulative
 credit and acknowledgements 661 ms after reopening. Those checks include native
