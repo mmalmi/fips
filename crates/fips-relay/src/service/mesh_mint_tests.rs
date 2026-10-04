@@ -236,6 +236,14 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         }
 
         // The fixture releases the URL; the customer now owns its adapter.
+        assert!(
+            phone.execute(CustomerCommand::Start).await.is_err(),
+            "an occupied mint listener must not be adopted"
+        );
+        assert_eq!(
+            phone.execute(CustomerCommand::Status).await.unwrap()["running"],
+            false
+        );
         client.shutdown().await.unwrap();
         phone.execute(CustomerCommand::Start).await.unwrap();
         let guarded = phone

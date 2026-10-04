@@ -360,11 +360,9 @@ async fn drive(
     // Reset retained streams before the endpoint stops; abandoning them leaves
     // stale tuples at the mint when the next adapter opens its first TCP port.
     tokio::time::timeout(Duration::from_secs(2), async {
-        if let Mode::Client { mint, .. } = mode {
-            tcp.abort_peer(mint).await.map_err(|e| e.to_string())?;
-        } else {
-            for id in connections.keys() {
-                let _ = tcp.abort(*id).await;
+        for id in connections.keys() {
+            if tcp.state(*id).is_some() {
+                tcp.abort(*id).await.map_err(|e| e.to_string())?;
             }
         }
         Ok::<_, String>(())

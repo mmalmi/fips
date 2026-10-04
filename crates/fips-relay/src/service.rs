@@ -374,7 +374,13 @@ impl RelayService {
         let mint = if create {
             None
         } else {
-            mint_access::attach(&config, endpoint.clone(), quotes.clone()).await?
+            match mint_access::attach(&config, endpoint.clone(), quotes.clone()).await {
+                Ok(mint) => mint,
+                Err(error) => {
+                    let _ = endpoint.shutdown().await;
+                    return Err(error);
+                }
+            }
         };
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
         let (acceptance, incoming) = ControlTransport::start_with_admission(
