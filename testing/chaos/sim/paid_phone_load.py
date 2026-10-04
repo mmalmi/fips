@@ -11,8 +11,8 @@ import time
 from types import SimpleNamespace
 
 from . import phone_diagnostics, wifi_probes as probes
-from .paid_finances import FinancialObservationChanged, payments_credited
-from .paid_phone import PaidPhoneRun
+from .paid_finances import FinancialObservationChanged, financial_snapshot, payments_credited
+from .paid_phone import Accounts, PaidPhoneRun
 from .paid_phone_finances import validate_reopened
 from .paid_relay import eventually
 from .paid_settlement import require
@@ -70,10 +70,19 @@ def validate_window(row, identities):
                         for value in row['loss_after'].values()), 'loss injection was not observed')
 
 
+class LoadAccounts(Accounts):
+    def ctl(self, name, kind):
+        if name == 'phone':
+            require(kind == 'status', 'only live phone status can be sampled')
+            return self.run.ctl(name, kind)
+        return super().ctl(name, kind)
+
+
 class PhoneLoadRun(PaidPhoneRun):
     def __init__(self, args):
         require(not getattr(args, 'phone_restart', False), 'load and restart are separate scenarios')
         super().__init__(args)
+        self.accounts = LoadAccounts(self)
         self.evidence['phone_load'] = {'passed': False, 'windows': [],
             'packets_per_direction_per_window': PACKETS, 'packets_per_second': RATE,
             'seconds_per_window': SECONDS, 'payload_bytes': BYTES, 'frame_loss_every': EVERY,
@@ -98,6 +107,11 @@ class PhoneLoadRun(PaidPhoneRun):
         # minutes of continuous traffic without exhausting a 32-sat channel.
         config['terms'].update(fee_msat_per_kib=1, quote_max_units=32 * 1024 * 1024)
         return config
+
+    def finances(self):
+        # Sampling uses the same private status socket as the routers. Starting
+        # UI refresh here would race the sender's pending-UI-action guard.
+        return financial_snapshot(self.accounts, wallet=None)
 
     def transfer(self, label, count, initial):
         baseline = self.journals('before-load')
