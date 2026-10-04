@@ -700,6 +700,22 @@ networking and unchanged prior accounts. Evidence is
 `work/android-current-r5/failed-acceptance-closure.json`. This adds a failed
 sustained workload and verified recovery, not a forwarding fix or acceptance.
 
+The next trial (`android-current-r6`) initially stops before purchasing because
+another physical-phone test takes the foreground. After a coordinated device
+handoff, verification proves all four original wallets still hold 128 unused
+test sats and no channels or purchases exist. Resuming those same accounts
+delivers 3,996/4,000 phone-to-leaf originals and all 4,000 in reverse. All router
+processes remain stable; recorded forwarding refusal, queue, expiry, send,
+decode and transport drop/error counters stay at zero. The destination session
+itself receives 3,996 packets, so the application probe does not account for the
+four losses. Their exact location remains unresolved. The four channels settle,
+all 512 test sats are collected, and normal networking and prior accounts pass
+independent restoration checks. Evidence is
+`work/android-current-r6/failed-acceptance-closure.json`. The harness now captures
+the phone's existing native diagnostics as well as the routers', checks both
+phone diagnostic sockets before funding, and passes 62 focused harness checks;
+that additional phone capture still needs physical acceptance.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |

@@ -845,9 +845,10 @@ direction in each window. The middle window drops every twentieth experimental
 EtherType frame from the middle router at each leaf; the surrounding healthy
 and recovery windows require complete delivery. All windows require delivery,
 buyer authorization and provider credit to advance while sending. The existing
-app-private diagnostic socket is checked on the empty account before issuance;
-it uses a non-PTY ADB shell for binary input/output. No app or protocol extension
-is needed. Existing router status, routing, transport and session diagnostics
+app-private control and native diagnostic sockets are checked on the empty
+account before issuance; they use a non-PTY ADB shell for binary or newline JSON
+input/output. No app or protocol extension is needed. Existing phone and router
+status, routing, transport and session diagnostics
 are retained before and after every window, including failed windows, so loss
 can be investigated after cleanup. Router fees are 1 msat/KiB with 32-MiB quote
 limits; the same channel capacity and lifetime buyer budgets apply. Whole-app
