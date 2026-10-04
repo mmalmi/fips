@@ -275,6 +275,26 @@ is in `renewal-journal-red-r1` and `renewal-journal-green-r2` in the private
 payment-recovery bundle. These checks do not attribute earlier physical loss or
 the separate rapid-restart failure.
 
+The unchanged five-minute router workload on `28e7a1254` delivers all 84,000
+original packets, with no missing, duplicate or invalid packets and 238/252
+reordered packets. Each direction has seven live successor observations with
+advancing payment credit and delivery, and authorizes 43 test sats within the
+original 64-sat budget. No source-wait drops occur; source carrier counts match
+delivery, and measured forwarding-drop counters stay unchanged on all three
+routers. One source-policy diagnostic remains in the full process log.
+
+The two measured pauses are 1.693 and 1.804 seconds: settlement takes 0.873/0.903
+seconds, replacement preparation 0.071/0.070 seconds and purchase acceptance
+0.749/0.831 seconds. This is elapsed time, not CPU time. The longer pause is still
+close to the approximately 1.83 seconds that the unchanged packet cap covers at
+140 packets/s. There is no matched earlier pause-time measurement, so this single
+pass does not establish a latency improvement or sufficient renewal headroom.
+It does not erase the earlier losses. Four channels settle, all 384 test sats are
+collected and all 645 management checks pass. Independent closure verifies normal
+router-state restoration, stopped test processes and removed filters. Evidence is
+under `work/hardware-current-r1/renewal-load-r5`; closure SHA-256 is
+`f708fbf23ff76956cadcba931863ec3e74121b3b79e9b332f64c2df022dd85d7`.
+
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted
@@ -463,7 +483,7 @@ power loss, continuous traffic during recovery, throughput or an Internet VPN.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. Continuous-renewal runs lose 465, 14, 0 and 2 of 84,000 packets respectively, with financial closure in each. The latest two losses match source queue capacity refusals; earlier loss remains unattributed. See [cadence results](CADENCE-RESULTS.md). | Resolve observed renewal queue pressure and qualify repeated/slow renewal, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. Continuous-renewal runs lose 465, 14, 0, 2 and 0 of 84,000 packets respectively, with financial closure in each. The two-packet loss matches source queue capacity refusals; the latest passing run measures 1.69/1.80-second pauses, close to the packet cap at this rate. Earlier loss remains unattributed. See [cadence results](CADENCE-RESULTS.md). | Resolve observed renewal queue pressure and qualify repeated/slow renewal, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
