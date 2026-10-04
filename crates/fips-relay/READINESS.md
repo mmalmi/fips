@@ -388,7 +388,39 @@ from the useful neighbor is missing. Its authenticated receive counter advances;
 the trace does not identify the later delivery/drop branch. The original two-second
 assertion remains failed, with no retry. Source, executable and process closure
 are verified in `combined-routing-green-r1/full-core-qualification.json`.
-Full-core acceptance remains outstanding despite the focused and device passes.
+That candidate did not pass full-core acceptance despite its focused and device
+passes.
+
+The `180c52312` repair makes the shared synchronous-send helper retain every
+completed dataplane turn before returning success/error or awaiting continuation.
+Callers receive only receipt/error diagnostics, removing duplicate turn handling.
+Turns containing only an FMP receive receipt also remain owned for bookkeeping.
+Two deterministic cases reproduce discarded authenticated ingress before the
+change and deliver it exactly once afterward, using identical real-crypto
+fixtures. Seventeen focused checks, including the five unchanged rejoin cases,
+and strict core lint pass. This proves the ownership defect independently of the
+earlier sequence-126 trace, which did not identify its exact loss branch.
+Evidence is `work/payment-reply-recovery/terminal-turn-green-r1/handoff.json`.
+
+The complete core suite on this repaired candidate passes 2,806 tests, with zero
+failures and 17 ignored, in 2,326 seconds. The unchanged rejoin case passes in
+that run. There are no per-case retries. Independent closure verifies all 1,577
+recorded source files and the executable remain unchanged, with the test process
+group absent. The source-bound result is
+`terminal-turn-green-r1/full-core-qualification.json`; the earlier failed run
+remains recorded separately.
+
+The matching static ARM64 build also passes the unchanged five-minute router
+workload: all 84,000 originals arrive, with zero missing, duplicate or invalid
+packets. Both successor channels advance delivery and payment during six live
+observations; each direction authorizes 43 test sats within its 64-sat limit.
+No source-wait drops or middle policy-drop increase occur. Renewal pauses are
+1.736 and 1.567 seconds. The middle uses 79.406 CPU seconds, or 0.991 CPU seconds
+per payload MiB, and peaks at 22,288 KiB resident memory. These are observations
+from one finite run, not an established speedup. All four channels settle, all
+384 test sats are collected, and all 648 management checks pass. Independent
+closure verifies restored router state and stopped test services in
+`work/hardware-current-r1/renewal-load-r8/closure.json`.
 
 The strengthened renewal case offers 320 originals once while settlement is held.
 The old runtime loses 67; the repaired candidate delivers all 320 exactly once,
@@ -632,9 +664,18 @@ a stopped empty test account. Evidence is `work/android-current-r2/acceptance.js
 This accepts that finite paid session and app restart; physical power loss,
 Internet VPN service and phone throughput remain separate acceptance targets.
 
+The matching `180c52312` Pixel build repeats the same paid-session/restart case
+successfully: eight originals arrive once, all four paying directions advance,
+and the original channels and budgets survive the app restart. All four channels
+settle, all 512 test sats are collected, and all 744 management checks pass.
+Independent closure verifies restored router state, normal phone Wi-Fi and a
+Wi-Fi-bound Internet probe, unchanged prior accounts, and the stopped empty test
+account. The source-bound receipt is `work/android-current-r3/acceptance.json`;
+the same finite-workload limits apply.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest cancellation-recovery runtime delivers all 84,000 router originals with 1.62/1.74-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
