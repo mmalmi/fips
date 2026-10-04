@@ -536,3 +536,5 @@ impl RelayService {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "testbench"))]
+mod mesh_mint_tests;
