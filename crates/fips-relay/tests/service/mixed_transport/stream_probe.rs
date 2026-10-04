@@ -66,6 +66,15 @@ async fn operator_stream_probe_requires_paid_routes_and_preserves_settlement() {
         let delivery = duplex(&bench, 6, 128 * 1024).await;
         let after = bench.states().await;
         eprintln!("fixed stream workload results: {delivery:?}");
+        if delivery.iter().any(Result::is_err) {
+            for (node, state) in after.iter().enumerate() {
+                eprintln!(
+                    "stream node={node} progress={} carrier={}",
+                    state["stream_probe"], state["stream_carrier"]
+                );
+            }
+            bench.failure_snapshot().await;
+        }
         // Close accounts even if the fixed measured workload failed; no new
         // application traffic or purchase can repair that recorded verdict.
         for config in &bench.configs {

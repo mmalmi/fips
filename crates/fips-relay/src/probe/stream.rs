@@ -188,15 +188,19 @@ async fn drive(
     let mut connected_at = None;
     let mut marker = None;
     let mut digest = Sha256::new();
-    let mut body = vec![0; CHUNK];
+    let mut body = vec![0; BUFFER];
     loop {
         let now = started.elapsed().as_millis() as u64;
-        tokio::select! {
+        let send_due = tokio::select! {
             received = tcp.receive_report_filtered(now, |source| source.pubkey() == peer.pubkey()) => {
                 report.rejected_datagrams += received.map_err(|e| e.to_string())?.rejected() as u64;
+                false
             }
-            _ = ticker.tick() => tcp.poll(started.elapsed().as_millis() as u64).await.map_err(|e| e.to_string())?,
-        }
+            _ = ticker.tick() => {
+                tcp.poll(started.elapsed().as_millis() as u64).await.map_err(|e| e.to_string())?;
+                true
+            }
+        };
         if connection.is_none() {
             connection = tcp.accept();
         }
@@ -226,21 +230,31 @@ async fn drive(
         let due = (pace_start.elapsed().as_micros() * u128::from(report.shape.bytes_per_second)
             / 1_000_000)
             .min(u128::from(report.shape.bytes)) as u64;
-        let offered = due.saturating_sub(report.accepted_bytes).min(CHUNK as u64) as usize;
-        if offered > 0 {
-            fill(&mut body[..offered], report.accepted_bytes, &id);
-            let (accepted, boundary) = tcp
-                .write_with_marker(connection, &body[..offered], now)
-                .await
-                .map_err(|e| e.to_string())?;
-            report.partial_writes += u64::from(accepted < offered);
-            report.accepted_bytes += accepted as u64;
-            if accepted > 0 {
-                marker = Some(boundary);
+        // Batch application writes on the pacing tick; incoming ACKs must not
+        // turn a byte rate into a stream of tiny, separately priced packets.
+        if send_due {
+            for _ in 0..BUFFER / CHUNK {
+                let offered = due.saturating_sub(report.accepted_bytes).min(CHUNK as u64) as usize;
+                if offered == 0 {
+                    break;
+                }
+                fill(&mut body[..offered], report.accepted_bytes, &id);
+                let (accepted, boundary) = tcp
+                    .write_with_marker(connection, &body[..offered], now)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                report.partial_writes += u64::from(accepted < offered);
+                report.accepted_bytes += accepted as u64;
+                if accepted > 0 {
+                    marker = Some(boundary);
+                }
+                if accepted < offered {
+                    break;
+                }
             }
         }
         let received = tcp
-            .read(connection, CHUNK, now)
+            .read(connection, BUFFER, now)
             .await
             .map_err(|e| e.to_string())?;
         if report.received_bytes + received.len() as u64 > report.shape.bytes {
