@@ -205,15 +205,16 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             "mint HTTP bypassed the unavailable relay"
         );
         nodes[1].forwarding.ready.store(true, Ordering::Release);
-        tokio::time::timeout(Duration::from_secs(10), request.read_to_end(&mut response))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            response.starts_with(b"HTTP/1.1 200"),
-            "mint response: {}",
-            String::from_utf8_lossy(&response)
-        );
+        let reply =
+            tokio::time::timeout(Duration::from_secs(10), request.read_to_end(&mut response)).await;
+        if !matches!(reply, Ok(Ok(_))) || !response.starts_with(b"HTTP/1.1 200") {
+            let server = nodes[2].mint.take().unwrap().shutdown().await;
+            panic!(
+                "mint reply {reply:?}, bytes {}, server {server:?}, returns {:?}",
+                response.len(),
+                nodes[1].forwarding.relay.return_stats()
+            );
+        }
         let body = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
         let info: Value =
             serde_json::from_slice(&response[body..]).expect("complete mint JSON after recovery");

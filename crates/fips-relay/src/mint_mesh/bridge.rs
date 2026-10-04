@@ -100,7 +100,9 @@ impl MeshMintBridge {
             send_buffer: BUFFER,
             max_connections: CONNECTIONS,
             max_connections_per_peer: 4,
-            fin_wait_2_ms: 1_000,
+            // Closing the request half must not shorten the response's lifetime
+            // on a bandwidth-limited return path. Shutdown explicitly resets it.
+            fin_wait_2_ms: LIFETIME.as_millis() as u64,
             time_wait_ms: 1_000,
             ..Config::default()
         };
