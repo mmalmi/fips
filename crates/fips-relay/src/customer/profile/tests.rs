@@ -74,6 +74,28 @@ fn legacy_and_malformed_billing_never_fall_back_to_another_tariff() {
     }
 }
 
+#[test]
+fn relay_admission_changes_only_neighbor_policy_and_is_part_of_saved_terms() {
+    let original: CustomerProfile = serde_json::from_value(saved_original()).unwrap();
+    assert_eq!(
+        original.neighbor_admission,
+        NeighborAdmission::ConfiguredOnly
+    );
+    let mut relay = original.clone();
+    relay.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
+    relay.validate().unwrap();
+    let encoded = serde_json::to_value(&relay).unwrap();
+    let restored: CustomerProfile = serde_json::from_value(encoded).unwrap();
+    assert_eq!(restored, relay);
+    assert_ne!(restored, original);
+    let mut expected = serde_json::to_value(original.config(Path::new("/customer"))).unwrap();
+    expected["neighbor_admission"] = json!("authenticated_adjacent");
+    assert_eq!(
+        serde_json::to_value(restored.config(Path::new("/customer"))).unwrap(),
+        expected
+    );
+}
+
 #[tokio::test]
 async fn rejected_service_configuration_does_not_save_or_lock_customer_profile() {
     tokio::time::timeout(Duration::from_secs(10), async {

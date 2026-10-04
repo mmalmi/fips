@@ -1,6 +1,7 @@
 //! An explicit, immutable test-customer purchase policy.
 use super::*;
 use crate::{
+    control_transport::NeighborAdmission,
     controller::{ControllerPolicy, RenewalPolicy},
     ledger::BillingBasis,
     service::ServiceTerms,
@@ -26,6 +27,10 @@ pub struct CustomerProfile {
     /// Immutable route tariff. Missing saved values retain the original mode.
     #[serde(default = "original_billing")]
     pub billing: BillingBasis,
+    /// Opt in to offering paid forwarding to authenticated adjacent peers.
+    /// This does not grant free traffic or expand the account's spending limits.
+    #[serde(default)]
+    pub neighbor_admission: NeighborAdmission,
 }
 
 fn original_billing() -> BillingBasis {
@@ -103,7 +108,7 @@ impl CustomerProfile {
                 ..Default::default()
             },
             customer_network: None,
-            neighbor_admission: Default::default(),
+            neighbor_admission: self.neighbor_admission,
             destination_fees: Default::default(),
             return_allowance: false,
             free_bandwidth: None,

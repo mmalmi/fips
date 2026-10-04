@@ -25,6 +25,7 @@
     <string name="balance">Available test sats: %1$d</string>
     <string name="billing_note">Payments buy forwarding attempts. Delivery is best effort. Routing continues when you leave this app. Use Stop here or in the notification.</string>
     <string name="routing_channel">Mesh routing</string>
+    <string name="relay_enabled">Connected peers can buy forwarding within this budget.</string>
     <string name="routing_active">Routing is active. Tap Stop to end the session.</string>
     <string name="routing_working">Updating the mesh connection…</string>
     <string name="routing_attention">Connection needs attention. Tap Stop to end the session.</string>

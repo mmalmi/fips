@@ -47,7 +47,7 @@ def native(phone, command):
 
 
 def control(phone, kind, *, probe=None, operation_timeout=20):
-    require(kind in ('status', 'receive_probe', 'send_probe'),
+    require(kind in ('status', 'receive_probe', 'send_probe', 'stream_probe'),
             'phone diagnostic command is not allowed')
     require((probe is None) == (kind == 'status')
             and type(operation_timeout) is int and 10 <= operation_timeout <= 330,

@@ -9,6 +9,9 @@ description = "Thin Android shell bridge for the FIPS paid relay test bench"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+measurements = ["fips-relay/measurements"]
+
 [target.'cfg(target_os = "android")'.dependencies]
 fips-relay = { path = "../fips-relay" }
 jni = "0.21"

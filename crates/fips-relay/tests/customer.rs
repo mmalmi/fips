@@ -3,6 +3,9 @@
 mod idle;
 #[allow(dead_code)]
 mod process_support;
+#[cfg(feature = "measurements")]
+#[path = "customer/transit.rs"]
+mod transit;
 use process_support::{udp_bind, udp_transports};
 
 use cashu_service::{

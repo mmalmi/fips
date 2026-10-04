@@ -298,6 +298,9 @@ public final class MainActivity extends Activity {
         } else {
             String price = String.format(Locale.ROOT, "%.3f", profile.optLong("max_rate_msat_per_kib") / 1000.0);
             String description = getString(R.string.profile_details, profile.optLong("budget_sat"), price);
+            if ("authenticated_adjacent".equals(profile.optString("neighbor_admission"))) {
+                description += "\n" + getString(R.string.relay_enabled);
+            }
             if (running && relay != null) description += "\n" + getString(R.string.spending,
                 profile.optLong("budget_sat") - relay.optLong("remaining_budget_sat"), relay.optLong("locked_sat"));
             else if (balance >= 0) description += "\n" + getString(R.string.balance, balance);

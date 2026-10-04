@@ -61,11 +61,13 @@ public final class MainActivityTest {
         Wallet.starts = 0;
         Wallet.stops = 0;
         Wallet.failStop = false;
+        Wallet.relayEnabled = false;
         Wifi.binds = 0;
         Wifi.unbinds = 0;
     }
 
     @Test public void routingSurvivesScreenRecreationAndNotificationStopsIt() throws Exception {
+        Wallet.relayEnabled = true;
         shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS);
         ActivityController<MainActivity> screen = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity activity = screen.get();
@@ -81,6 +83,8 @@ public final class MainActivityTest {
         assertTrue(Wallet.running);
         assertEquals(1, Wallet.starts);
         assertEquals(1, Wifi.binds);
+        android.widget.TextView details = ReflectionHelpers.getField(activity, "details");
+        assertTrue(details.getText().toString().contains(activity.getString(R.string.relay_enabled)));
         Notification notice = shadowOf(service).getLastForegroundNotification();
         assertNotNull(notice);
         assertTrue((notice.flags & Notification.FLAG_ONGOING_EVENT) != 0);
@@ -331,10 +335,12 @@ public final class MainActivityTest {
         static int starts;
         static int stops;
         static boolean failStop;
+        static boolean relayEnabled;
         @Implementation protected static void __staticInitializer__() {}
         @Implementation protected static String execute(String directory, String encoded) throws Exception {
             JSONObject command = new JSONObject(encoded);
-            JSONObject profile = new JSONObject().put("budget_sat", 128).put("max_rate_msat_per_kib", 8192);
+            JSONObject profile = new JSONObject().put("budget_sat", 128).put("max_rate_msat_per_kib", 8192)
+                .put("neighbor_admission", relayEnabled ? "authenticated_adjacent" : "configured_only");
             JSONObject result;
             switch (command.getString("type")) {
                 case "status": result = new JSONObject().put("configured", true).put("running", running).put("profile", profile); break;
