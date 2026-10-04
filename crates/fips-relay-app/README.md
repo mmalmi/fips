@@ -28,6 +28,11 @@ access are intentional for this isolated, test-funded bench. Do not distribute
 this artifact as a production wallet. Ordinary Gradle packaging alone is not the
 supported build entry point: it could reuse an old native library.
 
+The optional Cargo feature `measurements` enables the private bounded TCP stream
+diagnostic described in [MEASUREMENTS.md](../fips-relay/MEASUREMENTS.md). It is off
+in the build script above. A diagnostic build must add `--features measurements`
+to the native build before packaging and verify the resulting native library.
+
 For fresh-account acceptance alongside an existing installation, build with
 `crates/fips-relay-app/build-android.sh --isolated`. This uses the same code with
 package `org.fips.relaybench.acceptance`, label **FIPS Bench Acceptance** and setup
@@ -102,6 +107,15 @@ locked. Loading funds never resets spending history or those limits.
 connection setup; `forwarding_attempt` uses the original per-attempt policy.
 Omitting it preserves `forwarding_attempt` for existing saved profiles. Both
 choices are immutable after setup; the legacy unique-envelope tariff is rejected.
+
+For a phone that also sells forwarding, explicitly add
+`"neighbor_admission": "authenticated_adjacent"`. This admits paid control from
+authenticated neighboring nodes within the service's peer/session limits. The
+default, `configured_only`, accepts only configured neighbors. The choice is
+immutable after setup and preserves the same spending, locked-capital and price
+limits; admitting a neighbor does not give it free payload forwarding. The entry
+remains the phone's only configured outgoing peer; another relay can connect to
+the phone's reachable UDP endpoint.
 
 Provide the JSON through the `setup_profile` intent string extra or through
 `fipsbench://setup?profile=<base64url-encoded-JSON>`. An intent only previews a
@@ -197,6 +211,14 @@ export collect all 384 issued test sats with positive entry earnings. These are
 local process checks, not current Android or radio acceptance. The test also
 exercises exclusive ownership and rejects unsafe profiles. Existing process tests cover the longer
 three-relay path, both paid directions, longer streams and router crash recovery.
+
+With `measurements`, the customer suite also tests a four-node line:
+endpoint → phone client → onward relay → endpoint. The onward relay connects
+without static enrollment in the phone profile. Unfunded payloads are denied;
+after funding, both endpoints deliver and acknowledge 128 KiB, the phone earns
+provider credit and pays for onward forwarding, and all 512 test sats reconcile.
+This exercises the same native `CustomerClient` used by JNI, on a local host.
+It does not establish actual phone background or screen-off delivery.
 
 ```sh
 cargo test -p fips-relay --lib --test customer --test control_transport --test service

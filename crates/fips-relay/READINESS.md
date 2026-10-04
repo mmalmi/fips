@@ -841,8 +841,10 @@ process; the actual phone claim is released. Evidence is under
 investigation; they do not establish production readiness.
 
 Phone transit is a separate required acceptance from those customer results.
-Use isolated FIPS profiles to force Cudy → phone → Cudy, with the application
-sender and recipient on the routers. Verify the phone's actual forwarded bytes,
+Use isolated FIPS profiles to force Cudy → phone → Cudy → Cudy, with the application
+sender and recipient on the outer routers. The additional onward relay is needed
+to exercise the phone's purchase: a final recipient does not sell forwarding.
+Verify the phone's actual forwarded bytes,
 provider credit and onward payments, then repeat while the app is backgrounded
 and the screen is off. Check link interruption/recovery, bounded spending,
 settlement, CPU and battery cost without changing the management LAN. Direct
@@ -860,11 +862,35 @@ service replacement. APK assembly and strict Android lint pass, and rendered
 running/return screens were inspected. Evidence is in `work/android-background-r2`;
 result digest is `47b51416493fde19e32fcff66b3976f042561c332031f0a0e900fbc72c1cb69d`.
 
-This Android lifecycle check reuses the closed `241bc6765` JNI byte-for-byte;
-it does not qualify newer native changes on Android. The JVM tests isolate
-native commands and Wi-Fi. No phone installation, background transit, screen-off
-delivery, radio recovery or battery result is claimed. A fresh combined native
-build and those physical checks remain prerequisites for phone-transit acceptance.
+That lifecycle-only build reused `241bc6765` JNI. The newer `r15` build compiles
+the complete native Android library from `870dbf1d2`, with measurements enabled,
+and packages the foreground service and explicit paid-transit admission policy.
+All six JVM cases, Android-target Clippy, strict Android lint and APK verification
+pass; running and wallet-return screens were inspected. The JVM cases still
+isolate native commands and Wi-Fi. On the actual Pixel, the freshly installed APK
+loads JNI and opens an empty setup screen. Closure confirms zero funds issued,
+no saved profile or funding file, a stopped app, restored foreground, unchanged
+other bench accounts and unchanged normal Wi-Fi. A runner's incorrect treatment
+of an absent process was repaired with closure only, without replaying startup.
+Evidence is `work/android-current-r15/result.json` and `empty-phone-closure.json`.
+
+Native source `98750c929` adds the four-node transit acceptance using the exact
+`CustomerClient` that JNI calls. Unfunded payloads are denied. After funding, both
+endpoints deliver and acknowledge 128 KiB with matching digests; the phone records
+two positive provider channels and one positive onward-payment channel. Settlement
+reconciles all 512 test sats with no phone funds locked or pending. The focused
+case, five profile-policy checks, strict affected-target lint and a build without
+measurements pass. Three unchanged customer lifecycle cases passed on `870dbf1d2`;
+only the new test's topology changes between these two revisions. The earlier
+three-node attempt is retained: it delivered payloads and reconciled funds but
+correctly had no onward purchase to a final recipient. Evidence is under
+`work/phone-transit-r1` and `work/phone-transit-r2`.
+
+A static ARM64 router build of `98750c929` also passes, recorded in
+`work/phone-transit-arm-r1/result.json`; it is not yet installed on the routers.
+These checks establish local native transit and actual Android startup.
+Funded physical phone transit, background/screen-off delivery, radio recovery,
+CPU and battery cost remain outstanding.
 
 The preceding `r13` attempt verifies the live logger but stops before funding
 because retained captures consume its temporary-storage reserve. It closes with
