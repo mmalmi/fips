@@ -673,57 +673,40 @@ Wi-Fi-bound Internet probe, unchanged prior accounts, and the stopped empty test
 account. The source-bound receipt is `work/android-current-r3/acceptance.json`;
 the same finite-workload limits apply.
 
-The first longer Pixel trial (`android-current-r4`) fails before any load: its
-new harness used ADB `exec-out`, which reads replies but did not transmit the
-binary request. A controlled read-only comparison returns a service timeout
-through that command and valid live status through `shell -T`. The corrected
-harness uses the latter and checks the connection on an empty account before
-issuing funds. Fifty-nine phone harness checks pass; production app/native code
-is unchanged. All four originally funded channels had zero authorization and
-were cooperatively settled without new funding. Independent closure verifies
-all 512 test sats collected, restored router/phone networking and unchanged
-prior accounts. Recovery also reconciles a stale handle from its deliberately
-recreated owned UDP rule; both failed attempts remain recorded. Evidence is
-`work/android-current-r4/failed-acceptance-closure.json`. This failed setup does
-not establish sustained phone acceptance.
+Longer Pixel trials expose a remaining delivery issue. In the first 100-second
+bidirectional window, each endpoint submits 4,000 originals of 1,000 bytes at
+40 packets/s, without deliberate frame loss. Phone-to-leaf delivery is 3,992 in
+`android-current-r5`, 3,996 in the resumed `android-current-r6`, and 3,997 in
+`android-current-r8`; reverse delivery is 4,000 in each. All four paying directions
+advance, with no duplicate or invalid payloads. The complete-delivery check fails,
+so the impaired and recovery windows do not run.
 
-The corrected harness then completes its empty-account preflight and the first
-100-second bidirectional Pixel window (`android-current-r5`). Each endpoint
-submits 4,000 originals of 1,000 bytes at 40 packets/s. The phone-to-leaf path
-delivers 3,992 and the reverse delivers all 4,000, with no duplicate or invalid
-payloads and no deliberately injected loss. All four paying directions advance,
-but the complete-delivery check fails, so the impaired and recovery windows do
-not run. Saved diagnostics do not locate the eight missing originals; local
-submission is not proof of transmission. The exact four channels subsequently
-settle, all 512 test sats are collected, and independent checks verify restored
-networking and unchanged prior accounts. Evidence is
-`work/android-current-r5/failed-acceptance-closure.json`. This adds a failed
-sustained workload and verified recovery, not a forwarding fix or acceptance.
+The uninterrupted `r8` trial captures both diagnostic interfaces on all four
+devices. The phone's new end-to-end session counts 4,000 sent packets, while the
+destination session receives 3,997. That send counter advances after source
+admission and before encryption/output: it does not prove transmission. The two
+forwarding routers each count 8,429 received and forwarded packets; all recorded
+forwarding and transport drop/error counters stay at zero. This locates the gap
+after source admission and before authenticated reception, but does not establish
+its exact cause. Router warning logs do not expose all crypto/output drops.
 
-The next trial (`android-current-r6`) initially stops before purchasing because
-another physical-phone test takes the foreground. After a coordinated device
-handoff, verification proves all four original wallets still hold 128 unused
-test sats and no channels or purchases exist. Resuming those same accounts
-delivers 3,996/4,000 phone-to-leaf originals and all 4,000 in reverse. All router
-processes remain stable; recorded forwarding refusal, queue, expiry, send,
-decode and transport drop/error counters stay at zero. The destination session
-itself receives 3,996 packets, so the application probe does not account for the
-four losses. Their exact location remains unresolved. The four channels settle,
-all 512 test sats are collected, and normal networking and prior accounts pass
-independent restoration checks. Evidence is
-`work/android-current-r6/failed-acceptance-closure.json`. The harness now captures
-the phone's existing native diagnostics as well as the routers', checks both
-phone diagnostic sockets before funding, and passes 62 focused harness checks;
-that additional phone capture still needs physical acceptance. The following
-trial (`android-current-r7`) stops before sustained traffic when another app's
-instrumentation repeatedly takes the foreground. Android events show the test
-activity stopping its client as designed; its process survives. No parser or
-diagnostic-framing defect is established. The four zero-authorization channels
-settle, all 512 test sats are collected, and 201 management checks plus independent
-network/account restoration checks pass. Evidence is
-`work/android-current-r7/failed-acceptance-closure.json`, with the event timeline in
-`foreground-event-diagnosis.json`. An uninterrupted device run is still needed
-to locate the earlier delivery gaps.
+Preparatory failures remain distinct. The `r4` harness failed to transmit its
+binary request through ADB `exec-out`; a controlled comparison justified
+switching to `shell -T`. The first `r6` attempt and `r7` were interrupted by other
+phone instrumentation taking the foreground. The `r7` event timeline confirms
+the app stopped its client as designed while its process survived. Both phone
+diagnostic sockets are now checked on an empty account before funding, and 62
+focused harness checks pass. The `r8` run verifies the added phone counter capture;
+it does not establish sustained delivery acceptance.
+
+Each completed failed trial retains its original accounts, settles all four
+funded channels where present, and collects all 512 test sats without new funding
+or wider budgets. Independent closure verifies restored routers, normal phone
+Wi-Fi/Internet and unchanged prior accounts; the latest `r8` recovery also passes
+201 management checks. Source-bound receipts are the respective
+`work/android-current-r4` through `work/android-current-r8` directories'
+`failed-acceptance-closure.json` files in the private recovery bundle. The
+instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
