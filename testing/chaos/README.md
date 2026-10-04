@@ -429,6 +429,22 @@ checked before stopping the mint. A failed cleanup is reported as a failed run.
 Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
 include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
 
+Use `--streams` with a measurement-enabled relay for reliable TCP/FIPS delivery
+before, during and after controlled frame loss. Each 30-second window sends
+512 KiB in each direction at 32 KiB/s over the authenticated two-hop radio line.
+Both endpoints must acknowledge every byte and report the expected payload
+digest. The middle window drops every twentieth experimental EtherType frame
+arriving from the middle router at each leaf; actual drop counters must advance.
+The final window runs after both owned rules are removed, using the same
+processes and payment channels. Local fees are 1 msat/KiB so this finite workload
+fits the original spending and channel limits; return allowances are disabled.
+
+This mode shares the phone's stream dispatcher and validator, preserves both
+endpoint outcomes when observation fails, and uses the existing 384-sat
+settlement/collection and restoration checks. Resource snapshots include the
+whole relay process and diagnostic overhead; they are not a matched cadence or
+unloaded performance benchmark. Frame-loss and radio-departure modes are separate.
+
 Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
 explicitly funded round-trip stream is still sending. The fixture waits for
 partial replies, removes leaf n03 from the radio mesh by default, observes actual peer

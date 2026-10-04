@@ -27,7 +27,16 @@ def validate_stream(report, shape):
     require(report['received_sha256'] == expected, 'stream payload digest differs')
 
 
-def duplex(run, record, *, label, count, duration, rate, observe):
+def denied(report, shape):
+    require(report['shape'] == shape and report['ready'] and report['finished']
+            and report['completed_us'] is None
+            and report['stopped_reason'] == 'stream probe deadline reached before exact delivery and ACK'
+            and report['received_bytes'] == report['acknowledged_bytes'] == 0
+            and report['received_sha256'] == hashlib.sha256(b'').hexdigest(),
+            'unpaid deadline lacks fresh completed zero-delivery evidence')
+
+
+def duplex(run, record, *, label, count, duration, rate, observe, expect_denial=False):
     """Dispatch each endpoint once; retain both outcomes even if observation fails."""
     operations = run.root / ('stream-' + checked_name(label))
     operations.mkdir(mode=0o700)
@@ -41,7 +50,20 @@ def duplex(run, record, *, label, count, duration, rate, observe):
 
     def probe(name):
         save(operations / (name + '-intent.json'), shapes[name])
-        result = run.ctl(name, 'stream_probe', probe=shapes[name], operation_timeout=duration + 20)
+        try:
+            result = run.ctl(name, 'stream_probe', probe=shapes[name], operation_timeout=duration + 20)
+        except Exception as error:
+            save(operations / (name + '-error.json'), {'type': type(error).__name__, 'reason': str(error)[:240]})
+            # The native diagnostic returns an error for incomplete delivery.
+            # Reconcile that exact stream from live status; never resend it.
+            observed = run.ctl(name, 'status').get('stream_probe')
+            save(operations / (name + '-observed.json'), observed)
+            if not expect_denial:
+                raise
+            require(isinstance(observed, dict), 'unpaid stream status is unavailable')
+            result = {'probe': observed, 'observed_after_error': True}
+        if expect_denial:
+            denied(result['probe'], shapes[name])
         save(operations / (name + '-result.json'), result)
         return result['probe']
 

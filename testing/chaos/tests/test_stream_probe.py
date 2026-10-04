@@ -12,6 +12,32 @@ from sim.stream_probe import duplex
 
 
 class StreamProbeTests(unittest.TestCase):
+    def test_unpaid_deadline_requires_fresh_finished_zero_delivery_evidence(self):
+        for received in (0, 1):
+            with self.subTest(received=received), tempfile.TemporaryDirectory() as root:
+                run = Mock(root=Path(root), nodes={name: Mock(npub=name) for name in ('n01', 'n03')})
+                reports = {}
+                def control(name, kind, **fields):
+                    if kind == 'stream_probe':
+                        reports[name] = dict(shape=fields['probe'], ready=True, finished=True,
+                            completed_us=None, received_bytes=received, acknowledged_bytes=0,
+                            received_sha256='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+                            stopped_reason='stream probe deadline reached before exact delivery and ACK')
+                        raise RuntimeError('CLI returned nonzero')
+                    self.assertEqual(kind, 'status')
+                    return {'stream_probe': reports[name]}
+                run.ctl.side_effect = control
+                record = {}
+                if received:
+                    with self.assertRaises(RuntimeError):
+                        duplex(run, record, label='denied', count=1024, duration=4,
+                               rate=1024, observe=lambda: {}, expect_denial=True)
+                else:
+                    duplex(run, record, label='denied', count=1024, duration=4,
+                           rate=1024, observe=lambda: {}, expect_denial=True)
+                    self.assertEqual(record['results'], reports)
+                self.assertEqual(run.ctl.call_count, 4)
+
     def test_observer_failure_retains_both_completed_requests_without_replay(self):
         with tempfile.TemporaryDirectory() as root:
             release = threading.Event()

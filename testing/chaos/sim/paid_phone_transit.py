@@ -137,15 +137,12 @@ class PhoneTransitRun(PaidPhoneRun):
             require(self.topology() is not None, 'transit topology changed during transfer')
             return {'line_verified': True, **self.screen(mode)}
         duplex(self, row, label=('unpaid-' if unpaid else '') + mode,
-               count=count, duration=duration, rate=32 * 1024, observe=observe)
+               count=count, duration=duration, rate=32 * 1024, observe=observe, expect_denial=unpaid)
         row['after'] = resources(self.phone)
         require(row['before']['process'] == row['after']['process'], 'phone process changed')
         row['cpu_seconds'] = (row['after']['cpu_ticks'] - row['before']['cpu_ticks']) / row['before']['ticks_per_second']
         self.save()
-        if unpaid:
-            require(all(result['received_bytes'] == result['acknowledged_bytes'] == 0
-                        for result in row['results'].values()), 'unpaid payload was delivered')
-        else:
+        if not unpaid:
             for name, result in row['results'].items():
                 validate_stream(result, row['shapes'][name])
             row['cpu_seconds_per_delivered_mib'] = row['cpu_seconds'] / (2 * count / 1024 ** 2)
