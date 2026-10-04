@@ -746,6 +746,50 @@ reservation is released. The closed failed-run receipt is
 `work/android-current-r10/failed-acceptance-closure.json`; packet observations
 remain diagnostic evidence rather than successful delivery acceptance.
 
+The `r12` entry-receive diagnostic retains runtime `180c52312`, adding the
+existing post-GRO, pre-fast-ingress UDP log and 3,072-byte guest capture snapshots.
+The first healthy window delivers 3,979 of 4,000 phone-to-leaf originals and all
+4,000 reverse originals. Its complete-delivery assertion fails; impaired and
+recovery windows do not run. All four paying directions advance. The failure
+path now settles the original accounts immediately, before offline analysis;
+all four channels settle, all 512 test sats are collected, and four wallets are
+empty without new funding or wider budgets.
+
+The guest capture, entry receive log and first mesh egress each contain 3,979
+data-sized FMP records: 3,974 of 1,110 bytes and five of 1,194 bytes. The complete
+guest capture and complete receive log retain the same data-size totals, so the
+21-packet difference is not explained by their window boundaries. Every selected
+guest FMP header matches the complete receive log and vice versa, preserving
+duplicate counts. Full captured phone-to-entry payloads admit structural splitting with no
+opaque or truncated records; classic PCAP still lacks GRO metadata, and
+these headers and size classes do not authenticate application identity. All
+four directed mesh comparisons match in both directions. The same entry UDP
+socket reports zero drops, and the observed host UDP error counters do not
+increase. This points toward phone output or the guest Wi-Fi/AP path before the
+entry capture point; it does not yet distinguish those causes.
+
+The phone transport counts 4,777 successful kernel UDP submissions across data
+and control traffic, with zero send errors. Its session count of 4,000 advances
+before encryption/output, and profiler output totals describe a different stage
+and sampling interval. These aggregates cannot identify every submitted payload.
+The next useful observation is each phone-side FMP header and its scalar send
+result, matched to the entry capture; finer mesh captures would not resolve this
+remaining distinction.
+
+All four captures close normally with zero kernel capture drops, verifying the
+integer-only supervisor polling on the routers. All 759 management checks pass.
+Independent closure verifies restored router state, normal phone Wi-Fi and
+Wi-Fi-bound Internet, unchanged prior accounts, stopped test services and an
+absent diagnostic app process; the physical-device claim is released. The
+`r11` preflight had refused an oversized capture allocation before any funding;
+its empty account and zero-issuance mint closure remain separate evidence.
+The revised capture has explicit, separately checked RAM and temporary-storage
+reserves. Fourteen focused private helper/parser checks pass. Evidence is under
+`work/android-current-r12`: `device-closure.json`, `physical-session-closure.json`,
+`packet-analysis.json`, `receive-analysis.json` and `packet-review.json`. Instrumentation changes
+timing; this is loss-localization evidence, not sustained-delivery acceptance
+or an uninstrumented performance measurement.
+
 A separate scalar UDP send-error fix (`55eba04a6`) now preserves the successful
 prefix assumed by forwarding/accounting completion. Previously Android/Windows
 could send later packets after an earlier failure, making a total failure count
