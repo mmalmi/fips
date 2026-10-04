@@ -23,7 +23,11 @@ const PORT: u16 = 44_745;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
-    tokio::time::timeout(Duration::from_secs(90), async {
+    let started = std::time::Instant::now();
+    let checkpoint =
+        |phase| eprintln!("mesh mint {:.2}s: {phase}", started.elapsed().as_secs_f64());
+    // The complete financial lifecycle shares the unchanged 1 KiB/s reply tier.
+    tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -219,6 +223,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let info: Value =
             serde_json::from_slice(&response[body..]).expect("complete mint JSON after recovery");
         assert!(info["nuts"].is_object());
+        checkpoint("original HTTP response recovered");
         let quote = create_topup_quote(&wallet, &url, 16).await.unwrap();
         network
             .orchestrator_funding()
@@ -232,6 +237,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         );
         let payment = send_payment_token(&wallet, &url, 16).await.unwrap();
         assert_eq!(payment.mint_url, url);
+        checkpoint("source wallet funded and exported");
         for (path, bytes) in &untouched {
             assert_eq!(std::fs::read(path).unwrap(), *bytes);
         }
@@ -267,12 +273,14 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             phone.execute(CustomerCommand::Balance).await.unwrap()["balance_sat"],
             16
         );
+        checkpoint("customer offline import complete");
         phone.execute(CustomerCommand::Start).await.unwrap();
         // Payment, provider redemption and buyer refund all use the mesh mint.
         phone.execute(CustomerCommand::Buy).await.unwrap();
         let funded = phone.execute(CustomerCommand::Status).await.unwrap();
         assert_eq!(funded["relay"]["locked_sat"], 8);
         assert_eq!(funded["relay"]["funding_budget"]["wallet_debited_sat"], 8);
+        checkpoint("customer channel funded");
         let channel = funded["relay"]["history"][0]["channel"]["id"]
             .as_str()
             .unwrap();
@@ -296,6 +304,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         })
         .await
         .expect("payload delivery and automatic provider credit");
+        checkpoint("paid payload delivered and provider credited");
         let remaining = phone.execute(CustomerCommand::Finish).await.unwrap()["balance_sat"]
             .as_u64()
             .unwrap();
@@ -311,6 +320,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         assert_eq!(remaining + paid, 16);
         assert_eq!(settlement["report"]["refunded_sat"], 8 - paid);
         assert_eq!(settlement["wallet_refund_sat"], 8 - paid);
+        checkpoint("provider settlement and customer refund complete");
         drop(phone);
         let mut phone = CustomerClient::open(&customer_root).unwrap();
         let reopened = phone.execute(CustomerCommand::Status).await.unwrap();
@@ -334,6 +344,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             exported, retained,
             "export recovery must retain the original operation"
         );
+        checkpoint("customer export retained across reopen");
         let payment: cashu_service::CashuSentPayment =
             read_json(Path::new(exported["path"].as_str().unwrap())).unwrap();
         let collected = root.path().join("collected");
@@ -358,6 +369,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 .balance_sat,
             remaining
         );
+        checkpoint("customer token collected");
         let stats = nodes[1].free.stats();
         assert!(stats.admitted_packets > 0 && stats.admitted_session_bytes > 0);
         assert!(stats.bandwidth.unwrap().admitted_packets > 0);
@@ -425,6 +437,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 .balance_sat,
             16
         );
+        checkpoint("all sixteen test sats collected");
         collection_proxy.shutdown().await.unwrap();
         for node in nodes {
             node.shutdown().await.unwrap();

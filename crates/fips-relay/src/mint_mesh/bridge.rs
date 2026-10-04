@@ -96,6 +96,9 @@ impl MeshMintBridge {
                 .unwrap(),
         );
         let config = Config {
+            // Leave room for TCP/FIPS headers within the 512 bytes earned by a
+            // small forward packet, so a TCP ACK can sustain bounded replies.
+            mss: 256,
             receive_buffer: BUFFER,
             send_buffer: BUFFER,
             max_connections: CONNECTIONS,
