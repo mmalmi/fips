@@ -23,6 +23,11 @@ const PORT: u16 = 44_745;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_timer(tracing_subscriber::fmt::time::Uptime::default())
+        .with_test_writer()
+        .try_init();
     let started = std::time::Instant::now();
     let checkpoint =
         |phase| eprintln!("mesh mint {:.2}s: {phase}", started.elapsed().as_secs_f64());
@@ -310,9 +315,17 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         .await
         .expect("payload delivery and automatic provider credit");
         checkpoint("paid payload delivered and provider credited");
-        let remaining = phone.execute(CustomerCommand::Finish).await.unwrap()["balance_sat"]
-            .as_u64()
-            .unwrap();
+        let finished = phone.execute(CustomerCommand::Finish).await;
+        assert!(
+            finished.is_ok(),
+            "finish {finished:?}; provider {:?}; returns {:?}",
+            nodes[0].controller.last_error(),
+            nodes
+                .iter()
+                .map(|n| n.forwarding.relay.return_stats())
+                .collect::<Vec<_>>()
+        );
+        let remaining = finished.unwrap()["balance_sat"].as_u64().unwrap();
         let journal: Value =
             read_json(&customer_root.join("state/controller/controller.json")).unwrap();
         let settlements = journal["buyer_settlements"].as_object().unwrap();

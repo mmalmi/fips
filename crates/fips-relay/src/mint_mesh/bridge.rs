@@ -189,7 +189,17 @@ impl Connection {
         id: ConnectionId,
         now: u64,
     ) -> Result<bool, String> {
-        if self.started.elapsed() >= LIFETIME || tcp.state(id).is_none() {
+        if self.started.elapsed() >= LIFETIME {
+            tracing::debug!(
+                elapsed_ms = self.started.elapsed().as_millis(),
+                state = ?tcp.state(id),
+                to_mesh = self.to_mesh.len(),
+                to_socket = self.to_socket.len(),
+                "mesh mint stream lifetime reached"
+            );
+            return Ok(false);
+        }
+        if tcp.state(id).is_none() {
             return Ok(false);
         }
         if !matches!(
