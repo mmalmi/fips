@@ -480,16 +480,21 @@ async fn late_demand(
             .has_traffic_for(&target)
     );
     dial(nodes, TARGET, remote, parent).await;
-    while witness.lock().unwrap().replies.is_empty() {
+    while !nodes[SOURCE]
+        .node
+        .get_peer(parent.node_addr())
+        .unwrap()
+        .may_reach(&target)
+    {
         turn(nodes).await;
         assert!(
             Node::now_ms() < original_deadline,
-            "target replies before query expires"
+            "target reachability returns before query expires"
         );
     }
     assert!(
-        witness.lock().unwrap().replies[0].2,
-        "first genuine signed reply is lost"
+        witness.lock().unwrap().requests.is_empty(),
+        "a query without queued traffic does not resume on a filter hint"
     );
     let payload = b"first payload arrives during an older query's last attempt";
     send_endpoint_data_via_dataplane(&mut nodes[SOURCE].node, destination, payload.to_vec())
@@ -538,8 +543,12 @@ async fn late_demand(
     }
     assert_eq!(nodes[SOURCE].node.stats().discovery.resp_timed_out, 0);
     assert!(
-        (2..=5).contains(&witness.lock().unwrap().requests.len()),
-        "one old request and one bounded data-owned lookup"
+        (2..=4).contains(&witness.lock().unwrap().requests.len()),
+        "one bounded data-owned lookup"
+    );
+    assert!(
+        witness.lock().unwrap().replies[0].2,
+        "first genuine signed reply is lost"
     );
     assert!(
         target_io.event_rx.try_recv().is_err(),
