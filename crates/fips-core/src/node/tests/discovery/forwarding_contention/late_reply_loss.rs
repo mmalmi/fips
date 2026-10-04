@@ -12,8 +12,14 @@ const TARGET: usize = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Case {
     LateReplyLoss,
+    QueryBeforeDemand,
     Offline,
     Unanswered,
+}
+
+#[test]
+fn first_payload_keeps_its_lookup_budget_after_an_older_route_query() {
+    run(Case::QueryBeforeDemand);
 }
 
 #[test]
@@ -224,6 +230,9 @@ async fn traffic(
     remote: TransportAddr,
     witness: &Arc<Mutex<Witness>>,
 ) {
+    if case == Case::QueryBeforeDemand {
+        return late_demand(nodes, parent, remote, witness).await;
+    }
     let destination = PeerIdentity::from_pubkey_full(nodes[TARGET].node.identity().pubkey_full());
     let target = *destination.node_addr();
     let _source_io = nodes[SOURCE].node.attach_endpoint_data_io(8).unwrap();
@@ -306,6 +315,7 @@ async fn traffic(
         Case::LateReplyLoss => 1,
         Case::Offline => 0,
         Case::Unanswered => 4,
+        Case::QueryBeforeDemand => unreachable!(),
     };
     assert_eq!(
         sent, expected,
@@ -434,4 +444,105 @@ async fn traffic(
             "old or duplicate originals remain absent"
         );
     }
+}
+
+async fn late_demand(
+    nodes: &mut [TestNode],
+    parent: PeerIdentity,
+    remote: TransportAddr,
+    witness: &Arc<Mutex<Witness>>,
+) {
+    let destination = PeerIdentity::from_pubkey_full(nodes[TARGET].node.identity().pubkey_full());
+    let target = *destination.node_addr();
+    let _source_io = nodes[SOURCE].node.attach_endpoint_data_io(8).unwrap();
+    let mut target_io = nodes[TARGET].node.attach_endpoint_data_io(8).unwrap();
+    nodes[SOURCE]
+        .node
+        .maybe_initiate_route_query_lookup(&target)
+        .await;
+    let started = Node::now_ms();
+    let original_deadline = loop {
+        turn(nodes).await;
+        let pending = nodes[SOURCE].node.pending_lookups.get(&target).unwrap();
+        let deadline = pending.deadline_ms(&[1, 2, 4, 8]);
+        if pending.attempt == 4 && Node::now_ms() >= deadline - 2_000 {
+            break deadline;
+        }
+        assert!(
+            Node::now_ms() < started + 15_000,
+            "ordinary query reaches its final attempt"
+        );
+    };
+    assert!(
+        !nodes[SOURCE]
+            .node
+            .pending_session_traffic
+            .has_traffic_for(&target)
+    );
+    dial(nodes, TARGET, remote, parent).await;
+    while witness.lock().unwrap().replies.is_empty() {
+        turn(nodes).await;
+        assert!(
+            Node::now_ms() < original_deadline,
+            "target replies before query expires"
+        );
+    }
+    assert!(
+        witness.lock().unwrap().replies[0].2,
+        "first genuine signed reply is lost"
+    );
+    let payload = b"first payload arrives during an older query's last attempt";
+    send_endpoint_data_via_dataplane(&mut nodes[SOURCE].node, destination, payload.to_vec())
+        .await
+        .unwrap();
+    let admitted = nodes[SOURCE]
+        .node
+        .pending_lookups
+        .get(&target)
+        .unwrap()
+        .clone();
+    for _ in 0..2 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        nodes[SOURCE].node.maybe_initiate_lookup(&target).await;
+        let pending = nodes[SOURCE].node.pending_lookups.get(&target).unwrap();
+        assert_eq!(
+            (pending.initiated_ms, pending.last_sent_ms, pending.attempt),
+            (
+                admitted.initiated_ms,
+                admitted.last_sent_ms,
+                admitted.attempt
+            ),
+            "repeated demand cannot extend the data-owned lookup"
+        );
+    }
+    let until = Instant::now() + Duration::from_secs(6);
+    loop {
+        turn(nodes).await;
+        if let Ok(event) = target_io.event_rx.try_recv() {
+            assert_eq!(
+                expect_single_endpoint_data_event(event).payload.as_slice(),
+                payload
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "first payload must not be discarded by an older route query's exhaustion: queued={}, lookup={:?}, timeouts={}",
+            nodes[SOURCE]
+                .node
+                .pending_session_traffic
+                .has_traffic_for(&target),
+            nodes[SOURCE].node.pending_lookups.get(&target),
+            nodes[SOURCE].node.stats().discovery.resp_timed_out
+        );
+    }
+    assert_eq!(nodes[SOURCE].node.stats().discovery.resp_timed_out, 0);
+    assert!(
+        (2..=5).contains(&witness.lock().unwrap().requests.len()),
+        "one old request and one bounded data-owned lookup"
+    );
+    assert!(
+        target_io.event_rx.try_recv().is_err(),
+        "one offered payload is delivered once"
+    );
 }
