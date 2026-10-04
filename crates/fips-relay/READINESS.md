@@ -7440,6 +7440,32 @@ physical eviction, general mobile-radio latency, restart recovery or sustained
 throughput. The strict short-contact datagram experiment remains unchanged and
 failing. No physical device changed.
 
+The focused carrier-loss follow-up at `e433cd31d` reuses that fixture and stream
+driver. `accepted_tcp_write_recovers_after_directed_carrier_loss` keeps the carrier
+up while dropping all encrypted traffic from node 0 to node 1 for two seconds.
+The application submits one 4,096-byte write. Before restoration, the source
+records five submissions on application service port 44753 (5,770 FIPS payload
+bytes); the network records 16 loss drops and zero link-down drops. Those network
+totals also include control traffic. The original TCP connection delivers the
+exact byte range once and acknowledges it without application replay: first
+receipt at 3.020 seconds, complete receipt at 3.081 seconds, acknowledgment at
+3.096 seconds, and independent carrier restoration at 2.001 seconds. The original
+20-second deadline and payment/capital limits are unchanged.
+
+The original split/rejoin case also passes on this source: ordinary split takes
+30.201 seconds, followed by acknowledgment 6.311 seconds after its single write.
+Both cases retain their eight original channels/funding identities, advance
+supported all-hop usage and catch up automatic payments; each collects all 1,536
+test sats. The separate service-carrier retransmission test passes too. These
+three focused checks, strict lint for both affected integration targets,
+workspace formatting and the 1,026-file size gate pass. Frozen source and
+dependency-manifest checks pass; acceptance evidence digest is
+`af5d296e775f8e4eb7ac43e61ea1bfafee1f5611388e7c30ec8ab2b85bd9e75f`.
+This verifies reliable application bytes over a simulated paid lossy carrier,
+independently of payment control. It adds no delivery-receipt protocol. The
+physical phone raw-datagram loss result remains failed; sustained reliable
+application-byte acceptance on the phone/router route is still required.
+
 All eight original channels separately recover the required usage, cumulative
 credit and acknowledgements 661 ms after reopening. Those checks include native
 upkeep and prior credit and do not establish delivery of the missing original.
