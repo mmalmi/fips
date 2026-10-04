@@ -394,7 +394,7 @@ Controls bloom-guided node discovery (LookupRequest/LookupResponse).
 | `node.discovery.recent_expiry_secs` | u64 | `10` | Dedup cache expiry for recent request IDs |
 | `node.discovery.backoff_base_secs` | u64 | `30` | Post-failure suppression base in seconds; doubles per consecutive failure. Set both backoff values to `0` to disable |
 | `node.discovery.backoff_max_secs` | u64 | `300` | Cap on post-failure backoff |
-| `node.discovery.forward_min_interval_secs` | u64 | `2` | Transit-side rate limiting: minimum interval between forwarded lookups for the same target |
+| `node.discovery.forward_min_interval_secs` | u64 | `2` | Transit-side rate limiting: minimum interval per authenticated ingress, claimed origin and target |
 
 If a failed lookup never selected an eligible peer, new local demand can spend
 one early retry when ordinary peer selection finds a route. This handles

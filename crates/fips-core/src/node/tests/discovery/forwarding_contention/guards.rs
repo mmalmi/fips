@@ -130,11 +130,10 @@ async fn exercise(nodes: &mut [TestNode], case: Case) {
             "unrelated ready traffic cannot satisfy the absent request predicate"
         );
     }
-    let relay = *nodes[1].node.node_addr();
     let source = *nodes[0].node.node_addr();
     let target = *nodes[2].node.node_addr();
     let started = Instant::now();
-    send_noise(nodes, relay, 1).await;
+    source_request(nodes, 1).await;
     wait_record(nodes, 2, 1).await;
     if matches!(case, Case::FrozenExpiry) {
         nodes[1].node.config.node.discovery.recent_expiry_secs = 1;
@@ -203,12 +202,12 @@ async fn exercise(nodes: &mut [TestNode], case: Case) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     if matches!(case, Case::Keep) {
-        send_noise(nodes, relay, 2).await;
+        source_request(nodes, 2).await;
         wait_record(nodes, 1, 2).await;
         wait_record(nodes, 2, 100).await;
         assert!(
             !nodes[2].node.recent_requests.contains_key(&2),
-            "new ingress cannot steal reserved slot"
+            "new request cannot steal its ingress's reserved slot"
         );
         assert!(
             !nodes[2].node.recent_requests.contains_key(&101),

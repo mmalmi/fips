@@ -1,4 +1,4 @@
-//! Bounded waiting for the next existing per-target discovery forwarding slot.
+//! Bounded waiting for the next ingress/origin/target discovery forwarding slot.
 use super::{LookupForwardOutcome, LookupRequest, Node, NodeAddr};
 use crate::time::{Instant, instant_now};
 use crate::transport::LinkId;
@@ -26,13 +26,26 @@ struct DeferredForward {
 
 #[derive(Default)]
 pub(in crate::node) struct DeferredDiscoveryForwards {
-    entries: HashMap<NodeAddr, DeferredForward>,
+    entries: HashMap<(NodeAddr, NodeAddr, NodeAddr), DeferredForward>,
     bytes: usize,
     next_due: Option<Instant>,
 }
 
 impl DeferredDiscoveryForwards {
-    fn insert(&mut self, target: NodeAddr, entry: DeferredForward) -> bool {
+    fn due_keys(&self, now: Instant) -> Vec<(NodeAddr, NodeAddr, NodeAddr)> {
+        let mut due = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.due <= now)
+            .map(|(key, entry)| (entry.due, *key))
+            .collect::<Vec<_>>();
+        // Older reservations go first; new origin claims cannot starve them.
+        due.sort_unstable();
+        due.truncate(MAX_DISPATCH_PER_TURN);
+        due.into_iter().map(|(_, key)| key).collect()
+    }
+
+    fn insert(&mut self, target: (NodeAddr, NodeAddr, NodeAddr), entry: DeferredForward) -> bool {
         if self.entries.contains_key(&target)
             || self.entries.len() >= MAX_WAITERS
             || entry.encoded.len() > MAX_BYTES.saturating_sub(self.bytes)
@@ -55,7 +68,11 @@ impl DeferredDiscoveryForwards {
         true
     }
 
-    fn take_due(&mut self, target: &NodeAddr, now: Instant) -> Option<DeferredForward> {
+    fn take_due(
+        &mut self,
+        target: &(NodeAddr, NodeAddr, NodeAddr),
+        now: Instant,
+    ) -> Option<DeferredForward> {
         if self.entries.get(target).is_none_or(|entry| entry.due > now) {
             return None;
         }
@@ -88,30 +105,25 @@ impl Node {
         // shared RX-loop timebox. A slow transit must not steal their turn.
         self.check_pending_lookups(now_ms).await;
         let now = instant_now();
-        let due: Vec<_> = self
-            .deferred_discovery_forwards
-            .entries
-            .iter()
-            .filter_map(|(target, entry)| (entry.due <= now).then_some(*target))
-            .take(MAX_DISPATCH_PER_TURN)
-            .collect();
+        let due = self.deferred_discovery_forwards.due_keys(now);
         for target in due {
-            self.forward_due_lookup_for_target(&target).await;
+            self.forward_due_lookup_for_scope(&target).await;
         }
     }
 
     pub(super) fn defer_lookup_forward(&mut self, from: &NodeAddr, request: &LookupRequest) {
-        if self
-            .deferred_discovery_forwards
-            .entries
-            .contains_key(&request.target)
-        {
+        if self.deferred_discovery_forwards.entries.contains_key(&(
+            *from,
+            request.origin,
+            request.target,
+        )) {
             return;
         }
-        let Some(due) = self
-            .discovery_forward_limiter
-            .deferred_deadline(from, &request.target)
-        else {
+        let Some(due) = self.discovery_forward_limiter.deferred_deadline(
+            from,
+            &request.origin,
+            &request.target,
+        ) else {
             return;
         };
         let Some(peer) = self
@@ -157,13 +169,16 @@ impl Node {
         };
         if self
             .deferred_discovery_forwards
-            .insert(request.target, entry)
+            .insert((*from, request.origin, request.target), entry)
         {
             self.recent_requests.protect(request.request_id);
         }
     }
 
-    pub(super) async fn forward_due_lookup_for_target(&mut self, target: &NodeAddr) {
+    pub(super) async fn forward_due_lookup_for_scope(
+        &mut self,
+        target: &(NodeAddr, NodeAddr, NodeAddr),
+    ) {
         let Some(entry) = self
             .deferred_discovery_forwards
             .take_due(target, instant_now())
@@ -181,7 +196,7 @@ impl Node {
             .get(&entry.request_id)
             .is_some_and(|recent| {
                 recent.from_peer == entry.from
-                    && recent.target == *target
+                    && recent.target == target.2
                     && recent.timestamp_ms == entry.received_ms
                     && recent.admission_generation == entry.admission_generation
                     && !recent.response_forwarded
@@ -199,7 +214,10 @@ impl Node {
         let Ok(request) = LookupRequest::decode(&entry.encoded[1..]) else {
             return;
         };
-        // Remove before awaiting. Dispatch reserves the normal target slot and
+        if (entry.from, request.origin, request.target) != *target {
+            return;
+        }
+        // Remove before awaiting. Dispatch reserves the normal scoped slot and
         // ingress token before its first transport await; cancellation cannot
         // retry this reservation or remove any untouched waiting request.
         match self

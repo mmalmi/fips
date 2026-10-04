@@ -9,20 +9,40 @@ use std::panic::AssertUnwindSafe;
 
 #[test]
 fn canceled_deferred_send_preserves_local_retry_and_untouched_waiter() {
-    run_cancellation(false);
+    run_scenario(Scenario::Cancellation(false));
 }
 
 #[test]
 fn deferred_competition_drains_ready_work_without_a_new_wakeup() {
-    run_cancellation(true);
+    run_scenario(Scenario::Cancellation(true));
 }
 
-fn run_cancellation(retain_competing_wakeup: bool) {
+#[test]
+fn deferred_lookups_drop_disconnected_and_reauthenticated_ingresses() {
+    run_scenario(Scenario::RetiredIngress);
+}
+
+#[test]
+fn expired_deferred_lookups_never_forward() {
+    run_scenario(Scenario::ExpiredReservation);
+}
+
+#[test]
+fn forged_origins_cannot_replace_honest_ingress_waiters() {
+    run_scenario(Scenario::LiveReservations);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Scenario {
+    Cancellation(bool),
+    RetiredIngress,
+    ExpiredReservation,
+    LiveReservations,
+}
+
+fn run_scenario(scenario: Scenario) {
     run_large_stack_async_test("deferred-lookup-cancel", move || async move {
-        let name = format!(
-            "deferred-lookup-cancel-{}-{retain_competing_wakeup}",
-            std::process::id()
-        );
+        let name = format!("deferred-lookup-cancel-{}-{scenario:?}", std::process::id());
         let network = SimNetwork::new(272);
         network.set_default_link(SimLink {
             up: false,
@@ -48,9 +68,14 @@ fn run_cancellation(retain_competing_wakeup: bool) {
             nodes.push(configured_discovering_node(config, address).await);
         }
         nodes.sort_by_key(|node| *node.node.node_addr());
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network, retain_competing_wakeup))
-            .catch_unwind()
-            .await;
+        let result = AssertUnwindSafe(async {
+            match scenario {
+                Scenario::Cancellation(wakeup) => exercise(&mut nodes, &network, wakeup).await,
+                other => exercise_scoped_waiters(&mut nodes, &network, other).await,
+            }
+        })
+        .catch_unwind()
+        .await;
         for node in &nodes {
             network.set_node_send_completion_delay(node.addr.as_str().unwrap(), 0);
         }
@@ -160,13 +185,23 @@ async fn setup(nodes: &mut [TestNode], network: &SimNetwork) {
 }
 
 async fn send_request(nodes: &mut [TestNode], ingress: usize, target: usize, request_id: u64) {
+    send_request_as(nodes, ingress, target, request_id, ingress).await;
+}
+
+async fn send_request_as(
+    nodes: &mut [TestNode],
+    ingress: usize,
+    target: usize,
+    request_id: u64,
+    origin: usize,
+) {
     // The target is a genuine direct peer of relay 0. Both other ingress
     // peers submit their own authenticated request IDs over the real carrier.
     let request = LookupRequest::new(
         request_id,
         *nodes[target].node.node_addr(),
-        *nodes[ingress].node.node_addr(),
-        nodes[ingress].node.tree_state().my_coords().clone(),
+        *nodes[origin].node.node_addr(),
+        nodes[origin].node.tree_state().my_coords().clone(),
         1,
         0,
     );
@@ -223,17 +258,17 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, retain_competing
             .forward_min_interval_secs,
         2
     );
-    // Ingress 1 takes each existing global target slot. Ingress 2 then waits;
+    // One carrier repeats each origin/target. Its retry slot remains shared;
     // no synthetic limiter, recent-request owner or expiry is inserted.
     for target in [3, 4] {
-        send_request(nodes, 1, target, 100 + target as u64).await;
+        send_request(nodes, 2, target, 100 + target as u64).await;
     }
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
     while nodes[0].node.stats().discovery.req_forwarded < 2 {
         poll_available_packets(nodes).await;
         assert!(
             tokio::time::Instant::now() < until,
-            "both real global slots are consumed"
+            "both real origin/target slots are consumed"
         );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
@@ -450,6 +485,85 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork, retain_competing
     );
     finish_fresh_waiter(nodes, selected, forwarded).await;
     assert_eq!(owners(nodes), before_owners);
+}
+
+async fn exercise_scoped_waiters(nodes: &mut [TestNode], network: &SimNetwork, scenario: Scenario) {
+    setup(nodes, network).await;
+    let ids: Vec<_> = nodes.iter().map(|node| *node.node.node_addr()).collect();
+    if matches!(scenario, Scenario::ExpiredReservation) {
+        // The reservation must expire before its ordinary two-second retry slot.
+        nodes[0].node.config.node.discovery.recent_expiry_secs = 1;
+    }
+    for ingress in [1, 2, 4] {
+        // Ingress 1 forges ingress 2's origin; actual ingress 2 still forwards.
+        send_request_as(nodes, ingress, 3, 100 + ingress as u64, 2).await;
+    }
+    let until = tokio::time::Instant::now() + Duration::from_secs(1);
+    while nodes[0].node.stats().discovery.req_forwarded < 3 {
+        poll_available_packets(nodes).await;
+        assert!(
+            tokio::time::Instant::now() < until,
+            "independent origins forward immediately"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    for ingress in [1, 2, 4] {
+        send_request_as(nodes, ingress, 3, 200 + ingress as u64, 2).await;
+    }
+    let until = tokio::time::Instant::now() + Duration::from_secs(1);
+    while nodes[0].node.stats().discovery.req_forward_rate_limited < 3 {
+        poll_available_packets(nodes).await;
+        assert!(
+            tokio::time::Instant::now() < until,
+            "all origins own a retry reservation"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let due = nodes[0].node.discovery_work_deadline_ms().unwrap();
+    if matches!(scenario, Scenario::RetiredIngress) {
+        nodes[0].node.peers.remove(&ids[1]);
+        nodes[0]
+            .node
+            .peers
+            .get_mut(&ids[2])
+            .unwrap()
+            .set_link_id(LinkId::new(u64::MAX));
+        // Controlled post-authentication epoch change, preserving the link ID.
+        let old = nodes[0].node.peers.get(&ids[4]).unwrap();
+        let replacement = crate::peer::ActivePeer::new(
+            *old.identity(),
+            old.link_id(),
+            old.authenticated_at() + 1,
+        );
+        assert!(replacement.is_healthy() && replacement.can_send());
+        nodes[0].node.peers.insert(ids[4], replacement);
+    }
+    while Node::now_ms() <= due + 10 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    nodes[0].node.check_discovery_work(Node::now_ms()).await;
+    if matches!(scenario, Scenario::LiveReservations) {
+        let until = tokio::time::Instant::now() + Duration::from_secs(1);
+        while ![201, 202, 204]
+            .iter()
+            .all(|id| nodes[3].node.recent_requests.contains_key(id))
+        {
+            poll_available_packets(nodes).await;
+            assert!(
+                tokio::time::Instant::now() < until,
+                "honest and forged-origin waiters remain independent"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(nodes[0].node.stats().discovery.req_forwarded, 6);
+        assert_eq!(nodes[0].node.discovery_work_deadline_ms(), None);
+        return;
+    }
+    assert_eq!(nodes[0].node.stats().discovery.req_forwarded, 3);
+    assert_eq!(nodes[0].node.discovery_work_deadline_ms(), None);
+    assert!(!nodes[3].node.recent_requests.contains_key(&201));
+    assert!(!nodes[3].node.recent_requests.contains_key(&202));
+    assert!(!nodes[3].node.recent_requests.contains_key(&204));
 }
 
 async fn finish_fresh_waiter(nodes: &mut [TestNode], selected: usize, forwarded: u64) {

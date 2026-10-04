@@ -24,7 +24,8 @@ pub struct DiscoveryConfig {
     /// Maximum backoff cap in seconds (`node.discovery.backoff_max_secs`).
     #[serde(default = "DiscoveryConfig::default_backoff_max_secs")]
     pub backoff_max_secs: u64,
-    /// Minimum interval between forwarded lookups for the same target in seconds
+    /// Minimum interval between lookups for the same authenticated ingress,
+    /// claimed origin and target, in seconds. Authenticated-ingress budgets independently bound origin churn.
     /// (`node.discovery.forward_min_interval_secs`).
     /// Defense-in-depth against misbehaving nodes.
     #[serde(default = "DiscoveryConfig::default_forward_min_interval_secs")]

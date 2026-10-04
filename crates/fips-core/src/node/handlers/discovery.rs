@@ -631,7 +631,8 @@ impl Node {
         if !request.forward() {
             return LookupForwardOutcome::NoPeer;
         }
-        self.forward_due_lookup_for_target(&request.target).await;
+        self.forward_due_lookup_for_scope(&(*from, request.origin, request.target))
+            .await;
         self.forward_ready_lookup_request(from, request, true).await
     }
 
@@ -775,10 +776,11 @@ impl Node {
         request: &LookupRequest,
         allow_deferral: bool,
     ) -> bool {
-        if self
-            .discovery_forward_limiter
-            .should_forward(from, &request.target)
-        {
+        if self.discovery_forward_limiter.should_forward_for_origin(
+            from,
+            &request.origin,
+            &request.target,
+        ) {
             self.recent_requests.protect(request.request_id);
             return true;
         }

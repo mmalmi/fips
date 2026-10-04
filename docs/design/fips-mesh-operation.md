@@ -430,11 +430,18 @@ This avoids wasting network resources when the target is not in the mesh.
 
 ### Transit-Side Rate Limiting
 
-Transit nodes enforce a per-target minimum interval (default 2s, configurable
-via `forward_min_interval_secs`) for forwarded lookups. This is
-defense-in-depth against misbehaving nodes that generate fresh `request_id`s
-at high rate to bypass dedup. The rate limiter collapses rapid-fire lookups
-for the same target regardless of `request_id`.
+Transit nodes enforce a minimum interval (default 2s, configurable via
+`forward_min_interval_secs`) per authenticated ingress, claimed origin and
+target. Fresh `request_id`s cannot bypass that scope's delay, while distinct
+origins can discover the same destination concurrently through a shared transit.
+The claimed origin is untrusted: changing it still consumes the authenticated
+ingress's budget (256-request burst, 32 requests/second), and cannot reserve a
+different ingress's retry slot. Suppression state remains capped at 4096 entries.
+
+Deferred requests retain separate scopes, with at most 256 requests and 64 KiB
+of encoded payloads total, and 64 requests/16 KiB per ingress. Up to 16 due reservations dispatch
+oldest-first per turn. Dispatch rechecks the original request owner, link and
+authentication epoch, and frozen expiry; fresh IDs cannot replace a waiter.
 
 ### LookupResponse
 

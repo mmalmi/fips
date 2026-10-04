@@ -1,4 +1,4 @@
-//! Legitimate origins behind one ingress must share the next forwarding slot.
+//! Distinct origins behind one ingress retain independent forwarding slots.
 use super::wire_tap::WireTap;
 use super::*;
 use crate::protocol::LinkMessageType;
@@ -11,7 +11,7 @@ const TRANSIT: usize = 2;
 const TARGET: usize = 3;
 
 #[test]
-fn last_attempt_uses_next_slot_for_distinct_origin_behind_same_ingress() {
+fn distinct_origin_behind_shared_ingress_keeps_final_attempt_deadline() {
     run_large_stack_async_test("shared-lookup-ingress", || async {
         let _guard = lock_large_network_test().await;
         let mut nodes = Vec::new();
@@ -221,7 +221,7 @@ async fn exercise(nodes: &mut [TestNode]) {
         }
         eprintln!("shared ingress: delivered={delivered}, attempts={attempts:?}, remaining_ms={}, timed_out={}",
             deadline.saturating_sub(Node::now_ms()), nodes[SOURCE].node.stats().discovery.resp_timed_out);
-        assert!(delivered, "a distinct origin behind the same ingress must use the next existing target slot");
+        assert!(delivered, "an independent origin keeps its original deadline behind a shared ingress");
         let until = Instant::now() + Duration::from_millis(250);
         while Instant::now() < until {
             turn(nodes).await;
@@ -242,14 +242,24 @@ async fn exercise(nodes: &mut [TestNode]) {
             .unwrap();
         assert_eq!(received.from_peer, ingress);
         assert_eq!(received.target, target);
+        let delivered = nodes[TARGET]
+            .node
+            .recent_requests
+            .get(&request.request_id)
+            .unwrap();
+        assert!(
+            delivered.timestamp_ms < request.received_ms + 1_000,
+            "distinct origins must not wait for each other's two-second slot"
+        );
     }
-    assert!(
+    assert_eq!(
         nodes[TRANSIT]
             .node
             .stats()
             .discovery
-            .req_forward_rate_limited
-            > 0
+            .req_forward_rate_limited,
+        0,
+        "independent origins do not consume each other's retry slots"
     );
     assert_eq!(
         observations

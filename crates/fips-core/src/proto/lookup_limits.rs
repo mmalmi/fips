@@ -9,7 +9,7 @@
 //!   A lookup whose first request was delayed by missing reachability may retry
 //!   once when local demand finds a usable route, without clearing failure history.
 //!
-//! - **`DiscoveryForwardRateLimiter`** (transit-side): Per-target minimum
+//! - **`DiscoveryForwardRateLimiter`** (transit-side): Per-ingress/origin/target minimum
 //!   interval plus a per-authenticated-ingress budget for forwarded requests.
 //!   Defense-in-depth against misbehaving nodes generating fresh request_ids
 //!   and targets at high rate.
@@ -167,7 +167,7 @@ impl Default for DiscoveryBackoff {
 // Transit-side: Discovery Forward Rate Limiter
 // ============================================================================
 
-/// Default minimum interval between forwarded lookups for the same target.
+/// Default minimum interval between lookups for the same origin and target.
 const DEFAULT_FORWARD_MIN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Maximum age of entries before cleanup.
@@ -215,13 +215,13 @@ enum DiscoveryForwardDecision {
 
 /// Rate limiter for forwarded discovery requests.
 ///
-/// Tracks the last time a LookupRequest was forwarded for each target and
-/// enforces a minimum interval to prevent floods from misbehaving nodes
+/// Tracks the last forward for each authenticated ingress, claimed origin and target.
+/// Enforces a minimum interval to prevent floods from misbehaving nodes
 /// generating fresh request_ids. Both target state and per-ingress token
 /// buckets are hard-capped. Cleanup is time-amortized rather than performed on
 /// every admitted request.
 pub struct DiscoveryForwardRateLimiter {
-    last_forwarded: HashMap<NodeAddr, Instant>,
+    last_forwarded: HashMap<(NodeAddr, NodeAddr, NodeAddr), Instant>,
     ingress_buckets: HashMap<NodeAddr, DiscoveryForwardBucket>,
     min_interval: Duration,
     max_age: Duration,
@@ -262,29 +262,54 @@ impl DiscoveryForwardRateLimiter {
     /// peer for this target.
     ///
     /// Returns true if enough time has passed since the last forward for this
-    /// target and the ingress peer has forwarding budget. Updates internal
-    /// state only when returning true, apart from its bounded ingress bucket.
+    /// originating peer and target, and the ingress peer has forwarding budget.
+    /// Updates state only on success, apart from the bounded ingress bucket.
+    #[cfg(test)]
     pub fn should_forward(&mut self, from: &NodeAddr, target: &NodeAddr) -> bool {
-        let now = instant_now();
-        self.decision_at(from, target, now) == DiscoveryForwardDecision::Forward
+        self.should_forward_for_origin(from, from, target)
     }
 
+    /// Admit an independent origin sharing this authenticated ingress.
+    /// `origin` is an untrusted claim, used only for duplicate suppression.
+    /// Changing it cannot bypass the ingress budget or the retained-state cap,
+    /// or reserve another authenticated ingress's retry slot.
+    pub fn should_forward_for_origin(
+        &mut self,
+        from: &NodeAddr,
+        origin: &NodeAddr,
+        target: &NodeAddr,
+    ) -> bool {
+        let now = instant_now();
+        self.decision_for_origin_at(from, origin, target, now) == DiscoveryForwardDecision::Forward
+    }
+
+    #[cfg(test)]
     fn decision_at(
         &mut self,
         from: &NodeAddr,
         target: &NodeAddr,
         now: Instant,
     ) -> DiscoveryForwardDecision {
-        self.maybe_cleanup(now);
+        self.decision_for_origin_at(from, from, target, now)
+    }
 
-        if let Some(&last) = self.last_forwarded.get(target)
+    fn decision_for_origin_at(
+        &mut self,
+        from: &NodeAddr,
+        origin: &NodeAddr,
+        target: &NodeAddr,
+        now: Instant,
+    ) -> DiscoveryForwardDecision {
+        self.maybe_cleanup(now);
+        let key = (*from, *origin, *target);
+
+        if let Some(&last) = self.last_forwarded.get(&key)
             && now.saturating_duration_since(last) < self.min_interval
         {
             return DiscoveryForwardDecision::TargetInterval;
         }
 
-        if !self.last_forwarded.contains_key(target)
-            && self.last_forwarded.len() >= self.max_targets
+        if !self.last_forwarded.contains_key(&key) && self.last_forwarded.len() >= self.max_targets
         {
             return DiscoveryForwardDecision::TargetCapacity;
         }
@@ -302,7 +327,7 @@ impl DiscoveryForwardRateLimiter {
         }
         bucket.tokens -= 1.0;
 
-        self.last_forwarded.insert(*target, now);
+        self.last_forwarded.insert(key, now);
         DiscoveryForwardDecision::Forward
     }
 
@@ -312,10 +337,11 @@ impl DiscoveryForwardRateLimiter {
     pub(crate) fn deferred_deadline(
         &mut self,
         from: &NodeAddr,
+        origin: &NodeAddr,
         target: &NodeAddr,
     ) -> Option<Instant> {
         let now = instant_now();
-        let &last = self.last_forwarded.get(target)?;
+        let &last = self.last_forwarded.get(&(*from, *origin, *target))?;
         let due = last.checked_add(self.min_interval)?;
         if now >= due {
             return None;
@@ -627,6 +653,7 @@ mod tests {
     }
 
     mod deferred;
+    mod origins;
 
     // --- DiscoveryForwardRateLimiter tests ---
 
@@ -634,6 +661,14 @@ mod tests {
     fn test_forward_first_allowed() {
         let mut limiter = DiscoveryForwardRateLimiter::new();
         assert!(limiter.should_forward(&addr(99), &addr(1)));
+    }
+
+    #[test]
+    fn distinct_ingresses_can_discover_one_target_concurrently() {
+        let mut limiter = DiscoveryForwardRateLimiter::new();
+        for ingress in 1..=16 {
+            assert!(limiter.should_forward(&addr(ingress), &addr(99)));
+        }
     }
 
     #[test]
