@@ -572,6 +572,14 @@ focused phone-harness checks also pass. The consolidated receipt is
 accepts one Android process restart with a pause in offered traffic, not physical
 power loss, continuous traffic during recovery, throughput or an Internet VPN.
 
+The 4 October matching APK passes its build, lint, activity and package checks,
+but its new Pixel run aborts before paid purchases after simultaneous management
+SSH timeouts and hostname-resolution failures. It does not accept the newer
+phone runtime. All 512 test sats remain unspent and are subsequently collected;
+independent closure verifies restored routers, normal phone Wi-Fi/Internet and
+unchanged prior accounts. The stopped, empty test account is retained. Evidence
+is `work/android-current-r1/failed-acceptance-closure.json` in the private bundle.
+
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest cancellation-recovery runtime delivers all 84,000 router originals with 1.62/1.74-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
