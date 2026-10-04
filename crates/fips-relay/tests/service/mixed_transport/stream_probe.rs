@@ -47,6 +47,9 @@ async fn operator_stream_probe_requires_paid_routes_and_preserves_settlement() {
         bench.set_stage("stream-unfunded");
         let denied = duplex(&bench, 2, 1024).await;
         let unfunded = bench.states().await;
+        // Retain the original channels for this focused diagnostic check;
+        // automatic cumulative payments still run throughout the transfer.
+        bench.set_renewals_paused(true).await;
         for (source, destination) in [(0, 2), (2, 0)] {
             request(
                 &bench.configs[source],
@@ -57,11 +60,12 @@ async fn operator_stream_probe_requires_paid_routes_and_preserves_settlement() {
             .await
             .unwrap();
         }
-        let funding = bench.funding_intents(false);
+        let funding = bench.funding_intents(true);
         let before = bench.states().await;
         bench.set_stage("stream-paid");
         let delivery = duplex(&bench, 6, 128 * 1024).await;
         let after = bench.states().await;
+        eprintln!("fixed stream workload results: {delivery:?}");
         // Close accounts even if the fixed measured workload failed; no new
         // application traffic or purchase can repair that recorded verdict.
         for config in &bench.configs {
@@ -102,7 +106,7 @@ async fn operator_stream_probe_requires_paid_routes_and_preserves_settlement() {
         }
         assert!(
             bench
-                .funding_intents(false)
+                .funding_intents(true)
                 .iter()
                 .zip(&funding)
                 .all(|(after, before)| {

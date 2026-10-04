@@ -192,7 +192,7 @@ async fn drive(
     loop {
         let now = started.elapsed().as_millis() as u64;
         tokio::select! {
-            received = tcp.receive_report_filtered(now, |source| *source == peer) => {
+            received = tcp.receive_report_filtered(now, |source| source.pubkey() == peer.pubkey()) => {
                 report.rejected_datagrams += received.map_err(|e| e.to_string())?.rejected() as u64;
             }
             _ = ticker.tick() => tcp.poll(started.elapsed().as_millis() as u64).await.map_err(|e| e.to_string())?,
@@ -210,7 +210,7 @@ async fn drive(
             }
             continue;
         }
-        if tcp.peer(connection) != Some(peer) {
+        if tcp.peer(connection).map(|identity| identity.pubkey()) != Some(peer.pubkey()) {
             return Err("stream probe accepted another peer".into());
         }
         report.connected = true;

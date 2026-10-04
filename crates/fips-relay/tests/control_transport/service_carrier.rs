@@ -23,10 +23,22 @@ impl Drop for Network {
 }
 
 async fn simulated_pair(name: &str) -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
+    simulated_pair_with_identities(name, None).await
+}
+
+async fn simulated_pair_with_identities(
+    name: &str,
+    identities: Option<&[Identity; 2]>,
+) -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
     let mut nodes = Vec::new();
-    for address in ["sender", "receiver"] {
+    for (index, address) in ["sender", "receiver"].into_iter().enumerate() {
         let mut cfg = config();
         cfg.node.identity.persistent = false;
+        if let Some(identities) = identities {
+            cfg.node.identity.nsec = Some(fips_core::encode_nsec(
+                &identities[index].keypair().secret_key(),
+            ));
+        }
         cfg.node.control.enabled = false;
         cfg.transports = Default::default();
         cfg.transports.sim = TransportInstances::Single(SimTransportConfig {

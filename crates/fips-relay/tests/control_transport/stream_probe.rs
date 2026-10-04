@@ -27,7 +27,12 @@ async fn observed(progress: &Progress, check: impl Fn(&StreamReport) -> bool) {
         }
     })
     .await
-    .expect("stream diagnostic progress deadline");
+    .unwrap_or_else(|_| {
+        panic!(
+            "stream diagnostic progress deadline: {:?}",
+            progress.lock().unwrap()
+        )
+    });
 }
 
 fn start(
@@ -44,7 +49,15 @@ async fn stream_probe_recovers_duplex_bytes_and_partial_writes_without_replay() 
     let network = SimNetwork::new(744);
     let registration = Network(format!("stream-probe-{}", Identity::generate().node_addr()));
     fips_core::register_sim_network(registration.0.clone(), network.clone());
-    let (a, b) = simulated_pair(&registration.0).await;
+    // npub intentionally omits full-key parity. Force both native identities
+    // to carry odd parity so accidental whole-struct equality always fails.
+    let identities = [1..=64, 65..=128].map(|seeds| {
+        seeds
+            .map(|seed| Identity::from_secret_bytes(&[seed; 32]).unwrap())
+            .find(|identity| identity.pubkey_full().serialize()[0] == 3)
+            .unwrap()
+    });
+    let (a, b) = simulated_pair_with_identities(&registration.0, Some(&identities)).await;
     let (stop, receive_stop) = watch::channel(false);
     let first = Arc::new(Mutex::new(None));
     let second = Arc::new(Mutex::new(None));
