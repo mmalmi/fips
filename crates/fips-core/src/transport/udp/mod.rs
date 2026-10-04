@@ -84,7 +84,7 @@ pub(crate) const UDP_PAYLOAD_MAX_SLICES: usize = 2;
 pub(crate) trait UdpPayloadBatch {
     fn len(&self) -> usize;
     fn payload_len(&self, index: usize) -> usize;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     fn contiguous_payload(&self, index: usize) -> Option<&[u8]>;
     fn payload_slices<'a>(
         &'a self,
@@ -92,7 +92,7 @@ pub(crate) trait UdpPayloadBatch {
         out: &mut [Option<&'a [u8]>; UDP_PAYLOAD_MAX_SLICES],
     ) -> usize;
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     fn copy_payload_into(&self, index: usize, out: &mut Vec<u8>) {
         out.clear();
         let mut slices = [None; UDP_PAYLOAD_MAX_SLICES];
@@ -189,7 +189,15 @@ impl UdpSendSnapshot {
     where
         B: UdpPayloadBatch + ?Sized,
     {
-        let mut failed = 0usize;
+        self.send_payload_batch_scalar_to(payloads, remote_addr)
+            .await
+    }
+
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+    async fn send_payload_batch_scalar_to<B>(&self, payloads: &B, remote_addr: SocketAddr) -> usize
+    where
+        B: UdpPayloadBatch + ?Sized,
+    {
         let mut scratch = Vec::new();
         for index in 0..payloads.len() {
             let expected_len = payloads.payload_len(index);
@@ -206,10 +214,11 @@ impl UdpSendSnapshot {
                 self.stats.record_send(bytes_sent);
             } else {
                 self.stats.record_send_error();
-                failed = failed.saturating_add(1);
+                // Completion accounting treats successful sends as a prefix.
+                return payloads.len() - index;
             }
         }
-        failed
+        0
     }
 }
 

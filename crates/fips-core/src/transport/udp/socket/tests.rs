@@ -28,6 +28,10 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
         self.payloads[index].iter().map(Vec::len).sum()
     }
 
+    fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
+        (self.payloads[index].len() == 1).then(|| self.payloads[index][0].as_slice())
+    }
+
     fn payload_slices<'a>(
         &'a self,
         index: usize,
@@ -38,6 +42,42 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
             out[slot] = Some(slice.as_slice());
         }
         self.payloads[index].len()
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn scalar_batch_send_preserves_successful_prefix() {
+    use crate::transport::udp::{UdpSendSnapshot, UdpStats};
+    use tokio::time::{Duration, timeout};
+
+    for failure_at in [Some(0), Some(1), None] {
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let socket = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65_536, 65_536).unwrap();
+        let stats = Arc::new(UdpStats::new());
+        let sender = UdpSendSnapshot {
+            local_addr: socket.local_addr(), socket: socket.into_async().unwrap(),
+            mtu: u16::MAX, stats: stats.clone(),
+        };
+        let mut payloads = TestPayloadBatch::new(vec![vec![b"a"], vec![b"b", b"b"], vec![b"ccc"]]);
+        if let Some(index) = failure_at {
+            // Force a kernel send failure inside the production scalar loop.
+            payloads.payloads[index] = vec![vec![0; 65_536]];
+        }
+        let sent = failure_at.unwrap_or(3);
+        let failed = sender.send_payload_batch_scalar_to(&payloads, receiver.local_addr().unwrap()).await;
+        assert_eq!(failed, 3 - sent, "failure at {failure_at:?}");
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.packets_sent, sent as u64);
+        assert_eq!(snapshot.bytes_sent, (sent * (sent + 1) / 2) as u64);
+        assert_eq!(snapshot.send_errors, u64::from(failure_at.is_some()));
+        let mut buffer = [0; 8];
+        for expected in [b"a".as_slice(), b"bb".as_slice(), b"ccc".as_slice()].iter().take(sent) {
+            let length = timeout(Duration::from_secs(1), receiver.recv(&mut buffer)).await.unwrap().unwrap();
+            assert_eq!(&buffer[..length], *expected);
+        }
+        assert!(timeout(Duration::from_millis(30), receiver.recv(&mut buffer)).await.is_err(),
+                "a datagram after the failed item was sent");
     }
 }
 
