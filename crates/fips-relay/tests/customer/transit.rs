@@ -23,7 +23,7 @@ async fn duplex(
         };
         async move { request(&config, &AdminRequest::StreamProbe { probe }).await }
     };
-    let (left, right) = tokio::join!(run(0, 2), run(2, 0));
+    let (left, right) = tokio::join!(run(0, 3), run(3, 0));
     vec![left, right]
 }
 
@@ -48,11 +48,12 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
         let mut configs = vec![
             config(&root.path().join("left"), mint.url()),
             config(&directory, mint.url()),
+            config(&root.path().join("onward"), mint.url()),
             config(&root.path().join("right"), mint.url()),
         ];
         let mut reservations = Vec::new();
-        let mut npubs = vec![String::new(); 3];
-        for node in [0, 2] {
+        let mut npubs = vec![String::new(); 4];
+        for node in [0, 2, 3] {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
             configs[node].transports = udp_transports(socket.local_addr().unwrap());
             configs[node].neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
@@ -75,7 +76,7 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
         let mut policy = profile(
             &npubs[0],
             udp_bind(&configs[0]).to_string(),
-            &npubs[2],
+            &npubs[3],
             mint.url(),
         );
         policy.billing = BillingBasis::ForwardingData;
@@ -105,13 +106,16 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
         );
         let paths = [
             root.path().join("left.json"),
+            root.path().join("onward.json"),
             root.path().join("right.json"),
         ];
         std::fs::write(&paths[0], serde_json::to_vec(&configs[0]).unwrap()).unwrap();
         drop(reservations);
         let mut children = vec![process_support::start(&paths[0]).await];
         // CustomerClient starts the same service used by Android, with only its
-        // configured entry. The other endpoint must establish a new adjacency.
+        // configured entry. The onward relay must establish a new adjacency.
+        // A separate final recipient makes onward purchases observable: direct
+        // delivery to a neighbor has no additional relay to pay.
         client.execute(Action::Start).await.unwrap();
         let report = native_request(&configs[1], &json!({"command":"show_transports"}))
             .await
@@ -123,9 +127,18 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
             .unwrap();
         assert_ne!(address.port(), 0);
         address.set_ip(Ipv4Addr::LOCALHOST.into());
-        configs[2].neighbors = vec![PeerConfig::new(&npubs[1], "udp", address.to_string())];
-        std::fs::write(&paths[1], serde_json::to_vec(&configs[2]).unwrap()).unwrap();
-        children.push(process_support::start(&paths[1]).await);
+        configs[2].neighbors = vec![
+            PeerConfig::new(&npubs[1], "udp", address.to_string()),
+            PeerConfig::new(&npubs[3], "udp", udp_bind(&configs[3]).to_string()),
+        ];
+        for node in [2, 3] {
+            std::fs::write(
+                &paths[node - 1],
+                serde_json::to_vec(&configs[node]).unwrap(),
+            )
+            .unwrap();
+            children.push(process_support::start(&paths[node - 1]).await);
+        }
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let mut ready = true;
@@ -141,10 +154,10 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
             }
         })
         .await
-        .expect("only the two phone adjacencies must form");
+        .expect("only the four-node transit line must form");
         let denied = duplex(&configs, &npubs, 1024, 2).await;
         let unpaid = request(&configs[1], &AdminRequest::Status).await.unwrap();
-        for (source, destination) in [(0, 2), (2, 0)] {
+        for (source, destination) in [(0, 3), (3, 0)] {
             request(
                 &configs[source],
                 &AdminRequest::Buy {
@@ -174,7 +187,7 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
                 .unwrap()
                 .balance_sat;
         }
-        assert_eq!(total, 384);
+        assert_eq!(total, 512);
         assert!(network.accounting().unwrap().is_conserved());
         assert_eq!(settled["relay"]["funding_budget"]["locked_sat"], 0);
         assert_eq!(
@@ -213,7 +226,7 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
                     && row["usage"]["paid_msat"].as_u64().unwrap() > 0)
         );
         let progress = after["relay"]["payment_progress"].as_object().unwrap();
-        assert_eq!(progress.len(), 2);
+        assert_eq!(progress.len(), 1);
         assert!(
             progress
                 .values()
