@@ -340,7 +340,15 @@ pump can hand it back without awaiting another send. Three deterministic cases
 fail before the fix and pass afterward; all 146 dataplane checks pass. The
 combined candidate passes eight queue-bound, three cancellation and five real
 rotation/rejoin checks. This establishes a concrete cancellation repair, without
-attributing the earlier full-suite one-shot loss. A new full-core run is pending.
+attributing the earlier full-suite one-shot loss. The new full-core run records
+2,790 passes, 17 ignored tests and eleven Unix-socket setup failures caused by
+an overlong temporary directory. Each affected case receives one corrected
+short-path retry: nine pass, while two expose actual routing failures during
+short contacts, including the 400-ms cold-contact case. The original run remains
+failed; the earlier rotation/rejoin one-shot case passes in this run. Source and
+executable hashes are unchanged, and all test process groups are closed.
+`ingress-integration-green-r1/core-qualification.json` retains both outcomes;
+the two contact failures remain open.
 
 The strengthened renewal case offers 320 originals once while settlement is held.
 The old runtime loses 67; the repaired candidate delivers all 320 exactly once,
