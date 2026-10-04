@@ -116,16 +116,19 @@ class PhoneLoadRun(PaidPhoneRun):
     def before_funding(self):
         try:
             self.ui('start')
-            status = self.ctl('phone', 'status')
-            require(status['npub'] == self.evidence['phone_npub']
-                    and not status['purchases'] and not any(status['funding_budget'].values()),
-                    'empty phone diagnostic preflight changed financial authority')
-            phone_diagnostics.native(self.phone, 'show_status')
+            self.verify_empty_diagnostics()
         finally:
             stopped = self.ui('stop')
             require(not stopped['customer']['running'] and stopped['balance_sat'] == 0,
                     'empty diagnostic preflight did not stop cleanly')
         self.phase('both phone diagnostic sockets verified before issuing any test funds')
+
+    def verify_empty_diagnostics(self):
+        status = self.ctl('phone', 'status')
+        require(status['npub'] == self.evidence['phone_npub']
+                and not status['purchases'] and not any(status['funding_budget'].values()),
+                'empty phone diagnostic preflight changed financial authority')
+        phone_diagnostics.native(self.phone, 'show_status')
 
     def transfer(self, label, count, initial):
         baseline = self.journals('before-load')
