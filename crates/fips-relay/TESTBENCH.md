@@ -126,9 +126,11 @@ is never exported. No additional proxy process or mint protocol is needed.
 This configuration does not grant bootstrap traffic automatically. Arrange
 bounded zero-price offers to the mint and the known client identities, and use
 the existing zero-ceiling route watch on the mint host for the response path.
-Permissionless return bootstrap and hardware deployment remain pending. Existing
-hardware remains on its LAN-mint baseline. Current acceptance is recorded in
-[READINESS.md](READINESS.md).
+Automatic permissionless return bootstrap remains pending. A fresh two-router
+UDP check verifies offline import/export through the mesh mint and restores the
+original devices afterward. Saved hardware accounts retain their LAN-mint URLs;
+radio-mesh and Android acceptance for this configuration remain pending. Current
+acceptance is recorded in [READINESS.md](READINESS.md).
 
 ## Fund a relay
 

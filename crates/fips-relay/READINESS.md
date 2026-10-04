@@ -85,14 +85,35 @@ interruption during a financial mint request.
 
 On `655344ade`, the native case uses the normal relay's `mint_export`
 configuration instead of separately constructing the mint-side bridge. The paid
-lifecycle and complete 16-sat collection pass again in 44.84 seconds, together
+lifecycle and complete 16-sat collection pass again in 44.79 seconds, together
 with 33 related checks, strict library lint, a normal library/daemon build and
 the source-size gate. The same frozen source also builds as a static ARM64 Linux
 executable. Verified logs, hashes and independent process/cache closure are in
 `work/mesh-mint-r9` and `work/mesh-mint-arm-r1`. The existing test-mint executable
 can now remain loopback-only while an ordinary relay exports that listener;
 [server configuration](TESTBENCH.md#mint-host-configuration) documents the setup.
-This does not yet accept a device deployment or remove explicit return bootstrap.
+This build check does not remove explicit return bootstrap; the device result
+below has its own limited scope.
+
+The same ARM64 executable also passes a fresh physical mint-access check on two
+Cudy routers and a Linux mint host: client router → forwarding router → mint,
+over authenticated FIPS UDP links on the existing LAN. The mint HTTP listener
+binds only to its host's loopback address; the client wallet uses its own pinned
+loopback adapter. After stopping the empty client service, ordinary offline wallet
+commands import eight test sats and export them again through both FIPS hops.
+All eight are collected, the client wallet ends empty, and the forwarding
+router's buyer/seller/controller journals remain unchanged. Its bounded free
+route counters record actual transit; no paid channel opens for bootstrap.
+
+The test uses one explicit zero-ceiling return watch for the known client. All
+58 management checks pass. Independent postflight checks confirm both original
+router baselines restored, temporary router executables removed, and the owned
+mint and export-relay processes exited cleanly. The run completes in 69.105
+seconds including cleanup; this is not a throughput benchmark. Evidence and
+closure are retained under `work/mesh-mint-physical-r1`. The carrier is UDP on the
+existing LAN: this does not accept radio-mesh discovery, Android wiring, paid
+payloads on this device run, or interrupted financial HTTP recovery. Existing
+saved accounts and the earlier retained phone test mint are unchanged.
 
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
