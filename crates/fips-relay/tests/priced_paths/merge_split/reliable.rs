@@ -1,4 +1,4 @@
-//! One TCP write survives a genuine paid mesh split without application replay.
+//! One TCP write survives paid carrier loss or a mesh split without application replay.
 use super::*;
 use fips_tcp::{ConnectionId, MarkerStatus, State};
 use fips_tcp_endpoint::FipsTcpEndpoint;
@@ -7,6 +7,21 @@ use tokio::{task::JoinSet, time::MissedTickBehavior};
 const PORT: u16 = 44_753;
 const BODY_LEN: usize = 4096;
 const RECOVERY: Duration = Duration::from_secs(20);
+
+#[derive(Clone, Copy, Debug)]
+enum Disruption {
+    Split,
+    DirectedLoss,
+}
+
+impl Disruption {
+    fn restore(self, network: &SimNetwork) {
+        match self {
+            Self::Split => network.set_link_up("2", "3", true),
+            Self::DirectedLoss => network.set_directed_link("0", "1", None),
+        }
+    }
+}
 
 struct Stream {
     client: FipsTcpEndpoint,
@@ -122,11 +137,36 @@ impl Stream {
     }
 }
 
-async fn accepted_write(bench: Arc<Bench>) -> Result<serde_json::Value, String> {
+async fn accepted_write(
+    bench: Arc<Bench>,
+    disruption: Disruption,
+) -> Result<serde_json::Value, String> {
     let mut stream = Stream::connect(&bench).await?;
     let original = (stream.outgoing, stream.incoming.unwrap());
-    bench.network.set_link_up("2", "3", false);
-    let split_ms = stream.wait_for_split(&bench).await?;
+    let carrier = bench.nodes[0]
+        .enable_service_carrier_diagnostics(PORT)
+        .map_err(|e| e.to_string())?;
+    let carrier_before = carrier.snapshot();
+    let split_ms = match disruption {
+        Disruption::Split => {
+            bench.network.set_link_up("2", "3", false);
+            Some(stream.wait_for_split(&bench).await?)
+        }
+        Disruption::DirectedLoss => {
+            // Keep the link up; discard encrypted submissions on its forward leg.
+            bench.network.set_directed_link(
+                "0",
+                "1",
+                Some(SimLink {
+                    latency_ms: 2,
+                    loss_probability: 1.0,
+                    ..Default::default()
+                }),
+            );
+            None
+        }
+    };
+    let network_before = bench.network.stats();
     let body: Vec<_> = (0..BODY_LEN).map(|i| (i % 251) as u8).collect();
     let start = Instant::now();
     let deadline = start + RECOVERY;
@@ -136,9 +176,11 @@ async fn accepted_write(bench: Arc<Bench>) -> Result<serde_json::Value, String> 
     // Dropping this owner on timeout also cancels an unvisited scheduled mutation.
     reopening.spawn(async move {
         tokio::time::sleep_until(start + Duration::from_secs(2)).await;
+        let loss = network.stats().delta_since(&network_before);
+        let submitted = carrier.snapshot();
         let before = start.elapsed().as_micros();
-        network.set_link_up("2", "3", true);
-        [before, start.elapsed().as_micros()]
+        disruption.restore(&network);
+        ([before, start.elapsed().as_micros()], loss, submitted)
     });
     let offered = start.elapsed().as_micros();
     let now = stream.now();
@@ -154,7 +196,7 @@ async fn accepted_write(bench: Arc<Bench>) -> Result<serde_json::Value, String> 
         return Err(format!("single TCP write accepted only {accepted} bytes"));
     }
     if stream.client.marker_status(&marker) != MarkerStatus::Pending {
-        return Err("partitioned write was already acknowledged".into());
+        return Err("disrupted write was already acknowledged".into());
     }
     let mut received = Vec::new();
     let mut first_received_at = None;
@@ -208,7 +250,7 @@ async fn accepted_write(bench: Arc<Bench>) -> Result<serde_json::Value, String> 
         )
     })?;
     delivery?;
-    let opening = reopening
+    let (opening, loss, carrier_at_restore) = reopening
         .join_next()
         .await
         .ok_or("missing reopening task")?
@@ -223,6 +265,19 @@ async fn accepted_write(bench: Arc<Bench>) -> Result<serde_json::Value, String> 
         return Err(format!(
             "independent two-second reopening drifted: {opening:?}"
         ));
+    }
+    if matches!(disruption, Disruption::DirectedLoss) {
+        let submitted: u64 = carrier_at_restore
+            .transports
+            .iter()
+            .zip(&carrier_before.transports)
+            .map(|(after, before)| after.submitted_packets - before.submitted_packets)
+            .sum();
+        if loss.packets_dropped_loss == 0 || loss.packets_dropped_down != 0 || submitted == 0 {
+            return Err(format!(
+                "expected submitted TCP service traffic across a lossy live link: {loss:?}, submitted={submitted}"
+            ));
+        }
     }
     // The entire accepted byte range was read once; one further read is empty.
     let now = stream.now();
@@ -241,17 +296,26 @@ async fn accepted_write(bench: Arc<Bench>) -> Result<serde_json::Value, String> 
         "first_received_us": first_received_at,
         "received_us": received_at, "acknowledged_us": acknowledged_at,
         "original_deadline_us": RECOVERY.as_micros(),
+        "disruption": format!("{disruption:?}"), "loss_before_restore": loss,
+        "carrier_before": carrier_before, "carrier_at_restore": carrier_at_restore,
     }))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn accepted_tcp_write_recovers_after_bridge_rejoin() {
-    tokio::time::timeout(Duration::from_secs(480), exercise())
+    tokio::time::timeout(Duration::from_secs(480), exercise(Disruption::Split))
         .await
         .expect("paid TCP split/rejoin and collection deadline");
 }
 
-async fn exercise() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn accepted_tcp_write_recovers_after_directed_carrier_loss() {
+    tokio::time::timeout(Duration::from_secs(480), exercise(Disruption::DirectedLoss))
+        .await
+        .expect("paid TCP directed loss/recovery and collection deadline");
+}
+
+async fn exercise(disruption: Disruption) {
     let mut bench = bench::start(0, Scenario::MergeSplit, 153).await;
     converge(&bench, false, "TCP independent components").await;
     for (source, destination) in [(0, 2), (5, 3)] {
@@ -280,7 +344,7 @@ async fn exercise() {
     let before_hops = hop_usage(&bench).await;
     let bench = Arc::new(bench);
     // Retain cleanup ownership outside the fallible measured task, including panic.
-    let mut attempt = tokio::spawn(accepted_write(bench.clone()));
+    let mut attempt = tokio::spawn(accepted_write(bench.clone(), disruption));
     let outcome = match tokio::time::timeout(Duration::from_secs(150), &mut attempt).await {
         Ok(joined) => joined.map_err(|e| e.to_string()).and_then(|r| r),
         Err(_) => {
@@ -292,7 +356,7 @@ async fn exercise() {
     eprintln!("paid reliable write outcome: {outcome:?}");
     // Restoration and collection run even when the measured write fails. No
     // fresh application traffic is offered to repair that recorded verdict.
-    bench.network.set_link_up("2", "3", true);
+    disruption.restore(&bench.network);
     converge(&bench, true, "TCP collection route").await;
     let payment_bench = bench.clone();
     let payment = tokio::spawn(async move { payments(&payment_bench).await }).await;
@@ -313,7 +377,7 @@ async fn exercise() {
     let bench =
         Arc::try_unwrap(bench).unwrap_or_else(|_| panic!("measured task retained bench ownership"));
     collect(bench, &final_accounts, &credited).await;
-    outcome.expect("the one accepted reliable write must survive native bridge split/rejoin");
+    outcome.expect("the one accepted reliable write must survive the paid carrier disruption");
     payment.expect("automatic all-hop payments must catch up without an explicit flush");
     retain(&anchor, &final_accounts, true);
     // Aggregate accounting establishes retained all-hop authority and fresh
