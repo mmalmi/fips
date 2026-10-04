@@ -304,8 +304,36 @@ financial bounds remain unchanged. Eight focused checks pass, covering small
 capacities, peer shares, healthy traffic, mixed-priority release, expiry and
 cancellation. The old fixed 256-packet next-hop limit fails the same bulk-bound
 regression. Evidence is in `source-wait-budget-red-r1` and
-`source-wait-budget-green-r3` in the private payment-recovery bundle. This native
-result does not yet qualify the new bounds on hardware or attribute earlier loss.
+`source-wait-budget-green-r3` in the private payment-recovery bundle.
+
+The same five-minute router workload on `2dbdbd5ad` delivers all 84,000 originals,
+without missing, duplicate or invalid packets. Both successors advance credit and
+delivery during seven live observations; each direction authorizes 43 test sats
+within its unchanged 64-sat budget. Source carrier counts match delivery, no
+source-wait drops occur, and measured forwarding-drop counters remain unchanged.
+Two source-policy diagnostics remain in the full process logs. Renewal pauses
+are 1.641 and 1.730 seconds. The middle relay uses 79.378 CPU seconds, or 0.991
+CPU seconds per payload MiB, versus 79.431/0.992 in the preceding run; these two
+finite runs do not establish a general performance improvement. Peak resident
+memory at the middle remains 22,468 KiB. The larger queue limits still need
+slow-renewal and higher-pressure qualification.
+
+All four channels settle, all 384 test sats are collected, and all 648 management
+checks pass. Independent closure verifies restored devices, stopped test services
+and removed filters. Evidence is under `work/hardware-current-r1/renewal-load-r6`;
+closure SHA-256 is
+`d4ce39498e85294070823c12619e216f4ffaa56a54984563abc549477374811a`.
+
+The broader native integration run records 2,793 core passes, 17 ignored tests
+and four failures. Three permission/self-reexecution setup failures pass corrected
+exact retries. The fourth recovers its queued original after rotation/rejoin, then
+misses a later one-shot endpoint payload despite advancing receiver session
+counters. One isolated diagnostic passes but does not explain or repair that loss.
+Simulator 10, relay-library 310 and changed Python-harness 220 checks pass, as do
+format, workspace compilation, file-length and strict lint checks. Exact revision
+qualifications and the unresolved original failure are retained in
+`work/payment-reply-recovery/native-integration-r2/closure.json`. These partial
+gates do not establish production readiness or full integration acceptance.
 
 The current ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
