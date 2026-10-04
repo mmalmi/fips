@@ -2,8 +2,6 @@
 //! relay does not contain the simulated funding capability unless this feature
 //! is selected. The mint API and local funding control are separate listeners.
 
-pub mod mesh;
-
 use crate::{
     durable::write_private_journal,
     service::{read_json, read_record, write_record},

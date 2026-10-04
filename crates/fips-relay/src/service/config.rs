@@ -24,6 +24,9 @@ pub struct ServiceTerms {
     #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
     pub billing: BillingBasis,
     pub controller: ControllerPolicy,
+    /// Optional pinned FIPS transport for the immutable loopback mint URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
     /// Logical wallet bytes, including completion reservations; not filesystem space.
     /// Set only before initialization. Omission preserves an unconfigured wallet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +103,24 @@ pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T
 }
 
 impl ServiceConfig {
+    pub(super) fn quote_policy(&self, receiver_pubkey_hex: String) -> Result<QuotePolicy, String> {
+        let t = &self.terms;
+        Ok(QuotePolicy {
+            destination_fees: self
+                .destination_fees
+                .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?,
+            billing: t.billing,
+            mint_url: t.controller.mint_url.clone(),
+            receiver_pubkey_hex,
+            fee_msat_per_kib: t.fee_msat_per_kib,
+            max_rate_msat_per_kib: t.max_rate_msat_per_kib,
+            lifetime_secs: t.quote_lifetime_secs,
+            max_units: t.quote_max_units,
+            capacity_sat: t.controller.channel_capacity_sat,
+            grace_msat: t.grace_msat,
+        })
+    }
+
     pub fn read(path: &Path) -> Result<Self, String> {
         let value: Self = read_json(path)?;
         value.validate()?;
@@ -125,6 +146,12 @@ impl ServiceConfig {
         }
         self.validate_network()?;
         let t = &self.terms;
+        if let Some(mesh) = &t.mint_mesh {
+            mesh.target(&t.controller.mint_url)?;
+            if !t.billing.has_free_handshakes() {
+                return Err("mesh mint access requires forwarding-data billing".into());
+            }
+        }
         if let Some(policy) = &self.free_bandwidth {
             policy.validate()?;
             if !t.billing.has_free_handshakes() {

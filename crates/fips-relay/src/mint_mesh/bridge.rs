@@ -1,5 +1,6 @@
 //! Fixed loopback mint sockets carried as ordinary TCP/FIPS data. This adapter
 //! grants no forwarding permission and never retries an HTTP request.
+use crate::route_quotes::RouteQuotes;
 use fips_core::{FipsEndpoint, Identity, PeerIdentity};
 use fips_tcp::{Config, ConnectionId, StackError, State};
 use fips_tcp_endpoint::{AdapterError, FipsTcpEndpoint};
@@ -20,6 +21,13 @@ use tokio::{
 const CONNECTIONS: usize = 8;
 const BUFFER: usize = 16 * 1024;
 const LIFETIME: Duration = Duration::from_secs(45);
+
+pub(super) fn validate_port(port: u16) -> Result<(), String> {
+    if port == 0 || (44_740..=44_744).contains(&port) {
+        return Err("mint requires a distinct nonzero FIPS service port".into());
+    }
+    Ok(())
+}
 
 pub struct MeshMintBridge {
     task: JoinHandle<Result<(), String>>,
@@ -46,13 +54,40 @@ impl MeshMintBridge {
         listener: TcpListener,
     ) -> Result<Self, String> {
         loopback(listener.local_addr().map_err(|e| e.to_string())?)?;
-        Self::start(endpoint, port, Mode::Client { mint, listener }).await
+        Self::start(
+            endpoint,
+            port,
+            Mode::Client {
+                mint,
+                listener,
+                quotes: None,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn connect_quoted(
+        endpoint: Arc<FipsEndpoint>,
+        port: u16,
+        mint: PeerIdentity,
+        listener: TcpListener,
+        quotes: Arc<RouteQuotes>,
+    ) -> Result<Self, String> {
+        loopback(listener.local_addr().map_err(|e| e.to_string())?)?;
+        Self::start(
+            endpoint,
+            port,
+            Mode::Client {
+                mint,
+                listener,
+                quotes: Some(quotes),
+            },
+        )
+        .await
     }
 
     async fn start(endpoint: Arc<FipsEndpoint>, port: u16, mode: Mode) -> Result<Self, String> {
-        if port == 0 || (44_740..=44_744).contains(&port) {
-            return Err("mint requires a distinct nonzero FIPS service port".into());
-        }
+        validate_port(port)?;
         let seed = u64::from_le_bytes(
             Identity::generate().node_addr().as_bytes()[..8]
                 .try_into()
@@ -102,6 +137,7 @@ enum Mode {
     Client {
         mint: PeerIdentity,
         listener: TcpListener,
+        quotes: Option<Arc<RouteQuotes>>,
     },
     Server(SocketAddr),
 }
@@ -117,10 +153,10 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(socket: TcpStream) -> Self {
+    fn new(socket: TcpStream, started: Instant) -> Self {
         Self {
             socket,
-            started: Instant::now(),
+            started,
             to_mesh: Vec::new(),
             to_socket: Vec::new(),
             read_closed: false,
@@ -198,6 +234,7 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
     let mut connections = HashMap::<ConnectionId, Connection>::new();
     let mut waiting = VecDeque::new();
     let mut pending = JoinSet::new();
+    let mut preparing = JoinSet::new();
     let started = Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -216,14 +253,30 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
                     Mode::Client { listener, .. } => listener.accept().await,
                     Mode::Server(_) => std::future::pending().await,
                 }
-            }, if connections.len() + pending.len() + waiting.len() < CONNECTIONS => {
+            }, if connections.len() + pending.len() + waiting.len() + preparing.len() < CONNECTIONS => {
                 let (socket, _) = socket.map_err(|e| e.to_string())?;
-                waiting.push_back((socket, Instant::now()));
+                let accepted = Instant::now();
+                if let Mode::Client { mint, quotes: Some(quotes), .. } = &mode {
+                    let (mint, quotes) = (*mint, quotes.clone());
+                    preparing.spawn(async move {
+                        let ready = quotes.require_free_route(mint).await;
+                        (socket, accepted, ready)
+                    });
+                } else {
+                    waiting.push_back((socket, accepted, accepted));
+                }
+            }
+            Some(result) = preparing.join_next(), if !preparing.is_empty() => {
+                let (socket, accepted, ready) = result.map_err(|e| e.to_string())?;
+                match ready {
+                    Ok(()) => waiting.push_back((socket, accepted, Instant::now())),
+                    Err(error) => tracing::debug!(%error, "mesh mint bootstrap route unavailable"),
+                }
             }
             Some(result) = pending.join_next(), if !pending.is_empty() => {
                 let (id, socket) = result.map_err(|e| e.to_string())?;
                 if let Ok(Ok(socket)) = socket {
-                    connections.insert(id, Connection::new(socket));
+                    connections.insert(id, Connection::new(socket, Instant::now()));
                 } else { let _ = tcp.abort(id).await; }
             }
         }
@@ -232,18 +285,18 @@ async fn drive(mut tcp: FipsTcpEndpoint, mode: Mode) -> Result<(), String> {
         // entries finish closing. Wait before reading any request bytes; never
         // recreate a connection that already accepted application data.
         if let Mode::Client { mint, .. } = &mode {
-            while let Some((socket, queued)) = waiting.pop_front() {
-                if queued.elapsed() >= Duration::from_secs(3) {
+            while let Some((socket, accepted, queued)) = waiting.pop_front() {
+                if queued.elapsed() >= Duration::from_secs(3) || accepted.elapsed() >= LIFETIME {
                     continue;
                 }
                 match tcp.connect(*mint, now).await {
                     Ok(id) => {
-                        connections.insert(id, Connection::new(socket));
+                        connections.insert(id, Connection::new(socket, accepted));
                     }
                     Err(AdapterError::Tcp(
                         StackError::ConnectionLimit | StackError::NoEphemeralPort,
                     )) => {
-                        waiting.push_front((socket, queued));
+                        waiting.push_front((socket, accepted, queued));
                         break;
                     }
                     Err(error) => {

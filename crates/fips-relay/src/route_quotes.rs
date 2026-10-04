@@ -175,6 +175,25 @@ impl RouteQuotes {
         self.request_route_inner(destination, true).await
     }
 
+    /// Mint bootstrap never creates a payment obligation or accepts a priced
+    /// route. Request only when opening a connection; reuse the bounded cache.
+    pub(crate) async fn require_free_route(&self, destination: PeerIdentity) -> Result<(), String> {
+        if self
+            .endpoint
+            .resolve_next_hop(destination, None)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some_and(|peer| peer.node_addr() == destination.node_addr())
+        {
+            return Ok(());
+        }
+        let offer = self.refresh_route(destination).await?;
+        if offer.price.msat != 0 {
+            return Err("mint bootstrap requires an explicitly free route".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn max_rate_msat_per_kib(&self) -> u64 {
         self.policy.max_rate_msat_per_kib
     }

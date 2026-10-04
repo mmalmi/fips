@@ -4,7 +4,9 @@
 mod accept_barrier;
 mod config;
 mod control;
+mod mint_access;
 mod network;
+pub(crate) use mint_access::OfflineMint;
 mod transport_startup;
 pub(crate) use config::read_json;
 use config::{Manifest, REQUIRED, check_state};
@@ -103,6 +105,7 @@ impl ForwardingPolicy for ServiceForwarder {
 pub struct RelayService {
     config: ServiceConfig,
     endpoint: Arc<FipsEndpoint>,
+    mint: Option<crate::mint_mesh::MeshMintBridge>,
     controller: Arc<Controller>,
     seller: Arc<DurableRelay>,
     buyer: Arc<BuyerAuthorizer>,
@@ -360,20 +363,7 @@ impl RelayService {
         let quotes = RouteQuotes::with_free_routes(
             endpoint.clone(),
             Arc::new(quote_transport),
-            QuotePolicy {
-                destination_fees: config
-                    .destination_fees
-                    .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?,
-                billing: t.billing,
-                mint_url: t.controller.mint_url.clone(),
-                receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
-                fee_msat_per_kib: t.fee_msat_per_kib,
-                max_rate_msat_per_kib: t.max_rate_msat_per_kib,
-                lifetime_secs: t.quote_lifetime_secs,
-                max_units: t.quote_max_units,
-                capacity_sat: t.controller.channel_capacity_sat,
-                grace_msat: t.grace_msat,
-            },
+            config.quote_policy(receiver.receiver_pubkey_hex().to_string())?,
             free.clone(),
         )?;
         let quotes = Arc::new(if let Some(policy) = &config.price_selection {
@@ -381,6 +371,11 @@ impl RelayService {
         } else {
             quotes
         });
+        let mint = if create {
+            None
+        } else {
+            mint_access::attach(&config, endpoint.clone(), quotes.clone()).await?
+        };
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
         let (acceptance, incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
@@ -468,6 +463,7 @@ impl RelayService {
         Ok(Self {
             config,
             endpoint,
+            mint,
             controller,
             seller,
             buyer,
@@ -496,6 +492,7 @@ impl RelayService {
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
             endpoint,
+            mint,
             controller,
             seller,
             buyer,
@@ -517,6 +514,10 @@ impl RelayService {
         accept_barrier.shutdown().await;
         payment_server.stop().await;
         drop(quote_server);
+        let mint_result = match mint {
+            Some(mint) => mint.shutdown().await,
+            None => Ok(()),
+        };
         endpoint.shutdown().await.map_err(|e| e.to_string())?;
         receive_task.abort();
         let _ = receive_task.await;
@@ -530,11 +531,12 @@ impl RelayService {
         drop(controller);
         drop(endpoint);
         drop(_owner);
-        result
+        result?;
+        mint_result
     }
 }
 
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, feature = "testbench"))]
 mod mesh_mint_tests;
+#[cfg(test)]
+mod tests;

@@ -4,7 +4,7 @@ use crate::{
     controller::RouteAccess,
     customer::{CustomerClient, CustomerCommand, CustomerProfile},
     free_routes::FreeBandwidthPolicy,
-    testbench::mesh::MeshMintBridge,
+    mint_mesh::MeshMintBridge,
 };
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -66,10 +66,38 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             identities.push(PeerIdentity::from_npub(&npub).unwrap());
             configs.push(config);
         }
+        // Create the immutable customer profile before configuring its bootstrap prices.
+        let customer_root = root.path().join("phone");
+        let mut phone = CustomerClient::open(&customer_root).unwrap();
+        let profile: CustomerProfile = serde_json::from_value(json!({
+            "version": 1, "test_only": true,
+            "entry_npub": identities[0].npub(),
+            "entry_address": reservations[0].local_addr().unwrap().to_string(),
+            "destination_npub": identities[1].npub(), "mint_url": url,
+            "mint_mesh": {"npub": identities[2].npub(), "service_port": PORT},
+            "budget_sat": 16, "channel_capacity_sat": 8,
+            "max_rate_msat_per_kib": 8_192, "billing": "forwarding_data"
+        }))
+        .unwrap();
+        let setup = phone
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        let phone_identity = PeerIdentity::from_npub(setup["npub"].as_str().unwrap()).unwrap();
+        let mut changed = profile.clone();
+        changed.mint_mesh.as_mut().unwrap().npub = identities[1].npub();
+        assert!(
+            phone
+                .execute(CustomerCommand::Setup { profile: changed })
+                .await
+                .is_err()
+        );
         // Only this mint/client pair has a free tariff. Other destinations keep
         // the configured positive fee; both directions share the relay's cap.
         configs[1].destination_fees = serde_json::from_value(json!({
-            identities[0].npub(): 0, identities[2].npub(): 0
+            identities[0].npub(): 0, identities[2].npub(): 0, phone_identity.npub(): 0
         }))
         .unwrap();
         configs[1].free_bandwidth = Some(FreeBandwidthPolicy {
@@ -78,6 +106,11 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             peer_bytes_per_second: 32_768,
             peer_burst_bytes: 65_536,
         });
+        configs[0].destination_fees = serde_json::from_value(json!({
+            identities[2].npub(): 0, phone_identity.npub(): 0
+        }))
+        .unwrap();
+        configs[0].free_bandwidth = configs[1].free_bandwidth.clone();
         configs[0].customer_network = Some("127.0.0.1/32".parse().unwrap());
         for (i, config) in configs.iter_mut().enumerate() {
             config.neighbors = identities
@@ -202,25 +235,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             assert_eq!(std::fs::read(path).unwrap(), *bytes);
         }
 
-        // Exercise the real phone account lifecycle with mint connectivity
-        // independent of the account's exclusive running/stopped wallet lock.
-        let customer_root = root.path().join("phone");
-        let mut phone = CustomerClient::open(&customer_root).unwrap();
-        let profile: CustomerProfile = serde_json::from_value(json!({
-            "version": 1, "test_only": true,
-            "entry_npub": identities[0].npub(),
-            "entry_address": nodes[0].endpoint.bound_udp_listen_addrs().await.unwrap()[0],
-            "destination_npub": identities[2].npub(), "mint_url": url,
-            "budget_sat": 16, "channel_capacity_sat": 8,
-            "max_rate_msat_per_kib": 8_192, "billing": "forwarding_data"
-        }))
-        .unwrap();
-        let setup = phone
-            .execute(CustomerCommand::Setup {
-                profile: profile.clone(),
-            })
-            .await
-            .unwrap();
+        // The fixture releases the URL; the customer now owns its adapter.
+        client.shutdown().await.unwrap();
         phone.execute(CustomerCommand::Start).await.unwrap();
         let guarded = phone
             .execute(CustomerCommand::Import {
@@ -230,12 +246,21 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             .unwrap_err();
         assert!(guarded.contains("stop the customer service"));
         phone.execute(CustomerCommand::Stop).await.unwrap();
+        assert!(TcpStream::connect(address).await.is_err());
+        let return_controller = nodes[2].controller.clone();
+        let return_route =
+            tokio::spawn(async move { return_controller.watch_route(phone_identity, 0).await });
         phone
             .execute(CustomerCommand::Import {
                 token: payment.token,
             })
             .await
             .unwrap();
+        assert!(matches!(
+            return_route.await.unwrap().unwrap(),
+            RouteAccess::Free(_)
+        ));
+        assert!(TcpStream::connect(address).await.is_err());
         assert_eq!(
             phone.execute(CustomerCommand::Balance).await.unwrap()["balance_sat"],
             16
@@ -287,9 +312,12 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let payment: cashu_service::CashuSentPayment =
             read_json(Path::new(exported["path"].as_str().unwrap())).unwrap();
         let collected = root.path().join("collected");
+        phone.execute(CustomerCommand::Start).await.unwrap();
         receive_payment_token(&collected, &payment.token)
             .await
             .unwrap();
+        phone.execute(CustomerCommand::Stop).await.unwrap();
+        assert!(TcpStream::connect(address).await.is_err());
         assert_eq!(
             load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
             0
@@ -316,7 +344,6 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 assert_eq!(std::fs::read(path).unwrap(), bytes);
             }
         }
-        client.shutdown().await.unwrap();
         server.shutdown().await.unwrap();
         for node in nodes {
             node.shutdown().await.unwrap();

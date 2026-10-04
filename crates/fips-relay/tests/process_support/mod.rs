@@ -28,6 +28,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         neighbors: vec![],
         terms: ServiceTerms {
             billing: Default::default(),
+            mint_mesh: None,
             controller: ControllerPolicy {
                 mint_url: mint.into(),
                 channel_capacity_sat: 32,

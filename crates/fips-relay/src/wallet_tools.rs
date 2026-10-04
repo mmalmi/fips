@@ -190,35 +190,50 @@ pub async fn offline_wallet(
     RelayService::check_wallet_capacity(config).await?;
     let mint = &config.terms.controller.mint_url;
     let wallet = config.state_directory.join("wallet");
-    match command {
-        WalletRequest::Balance => serde_json::to_value(
-            load_mint_balance(&wallet, mint)
-                .await
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string()),
-        WalletRequest::Import { token } => {
-            checked_token(&token, mint)?;
-            serde_json::to_value(
-                receive_payment_token(&wallet, &token)
+    let network = if matches!(
+        &command,
+        WalletRequest::Import { .. } | WalletRequest::Export { .. }
+    ) {
+        crate::service::OfflineMint::start(config).await?
+    } else {
+        None
+    };
+    let result = async {
+        match command {
+            WalletRequest::Balance => serde_json::to_value(
+                load_mint_balance(&wallet, mint)
                     .await
                     .map_err(|e| e.to_string())?,
             )
-            .map_err(|e| e.to_string())
-        }
-        WalletRequest::Export { id, amount_sat } => {
-            let request_id = history::prepare_export(&config.state_directory, mint, id).await?;
-            export_payment(
-                &config.state_directory,
-                mint,
-                &id.to_string(),
-                amount_sat,
-                request_id,
-            )
-            .await
-        }
-        WalletRequest::AcknowledgeExports { through } => {
-            history::acknowledge(&config.state_directory, mint, through).await
+            .map_err(|e| e.to_string()),
+            WalletRequest::Import { token } => {
+                checked_token(&token, mint)?;
+                serde_json::to_value(
+                    receive_payment_token(&wallet, &token)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())
+            }
+            WalletRequest::Export { id, amount_sat } => {
+                let request_id = history::prepare_export(&config.state_directory, mint, id).await?;
+                export_payment(
+                    &config.state_directory,
+                    mint,
+                    &id.to_string(),
+                    amount_sat,
+                    request_id,
+                )
+                .await
+            }
+            WalletRequest::AcknowledgeExports { through } => {
+                history::acknowledge(&config.state_directory, mint, through).await
+            }
         }
     }
+    .await;
+    if let Some(network) = network {
+        network.shutdown().await?;
+    }
+    result
 }

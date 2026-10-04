@@ -21,6 +21,8 @@ pub struct CustomerProfile {
     pub entry_address: SocketAddr,
     pub destination_npub: String,
     pub mint_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
     pub budget_sat: u64,
     pub channel_capacity_sat: u64,
     pub max_rate_msat_per_kib: u64,
@@ -46,6 +48,9 @@ fn local_address(ip: IpAddr) -> bool {
 
 impl CustomerProfile {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(mesh) = &self.mint_mesh {
+            mesh.target(&self.mint_url)?;
+        }
         if !matches!(
             self.billing,
             BillingBasis::ForwardingAttempt | BillingBasis::ForwardingData
@@ -122,6 +127,7 @@ impl CustomerProfile {
             )],
             terms: ServiceTerms {
                 billing: self.billing,
+                mint_mesh: self.mint_mesh.clone(),
                 controller: ControllerPolicy {
                     mint_url: self.mint_url.clone(),
                     channel_capacity_sat: self.channel_capacity_sat,
