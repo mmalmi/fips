@@ -2095,6 +2095,8 @@ dependencies = [
  "jni",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3752,6 +3754,7 @@ dependencies = [
  "tokio-socks",
  "tokio-tungstenite 0.29.0",
  "tracing",
+ "tracing-subscriber",
  "tun",
  "uuid",
  "webrtc",

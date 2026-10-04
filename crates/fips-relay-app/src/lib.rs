@@ -8,7 +8,10 @@ use jni::{
     sys::jstring,
 };
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Mutex, Once},
+};
 
 struct Session {
     root: PathBuf,
@@ -18,7 +21,34 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
+fn init_diagnostic_logging() {
+    static LOGGING: Once = Once::new();
+    LOGGING.call_once(|| {
+        // The wrapper opts in before JNI starts; ordinary app runs stay silent.
+        let Ok(directives) = std::env::var("RUST_LOG") else {
+            return;
+        };
+        if directives.trim().is_empty() {
+            return;
+        }
+        let Ok(filter) = tracing_subscriber::EnvFilter::try_new(directives) else {
+            return;
+        };
+        if tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .with_env_filter(filter)
+            .try_init()
+            .is_ok()
+        {
+            tracing::trace!(target: "fips_udp_send", event = "logger_ready",
+                "UDP send diagnostics enabled");
+        }
+    });
+}
+
 fn dispatch(root: String, command: String) -> Result<Value, String> {
+    init_diagnostic_logging();
     if command.len() > 70_000 {
         return Err("customer request is too large".into());
     }

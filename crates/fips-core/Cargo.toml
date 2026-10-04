@@ -75,5 +75,6 @@ wintun = "0.5"
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3.15"
 tokio = { version = "1", features = ["test-util"] }

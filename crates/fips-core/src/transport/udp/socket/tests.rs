@@ -45,6 +45,83 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
     }
 }
 
+#[derive(Clone, Default)]
+struct SendLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SendLog {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl SendLog {
+    fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
+        let log = Self::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter("off,fips_udp_send=trace")
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        (log, tracing::subscriber::set_default(subscriber))
+    }
+
+    fn lines(&self) -> Vec<String> {
+        String::from_utf8(self.0.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn fmp_send_frame(counter: u64, wire_bytes: usize) -> Vec<u8> {
+    use crate::node::wire::{ESTABLISHED_HEADER_SIZE, FMP_VERSION, PHASE_ESTABLISHED};
+    let mut frame = vec![0xa5; wire_bytes];
+    frame[0] = (FMP_VERSION << 4) | PHASE_ESTABLISHED;
+    frame[1] = 3;
+    let payload_len =
+        u16::try_from(wire_bytes - ESTABLISHED_HEADER_SIZE - crate::noise::TAG_SIZE).unwrap();
+    frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    frame[4..8].copy_from_slice(&5050u32.to_le_bytes());
+    frame[8..16].copy_from_slice(&counter.to_le_bytes());
+    frame
+}
+
+fn assert_send_log(
+    line: &str,
+    counter: u64,
+    wire_bytes: usize,
+    accepted: bool,
+    local: SocketAddr,
+    remote: SocketAddr,
+) {
+    let outcome = if accepted {
+        "kernel_accepted"
+    } else {
+        "failed"
+    };
+    for field in [
+        "event=\"send_result\"".to_owned(),
+        "receiver_idx=5050".to_owned(),
+        "flags=3".to_owned(),
+        format!("counter={counter} "),
+        format!("wire_bytes={wire_bytes} "),
+        format!("local_addr={local} "),
+        format!("remote_addr={remote} "),
+        format!("outcome=\"{outcome}\""),
+        format!("accepted_bytes={} ", if accepted { wire_bytes } else { 0 }),
+    ] {
+        assert!(line.contains(&field), "missing {field}: {line}");
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn scalar_batch_send_preserves_successful_prefix() {
@@ -52,33 +129,127 @@ async fn scalar_batch_send_preserves_successful_prefix() {
     use tokio::time::{Duration, timeout};
 
     for failure_at in [Some(0), Some(1), None] {
+        let (log, _guard) = SendLog::capture();
         let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let remote = receiver.local_addr().unwrap();
         let socket = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65_536, 65_536).unwrap();
         let stats = Arc::new(UdpStats::new());
         let sender = UdpSendSnapshot {
-            local_addr: socket.local_addr(), socket: socket.into_async().unwrap(),
-            mtu: u16::MAX, stats: stats.clone(),
+            local_addr: socket.local_addr(),
+            socket: socket.into_async().unwrap(),
+            mtu: u16::MAX,
+            stats: stats.clone(),
         };
-        let mut payloads = TestPayloadBatch::new(vec![vec![b"a"], vec![b"b", b"b"], vec![b"ccc"]]);
+        let mut frames: Vec<_> = (0..3)
+            .map(|i| fmp_send_frame(100 + i, 64 + i as usize))
+            .collect();
         if let Some(index) = failure_at {
             // Force a kernel send failure inside the production scalar loop.
-            payloads.payloads[index] = vec![vec![0; 65_536]];
+            frames[index] = fmp_send_frame(100 + index as u64, 65_536);
         }
+        // The middle frame exercises scratch assembly, including a split header.
+        let payloads = TestPayloadBatch::new(vec![
+            vec![&frames[0]],
+            vec![&frames[1][..7], &frames[1][7..]],
+            vec![&frames[2]],
+        ]);
         let sent = failure_at.unwrap_or(3);
-        let failed = sender.send_payload_batch_scalar_to(&payloads, receiver.local_addr().unwrap()).await;
+        let failed = sender.send_payload_batch_scalar_to(&payloads, remote).await;
         assert_eq!(failed, 3 - sent, "failure at {failure_at:?}");
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.packets_sent, sent as u64);
-        assert_eq!(snapshot.bytes_sent, (sent * (sent + 1) / 2) as u64);
+        assert_eq!(
+            snapshot.bytes_sent,
+            frames
+                .iter()
+                .take(sent)
+                .map(|f| f.len() as u64)
+                .sum::<u64>()
+        );
         assert_eq!(snapshot.send_errors, u64::from(failure_at.is_some()));
-        let mut buffer = [0; 8];
-        for expected in [b"a".as_slice(), b"bb".as_slice(), b"ccc".as_slice()].iter().take(sent) {
-            let length = timeout(Duration::from_secs(1), receiver.recv(&mut buffer)).await.unwrap().unwrap();
-            assert_eq!(&buffer[..length], *expected);
+        let mut buffer = [0; 128];
+        for expected in frames.iter().take(sent) {
+            let length = timeout(Duration::from_secs(1), receiver.recv(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&buffer[..length], expected);
         }
-        assert!(timeout(Duration::from_millis(30), receiver.recv(&mut buffer)).await.is_err(),
-                "a datagram after the failed item was sent");
+        assert!(
+            timeout(Duration::from_millis(30), receiver.recv(&mut buffer))
+                .await
+                .is_err(),
+            "a datagram after the failed item was sent"
+        );
+        let lines = log.lines();
+        assert_eq!(lines.len(), sent + usize::from(failure_at.is_some()));
+        for (index, line) in lines.iter().enumerate() {
+            assert_send_log(
+                line,
+                100 + index as u64,
+                frames[index].len(),
+                index < sent,
+                sender.local_addr,
+                remote,
+            );
+        }
     }
+}
+
+#[tokio::test]
+async fn send_async_logs_only_established_fmp_kernel_results() {
+    use crate::transport::udp::UdpTransport;
+    use crate::transport::{TransportAddr, TransportId, packet_channel};
+    use tokio::time::{Duration, timeout};
+
+    let (log, _guard) = SendLog::capture();
+    let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let remote = receiver.local_addr().unwrap();
+    let destination = TransportAddr::from_string(&remote.to_string());
+    let (tx, _rx) = packet_channel(4);
+    let mut transport = UdpTransport::new(
+        TransportId::new(1),
+        None,
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            mtu: Some(u16::MAX),
+            ..Default::default()
+        },
+        tx,
+    );
+    transport.start_async().await.unwrap();
+    let local = transport.local_addr().unwrap();
+    let mut direct_fsp = fmp_send_frame(200, 64);
+    direct_fsp[1] |= crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
+    let mut handshake = fmp_send_frame(201, 64);
+    handshake[0] = crate::node::wire::PHASE_MSG1;
+    let mut malformed = fmp_send_frame(202, 64);
+    malformed[2..4].copy_from_slice(&0u16.to_le_bytes());
+    let accepted = fmp_send_frame(203, 64);
+    for frame in [&direct_fsp, &handshake, &malformed, &accepted] {
+        assert_eq!(
+            transport.send_async(&destination, frame).await.unwrap(),
+            frame.len()
+        );
+        let mut buffer = [0; 128];
+        let length = timeout(Duration::from_secs(1), receiver.recv(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buffer[..length], frame);
+    }
+    let oversized = fmp_send_frame(204, 65_535);
+    assert!(
+        transport
+            .send_async(&destination, &oversized)
+            .await
+            .is_err()
+    );
+    transport.stop_async().await.unwrap();
+    let lines = log.lines();
+    assert_eq!(lines.len(), 2);
+    assert_send_log(&lines[0], 203, accepted.len(), true, local, remote);
+    assert_send_log(&lines[1], 204, oversized.len(), false, local, remote);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

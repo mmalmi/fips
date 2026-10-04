@@ -9,6 +9,7 @@ use super::{
 #[cfg(target_os = "macos")]
 pub(crate) mod darwin_sockopts;
 mod rebind;
+mod send_diagnostics;
 pub(crate) mod socket;
 mod stats;
 #[cfg(any(
@@ -209,6 +210,7 @@ impl UdpSendSnapshot {
                 }
             };
             let result = self.socket.send_to(data, &remote_addr).await;
+            send_diagnostics::record(data, self.local_addr, remote_addr, &result);
             if let Ok(bytes_sent) = result {
                 debug_assert_eq!(bytes_sent, expected_len);
                 self.stats.record_send(bytes_sent);
@@ -928,7 +930,9 @@ impl UdpTransport {
             )));
         }
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-        match socket.send_to(data, &socket_addr).await {
+        let result = socket.send_to(data, &socket_addr).await;
+        send_diagnostics::record(data, local_addr, socket_addr, &result);
+        match result {
             Ok(bytes_sent) => {
                 self.stats.record_send(bytes_sent);
                 trace!(
