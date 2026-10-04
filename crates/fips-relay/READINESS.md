@@ -714,7 +714,16 @@ independent restoration checks. Evidence is
 `work/android-current-r6/failed-acceptance-closure.json`. The harness now captures
 the phone's existing native diagnostics as well as the routers', checks both
 phone diagnostic sockets before funding, and passes 62 focused harness checks;
-that additional phone capture still needs physical acceptance.
+that additional phone capture still needs physical acceptance. The following
+trial (`android-current-r7`) stops before sustained traffic when another app's
+instrumentation repeatedly takes the foreground. Android events show the test
+activity stopping its client as designed; its process survives. No parser or
+diagnostic-framing defect is established. The four zero-authorization channels
+settle, all 512 test sats are collected, and 201 management checks plus independent
+network/account restoration checks pass. Evidence is
+`work/android-current-r7/failed-acceptance-closure.json`, with the event timeline in
+`foreground-event-diagnosis.json`. An uninterrupted device run is still needed
+to locate the earlier delivery gaps.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
