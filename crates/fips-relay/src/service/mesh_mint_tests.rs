@@ -5,6 +5,7 @@ use crate::{
     customer::{CustomerClient, CustomerCommand, CustomerProfile},
     free_routes::FreeBandwidthPolicy,
     mint_mesh::MeshMintBridge,
+    wallet_tools::{WalletRequest, offline_wallet},
 };
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -274,16 +275,37 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             16
         );
         phone.execute(CustomerCommand::Start).await.unwrap();
-        // Opening and closing a real Spilman channel also uses the mesh mint.
-        // No application payload is sent: all eight locked sats must return.
+        // Payment, provider redemption and buyer refund all use the mesh mint.
         phone.execute(CustomerCommand::Buy).await.unwrap();
         let funded = phone.execute(CustomerCommand::Status).await.unwrap();
         assert_eq!(funded["relay"]["locked_sat"], 8);
         assert_eq!(funded["relay"]["funding_budget"]["wallet_debited_sat"], 8);
-        assert_eq!(
-            phone.execute(CustomerCommand::Finish).await.unwrap()["balance_sat"],
-            16
-        );
+        let channel = funded["relay"]["history"][0]["channel"]["id"]
+            .as_str()
+            .unwrap();
+        let payload = "paid delivery with a mesh-only mint";
+        let expected = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        phone
+            .execute(CustomerCommand::Send {
+                payload: payload.into(),
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let delivered =
+                    nodes[1].received.lock().unwrap().last_sha256.as_ref() == Some(&expected);
+                if delivered && nodes[0].seller.channel_usage(channel).unwrap().paid_msat > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("payload delivery and automatic provider credit");
+        let remaining = phone.execute(CustomerCommand::Finish).await.unwrap()["balance_sat"]
+            .as_u64()
+            .unwrap();
         let journal: Value =
             read_json(&customer_root.join("state/controller/controller.json")).unwrap();
         let settlements = journal["buyer_settlements"].as_object().unwrap();
@@ -291,9 +313,11 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let settlement = settlements.values().next().unwrap();
         assert_eq!(settlement["released"], true);
         assert_eq!(settlement["refunded"], true);
-        assert_eq!(settlement["report"]["paid_sat"], 0);
-        assert_eq!(settlement["report"]["refunded_sat"], 8);
-        assert_eq!(settlement["wallet_refund_sat"], 8);
+        let paid = settlement["report"]["paid_sat"].as_u64().unwrap();
+        assert!(paid > 0 && paid <= 8);
+        assert_eq!(remaining + paid, 16);
+        assert_eq!(settlement["report"]["refunded_sat"], 8 - paid);
+        assert_eq!(settlement["wallet_refund_sat"], 8 - paid);
         drop(phone);
         let mut phone = CustomerClient::open(&customer_root).unwrap();
         let reopened = phone.execute(CustomerCommand::Status).await.unwrap();
@@ -302,14 +326,14 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let exported = phone
             .execute(CustomerCommand::Export {
                 id: 1,
-                amount_sat: 16,
+                amount_sat: remaining,
             })
             .await
             .unwrap();
         let retained = phone
             .execute(CustomerCommand::Export {
                 id: 1,
-                amount_sat: 16,
+                amount_sat: remaining,
             })
             .await
             .unwrap();
@@ -339,7 +363,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 .await
                 .unwrap()
                 .balance_sat,
-            16
+            remaining
         );
         let stats = nodes[1].free.stats();
         assert!(stats.admitted_packets > 0 && stats.admitted_session_bytes > 0);
@@ -352,6 +376,51 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 assert_eq!(std::fs::read(path).unwrap(), bytes);
             }
         }
+        // Stop the provider before accessing its wallet. The remaining fixture
+        // endpoint carries collection HTTP over FIPS under the same mint URL.
+        nodes.remove(0).shutdown().await.unwrap();
+        let collection_proxy = MeshMintBridge::connect(
+            nodes[0].endpoint.clone(),
+            PORT,
+            identities[2],
+            TcpListener::bind(address).await.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            offline_wallet(&configs[0], WalletRequest::Balance)
+                .await
+                .unwrap()["balance_sat"],
+            paid
+        );
+        let exported = offline_wallet(
+            &configs[0],
+            WalletRequest::Export {
+                id: 1,
+                amount_sat: paid,
+            },
+        )
+        .await
+        .unwrap();
+        let earnings: cashu_service::CashuSentPayment =
+            read_json(Path::new(exported["path"].as_str().unwrap())).unwrap();
+        receive_payment_token(&collected, &earnings.token)
+            .await
+            .unwrap();
+        assert_eq!(
+            offline_wallet(&configs[0], WalletRequest::Balance)
+                .await
+                .unwrap()["balance_sat"],
+            0
+        );
+        assert_eq!(
+            load_mint_balance(&collected, &url)
+                .await
+                .unwrap()
+                .balance_sat,
+            16
+        );
+        collection_proxy.shutdown().await.unwrap();
         server.shutdown().await.unwrap();
         for node in nodes {
             node.shutdown().await.unwrap();
