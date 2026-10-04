@@ -15,6 +15,21 @@ pub struct MintMesh {
     pub service_port: u16,
 }
 
+/// Expose one local mint HTTP listener through the relay's existing identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MintExport {
+    pub backend: SocketAddr,
+    pub service_port: u16,
+}
+
+impl MintExport {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        bridge::validate_port(self.service_port)?;
+        bridge::loopback(self.backend)
+    }
+}
+
 impl MintMesh {
     pub(crate) fn target(&self, mint_url: &str) -> Result<(PeerIdentity, SocketAddr), String> {
         bridge::validate_port(self.service_port)?;
@@ -73,5 +88,18 @@ mod tests {
         mesh.service_port = 44_745;
         mesh.npub = "unverified-mint".into();
         assert!(mesh.target("http://127.0.0.1:3338").is_err());
+
+        let mut export = MintExport {
+            backend: "127.0.0.1:3338".parse().unwrap(),
+            service_port: 44_745,
+        };
+        assert!(export.validate().is_ok());
+        for backend in ["0.0.0.0:3338", "192.0.2.1:3338", "127.0.0.1:0"] {
+            export.backend = backend.parse().unwrap();
+            assert!(export.validate().is_err());
+        }
+        export.backend = "127.0.0.1:3338".parse().unwrap();
+        export.service_port = 44_743;
+        assert!(export.validate().is_err());
     }
 }

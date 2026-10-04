@@ -12,6 +12,11 @@ pub(super) async fn attach(
     endpoint: Arc<FipsEndpoint>,
     quotes: Arc<RouteQuotes>,
 ) -> Result<Option<MeshMintBridge>, String> {
+    if let Some(export) = &config.mint_export {
+        return MeshMintBridge::serve(endpoint, export.service_port, export.backend)
+            .await
+            .map(Some);
+    }
     let Some(mesh) = &config.terms.mint_mesh else {
         return Ok(None);
     };

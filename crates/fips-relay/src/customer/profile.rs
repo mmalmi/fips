@@ -113,6 +113,7 @@ impl CustomerProfile {
                 ..Default::default()
             },
             customer_network: None,
+            mint_export: None,
             neighbor_admission: self.neighbor_admission,
             destination_fees: Default::default(),
             return_allowance: false,

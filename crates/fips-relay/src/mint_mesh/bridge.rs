@@ -139,7 +139,7 @@ impl Drop for MeshMintBridge {
     }
 }
 
-fn loopback(address: SocketAddr) -> Result<(), String> {
+pub(super) fn loopback(address: SocketAddr) -> Result<(), String> {
     if !address.ip().is_loopback() || address.port() == 0 {
         return Err("mesh mint adapter requires a fixed loopback socket".into());
     }

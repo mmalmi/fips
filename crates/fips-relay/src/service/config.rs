@@ -45,6 +45,9 @@ pub struct ServiceTerms {
 pub struct ServiceConfig {
     pub state_directory: PathBuf,
     pub transports: fips_core::config::TransportsConfig,
+    /// Export one fixed local mint HTTP listener over this endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_export: Option<crate::mint_mesh::MintExport>,
     /// Opt-in inbound payment control for authenticated direct UDP peers in
     /// this network. It does not authorize Internet access or onward purchases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,6 +149,14 @@ impl ServiceConfig {
         }
         self.validate_network()?;
         let t = &self.terms;
+        if let Some(export) = &self.mint_export {
+            export.validate()?;
+            if t.mint_mesh.is_some() || !t.billing.has_free_handshakes() {
+                return Err(
+                    "mint export requires forwarding-data billing and no client adapter".into(),
+                );
+            }
+        }
         if let Some(mesh) = &t.mint_mesh {
             mesh.target(&t.controller.mint_url)?;
             if !t.billing.has_free_handshakes() {

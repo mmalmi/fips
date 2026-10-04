@@ -18,6 +18,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         state_directory: root.join("state"),
         transports: udp_transports("127.0.0.1:0".parse().unwrap()),
         customer_network: None,
+        mint_export: None,
         neighbor_admission: Default::default(),
         destination_fees: Default::default(),
         return_allowance: false,

@@ -12,6 +12,25 @@ fn zero_default_fee_config() -> ServiceConfig {
 }
 
 #[test]
+fn mint_export_requires_free_handshakes_and_cannot_also_be_a_client() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(config.mint_export.is_none());
+    config.mint_export = Some(crate::mint_mesh::MintExport {
+        backend: "127.0.0.1:3338".parse().unwrap(),
+        service_port: 44_745,
+    });
+    assert!(config.validate().unwrap_err().contains("forwarding-data"));
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.validate().unwrap();
+    config.terms.mint_mesh = Some(crate::mint_mesh::MintMesh {
+        npub: Identity::generate().npub(),
+        service_port: 44_745,
+    });
+    assert!(config.validate().unwrap_err().contains("no client adapter"));
+}
+
+#[test]
 fn funding_request_budget_is_local_optional_and_requires_positive_limits() {
     let mut value: Value =
         serde_json::from_str(include_str!("../../service.example.json")).unwrap();

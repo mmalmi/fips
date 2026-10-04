@@ -54,6 +54,12 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             config.state_directory = root.path().join(format!("node-{i}"));
             config.terms.billing = BillingBasis::ForwardingData;
             config.terms.controller.mint_url = url.clone();
+            if i == 2 {
+                config.mint_export = Some(crate::mint_mesh::MintExport {
+                    backend,
+                    service_port: PORT,
+                });
+            }
             config.terms.quote_max_units = 2 * 1024 * 1024;
             config.transports = TransportsConfig {
                 udp: TransportInstances::Single(UdpConfig {
@@ -176,9 +182,6 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
                 RouteAccess::Free(_)
             ));
         }
-        let server = MeshMintBridge::serve(nodes[2].endpoint.clone(), PORT, backend)
-            .await
-            .unwrap();
         let client =
             MeshMintBridge::connect(nodes[0].endpoint.clone(), PORT, identities[2], listener)
                 .await
@@ -421,7 +424,6 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             16
         );
         collection_proxy.shutdown().await.unwrap();
-        server.shutdown().await.unwrap();
         for node in nodes {
             node.shutdown().await.unwrap();
         }
