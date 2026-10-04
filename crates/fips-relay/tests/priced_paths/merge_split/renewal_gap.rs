@@ -3,7 +3,8 @@ use super::*;
 use cashu_service::spilman_client_store_path;
 use pending_funding::{journal, read};
 
-const COHORT: usize = 8;
+const COHORT: usize = 320;
+const PAYLOAD_BYTES: usize = 100;
 const TAG: u8 = 211;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -69,10 +70,12 @@ async fn exercise() {
 
     // These payloads have never been submitted to a carrier or charged to the
     // sealed channel. Each is offered once; setup traffic uses different tags.
+    // Exceed the former 256-packet wait cap while retaining the same financial
+    // limits and fitting the replacement's unchanged quote allowance.
     let started = Instant::now();
     for sequence in 0..COHORT {
-        let mut payload = vec![TAG; 900];
-        payload[0] = sequence as u8;
+        let mut payload = vec![TAG; PAYLOAD_BYTES];
+        payload[..2].copy_from_slice(&(sequence as u16).to_be_bytes());
         bench.nodes[2]
             .send_datagram(bench.peers[0], 44_740, 44_740, payload)
             .await
@@ -130,7 +133,13 @@ async fn exercise() {
         }
     }
     eprintln!(
-        "renewal original cohort: offered={COHORT}, copies={received:?}, before_acceptance={premature}, elapsed={:.3}s",
+        "renewal original cohort: offered={COHORT}, delivered={}, missing={}, duplicate={}, before_acceptance={premature}, elapsed={:.3}s",
+        received.iter().filter(|&&count| count > 0).count(),
+        received.iter().filter(|&&count| count == 0).count(),
+        received
+            .iter()
+            .map(|&count| count.saturating_sub(1))
+            .sum::<usize>(),
         started.elapsed().as_secs_f64()
     );
 
@@ -179,9 +188,12 @@ async fn exercise() {
 }
 
 fn sequence(payload: &[u8], source: PeerIdentity, expected: PeerIdentity) -> Option<usize> {
-    (source == expected
-        && payload.len() == 900
-        && payload[1..].iter().all(|&byte| byte == TAG)
-        && usize::from(payload[0]) < COHORT)
-        .then(|| usize::from(payload[0]))
+    if source != expected
+        || payload.len() != PAYLOAD_BYTES
+        || !payload[2..].iter().all(|&byte| byte == TAG)
+    {
+        return None;
+    }
+    let sequence = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    (sequence < COHORT).then_some(sequence)
 }
