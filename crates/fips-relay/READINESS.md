@@ -699,9 +699,52 @@ still fails the complete-delivery check. All four paying directions advance
 authorization and provider credit during every window. Each profiler capture
 includes a fresh complete report after traffic drains; no recorded phone drop,
 crypto-failure or replay event, router dataplane drop log, or transport error/drop
-counter explains the five missing recovery packets. The next diagnostic compares
-filtered test traffic at the router interfaces. No loss boundary is established
-yet, and this makes no uninstrumented performance claim.
+counter explains the five missing recovery packets. This trial alone does not
+establish the loss boundary or make an uninstrumented performance claim.
+
+The `r10` follow-up uses the identical native runtime and profiling settings,
+adding four bounded captures of only test traffic. Healthy delivery is 4,000 in
+each direction; deliberate-loss delivery is 3,798 and 3,801; recovery is 3,994
+phone-to-leaf and 4,000 reverse. All four paying directions advance in every
+window. Complete recovery delivery still fails.
+
+All twelve directed router-link/window comparisons match their captured frames,
+with zero kernel capture drops. The deliberate ingress drop filters act after
+the observed receive capture point, so these matches do not imply that the
+runtime received deliberately discarded frames. During recovery, six fewer
+application-sized frames are already visible at the first router's mesh egress
+than in the healthy window; length alone does not authenticate application
+identity. This narrows the next investigation toward phone output, the phone-to-entry
+link and entry processing, without establishing the cause. The guest capture
+contains 312 unresolved UDP records consistent with receive-side batching;
+its 128-byte snapshots omit headers needed for exact datagram reconstruction.
+Android sends individual datagrams in this runtime; Linux entry-side GRO can
+combine received datagrams. The next bounded diagnostic can use the existing
+entry UDP debug log after GRO splitting and before fast ingress.
+
+Capture shutdown itself fails: the router's sleep command rejects fractional
+seconds, so supervisors exit before recording terminal receipts. All four raw
+PCAP files and complete tcpdump footers are recovered, and capture/supervisor
+absence is verified; the missing exit statuses remain unknown. Both packet
+analysis and independent review preserve that failure separately from their
+same-link observations. Evidence is under `work/android-current-r10`, including
+`packet-analysis.json`, `packet-review.json` and `capture-recovery.json`. The
+canonical guard-startup wait now uses a portable one-second delay; a focused
+regression reproduces the integer-only-sleep failure and retains the missing-ack
+rejection. All twelve focused acceptance checks pass. This does not accept
+sustained Android delivery or uninstrumented performance.
+
+The `r10` recovery also verifies an expiry boundary: three original router
+purchases settle and retire into their retained lifetime totals, while the
+longer-lived phone purchase closes cooperatively. Final stopped balances match
+the original signatures, refunds and provider earnings; all 512 test sats are
+collected and all four wallets are empty. The failed recovery attempts remain
+separate evidence. Independent final checks verify restored routers, normal
+phone Wi-Fi and Internet, unchanged prior accounts and the stopped diagnostic
+process. All 153 final recovery management checks pass; the physical-device
+reservation is released. The closed failed-run receipt is
+`work/android-current-r10/failed-acceptance-closure.json`; packet observations
+remain diagnostic evidence rather than successful delivery acceptance.
 
 Preparatory failures remain distinct. The `r4` harness failed to transmit its
 binary request through ADB `exec-out`; a controlled comparison justified
@@ -715,9 +758,9 @@ it does not establish sustained delivery acceptance.
 Each completed failed trial retains its original accounts, settles all four
 funded channels where present, and collects all 512 test sats without new funding
 or wider budgets. Independent closure verifies restored routers, normal phone
-Wi-Fi/Internet and unchanged prior accounts; the latest `r9` recovery also passes
-201 management checks. Source-bound receipts are the respective
-`work/android-current-r4` through `work/android-current-r9` directories'
+Wi-Fi/Internet and unchanged prior accounts. The `r9` recovery passes 201
+management checks; the `r10` expiry recovery above passes 153. Source-bound receipts are the respective
+`work/android-current-r4` through `work/android-current-r10` directories'
 `failed-acceptance-closure.json` files in the private recovery bundle. The
 instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`.
 
