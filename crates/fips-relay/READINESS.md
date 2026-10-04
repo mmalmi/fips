@@ -690,6 +690,19 @@ forwarding and transport drop/error counters stay at zero. This locates the gap
 after source admission and before authenticated reception, but does not establish
 its exact cause. Router warning logs do not expose all crypto/output drops.
 
+The `r9` diagnostic trial keeps the same `180c52312` native runtime and enables
+five-second Android `FIPS_PERF` reports plus router dataplane debug logging. All
+8,000 originals arrive in the first healthy window. Deliberately dropping every
+twentieth test frame then yields 3,796 and 3,799 deliveries. After removing the
+filters, phone-to-leaf delivery is 3,995 and reverse delivery is 4,000, so recovery
+still fails the complete-delivery check. All four paying directions advance
+authorization and provider credit during every window. Each profiler capture
+includes a fresh complete report after traffic drains; no recorded phone drop,
+crypto-failure or replay event, router dataplane drop log, or transport error/drop
+counter explains the five missing recovery packets. The next diagnostic compares
+filtered test traffic at the router interfaces. No loss boundary is established
+yet, and this makes no uninstrumented performance claim.
+
 Preparatory failures remain distinct. The `r4` harness failed to transmit its
 binary request through ADB `exec-out`; a controlled comparison justified
 switching to `shell -T`. The first `r6` attempt and `r7` were interrupted by other
@@ -702,9 +715,9 @@ it does not establish sustained delivery acceptance.
 Each completed failed trial retains its original accounts, settles all four
 funded channels where present, and collects all 512 test sats without new funding
 or wider budgets. Independent closure verifies restored routers, normal phone
-Wi-Fi/Internet and unchanged prior accounts; the latest `r8` recovery also passes
+Wi-Fi/Internet and unchanged prior accounts; the latest `r9` recovery also passes
 201 management checks. Source-bound receipts are the respective
-`work/android-current-r4` through `work/android-current-r8` directories'
+`work/android-current-r4` through `work/android-current-r9` directories'
 `failed-acceptance-closure.json` files in the private recovery bundle. The
 instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`.
 
