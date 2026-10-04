@@ -335,7 +335,38 @@ qualifications and the unresolved original failure are retained in
 `work/payment-reply-recovery/native-integration-r2/closure.json`. These partial
 gates do not establish production readiness or full integration acceptance.
 
-The current ARM64 runtime also passes the three-router competing-provider cycle
+The `f055e8153` cancellation fix retains authenticated ingress until the outer
+pump can hand it back without awaiting another send. Three deterministic cases
+fail before the fix and pass afterward; all 146 dataplane checks pass. The
+combined candidate passes eight queue-bound, three cancellation and five real
+rotation/rejoin checks. This establishes a concrete cancellation repair, without
+attributing the earlier full-suite one-shot loss. A new full-core run is pending.
+
+The strengthened renewal case offers 320 originals once while settlement is held.
+The old runtime loses 67; the repaired candidate delivers all 320 exactly once,
+with no premature delivery and unchanged financial assertions. Six buyer checks
+also pass. Repeated UDP/self-signed-TLS renewal completes eight replacements,
+including continued neighbor payment during a held settlement, and conserves all
+384 test sats. A separate generated-CA test now explicitly enables
+`test-native-roots`, replacing its accidental reliance on dependency feature
+unification. Issuer/name rejection, paid forwarding, renewal, partition/restart
+and conservation pass; default production trust is unchanged. Strict core/relay
+lint passes. Evidence is in `ingress-integration-green-r1` through `r4`; the failed
+CA setup remains recorded in `r2`.
+
+The matching router runtime, recorded at `9b9a392b2`, delivers all 84,000 originals
+in the same five-minute workload, with no missing, duplicate or invalid packets.
+Both successor channels advance payment and delivery during six live observations;
+each direction authorizes 43 test sats within its unchanged 64-sat limit. No source
+wait drops occur; two source-policy diagnostics remain in the full logs. Renewal
+pauses are 1.615 and 1.738 seconds. The middle uses 80.929 CPU seconds, or 1.010
+CPU seconds per payload MiB, and peaks at 22,320 KiB resident memory. This finite
+run does not establish a performance improvement. All 384 test sats are collected,
+all 639 management checks pass, and independent closure verifies original-state
+restoration. Evidence is `work/hardware-current-r1/renewal-load-r7`; closure SHA-256
+is `0da2637ccd855929dda6c7e61099ef625c767483d088288720917ee9efe5e5c1`.
+
+An earlier ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted
 stage requires a complete fresh burst, healthy native delivery feedback and an
@@ -523,7 +554,7 @@ power loss, continuous traffic during recovery, throughput or an Internet VPN.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest lane-bounded renewal run delivers all 84,000 originals with 1.64/1.73-second pauses, unchanged financial bounds and full closure. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify larger wait bounds under repeated/slow renewal and higher pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest cancellation-recovery runtime delivers all 84,000 router originals with 1.62/1.74-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
 | Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
@@ -3585,8 +3616,8 @@ A third WebSocket case adds a loopback TLS reverse proxy to the URL-only fixture
 The real client rejects an untrusted issuer and a server-name mismatch without
 connecting to the WS backend, admitting peers, funding channels or debiting its
 wallet. A generated CA is passed only through the child client's `SSL_CERT_FILE`
-and an empty `SSL_CERT_DIR`; the current dependency graph's native-root loader
-uses these alongside bundled web PKI roots. No system trust store or certificate
+and an empty `SSL_CERT_DIR`; that earlier dependency graph's native-root loader
+used these alongside bundled web PKI roots. No system trust store or certificate
 verifier is changed. With a valid certificate, the existing FIPS authentication,
 unpaid denial, paid forwarding, exhaustion, renewal and settlement assertions
 pass. Crashing the middle relay requires a fresh TLS connection; paid traffic
@@ -3594,7 +3625,8 @@ resumes and all 384 test sats are conserved. This passes with all relay features
 and with optional relay features disabled; the plaintext seed regression and
 strict all-target lint also pass. Test-only dependencies reuse already locked
 `rcgen` and `tokio-rustls` versions. Production code and wire messages are unchanged.
-Run the service test filter `mixed_udp_websocket_tls` for this case. Local TLS
+Current builds require `--features test-native-roots` with the service test filter
+`mixed_udp_websocket_tls`; see [the explicit fixture command](SERVICE.md#initialization-and-configuration). Local TLS
 acceptance does not cover remote proxy deployment or resolve the intermittent
 paid-delivery timeout below.
 
