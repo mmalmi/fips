@@ -203,7 +203,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             .write_all(b"GET /v1/info HTTP/1.1\r\nHost: mint\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
-        request.shutdown().await.unwrap();
+        // Like a wallet, leave the request socket open for the HTTP response.
+        // The CDK HTTP server closes it after honoring Connection: close.
         let mut response = Vec::new();
         assert!(
             tokio::time::timeout(
