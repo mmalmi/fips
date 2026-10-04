@@ -362,6 +362,34 @@ comment-only clarification. The old trace did not capture its RTT echo payload,
 so it does not prove that particular historical failure used a zero-ms sample.
 Combined candidate and device acceptance remain separate.
 
+The combined `a7a94a0be` candidate also fixes late first payloads inheriting an
+almost-expired probe-only lookup. The first queued payload takes ownership and
+starts its bounded retry window once; later traffic cannot extend that window,
+and retained request identifiers remain capped. The native regression fails
+before this change and passes afterward. On the combined candidate, 38 focused
+core checks pass, including the unchanged short-contact and rejoin cases.
+Strict core/relay lint, formatting and source-size checks pass.
+
+The unchanged renewal/refund/restart scenario also passes with a 16-MiB wallet
+limit and two full-capacity recovery checkpoints. All eight tracked originals
+arrive once, the final fresh payload arrives, and all 384 test sats reconcile.
+New channel funding still requires a capacity reservation; this verifies logical
+recovery headroom, not physical flash failure. Evidence is retained in
+`work/payment-reply-recovery/combined-routing-green-r1/closure.json`, with the
+financial test in `combined-routing-green-r3`. The `r2` invocation selected zero
+tests without the required `testbench` feature and remains a failed setup record.
+
+The complete core run on this same candidate records 2,803 passes, one failure
+and 17 ignored tests in 2,311 seconds. Short Unix-socket paths avoid the earlier
+setup failures. The remaining failure is
+`same_path_rejoin::lifecycle::queued_original_delivers_once_after_real_rotation_and_rejoin`:
+the queued original recovers within 771 ms, but a subsequent one-shot payload
+from the useful neighbor is missing. Its authenticated receive counter advances;
+the trace does not identify the later delivery/drop branch. The original two-second
+assertion remains failed, with no retry. Source, executable and process closure
+are verified in `combined-routing-green-r1/full-core-qualification.json`.
+Full-core acceptance remains outstanding despite the focused and device passes.
+
 The strengthened renewal case offers 320 originals once while settlement is held.
 The old runtime loses 67; the repaired candidate delivers all 320 exactly once,
 with no premature delivery and unchanged financial assertions. Six buyer checks
@@ -591,6 +619,18 @@ phone runtime. All 512 test sats remain unspent and are subsequently collected;
 independent closure verifies restored routers, normal phone Wi-Fi/Internet and
 unchanged prior accounts. The stopped, empty test account is retained. Evidence
 is `work/android-current-r1/failed-acceptance-closure.json` in the private bundle.
+
+The subsequent Pixel run passes with both its named APK and router executable
+built from `a7a94a0be`. The phone enters over UDP and traverses two native wireless
+hops. All eight distinct payloads arrive across the before/after force-stop
+cohorts, with automatic payment advancing in all four paying directions. Reopening
+retains the original channels and budgets. All four channels settle, all 512 test
+sats are collected, and all 744 management checks pass. Management uses resolved
+addresses with the existing verified SSH host keys. Independent closure confirms
+restored router state, normal phone Wi-Fi/Internet, unchanged prior accounts, and
+a stopped empty test account. Evidence is `work/android-current-r2/acceptance.json`.
+This accepts that finite paid session and app restart; physical power loss,
+Internet VPN service and phone throughput remain separate acceptance targets.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
