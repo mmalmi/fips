@@ -292,7 +292,11 @@ impl RelayService {
             free.clone(),
         );
         let relay = if config.return_allowance {
-            relay.with_return_allowance()?
+            if let Some(policy) = &config.return_bandwidth {
+                relay.with_return_bandwidth(policy.clone())?
+            } else {
+                relay.with_return_allowance()?
+            }
         } else {
             relay
         };

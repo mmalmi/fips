@@ -144,6 +144,34 @@ fn return_allowance_is_explicit_and_cannot_change_legacy_tariffs() {
 }
 
 #[test]
+fn custom_reply_rates_require_enabled_allowance_and_valid_bounds() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(config.return_bandwidth.is_none());
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.return_bandwidth = Some(crate::free_routes::FreeBandwidthPolicy {
+        global_bytes_per_second: 32_768,
+        global_burst_bytes: 65_536,
+        peer_bytes_per_second: 8_192,
+        peer_burst_bytes: 16_384,
+    });
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .contains("requires return allowance")
+    );
+    config.return_allowance = true;
+    config.validate().unwrap();
+    config
+        .return_bandwidth
+        .as_mut()
+        .unwrap()
+        .peer_bytes_per_second = 0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn free_bandwidth_is_opt_in_and_rejects_invalid_or_legacy_configuration() {
     let mut value: Value =
         serde_json::from_str(include_str!("../../service.example.json")).unwrap();

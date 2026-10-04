@@ -66,6 +66,9 @@ pub struct ServiceConfig {
     /// Optional bounded opaque replies on the reverse of an admitted path.
     #[serde(default)]
     pub return_allowance: bool,
+    /// Optional rate limits for earned replies; omission keeps the small default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
     /// Optional local rate limits for already negotiated free-data forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
@@ -171,6 +174,12 @@ impl ServiceConfig {
         }
         if self.return_allowance && !t.billing.has_free_handshakes() {
             return Err("return allowance requires forwarding-data billing".into());
+        }
+        if let Some(policy) = &self.return_bandwidth {
+            policy.validate()?;
+            if !self.return_allowance {
+                return Err("return bandwidth requires return allowance".into());
+            }
         }
         self.destination_fees
             .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?;

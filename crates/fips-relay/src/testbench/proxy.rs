@@ -17,10 +17,9 @@ pub(crate) fn spawn(listener: TcpListener, backend: SocketAddr) -> JoinHandle<()
                     jobs.spawn(async move {
                         if let Ok(Ok(upstream)) = tokio::time::timeout(
                             Duration::from_secs(3), TcpStream::connect(backend),
-                        ).await {
-                            if let Err(error) = copy(incoming, upstream, Duration::from_secs(45)).await {
-                                tracing::debug!(%error, "test mint proxy stream ended");
-                            }
+                        ).await
+                            && let Err(error) = copy(incoming, upstream, Duration::from_secs(45)).await {
+                            tracing::debug!(%error, "test mint proxy stream ended");
                         }
                     });
                 }

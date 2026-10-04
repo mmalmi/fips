@@ -92,11 +92,27 @@ impl PaidForwarder {
     }
 
     /// Optional complimentary replies, separate from existing paid agreements.
-    pub fn with_return_allowance(mut self) -> Result<Self, String> {
+    pub fn with_return_allowance(self) -> Result<Self, String> {
+        self.with_returns(crate::return_allowance::ReturnAllowance::new())
+    }
+
+    /// Operator-selected reply rates; earned credit and path bounds stay fixed.
+    pub fn with_return_bandwidth(
+        self,
+        policy: crate::free_routes::FreeBandwidthPolicy,
+    ) -> Result<Self, String> {
+        policy.validate()?;
+        self.with_returns(crate::return_allowance::ReturnAllowance::new().with_bandwidth(&policy))
+    }
+
+    fn with_returns(
+        mut self,
+        allowance: crate::return_allowance::ReturnAllowance,
+    ) -> Result<Self, String> {
         if self.bootstrap.is_none() {
             return Err("return allowance requires forwarding-data billing".into());
         }
-        self.returns = Some(Mutex::new(crate::return_allowance::ReturnAllowance::new()));
+        self.returns = Some(Mutex::new(allowance));
         Ok(self)
     }
 

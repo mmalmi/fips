@@ -85,6 +85,40 @@ fn credit_caps_and_rate_denials_do_not_consume_other_flows() {
 }
 
 #[test]
+fn configured_reply_rates_still_share_neighbor_and_global_bounds() {
+    let policy = crate::free_routes::FreeBandwidthPolicy {
+        global_bytes_per_second: 2,
+        global_burst_bytes: 8_192,
+        peer_bytes_per_second: 1,
+        peer_burst_bytes: 4_096,
+    };
+    let mut allowance = ReturnAllowance::new().with_bandwidth(&policy);
+    let now = Instant::now();
+    for next in [3, 7, 8] {
+        let forward = request(1, 4, 2, next, &[0; 2_048]);
+        for _ in 0..3 {
+            allowance.earn_at(&forward, now);
+        }
+        assert_eq!(
+            allowance.flows[&Path::from_request(&forward).reverse()].remaining,
+            MAX_CREDIT
+        );
+    }
+    for next in [3, 7] {
+        for _ in 0..2 {
+            assert!(allowance.admit_at(&request(4, 1, next, 2, &[0; 2_048]), now));
+        }
+    }
+    // A new path cannot reset the returning neighbor's used burst.
+    allowance.earn_at(&request(5, 4, 2, 3, &[0; 512]), now);
+    assert!(!allowance.admit_at(&request(4, 5, 3, 2, &[0; 256]), now));
+    // A fresh neighbor also cannot exceed the shared aggregate burst.
+    assert!(!allowance.admit_at(&request(4, 1, 8, 2, &[0; 256]), now));
+    assert_eq!(allowance.stats().traffic.charged_units, 8_192);
+    assert_eq!(allowance.stats().traffic.rate_denied, 2);
+}
+
+#[test]
 fn state_is_bounded_under_claimed_address_and_neighbor_churn() {
     let mut allowance = ReturnAllowance::new();
     let now = Instant::now();

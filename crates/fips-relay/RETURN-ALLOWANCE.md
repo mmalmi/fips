@@ -31,7 +31,7 @@ prove that a forward packet arrived. The bound includes packets whose outgoing
 submission later fails. Return credit is volatile and independent of financial
 journals; a restart loses it, and fresh admitted traffic can earn it again.
 
-## Fixed limits
+## Credit bounds and default rates
 
 | Limit | Value |
 |---|---|
@@ -41,9 +41,18 @@ journals; a restart loses it, and fresh admitted traffic can earn it again.
 | Minimum credit/rate charge per return packet | 256 units |
 | Expiry | 30 seconds after last admitted forward packet |
 | Tracked paths | 128 total; 16 per returning neighbor |
-| Neighbor rate budget | 2,048-unit burst; 1,024 units/second |
-| Aggregate rate budget | 8,192-unit burst; 4,096 units/second |
+| Default neighbor rate budget | 2,048-unit burst; 1,024 units/second |
+| Default aggregate rate budget | 8,192-unit burst; 4,096 units/second |
 | Rate-budget identities | 64, with 60-second idle retirement |
+
+An optional `return_bandwidth` object uses the same four rate/burst fields and
+validation as `free_bandwidth`. It requires `return_allowance: true`; omission
+preserves the rates above. Operators can budget more reply traffic for services
+such as a bootstrap mint. Packet size, exact-path credit, expiry, tracked-state
+bounds and paid-route precedence remain unchanged. The rate budget is still
+shared across returning identities and paths. For slower configured rates,
+identity retirement is at least as long as refilling a full burst, so churn
+cannot reset its debt early.
 
 Replies consume credit and both rate budgets together. A denial cannot consume
 another flow's credit or the aggregate allowance. Replies cannot extend expiry.

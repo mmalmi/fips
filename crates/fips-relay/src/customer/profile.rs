@@ -117,6 +117,7 @@ impl CustomerProfile {
             neighbor_admission: self.neighbor_admission,
             destination_fees: Default::default(),
             return_allowance: false,
+            return_bandwidth: None,
             free_bandwidth: None,
             price_selection: None,
             payment_cadence: Default::default(),

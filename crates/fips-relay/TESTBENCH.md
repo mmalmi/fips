@@ -129,11 +129,25 @@ This configuration does not grant bootstrap traffic automatically. Give the mint
 destination a zero-price offer with bounded `free_bandwidth` on forwarding
 relays. Enable `return_allowance` on those relays to let admitted requests earn
 small replies along the reverse path. No client-specific tariff or mint-side
-return watch is then needed. The existing [return limits](RETURN-ALLOWANCE.md)
-remain unchanged, including the shared 1,024-unit/s neighbor budget. The adapter
-uses small TCP segments so acknowledgments can sustain that earned credit.
-This is a deliberately slow bootstrap tier, without a delivery or fairness
-guarantee under contention. A changed or asymmetric response path needs matching
+return watch is then needed. The adapter uses small TCP segments so
+acknowledgments can sustain that earned credit. The default 1,024-unit/s neighbor
+reply budget is intended for small replies; the full mint lifecycle can exceed
+metadata request deadlines at that rate. For this bench, explicitly configure:
+
+```json
+"return_allowance": true,
+"return_bandwidth": {
+  "global_bytes_per_second": 32768,
+  "global_burst_bytes": 65536,
+  "peer_bytes_per_second": 8192,
+  "peer_burst_bytes": 16384
+}
+```
+
+This changes only operator-selected rate/burst limits. [Earned credit, path
+binding, state bounds and paid-route precedence](RETURN-ALLOWANCE.md) stay fixed.
+It is still a bounded bootstrap tier, without a delivery or fairness guarantee
+under contention. A changed or asymmetric response path needs matching
 forward admission on its edges; this does not establish general mobile bootstrap.
 
 A fresh two-router UDP check verifies offline import/export without known-client

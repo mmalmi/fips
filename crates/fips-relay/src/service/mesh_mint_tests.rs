@@ -31,8 +31,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
     let started = std::time::Instant::now();
     let checkpoint =
         |phase| eprintln!("mesh mint {:.2}s: {phase}", started.elapsed().as_secs_f64());
-    // The complete financial lifecycle shares the unchanged 1 KiB/s reply tier.
-    tokio::time::timeout(Duration::from_secs(420), async {
+    // Explicit bootstrap rates cover mint metadata as well as small receipts.
+    tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -134,6 +134,14 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             crate::control_transport::NeighborAdmission::AuthenticatedAdjacent;
         configs[0].return_allowance = true;
         configs[1].return_allowance = true;
+        let replies = FreeBandwidthPolicy {
+            global_bytes_per_second: 32_768,
+            global_burst_bytes: 65_536,
+            peer_bytes_per_second: 8_192,
+            peer_burst_bytes: 16_384,
+        };
+        configs[0].return_bandwidth = Some(replies.clone());
+        configs[1].return_bandwidth = Some(replies);
         for (i, config) in configs.iter_mut().enumerate() {
             config.neighbors = identities
                 .iter()

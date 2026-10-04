@@ -22,6 +22,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         neighbor_admission: Default::default(),
         destination_fees: Default::default(),
         return_allowance: false,
+        return_bandwidth: None,
         free_bandwidth: None,
         price_selection: None,
         payment_cadence: Default::default(),
