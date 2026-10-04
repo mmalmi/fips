@@ -23,6 +23,9 @@
     <string name="profile_details">Test budget (sats): %1$d\nPrice limit (sats per KiB): %2$s</string>
     <string name="spending">Test sats spent: %1$d · locked: %2$d</string>
     <string name="balance">Available test sats: %1$d</string>
-    <string name="billing_note">Payments buy forwarding attempts. Delivery is best effort. Leaving this app stops traffic and preserves the account.</string>
+    <string name="billing_note">Payments buy forwarding attempts. Delivery is best effort. Routing continues when you leave this app. Use Stop here or in the notification.</string>
+    <string name="routing_channel">Mesh routing</string>
+    <string name="routing_active">Routing is active. Tap Stop to end the session.</string>
+    <string name="notifications_needed">Allow notifications to keep Stop available while the app is closed.</string>
     <string name="stop_pending">The account is still stopping. Its network binding is retained.</string>
 </resources>

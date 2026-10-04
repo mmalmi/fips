@@ -1,11 +1,17 @@
 package org.fips.relaybench;
 
 import android.app.Activity;
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ResultReceiver;
 import android.provider.Settings;
 import android.util.AtomicFile;
 import android.util.Base64;
@@ -24,15 +30,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import org.json.JSONObject;
 
-/** Foreground test customer. Intents preview setup only; purchases require a button. */
+/** Test customer controls. Intents preview setup only; purchases require a button. */
 public final class MainActivity extends Activity {
-    private static final ExecutorService WORK = Executors.newSingleThreadExecutor();
     private final List<Button> buttons = new ArrayList<>();
-    private WifiBinding wifi;
+    private BenchClient client;
     private JSONObject profile;
     private String entryIp;
     private JSONObject state = new JSONObject();
@@ -48,7 +51,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        wifi = new WifiBinding(getApplicationContext());
+        client = BenchClient.get(this);
         buildView();
         loadSetup(getIntent());
     }
@@ -96,7 +99,7 @@ public final class MainActivity extends Activity {
             if (!new File(getFilesDir(), "funding.json").delete()) throw new IllegalStateException("Funds loaded; funding file cleanup failed");
             refresh();
         }));
-        connect = button(content, R.string.connect, () -> action("start", true, () -> { call(command("start")); refresh(); }));
+        connect = button(content, R.string.connect, this::connect);
         buy = button(content, R.string.buy, () -> action("buy", false, () -> { call(command("buy")); refresh(); }));
         send = button(content, R.string.send, () -> action("send", false, () -> {
             StringBuilder payload = new StringBuilder("FIPS Bench ").append(UUID.randomUUID()).append(' ');
@@ -105,14 +108,8 @@ public final class MainActivity extends Activity {
             refresh();
             showMessage(getString(R.string.queued));
         }));
-        finish = button(content, R.string.finish, () -> action("finish", false, () -> {
-            balance = call(command("finish")).getLong("balance_sat");
-            wifi.unbindAfterStop();
-            refresh(false);
-        }));
-        stop = button(content, R.string.stop, () -> action("stop", false, () -> {
-            call(command("stop")); wifi.unbindAfterStop(); refresh(false);
-        }));
+        finish = button(content, R.string.finish, () -> serviceAction("finish"));
+        stop = button(content, R.string.stop, () -> serviceAction("stop"));
         export = button(content, R.string.return_funds, () -> action("export", true, this::returnFunds));
         button(content, R.string.refresh, () -> action("status",
             state.optBoolean("configured") && !state.optBoolean("running"), () -> refresh()));
@@ -156,11 +153,11 @@ public final class MainActivity extends Activity {
         busy = true;
         message.setText("");
         render();
-        WORK.execute(() -> {
+        BenchClient.WORK.execute(() -> {
             try {
                 if (bind) {
                     if (entryIp == null) throw new IllegalStateException(getString(R.string.need_setup));
-                    networkEvidence = wifi.bind(entryIp);
+                    networkEvidence = client.wifi.bind(entryIp);
                 }
                 operation.run();
                 writePrivate("last-action.json", new JSONObject().put("action", name).put("ok", true).toString());
@@ -174,14 +171,53 @@ public final class MainActivity extends Activity {
     }
 
     private JSONObject call(JSONObject command) throws Exception {
-        String result = NativeClient.execute(new File(getFilesDir(), "client").getAbsolutePath(), command.toString());
-        if (result == null) throw new IllegalStateException(getString(R.string.failed));
-        JSONObject response = new JSONObject(result);
-        if (response.has("error")) throw new IllegalStateException(response.getString("error"));
-        return response.getJSONObject("ok");
+        return client.call(command);
     }
 
-    private static JSONObject command(String type) throws Exception { return new JSONObject().put("type", type); }
+    private static JSONObject command(String type) throws Exception { return BenchClient.command(type); }
+
+    private void connect() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 32);
+            return;
+        }
+        serviceAction("start");
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request != 32) return;
+        if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) serviceAction("start");
+        else showMessage(getString(R.string.notifications_needed));
+    }
+
+    private void serviceAction(String name) {
+        if (busy) return;
+        busy = true;
+        message.setText("");
+        render();
+        ResultReceiver reply = new ResultReceiver(new Handler(Looper.getMainLooper())) {
+            @Override protected void onReceiveResult(int code, Bundle data) {
+                if (isDestroyed()) return;
+                busy = false;
+                action(name, false, () -> {
+                    if (code != 0) throw new IllegalStateException(data.getString("error"));
+                    JSONObject response = new JSONObject(data.getString("ok"));
+                    if (response.has("wifi")) networkEvidence = response.getJSONObject("wifi");
+                    if (response.has("balance_sat")) balance = response.getLong("balance_sat");
+                    refresh(false);
+                });
+            }
+        };
+        try {
+            startForegroundService(new Intent(this, RoutingService.class)
+                .putExtra(RoutingService.ACTION, name).putExtra(RoutingService.REPLY, reply));
+        } catch (RuntimeException error) {
+            busy = false;
+            render();
+            showMessage(error.getMessage() == null ? getString(R.string.failed) : error.getMessage());
+        }
+    }
     private void refresh() throws Exception { refresh(true); }
     private void refresh(boolean wallet) throws Exception {
         state = call(command("status"));
@@ -326,16 +362,5 @@ public final class MainActivity extends Activity {
         } catch (Exception error) { file.failWrite(stream); throw error; }
     }
 
-    @Override protected void onStop() {
-        super.onStop();
-        WORK.execute(() -> {
-            try {
-                call(command("stop"));
-                wifi.unbindAfterStop();
-                refresh(false);
-            } catch (Exception error) { showMessage(getString(R.string.stop_pending)); }
-        });
-    }
     @Override protected void onRestart() { super.onRestart(); loadSetup(getIntent()); }
-    @Override protected void onDestroy() { wifi.close(); super.onDestroy(); }
 }

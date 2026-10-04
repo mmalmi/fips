@@ -8,6 +8,10 @@ import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.content.Context;
+import android.content.Intent;
+import android.Manifest;
+import android.app.Notification;
+import android.app.Service;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.os.Looper;
@@ -17,7 +21,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONObject;
 import org.junit.Before;
@@ -31,6 +35,8 @@ import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.LooperMode;
 import org.robolectric.android.controller.ActivityController;
+import org.robolectric.android.controller.ServiceController;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.util.ReflectionHelpers;
 
 /** Real activity lifecycle and private files; the native wallet and Wi-Fi are isolated. */
@@ -48,6 +54,121 @@ public final class MainActivityTest {
         Wallet.exports = 0;
         Wallet.allowNewReturn = false;
         Wallet.failBalance = false;
+        Wallet.running = false;
+        Wallet.starts = 0;
+        Wallet.stops = 0;
+        Wallet.failStop = false;
+        Wifi.binds = 0;
+        Wifi.unbinds = 0;
+    }
+
+    @Test public void routingSurvivesScreenRecreationAndNotificationStopsIt() throws Exception {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS);
+        ActivityController<MainActivity> screen = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity activity = screen.get();
+        settle(activity);
+        Button connect = ReflectionHelpers.getField(activity, "connect");
+        connect.performClick();
+        Intent request = shadowOf(RuntimeEnvironment.getApplication()).getNextStartedService();
+        assertNotNull(request);
+        ServiceController<RoutingService> owner = Robolectric.buildService(RoutingService.class, request).create();
+        RoutingService service = owner.get();
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(request, 0, 1));
+        settle(activity);
+        assertTrue(Wallet.running);
+        assertEquals(1, Wallet.starts);
+        assertEquals(1, Wifi.binds);
+        Notification notice = shadowOf(service).getLastForegroundNotification();
+        assertNotNull(notice);
+        assertTrue((notice.flags & Notification.FLAG_ONGOING_EVENT) != 0);
+        capture(activity, "routing-running");
+
+        screen.pause().stop().destroy();
+        drain();
+        assertTrue(Wallet.running);
+        assertEquals(0, Wallet.stops);
+        assertEquals(0, Wifi.unbinds);
+        screen = Robolectric.buildActivity(MainActivity.class).setup();
+        activity = screen.get();
+        settle(activity);
+        assertEquals(1, Wallet.starts);
+        assertEquals(View.VISIBLE, ((Button) ReflectionHelpers.getField(activity, "stop")).getVisibility());
+
+        notice.actions[0].actionIntent.send();
+        Intent stop = shadowOf(RuntimeEnvironment.getApplication()).getNextStartedService();
+        assertNotNull(stop);
+        service.onStartCommand(stop, 0, 2);
+        drain();
+        assertFalse(Wallet.running);
+        assertEquals(1, Wallet.stops);
+        assertEquals(1, Wifi.unbinds);
+        assertTrue(shadowOf(service).isStoppedBySelf());
+        owner.destroy();
+        screen.pause().stop().destroy();
+        drain();
+        assertEquals("destruction must not repeat a confirmed stop", 1, Wallet.stops);
+    }
+
+    @Test public void failedStopRetainsServiceAndBindingAndDestructionStopsTheSession() throws Exception {
+        Intent start = new Intent(RuntimeEnvironment.getApplication(), RoutingService.class)
+            .putExtra(RoutingService.ACTION, "start");
+        ServiceController<RoutingService> owner = Robolectric.buildService(RoutingService.class, start).create();
+        RoutingService service = owner.get();
+        service.onStartCommand(start, 0, 1);
+        drain();
+        assertTrue(Wallet.running);
+        Wallet.failStop = true;
+        service.onStartCommand(new Intent(start).putExtra(RoutingService.ACTION, "stop"), 0, 2);
+        drain();
+        assertTrue(Wallet.running);
+        assertFalse(shadowOf(service).isStoppedBySelf());
+        assertEquals(0, Wifi.unbinds);
+        owner.destroy();
+        drain();
+        assertFalse(Wallet.running);
+        assertEquals(2, Wallet.stops);
+        assertEquals(1, Wifi.unbinds);
+    }
+
+    @Test public void notificationPermissionIsRequiredBeforeConnecting() throws Exception {
+        ActivityController<MainActivity> screen = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity activity = screen.get();
+        settle(activity);
+        Button connect = ReflectionHelpers.getField(activity, "connect");
+        connect.performClick();
+        activity.onRequestPermissionsResult(32, new String[] {Manifest.permission.POST_NOTIFICATIONS},
+            new int[] {android.content.pm.PackageManager.PERMISSION_DENIED});
+        drain();
+        assertEquals(0, Wallet.starts);
+        assertFalse(Wallet.running);
+        assertEquals(null, shadowOf(RuntimeEnvironment.getApplication()).getNextStartedService());
+        screen.pause().stop().destroy();
+        drain();
+    }
+
+    @Test public void delayedServiceCleanupCannotStopItsReplacement() throws Exception {
+        Intent start = new Intent(RuntimeEnvironment.getApplication(), RoutingService.class)
+            .putExtra(RoutingService.ACTION, "start");
+        ServiceController<RoutingService> first = Robolectric.buildService(RoutingService.class, start).create();
+        first.get().onStartCommand(start, 0, 1);
+        drain();
+        CountDownLatch release = new CountDownLatch(1);
+        BenchClient.WORK.submit(() -> { assertTrue(release.await(10, TimeUnit.SECONDS)); return null; });
+        ServiceController<RoutingService> replacement;
+        try {
+            first.destroy();
+            replacement = Robolectric.buildService(RoutingService.class, start).create();
+            replacement.get().onStartCommand(start, 0, 1);
+        } finally { release.countDown(); }
+        drain();
+        assertTrue(Wallet.running);
+        assertEquals(1, Wallet.starts);
+        assertEquals(0, Wallet.stops);
+        assertEquals(0, Wifi.unbinds);
+        replacement.destroy();
+        drain();
+        assertEquals(1, Wallet.stops);
+        assertEquals(1, Wifi.unbinds);
     }
 
     @Test public void interruptedReturnKeepsItsRequestAndRemainsRetryableAfterRestart() throws Exception {
@@ -148,10 +269,16 @@ public final class MainActivityTest {
     }
 
     private static void settle(MainActivity activity) throws Exception {
-        ExecutorService worker = ReflectionHelpers.getStaticField(MainActivity.class, "WORK");
-        worker.submit(() -> {}).get(10, TimeUnit.SECONDS);
-        shadowOf(Looper.getMainLooper()).idle();
+        drain();
         assertFalse((Boolean) ReflectionHelpers.getField(activity, "busy"));
+    }
+
+    private static void drain() throws Exception {
+        // Service completion posts a UI refresh back onto the same worker.
+        for (int i = 0; i < 3; i++) {
+            BenchClient.WORK.submit(() -> {}).get(10, TimeUnit.SECONDS);
+            shadowOf(Looper.getMainLooper()).idle();
+        }
     }
 
     private static void tap(MainActivity activity, int text) throws Exception {
@@ -197,13 +324,17 @@ public final class MainActivityTest {
         static int exports;
         static boolean allowNewReturn;
         static boolean failBalance;
+        static boolean running;
+        static int starts;
+        static int stops;
+        static boolean failStop;
         @Implementation protected static void __staticInitializer__() {}
         @Implementation protected static String execute(String directory, String encoded) throws Exception {
             JSONObject command = new JSONObject(encoded);
             JSONObject profile = new JSONObject().put("budget_sat", 128).put("max_rate_msat_per_kib", 8192);
             JSONObject result;
             switch (command.getString("type")) {
-                case "status": result = new JSONObject().put("configured", true).put("running", false).put("profile", profile); break;
+                case "status": result = new JSONObject().put("configured", true).put("running", running).put("profile", profile); break;
                 case "preview": result = new JSONObject().put("profile", profile).put("entry_ip", "127.0.0.1"); break;
                 case "balance":
                     if (failBalance) {
@@ -211,7 +342,14 @@ public final class MainActivityTest {
                         return new JSONObject().put("error", "Balance reply was interrupted").toString();
                     }
                     result = new JSONObject().put("balance_sat", balance); break;
-                case "stop": result = new JSONObject(); break;
+                case "start": starts++; running = true; result = new JSONObject(); break;
+                case "stop":
+                    stops++;
+                    if (failStop) {
+                        failStop = false;
+                        return new JSONObject().put("error", "Stop is still pending").toString();
+                    }
+                    running = false; result = new JSONObject(); break;
                 case "export":
                     exports++;
                     latest = command;
@@ -249,9 +387,11 @@ public final class MainActivityTest {
 
     @Implements(value = WifiBinding.class, isInAndroidSdk = false)
     public static final class Wifi {
+        static int binds;
+        static int unbinds;
         @Implementation protected void __constructor__(Context context) {}
-        @Implementation protected JSONObject bind(String address) { return new JSONObject(); }
-        @Implementation protected void unbindAfterStop() {}
+        @Implementation protected JSONObject bind(String address) { binds++; return new JSONObject(); }
+        @Implementation protected void unbindAfterStop() { unbinds++; }
         @Implementation protected void close() {}
     }
 }
