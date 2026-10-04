@@ -366,6 +366,18 @@ all 639 management checks pass, and independent closure verifies original-state
 restoration. Evidence is `work/hardware-current-r1/renewal-load-r7`; closure SHA-256
 is `0da2637ccd855929dda6c7e61099ef625c767483d088288720917ee9efe5e5c1`.
 
+The same runtime also passes twelve router streams around a middle-relay process
+crash. Healthy and recovery cohorts deliver 32,000/32,000; four cohorts with every
+twentieth test frame deliberately dropped deliver 15,201/16,000, with automatic
+payments advancing under loss. No duplicate or invalid payloads occur. The
+original channels and 4,000-msat unbilled recovery allowance per channel persist.
+All 384 test sats are collected and all 621 management checks pass; independent
+closure verifies restoration and removal of the fault filters. Evidence is
+`work/hardware-current-r1/restart-loss-r3`, closure SHA-256
+`4856e941fd6d35fdcf7ff7d8e0f38b802c110a73a135728d7f6b6fc339128372`. Frame-drop counters include control traffic;
+this does not attribute individual missing payloads or test physical power loss
+or traffic during the crash.
+
 An earlier ARM64 runtime also passes the three-router competing-provider cycle
 with harness `f426a35cb`. One source watch selects the cheaper provider, switches
 after an in-flight radio cut, and returns after that radio recovers. Every accepted
