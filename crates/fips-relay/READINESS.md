@@ -83,6 +83,17 @@ and repair remain in `work/mesh-mint-r5` through `r7`. This is native Linux
 acceptance, not Android/OpenWrt deployment, permissionless return bootstrap or
 interruption during a financial mint request.
 
+On `655344ade`, the native case uses the normal relay's `mint_export`
+configuration instead of separately constructing the mint-side bridge. The paid
+lifecycle and complete 16-sat collection pass again in 44.84 seconds, together
+with 33 related checks, strict library lint, a normal library/daemon build and
+the source-size gate. The same frozen source also builds as a static ARM64 Linux
+executable. Verified logs, hashes and independent process/cache closure are in
+`work/mesh-mint-r9` and `work/mesh-mint-arm-r1`. The existing test-mint executable
+can now remain loopback-only while an ordinary relay exports that listener;
+[server configuration](TESTBENCH.md#mint-host-configuration) documents the setup.
+This does not yet accept a device deployment or remove explicit return bootstrap.
+
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent

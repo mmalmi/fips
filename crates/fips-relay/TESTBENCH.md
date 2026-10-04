@@ -100,9 +100,35 @@ offline wallet commands.
 The mint and every client's adapter must use the same wallet URL. A test mint can
 bind its own loopback port and clients can use that same loopback port locally,
 with TCP/FIPS connecting them. Do not rewrite a saved wallet's mint URL to adopt
-another adapter. The mint executable and hardware runner still need explicit
-server/export and reverse-bootstrap wiring; existing hardware remains on its
-LAN-mint baseline. Current acceptance is recorded in [READINESS.md](READINESS.md).
+another adapter.
+
+### Mint host configuration
+
+Run the test mint on its own loopback listener, for example `127.0.0.1:3338`.
+The ordinary relay daemon on that host can expose it using this top-level field
+in its existing service configuration:
+
+```json
+"mint_export": {
+  "backend": "127.0.0.1:3338",
+  "service_port": 44745
+}
+```
+
+Initialize a fresh relay account, then run it normally. Its saved FIPS identity
+is the `terms.mint_mesh.npub` that clients pin. Use forwarding-data billing and
+the same `http://127.0.0.1:3338` mint URL; omit `terms.mint_mesh` on the mint host.
+Client and server adapters cannot be enabled together. The export accepts only
+a fixed loopback TCP backend and a distinct, non-reserved FIPS service port. It
+shares the relay endpoint and its shutdown; the mint's private issuance socket
+is never exported. No additional proxy process or mint protocol is needed.
+
+This configuration does not grant bootstrap traffic automatically. Arrange
+bounded zero-price offers to the mint and the known client identities, and use
+the existing zero-ceiling route watch on the mint host for the response path.
+Permissionless return bootstrap and hardware deployment remain pending. Existing
+hardware remains on its LAN-mint baseline. Current acceptance is recorded in
+[READINESS.md](READINESS.md).
 
 ## Fund a relay
 
