@@ -44,12 +44,19 @@ def control(phone, kind, *, probe=None, operation_timeout=20):
         'request': request, 'sha256': hashlib.sha256(data).hexdigest(),
         'timeout_seconds': operation_timeout,
     })
-    reply = phone.adb(
-        'exec-out', 'run-as', phone.package, 'toybox', 'nc', '-U', '-w', '3',
-        '-W', str(operation_timeout - 5), 'files/client/state/control.sock',
-        data=struct.pack('!I', len(data)) + data, timeout=operation_timeout,
-    )
-    result = decode_record(reply)
+    try:
+        # exec-out only copies output: the service receives no request bytes.
+        # A non-PTY shell carries both directions without terminal conversion.
+        reply = phone.adb(
+            'shell', '-T', 'run-as', phone.package, 'toybox', 'nc', '-U', '-w', '3',
+            '-W', str(operation_timeout - 5), 'files/client/state/control.sock',
+            data=struct.pack('!I', len(data)) + data, timeout=operation_timeout,
+        )
+        result = decode_record(reply)
+    except Exception as error:
+        save(phone.root / (identifier + '-failure.json'),
+             {'error': type(error).__name__, 'reason': str(error)[:240]})
+        raise
     save(phone.root / (identifier + '-result.json'), result)
     return result
 
