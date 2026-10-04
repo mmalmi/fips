@@ -52,8 +52,10 @@ impl KeysetRefresh {
         // The library writes keysets to the shared receiver SQLite store;
         // its already-loaded receiver reads that store for every validation.
         // Do not replace financial state or waive signature verification.
+        // Allow bounded mesh bootstrap to fetch keys while leaving time for the
+        // acceptance response inside the control transport's 30-second request.
         let result = match tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(20),
             FileSpilmanPaymentReceiver::load_with_keyset_refresh(
                 &self.directory,
                 self.config.clone(),

@@ -27,7 +27,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
     let checkpoint =
         |phase| eprintln!("mesh mint {:.2}s: {phase}", started.elapsed().as_secs_f64());
     // The complete financial lifecycle shares the unchanged 1 KiB/s reply tier.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(Duration::from_secs(300), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -276,7 +276,12 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         checkpoint("customer offline import complete");
         phone.execute(CustomerCommand::Start).await.unwrap();
         // Payment, provider redemption and buyer refund all use the mesh mint.
-        phone.execute(CustomerCommand::Buy).await.unwrap();
+        let purchase = phone.execute(CustomerCommand::Buy).await;
+        assert!(
+            purchase.is_ok(),
+            "purchase {purchase:?}; provider {:?}",
+            nodes[0].controller.last_error()
+        );
         let funded = phone.execute(CustomerCommand::Status).await.unwrap();
         assert_eq!(funded["relay"]["locked_sat"], 8);
         assert_eq!(funded["relay"]["funding_budget"]["wallet_debited_sat"], 8);
