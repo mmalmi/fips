@@ -412,6 +412,11 @@ async fn wait_for_session_drain(config: &ServiceConfig, source: &str) {
 async fn deliver(configs: &[ServiceConfig], destination: &str, round: u8) -> bool {
     let payload = format!("renewal-restart-{round}:{}", "x".repeat(700));
     let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
+    let before = if round == 100 {
+        Some(delivery_snapshot(configs).await)
+    } else {
+        None
+    };
     request(
         &configs[0],
         &AdminRequest::Send {
@@ -421,7 +426,7 @@ async fn deliver(configs: &[ServiceConfig], destination: &str, round: u8) -> boo
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
+    let delivered = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let status = request(&configs[2], &AdminRequest::Status).await.unwrap();
             if status["received"]["last_sha256"] == digest {
@@ -431,5 +436,74 @@ async fn deliver(configs: &[ServiceConfig], destination: &str, round: u8) -> boo
         }
     })
     .await
-    .is_ok()
+    .is_ok();
+    if !delivered && let Some(before) = before {
+        let after = delivery_snapshot(configs).await;
+        eprintln!("renewal fresh-delivery failure: before={before}, after={after}");
+    }
+    delivered
+}
+
+async fn delivery_snapshot(configs: &[ServiceConfig]) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let select = |row: &Value, fields: &[&str]| -> Value {
+        fields
+            .iter()
+            .map(|&field| (field.to_owned(), row[field].clone()))
+            .collect()
+    };
+    let mut nodes = Vec::new();
+    for config in configs {
+        let mut node = json!({});
+        if let Ok(Ok(status)) = tokio::time::timeout(
+            Duration::from_millis(250),
+            request(config, &AdminRequest::Status),
+        )
+        .await
+        {
+            node["service"] = select(
+                &status,
+                &[
+                    "received",
+                    "last_error",
+                    "data_carrier",
+                    "funding_budget",
+                    "remaining_budget_sat",
+                    "payment_progress",
+                ],
+            );
+        }
+        for command in ["show_status", "show_routing", "show_sessions"] {
+            node[command] = match tokio::time::timeout(
+                Duration::from_millis(250),
+                native_request(config, &json!({"command": command})),
+            )
+            .await
+            {
+                Ok(Ok(reply)) if reply["status"] == "ok" && reply.to_string().len() <= 16_384 => {
+                    reply["data"].clone()
+                }
+                _ => json!({"unavailable": true}),
+            };
+        }
+        let buyer = read(&config.state_directory.join("buyer/buyer.json"));
+        node["buyer_channels"] = json!(buyer["channels"].as_object().map(|rows| {
+            rows.iter().take(16).map(|(id, row)| {
+            json!({"id": id, "state": select(row, &["authorized_sat", "active", "retired"])})
+        }).collect::<Vec<_>>()
+        }));
+        node["buyer_routes"] = json!(buyer["quotes"].as_object().map(|rows| rows.iter().take(16).map(|(id, row)| {
+            json!({"id": id, "state": select(row, &["active", "observed_units", "submitted_units", "completed"])})
+        }).collect::<Vec<_>>()));
+        let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+            &config.state_directory.join("wallet"),
+        ))
+        .await
+        .unwrap();
+        let capacity = db.storage_capacity().await.unwrap().unwrap();
+        node["wallet_capacity"] =
+            json!({"maximum": capacity.maximum_bytes, "charged": capacity.charged_bytes});
+        nodes.push(node);
+    }
+    json!(nodes)
 }
