@@ -644,6 +644,27 @@ impl Node {
     ) -> LookupForwardOutcome {
         let mut forward_limiter_checked = false;
 
+        let direct_target_health = self
+            .peers
+            .get(&request.target)
+            .filter(|peer| {
+                request.target != *from
+                    && self.lookup_peer_mtu(&request.target) >= request.min_mtu
+                    && peer.can_send()
+            })
+            .map(|peer| peer.is_healthy());
+        let direct_probe_without_plan = direct_target_health.is_some_and(|healthy| {
+            healthy || self.config.node.routing.mode != RoutingMode::ReplyLearned
+        });
+        // A known usable target lets rejected requests skip the peer scan.
+        // Otherwise plan first: NoPeer must leave quota and same-ID retries free.
+        if direct_probe_without_plan {
+            if !self.should_forward_lookup_for_target(from, &request, allow_deferral) {
+                return LookupForwardOutcome::RateLimited;
+            }
+            forward_limiter_checked = true;
+        }
+
         let candidates: Vec<_> = self
             .lookup_peer_candidates(&request.target)
             .into_iter()
@@ -672,15 +693,12 @@ impl Node {
         // targets remain probeable, but reply-learned routing lets a planned
         // healthy fallback carry the request instead of giving the stale target
         // exclusive request-id ownership.
-        let stale_direct_probe_allowed =
-            self.config.node.routing.mode != RoutingMode::ReplyLearned || forward_to.is_empty();
-        let direct_target_sendable = request.target != *from
-            && self.lookup_peer_mtu(&request.target) >= request.min_mtu
-            && self.peers.get(&request.target).is_some_and(|peer| {
-                peer.can_send() && (peer.is_healthy() || stale_direct_probe_allowed)
-            });
+        let direct_target_sendable =
+            direct_probe_without_plan || (direct_target_health.is_some() && forward_to.is_empty());
         if direct_target_sendable {
-            if !self.should_forward_lookup_for_target(from, &request, allow_deferral) {
+            if !forward_limiter_checked
+                && !self.should_forward_lookup_for_target(from, &request, allow_deferral)
+            {
                 return LookupForwardOutcome::RateLimited;
             }
             forward_limiter_checked = true;

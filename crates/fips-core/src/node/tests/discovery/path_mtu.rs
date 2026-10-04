@@ -392,6 +392,16 @@ async fn qualified_lookup_retries_when_target_connects_after_no_peer() {
     let mut nodes = spanning_tree::run_tree_test_with_mtus(&[4096, 4096, 4096], &[(0, 1)]).await;
     let origin = *nodes[0].node.node_addr();
     let target = *nodes[2].node.node_addr();
+    // A closed target slot must not turn a route-less request into deferred
+    // work or retain its ID before a qualified neighbor becomes available.
+    nodes[1].node.discovery_forward_limiter =
+        DiscoveryForwardRateLimiter::with_interval(Duration::from_secs(60));
+    assert!(
+        nodes[1]
+            .node
+            .discovery_forward_limiter
+            .should_forward(&origin, &target)
+    );
     let request = LookupRequest::generate(
         target,
         origin,
@@ -416,6 +426,7 @@ async fn qualified_lookup_retries_when_target_connects_after_no_peer() {
             .contains_key(&request.request_id),
         "a lookup with no send or deferred work must not poison its same-ID retry"
     );
+    assert_eq!(nodes[1].node.discovery_work_deadline_ms(), None);
 
     // The target now joins the same seed over a real authenticated link.
     spanning_tree::initiate_handshake(&mut nodes, 1, 2).await;
@@ -427,6 +438,15 @@ async fn qualified_lookup_retries_when_target_connects_after_no_peer() {
             .is_some_and(|peer| peer.can_send())
     );
     let target_before = nodes[2].node.stats().discovery.req_target_is_us;
+    nodes[1].node.discovery_forward_limiter =
+        DiscoveryForwardRateLimiter::with_interval(Duration::from_millis(500));
+    assert!(
+        nodes[1]
+            .node
+            .discovery_forward_limiter
+            .should_forward(&origin, &target)
+    );
+    let limited_before = nodes[1].node.stats().discovery.req_forward_rate_limited;
     nodes[1]
         .node
         .handle_lookup_request(&origin, &encoded[1..])
@@ -437,14 +457,25 @@ async fn qualified_lookup_retries_when_target_connects_after_no_peer() {
             .recent_requests
             .contains_key(&request.request_id)
     );
-    tokio::time::timeout(Duration::from_secs(1), async {
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_forward_rate_limited,
+        limited_before + 1
+    );
+    assert!(nodes[1].node.discovery_work_deadline_ms().is_some());
+    tokio::time::timeout(Duration::from_secs(2), async {
         while nodes[2].node.stats().discovery.req_target_is_us == target_before {
+            nodes[1].node.check_discovery_work(Node::now_ms()).await;
             process_available_packets(&mut nodes).await;
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("the unchanged retry must reach the newly connected target");
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_target_is_us,
+        target_before + 1,
+        "the deferred retry reaches the target exactly once"
+    );
 
     let duplicates_before = nodes[1].node.stats().discovery.req_duplicate;
     nodes[1]
