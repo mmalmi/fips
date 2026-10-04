@@ -348,7 +348,19 @@ short contacts, including the 400-ms cold-contact case. The original run remains
 failed; the earlier rotation/rejoin one-shot case passes in this run. Source and
 executable hashes are unchanged, and all test process groups are closed.
 `ingress-integration-green-r1/core-qualification.json` retains both outcomes;
-the two contact failures remain open.
+the two contact failures receive the focused repair below.
+
+The `b9ef05a54` repair avoids spending the announcement interval on an obsolete
+root while its better authenticated declaration awaits initial measurement. Valid
+positive timestamp echoes that round to zero milliseconds now yield a 1-ms RTT;
+missing, future and stale echoes retain their rejection rules. Two deterministic
+cases fail before the repair; 110 focused checks pass afterward. The unchanged
+400-ms contact test learns both current declarations in 165.075/165.336 ms at its
+two starting phases, and the 750-ms bidirectional-contact test also passes.
+`cold-contact-green-r2/handoff.json` records the evidence and a post-build
+comment-only clarification. The old trace did not capture its RTT echo payload,
+so it does not prove that particular historical failure used a zero-ms sample.
+Combined candidate and device acceptance remain separate.
 
 The strengthened renewal case offers 320 originals once while settlement is held.
 The old runtime loses 67; the repaired candidate delivers all 320 exactly once,
