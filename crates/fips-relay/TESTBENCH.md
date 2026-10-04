@@ -51,7 +51,7 @@ this tool does not claim production mint restart support.
 
 ## Mint HTTP over FIPS
 
-The test-feature library exposes `testbench::mesh::MeshMintBridge`: `serve`
+The relay library exposes `mint_mesh::MeshMintBridge`: `serve`
 connects one FIPS service port to a fixed loopback mint socket; `connect` binds
 a loopback client listener to that server's authenticated FIPS identity. It
 carries ordinary HTTP bytes over existing TCP/FIPS, without HTTP request replay,
@@ -59,29 +59,50 @@ new payment messages, remote proxy destinations or access to the issuance socket
 Each adapter has eight connection slots, four TCP connections per peer, 16 KiB
 buffers per direction and a 45-second connection lifetime. Local sockets wait
 up to three seconds for a TCP slot before any request bytes are read.
+Shutdown explicitly resets retained streams before stopping the native endpoint,
+so reopening the same identity does not inherit abandoned TCP connections.
 
 The adapter grants no forwarding exemption. An operator must explicitly arrange
 bounded bootstrap access in **both** directions using existing route pricing
 and free-bandwidth controls. An empty customer wallet must be able to reach the
-mint before buying paid service. The focused native check is:
+mint before buying paid service. A client requests a zero-price route when an
+HTTP connection arrives, through the existing bounded quote cache. It never
+opens a paid channel to obtain mint access and does not poll for routes while
+idle. The focused native check is:
 
 ```sh
 cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
 ```
 
-The case funds an empty wallet across two FIPS hops, holds an HTTP request across
-a relay outage, and exercises the real customer account's start/stop/reopen
-guards. It also opens and settles an eight-sat zero-use Spilman channel through
-the adapter, then collects all 16 originally issued test sats. The network
-fixture keeps mint access alive while the customer service is stopped.
+### Client configuration and wallet lifetime
 
-This library experiment uses fresh isolated accounts and one immutable test mint
-URL. The device runner, Android profile and mint executable are not yet wired to
-it; their existing LAN-mint setup remains the hardware baseline. Integration must
-also retain mesh access during wallet import, settlement and recovery, including
-operations that stop the paid-relay service to obtain exclusive wallet ownership.
-Do not rewrite an existing wallet's mint URL to point at a new adapter. Current
-evidence and outstanding acceptance are recorded in [READINESS.md](READINESS.md).
+Configure fresh accounts before initialization:
+
+| Setting | Meaning |
+| --- | --- |
+| `terms.controller.mint_url` | Fixed numeric loopback HTTP URL, such as `http://127.0.0.1:3338`. |
+| `terms.mint_mesh.npub` | Authenticated FIPS identity of the mint's adapter. |
+| `terms.mint_mesh.service_port` | Its FIPS service port; `44745` is available for this experiment. |
+
+The mint identity and port are saved with the immutable financial terms. Customer
+profiles accept the same `mint_mesh` object alongside `mint_url`. Omit it to keep
+ordinary mint access. Mesh access requires forwarding-data billing; reserved
+relay service ports, non-loopback URLs and an occupied local listener are refused.
+
+While running, the mint adapter uses the relay's native endpoint. Import/export
+under the stopped wallet's exclusive root lock temporarily opens a mint-only
+endpoint with the **same** FIPS identity and configured links. It negotiates only
+free routes and rejects all transit. Balance reads and export-history
+acknowledgments do not start networking. Normal shutdown closes the adapter and
+endpoint before releasing the root lock; an active paid service still prevents
+offline wallet commands.
+
+The mint and every client's adapter must use the same wallet URL. A test mint can
+bind its own loopback port and clients can use that same loopback port locally,
+with TCP/FIPS connecting them. Do not rewrite a saved wallet's mint URL to adopt
+another adapter. The mint executable and hardware runner still need explicit
+server/export and reverse-bootstrap wiring; existing hardware remains on its
+LAN-mint baseline. Current acceptance is recorded in [READINESS.md](READINESS.md).
 
 ## Fund a relay
 

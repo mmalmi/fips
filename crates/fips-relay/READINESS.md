@@ -60,6 +60,29 @@ financial request. The focused case passes in 16.61 seconds; evidence is in
 `work/mesh-mint-r4`. Device integration and permissionless bootstrap policy remain
 outstanding.
 
+The runtime-integrated case on `240b437ea` passes in 44.88 seconds. The customer
+now owns its pinned mint adapter while running and temporarily starts the same
+native identity for stopped-wallet import/export. It rejects an occupied adapter
+listener, preserves the active-wallet guard, and retains its identity, terms and
+original export across reopen. A paid payload arrives and automatic payment
+credits the provider; cooperative settlement redeems those earnings and refunds
+the unused channel capacity. The collector recovers all 16 originally issued test
+sats, leaving the source, customer and provider wallets empty. Provider collection
+uses the remaining native fixture endpoint after the provider stops; no wallet
+receives a direct mint-backend URL. Explicit known-client return pricing and a
+free-route watch remain part of this test's bootstrap policy.
+
+This extension caught abandoned TCP streams across repeated wallet shutdowns.
+The adapter now resets retained connections before endpoint shutdown; failed
+startup also waits for endpoint cleanup before releasing ownership. The earlier
+zero-use lifecycle then passed on `0d81caed6`, followed by the paid case above.
+All 32 related target/profile/wallet/service checks, strict library lint, the
+normal library build and the source-size gate pass. Logs and independent process
+and cache-lock closure are retained under `work/mesh-mint-r8`; the earlier failure
+and repair remain in `work/mesh-mint-r5` through `r7`. This is native Linux
+acceptance, not Android/OpenWrt deployment, permissionless return bootstrap or
+interruption during a financial mint request.
+
 The newer standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
