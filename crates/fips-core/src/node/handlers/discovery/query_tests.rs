@@ -4,7 +4,10 @@ use crate::config::{Config, NostrDiscoveryPolicy, PeerConfig};
 use crate::peer::ActivePeer;
 use crate::transport::LinkId;
 use crate::tree::{ParentDeclaration, TreeCoordinate};
-use std::{hint::black_box, time::Instant};
+use std::{
+    hint::black_box,
+    time::{Duration, Instant},
+};
 
 fn populated(count: usize, target: NodeAddr) -> Node {
     let identities: Vec<_> = (1..=count)
@@ -167,5 +170,56 @@ fn shared_hash_candidate_benchmark() {
                 })
             );
         }
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit bounded comparison; run an optimized build with --ignored --exact --nocapture"]
+async fn blocked_direct_lookup_benchmark() {
+    assert!(!black_box(cfg!(debug_assertions)), "use an optimized build");
+    const CALLS: usize = 256;
+    const SAMPLES: usize = 7;
+    for count in [100, 350, 500] {
+        let mut node = populated(count, NodeAddr::from_bytes([0xa5; 16]));
+        let target = *node
+            .peers
+            .iter()
+            .filter(|(_, peer)| peer.is_healthy() && peer.can_send())
+            .map(|(addr, _)| addr)
+            .min()
+            .unwrap();
+        let from = NodeAddr::from_bytes([0xf1; 16]);
+        let request = LookupRequest::new(1, target, from, TreeCoordinate::root(from), 1, 0);
+        node.discovery_forward_limiter =
+            crate::proto::lookup_limits::DiscoveryForwardRateLimiter::with_interval(
+                Duration::from_secs(3600),
+            );
+        assert!(
+            node.discovery_forward_limiter
+                .should_forward(&from, &target)
+        );
+        let mut samples = Vec::new();
+        for _ in 0..SAMPLES {
+            let start = Instant::now();
+            for _ in 0..CALLS {
+                // No deferred owner or transport work: measure the rejected
+                // production path against identical fixture-only baseline code.
+                assert!(matches!(
+                    node.forward_ready_lookup_request(&from, black_box(request.clone()), false)
+                        .await,
+                    LookupForwardOutcome::RateLimited
+                ));
+            }
+            samples.push(start.elapsed().as_nanos() as u64 / CALLS as u64);
+        }
+        samples.sort_unstable();
+        println!(
+            "{}",
+            serde_json::json!({
+                "peers": count, "calls_per_sample": CALLS, "samples_ns": samples,
+                "median_ns": samples[SAMPLES / 2],
+                "includes": "blocked direct-target forwarding; setup and transport excluded"
+            })
+        );
     }
 }
