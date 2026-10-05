@@ -37,7 +37,7 @@ pub(super) async fn interrupt_close(
                 .all(|proof| proof.y().is_ok_and(|y| originals.contains(&y.to_string())))
     });
     let swaps = proxy.state.swaps.load(Ordering::SeqCst);
-    let failed_relay = nodes[1].endpoint.node_addr();
+    let failed_relay = *nodes[1].endpoint.node_addr();
     let counts = lose_reply(
         phone.execute(CustomerCommand::Finish),
         nodes,
@@ -58,7 +58,7 @@ pub(super) async fn interrupt_close(
     // Keep the original transit relay offline. The replacement has its own
     // identity and empty journals, and needs no client-specific return tariff.
     nodes.insert(1, RelayService::load(configs[3].clone()).await.unwrap());
-    let alternate = nodes[1].endpoint.node_addr();
+    let alternate = *nodes[1].endpoint.node_addr();
     // Only read journals until both ordinary workers release the original
     // channel. No second Finish/Settle request may drive recovery.
     let recovered = tokio::time::timeout(Duration::from_secs(60), async {
