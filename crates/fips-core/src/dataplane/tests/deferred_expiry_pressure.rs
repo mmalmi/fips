@@ -124,3 +124,75 @@ async fn deferred_retries_preserve_zero_and_per_turn_budgets() {
             "freshly deferred packets remain; only the bounded old prefix is revisited");
     }
 }
+
+#[tokio::test]
+async fn later_route_delivers_deferred_ciphertexts_once_in_order_with_fresh_pressure() {
+    let mut node = crate::Node::new(crate::Config::new()).expect("node");
+    let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+    let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let transports = HashMap::<TransportId, TransportHandle>::new();
+    let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let source_addr = *source_peer.node_addr();
+    let local_addr = NodeAddr::from_bytes([0xa1; 16]);
+    let owner = OwnerId::fsp_node(source_addr);
+    let key = 0xa5;
+    let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+    let now = crate::time::now_ms();
+    for counter in 1..=2 {
+        let inner = crate::node::session_wire::fsp_prepend_inner_header(
+            counter as u32,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            &[counter as u8],
+        );
+        let raw = DataplaneRawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(178),
+                TransportAddr::from_string("198.51.100.178:9000"),
+                PacketBuffer::new(fsp_encrypted_wire(counter, 0, &inner, key)),
+                now,
+            ),
+        ).with_fsp_source(source_addr);
+        live_node.deferred_raw_ingress.push_back((raw, now));
+    }
+    let mut delivered = Vec::new();
+    let mut admitted = 0;
+    for turn_id in 0..64 {
+        if turn_id == 4 {
+            register_keyed_owner(&mut live_node.driver, owner,
+                OwnerConfig::new(1, 8).with_source_peer(source_peer.clone()), key);
+            register_fsp_session_payload_route(&mut live_node.routes, source_addr, owner, local_addr);
+        }
+        let mut fresh: VecDeque<_> = (0..4)
+            .map(|offset| unrouted(100 + turn_id * 4 + offset)).collect();
+        let mut turn = live_node.pump_turn_with_firsts_and_transport_batch(
+            None, &mut fresh, 4, DataplaneLiveOutboundFirsts::default(),
+            DataplaneLiveTurnIo {
+                endpoint_data_rx: &mut endpoint_data_rx, endpoint_limit: 0,
+                tun_outbound_rx: &mut tun_outbound_rx, tun_limit: 0,
+                endpoint_tx: &endpoint_io.event_tx, transports: &transports,
+                crypto_limit: 8, transport_send_batch_packets: 8,
+            },
+        ).await;
+        assert!(fresh.is_empty(), "fresh traffic keeps its full admission turn");
+        assert_eq!(turn.summary().drops(), 0, "authenticated data must not fail crypto/retirement");
+        admitted += turn.summary().inbound_admitted();
+        for ingress in turn.take_fsp_authenticated_ingress().sessions {
+            let (source, _, _, _, _, _, _, _, plaintext) = ingress.into_parts();
+            assert_eq!(source, source_addr);
+            delivered.extend_from_slice(&plaintext.as_slice()[crate::node::session_wire::FSP_INNER_HEADER_SIZE..]);
+        }
+        if turn_id < 4 {
+            assert!(delivered.is_empty());
+            assert_eq!(live_node.deferred_raw_ingress.iter()
+                .filter(|(raw, _)| raw.fsp_source == Some(source_addr)).count(), 2,
+                "nonexpired ciphertexts survive retries before the route exists");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(admitted, 2, "deferred ciphertexts admitted exactly once");
+    assert_eq!(delivered, vec![1, 2], "FIFO authenticated payload delivery exactly once");
+    assert!(!live_node.deferred_raw_ingress.iter().any(|(raw, _)| raw.fsp_source == Some(source_addr)));
+}
