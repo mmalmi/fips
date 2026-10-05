@@ -60,7 +60,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let address = listener.local_addr().unwrap();
         let url = format!("http://{address}");
         assert_ne!(url, mint.url());
-        let reservations: Vec<_> = (0..3)
+        let reservations: Vec<_> = (0..4)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
             .collect();
         let mut configs = Vec::new();
@@ -119,38 +119,37 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         );
         // Only the mint has a free tariff. Replies must use the existing bounded
         // allowance earned by forwarded requests, with no client return watch.
-        configs[1].destination_fees = serde_json::from_value(json!({
-            identities[2].npub(): 0
-        }))
-        .unwrap();
-        configs[1].free_bandwidth = Some(FreeBandwidthPolicy {
+        let requests = FreeBandwidthPolicy {
             global_bytes_per_second: 65_536,
             global_burst_bytes: 131_072,
             peer_bytes_per_second: 32_768,
             peer_burst_bytes: 65_536,
-        });
-        configs[0].destination_fees = serde_json::from_value(json!({
-            identities[2].npub(): 0
-        }))
-        .unwrap();
-        configs[0].free_bandwidth = configs[1].free_bandwidth.clone();
+        };
         configs[0].neighbor_admission =
             crate::control_transport::NeighborAdmission::AuthenticatedAdjacent;
-        configs[0].return_allowance = true;
-        configs[1].return_allowance = true;
         let replies = FreeBandwidthPolicy {
             global_bytes_per_second: 32_768,
             global_burst_bytes: 65_536,
             peer_bytes_per_second: 8_192,
             peer_burst_bytes: 16_384,
         };
-        configs[0].return_bandwidth = Some(replies.clone());
-        configs[1].return_bandwidth = Some(replies);
+        for i in [0, 1, 3] {
+            configs[i].destination_fees = serde_json::from_value(json!({
+                identities[2].npub(): 0
+            }))
+            .unwrap();
+            configs[i].free_bandwidth = Some(requests.clone());
+            configs[i].return_allowance = true;
+            configs[i].return_bandwidth = Some(replies.clone());
+        }
+        // Two possible paths, with the alternate relay stopped until the
+        // original path fails during settlement. The gateway identity stays put.
+        let neighbors = [[1, 3], [0, 2], [1, 3], [0, 2]];
         for (i, config) in configs.iter_mut().enumerate() {
             config.neighbors = identities
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| i.abs_diff(*j) == 1)
+                .filter(|(j, _)| neighbors[i].contains(j))
                 .map(|(j, id)| {
                     PeerConfig::new(
                         id.npub(),
@@ -162,7 +161,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         }
         drop(reservations);
         let mut nodes = Vec::new();
-        for config in &configs {
+        for config in &configs[..3] {
             nodes.push(RelayService::load(config.clone()).await.unwrap());
         }
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -338,7 +337,9 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             channel,
         )
         .await;
-        checkpoint("lost committed close recovered automatically without another swap");
+        checkpoint(
+            "lost committed close recovered through an alternate relay without another swap",
+        );
         let finished = phone.execute(CustomerCommand::Finish).await;
         assert!(
             finished.is_ok(),

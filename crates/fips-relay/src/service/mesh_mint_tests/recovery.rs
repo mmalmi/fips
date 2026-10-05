@@ -37,9 +37,11 @@ pub(super) async fn interrupt_close(
                 .all(|proof| proof.y().is_ok_and(|y| originals.contains(&y.to_string())))
     });
     let swaps = proxy.state.swaps.load(Ordering::SeqCst);
+    let failed_relay = nodes[1].endpoint.node_addr();
     let counts = lose_reply(
         phone.execute(CustomerCommand::Finish),
         nodes,
+        1,
         proxy,
         (committed, release),
     )
@@ -53,9 +55,10 @@ pub(super) async fn interrupt_close(
     assert!(interrupted["seller_settlements"][channel]["payment"].is_object());
     assert!(interrupted["seller_settlements"][channel]["report"].is_null());
 
-    // Service registrations live with the native endpoint. Restart the whole
-    // gateway from its saved profile, retaining the mint process and identity.
-    nodes.push(RelayService::load(configs[2].clone()).await.unwrap());
+    // Keep the original transit relay offline. The replacement has its own
+    // identity and empty journals, and needs no client-specific return tariff.
+    nodes.insert(1, RelayService::load(configs[3].clone()).await.unwrap());
+    let alternate = nodes[1].endpoint.node_addr();
     // Only read journals until both ordinary workers release the original
     // channel. No second Finish/Settle request may drive recovery.
     let recovered = tokio::time::timeout(Duration::from_secs(60), async {
@@ -88,6 +91,32 @@ pub(super) async fn interrupt_close(
         nodes[0].controller.last_error()
     );
     counts.recovered(proxy);
+    assert_ne!(alternate, failed_relay);
+    for node in [&nodes[0], &nodes[2]] {
+        let peers = node.endpoint.peers().await.unwrap();
+        assert!(
+            peers
+                .iter()
+                .all(|p| !p.connected || p.node_addr != failed_relay)
+        );
+        assert!(
+            peers
+                .iter()
+                .any(|peer| peer.connected && peer.node_addr == alternate),
+            "both ends must connect through the alternate relay"
+        );
+    }
+    assert!(nodes[1].free.stats().admitted_session_bytes > 0);
+    assert!(
+        nodes[1]
+            .forwarding
+            .relay
+            .return_stats()
+            .unwrap()
+            .traffic
+            .admitted_packets
+            > 0
+    );
     let status = phone.execute(CustomerCommand::Status).await.unwrap();
     assert_eq!(status["relay"]["locked_sat"], 0);
     assert_eq!(status["relay"]["funding_budget"]["wallet_debited_sat"], 8);
@@ -122,6 +151,7 @@ impl Counters {
 async fn lose_reply(
     request: impl std::future::Future<Output = Result<Value, String>>,
     nodes: &mut Vec<RelayService>,
+    failed: usize,
     proxy: &MintProxy,
     gate: (
         tokio::sync::oneshot::Receiver<()>,
@@ -142,16 +172,16 @@ async fn lose_reply(
         restores: proxy.state.restores.load(Ordering::SeqCst),
     };
     proxy.state.reject_swap_replay.store(true, Ordering::SeqCst);
-    // Close the real TCP/FIPS stream before the committed outputs can arrive.
-    // The mint itself stays alive; neither its identity nor its URL changes.
-    nodes.pop().unwrap().shutdown().await.unwrap();
+    // Remove the only path before the committed outputs can arrive. The mint
+    // itself stays alive; neither its identity nor its URL changes.
+    nodes.remove(failed).shutdown().await.unwrap();
     let _ = release.send(());
     let result = tokio::time::timeout(Duration::from_secs(70), request)
         .await
         .expect("original request must fail within its existing deadline");
     assert!(
         result.is_err(),
-        "financial request bypassed the absent mint gateway"
+        "financial request bypassed the absent mint path"
     );
     counts.unchanged(proxy);
     counts
@@ -182,7 +212,7 @@ pub(super) async fn interrupt_funding(
                 original.outputs() == request.outputs()
             })
     });
-    let counts = lose_reply(phone.execute(CustomerCommand::Buy), nodes, proxy, gate).await;
+    let counts = lose_reply(phone.execute(CustomerCommand::Buy), nodes, 2, proxy, gate).await;
     let original: Value = read_json(&buyer_path).unwrap();
     let intents = original["funding"].as_object().unwrap();
     assert_eq!(intents.len(), 1);
