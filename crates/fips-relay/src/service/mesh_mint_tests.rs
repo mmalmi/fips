@@ -299,12 +299,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         checkpoint("customer offline import complete");
         phone.execute(CustomerCommand::Start).await.unwrap();
         // Payment, provider redemption and buyer refund all use the mesh mint.
-        let purchase = phone.execute(CustomerCommand::Buy).await;
-        assert!(
-            purchase.is_ok(),
-            "purchase {purchase:?}; provider {:?}",
-            nodes[0].controller.last_error()
-        );
+        recovery::interrupt_funding(&mut phone, &configs, &mut nodes, &fault, &customer_root).await;
+        checkpoint("lost committed funding recovered without another wallet spend");
         let funded = phone.execute(CustomerCommand::Status).await.unwrap();
         assert_eq!(funded["relay"]["locked_sat"], 8);
         assert_eq!(funded["relay"]["funding_budget"]["wallet_debited_sat"], 8);
