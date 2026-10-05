@@ -76,9 +76,10 @@ idle. The focused native check is:
 cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
 ```
 
-The case also restarts the mint gateway after a committed close loses its reply.
-Background recovery must finish the original payout and refund without another
-swap or new funding; see the bounded evidence in [READINESS.md](READINESS.md).
+The case restarts the mint gateway after committed funding and close replies
+are lost. Background recovery must activate the original channel, then finish
+its payout and refund without another swap or wallet spend. See the bounded
+evidence in [READINESS.md](READINESS.md).
 
 ### Client configuration and wallet lifetime
 
@@ -128,6 +129,8 @@ Client and server adapters cannot be enabled together. The export accepts only
 a fixed loopback TCP backend and a distinct, non-reserved FIPS service port. It
 shares the relay endpoint and its shutdown; the mint's private issuance socket
 is never exported. No additional proxy process or mint protocol is needed.
+Service-port registrations last for the native endpoint's lifetime; restart the
+complete relay service to restart an adapter, preserving its saved account.
 
 This configuration does not grant bootstrap traffic automatically. Give the mint
 destination a zero-price offer with bounded `free_bandwidth` on forwarding
