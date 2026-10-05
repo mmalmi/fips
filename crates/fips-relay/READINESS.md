@@ -2363,6 +2363,25 @@ No timing-equivalence or physical-router claim follows. Exact source/artifact
 hashes, CPU quotas, released cache ownership and absent owned processes/cgroups
 are verified in `work/adjacent-control-rekey-r107`.
 
+Private purchase/funding timing probes on `3f2ed1328` retain the original five-node
+fixture, deadlines and financial limits. The two-CPU control passes in 64.202
+seconds and collects all 1,280 test sats; quarter-CPU traffic fails at round seven
+from node four to node zero after 111.567 seconds without final collection.
+Among completed, unambiguous funding calls, SDK dispatch/funding/mint waits have
+median/maximum durations of 0.192/0.310 seconds at two CPUs and 2.600/9.605 seconds
+at quarter CPU. These include scheduling and mint work, rather than isolated CPU
+or wire cost. Eleven completed constrained renewals pause admission for up to
+24.601 seconds, including up to 11.402 seconds after replacement offers are ready.
+
+The constrained trace also observes overlapping calls for two funding offers and
+15 acceptance offers; their phase timings are excluded. Recovery currently retries
+unaccepted replacement offers while an unfinished renewal can purchase them too.
+This identifies redundant work to investigate, without attributing the delivery
+failure or claiming an optimization. Relinking and instrumentation exclude timing
+equivalence and physical-router claims. Exact private source/artifact hashes,
+frozen dependencies, CPU quotas and absent owned processes/cgroups are verified
+in `work/controller-purchase-phases-r109`; residual financial state is preserved.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
