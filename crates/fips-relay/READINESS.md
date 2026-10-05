@@ -37,7 +37,15 @@ without another settlement swap. The earlier failed run and separate recovery
 remain preserved. This accepts the recorded bounded topology changes, not
 arbitrary mobile bootstrap or production readiness.
 
-Physical Android mint access also passes on `381eb0bce`: empty-wallet funding,
+Current physical Android mint access passes on `3f2ed13280d7`: empty-wallet
+funding, paid delivery, settlement with the activity hidden, and stopped-wallet
+fund return use a loopback-only mint reached through two open radio hops. All
+16 test sats are collected and 390 management checks pass. The completed test
+app is removed after verifying its APK/account recovery archives; the main app,
+original accounts and normal Wi-Fi remain unchanged. Evidence is
+`work/mesh-mint-phone-current-r103` and `work/phone-app-cleanup-r4`.
+
+Earlier physical Android mint access passes on `381eb0bce`: empty-wallet funding,
 paid delivery, settlement while the activity is hidden, and stopped-wallet fund
 return all use the mesh-only mint. A second case also recovers the original
 settlement across controlled radio return-path loss, with no second mint swap.
@@ -1629,7 +1637,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal and quote-retirement runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs, plus five-minute physical renewal with all 84,000 router stream originals delivered, two replacements and complete collection/restoration. Four current native UDP/TCP/WebSocket/self-signed TLS daemon cases retain financial bounds across restart and eight replacement channels with mint key rotation. Current physical brief leaf-radio interruptions retain the original paid channels, deliver all eight recovery replies and fully collect/restore on saved-SAE and temporary open meshes. Their observed bounds are 50.323 and 8.764 seconds; retained diagnostics locate stalled native Wi-Fi admission in the SAE case. A current open-mesh middle-radio interruption also restores both edges and paid channels, delivers all eight recovery replies within an observed 8.862-second bound and fully collects/restores. | Requalify full peer-eviction radio recovery and remaining physical mixed-link cases after the transit-renewal and quote-retirement changes; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal and quote-retirement runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs, plus five-minute physical renewal with all 84,000 router stream originals delivered, two replacements and complete collection/restoration. Four current native UDP/TCP/WebSocket/self-signed TLS daemon cases retain financial bounds across restart and eight replacement channels with mint key rotation. Current physical brief leaf-radio interruptions retain the original paid channels, deliver all eight recovery replies and fully collect/restore on saved-SAE and temporary open meshes. Their observed bounds are 50.323 and 8.764 seconds; retained diagnostics locate stalled native Wi-Fi admission in the SAE case. A current open-mesh middle-radio interruption also restores both edges and paid channels, delivers all eight recovery replies within an observed 8.862-second bound and fully collects/restores. The current Pixel completes empty-wallet mesh-only funding, paid delivery and settlement with its activity hidden; all 16 test sats are collected and the completed app is removed with verified recovery archives. | Requalify full peer-eviction radio recovery and remaining physical mixed-link cases after the transit-renewal and quote-retirement changes; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -2540,10 +2548,29 @@ checks, APK assembly/lint and signature verification pass. The APK contains the
 exact verified strip of the newly built native library. Independent closure
 checks all 1,614 original source files, two source symlinks, the dependency bundle
 and absent command groups; all 19 artifact/log/receipt files are retained and
-hash-verified. Evidence is `work/android-current-r102`. This qualifies the current
-build and simulated JVM lifecycle checks; physical Pixel paid forwarding,
-mesh-only funding/settlement and background requalification remain pending.
-The acceptance APK is not installed; the phone still has only its main FIPS app.
+hash-verified. Evidence is `work/android-current-r102`.
+
+That APK also passes the existing physical Android mesh-mint lifecycle scenario
+on `3f2ed13280d7`, with the same frozen dependency graph as the router and native
+Linux gateway/mint builds. An empty wallet imports 16 test sats through a
+loopback-only mint reached over phone UDP, two open radio hops and gateway UDP.
+It opens one eight-sat channel and delivers a fresh 1,000-byte paid payload.
+With the activity hidden, the running service settles that same channel: the
+provider receives two sats and the buyer receives its six-sat refund. The stopped
+phone exports its remaining 14 sats and the provider exports two; the collector
+recovers all 16 and both wallets end empty. No second purchase, wider budget or
+direct mint HTTP route is used.
+
+Independent closure verifies all 390 management checks, the original phone
+accounts/Wi-Fi, restored router fields and radio limits, absent owned processes
+and removed router candidates. The result-bound inventory verifies all 107
+retained evidence files. The financially closed app is removed after independently
+verifying its exact APK and complete account archive; Android account data is
+retained and only the original main app remains installed. Evidence is
+`work/mesh-mint-phone-current-r103` and `work/phone-app-cleanup-r4`. This accepts
+one steady physical paid session with settlement while the activity is hidden.
+Route failure, deep idle, process restart, sustained/impaired traffic, phone
+transit routing and Internet isolation remain separate acceptance cases.
 
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
