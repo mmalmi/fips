@@ -126,8 +126,12 @@ The mint and all participating wallets must use the same URL; the URL and pinned
 identity cannot change on a saved account. Configure bounded free requests to
 the mint and earned reply allowances at the forwarding routers as described in
 [mint HTTP over FIPS](../fips-relay/TESTBENCH.md#mint-http-over-fips).
-Native customer lifecycle and router tests cover this arrangement; physical
-Android acceptance remains outstanding.
+Native, router and physical Android tests cover this arrangement. The Android
+case funds an empty wallet, delivers paid data, settles while the activity is
+hidden, and returns funds after stopping routing; all 16 test sats are collected.
+Its verified mint path includes two radio hops. This steady-path result does not
+cover Android movement, deep idle or process restart; see the revision and scope
+in [paid-relay readiness](../fips-relay/READINESS.md#scope-and-outstanding-acceptance).
 
 `billing` must match the relay network: `forwarding_data` includes bounded free
 connection setup; `forwarding_attempt` uses the original per-attempt policy.
