@@ -2339,16 +2339,29 @@ this is not isolated funding CPU or wire latency.
 
 A constrained serial snapshot at 102.759 seconds finds no pending renewals or
 unfinished funding on any node. The later native snapshot identifies the source's
-adjacent session to node one as draining; its routed data session to node four is
-not draining. This narrows the next check to adjacent rekey and renewal/control
-interaction, without proving simultaneous native readiness or attributing the
-delay to either alone.
+adjacent session to node one as retaining previous receive keys; its routed data
+session to node four is not retaining them. The native `is_draining` flag describes
+normal old-key retention after promotion of a new established session. It neither
+identifies a stalled rekey nor proves simultaneous readiness of all sessions.
 The observer runs outside the five-node/mint/QEMU quota; no performance-equivalence,
 physical-router or runtime-optimization claim follows. Exact inputs/artifacts,
 quotas and absent owned processes/cgroups are verified in
 `work/controller-pressure-progress-r106`. The preceding Unix control-socket path
 failure provides no traffic acceptance and remains closed in
 `work/controller-pressure-progress-r105`.
+
+An isolated two-node ARM64 check exercises the existing authenticated TCP/FIPS
+control-record scenario over UDP after a witnessed key cutover. Large records,
+oversize rejection, cancellation recovery and reverse replies pass within the
+original 40-second deadline at both two-CPU and quarter-CPU limits, in 4.219 and
+4.420 seconds. Fresh replies complete while previous receive keys remain retained.
+Production code and frozen dependencies are unchanged; private instrumentation
+only lowers the rekey threshold and observes native session state. This verifies
+adjacent control traffic during old-key retention, without reproducing or resolving
+the five-node renewal failure: it excludes wallet work, funding and multi-hop load.
+No timing-equivalence or physical-router claim follows. Exact source/artifact
+hashes, CPU quotas, released cache ownership and absent owned processes/cgroups
+are verified in `work/adjacent-control-rekey-r107`.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
