@@ -82,3 +82,45 @@ async fn expired_raw_ingress_is_reclaimed_under_full_fresh_budget() {
     assert_eq!(retained_before_idle, 0,
         "already-expired unrouted data must not require a fresh-ingress gap");
 }
+
+#[tokio::test]
+async fn deferred_retries_preserve_zero_and_per_turn_budgets() {
+    let mut node = crate::Node::new(crate::Config::new()).expect("node");
+    let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+    let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let transports = HashMap::<TransportId, TransportHandle>::new();
+    let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+    let expired_at = crate::time::now_ms()
+        .saturating_sub(DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS + 1);
+    for counter in 1..=9 {
+        live_node.deferred_raw_ingress.push_back((unrouted(counter), expired_at));
+    }
+    let mut fresh: VecDeque<_> = (10..14).map(unrouted).collect();
+    for (budget, expected_old, expected_fresh, expected_drops) in [(0, 9, 4, 0), (4, 5, 0, 4)] {
+        let turn = live_node
+            .pump_turn_with_firsts_and_transport_batch(
+                None,
+                &mut fresh,
+                budget,
+                DataplaneLiveOutboundFirsts::default(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets: 8,
+                },
+            )
+            .await;
+        assert_eq!(fresh.len(), expected_fresh);
+        assert_eq!(turn.summary.raw_ingress_dropped(), expected_drops);
+        assert_eq!(live_node.deferred_raw_ingress.iter()
+            .filter(|(_, at)| *at == expired_at).count(), expected_old);
+        assert_eq!(live_node.deferred_raw_ingress.len(), 9,
+            "freshly deferred packets remain; only the bounded old prefix is revisited");
+    }
+}

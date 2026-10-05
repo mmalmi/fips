@@ -78,7 +78,7 @@ impl DataplaneTurnDriver {
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
             let deferred_available = deferred_raw_ingress.len();
-            let fresh_drained = raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
+            raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
                 if let Some(socket_packet) =
                     Self::raw_ingress_socket_packet(
                         packet,
@@ -92,9 +92,10 @@ impl DataplaneTurnDriver {
                     raw_socket_packets.push(socket_packet);
                 }
             });
-            let deferred_limit = raw_ingress_limit
-                .saturating_sub(fresh_drained)
-                .min(deferred_available);
+            // Fresh traffic cannot consume the retry/expiry allowance. Only
+            // revisit the bounded prefix that was pending before this turn;
+            // newly deferred packets must not spin within the same turn.
+            let deferred_limit = raw_ingress_limit.min(deferred_available);
             for _ in 0..deferred_limit {
                 let Some((packet, deferred_at_ms)) = deferred_raw_ingress.pop_front() else {
                     break;
