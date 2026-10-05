@@ -23,6 +23,14 @@ require the credit it is needed to obtain. A stable mint identity and URL must
 survive path changes. Ordinary TCP/FIPS and existing forwarding limits should
 carry these requests without a new payment-message family.
 
+Current device gate: steady mesh funding, paid delivery, settlement and one
+symmetric edge handover pass. The persistent one-way return-loss case in
+`work/mesh-mint-radio-r5` fails its bounded settlement recovery window despite
+observing the replacement topology. Its original 16 test sats are subsequently
+recovered on the original path, with unchanged funding authority and no further
+mint swap. Mesh-only mint access is implemented; general asymmetric handover is
+not accepted.
+
 The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
 funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
 and collects all 16 in the isolated collection wallet. Only the client adapter's
@@ -284,8 +292,9 @@ retaining the original funding authority without another mint swap. Evidence is
 in `work/mesh-mint-r28` and `work/mesh-mint-r29`.
 
 The extended handover fixture on `793248a25` also passes with persistent packet
-loss in either direction of the former provider-to-mint-side edge. Discovery
-continues advertising that edge as up; neither failed direction is repaired.
+loss in either direction of the former provider-to-mint-side edge. The link
+remains enabled, but simulated discovery advertisements are also suppressed in
+the fully lossy direction; neither failed direction is repaired.
 Both cases and the original full-disconnection case observe the replacement
 topology, recover the original settlement through ordinary workers without
 another swap or wallet spend, and confirm actual mint transit through the former
@@ -334,10 +343,30 @@ checks pass. Independent postflight confirms restored original router settings
 and services, removed candidate executables, matching released settlement
 records and clean mint/export-relay exits, without cleanup assistance.
 
-This accepts that specific symmetric radio-edge change with bounded free mint
-access. Broader asymmetric mobility, hardware mint-process restart, recovery
-with a persistent Lightning backend, financial power-loss recovery and Android
-mint integration still need their own acceptance.
+The same runtime fails the subsequent persistent return-loss case in
+`work/mesh-mint-radio-r5`. Only mint-side-to-provider test-EtherType frames are
+dropped; the opposite direction remains unfiltered, and the alternative edge
+opens. Empty-wallet funding and paid delivery succeed, and the replacement
+peer topology appears at 119.63 seconds. However, the committed settlement does
+not recover within the bounded observation window. Provider logs record quote
+timeouts and unsuccessful mint streams; replacement transit records six free
+packets and no admitted return packets. These observations do not establish the
+root cause. All 438 management checks pass and automatic device cleanup succeeds.
+
+The original mint and accounts are retained for recovery. After restoring the
+original radio path, ordinary workers release the original channel and refund
+seven sats; the provider receives one sat. Mint swaps and attempts stay at three,
+and all 16 original sats are collected. Recovery passes 108 management checks;
+independent postflight verifies unchanged funding authority, matching released
+settlement records, restored device state and clean exits of the mint and both
+export-relay processes. The failed result and separate recovery closure are
+preserved. Its complete frozen harness/archive (146 files) also matches the
+recorded hashes. Recovery does not turn the failed handover into a pass.
+
+This accepts the earlier symmetric radio-edge change with bounded free mint
+access. The one-way failure above, broader mobility, hardware mint-process
+restart, recovery with a persistent Lightning backend, financial power-loss
+recovery and Android mint integration still need their own acceptance.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,

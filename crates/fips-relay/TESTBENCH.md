@@ -114,9 +114,10 @@ backend. The hardware test mint still requires a new directory per process.
 
 The handover cases keep all nodes alive while the provider's mint route moves
 through its former customer. They cover a disconnected edge and persistent
-packet loss in either direction of an edge that discovery still advertises as
-up. The failed direction stays broken throughout recovery. Superseded cached
-free quotes are refetched without reviving their old allowances; no additional
+packet loss in either direction of an enabled edge. Simulated discovery also
+suppresses advertisements in the fully lossy direction. The failed direction
+stays broken throughout recovery. Superseded cached free quotes are refetched
+without reviving their old allowances; no additional
 swap or wallet spend is allowed during recovery. After normal workers settle the
 original channel, the fixture redeems all 16 test sats through the remaining
 mint-side FIPS endpoint. See the bounded evidence in [READINESS.md](READINESS.md).
@@ -210,6 +211,11 @@ through its former customer while the old edge stays blocked. Its original
 administrative request times out; background recovery completes the saved
 settlement without another swap, and all test funds are collected. This specific
 symmetric topology change does not establish arbitrary or asymmetric mobility.
+The subsequent device case with persistent loss only in the old edge's return
+direction fails to recover settlement within its bounded window, even after
+the replacement topology appears. Its original funds are recovered separately
+on the original path. Treat asymmetric handover as outstanding acceptance;
+do not bypass it by granting unlimited mint forwarding or issuing new funds.
 
 ## Fund a relay
 

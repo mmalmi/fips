@@ -20,8 +20,8 @@ impl Failure {
             Self::ForwardLoss => ("1", "2"),
             Self::ReturnLoss => ("2", "1"),
         };
-        // Discovery still advertises an up link; only encrypted packets in one
-        // direction disappear. Never repair this leg to obtain settlement.
+        // The link remains enabled, but packets and discovery advertisements
+        // disappear in one direction. Never repair it to obtain settlement.
         network.set_directed_link(
             source,
             destination,
