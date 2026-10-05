@@ -54,13 +54,17 @@ to a private local configuration file and replace its example mint address with
 the local test mint. Direct service startup
 loads local receiver state without contacting the mint; new paid funding refreshes
 mint keys before verification. Funding and settlement remain mint-dependent.
-The OpenWrt readiness wrapper separately still waits for the mint. Create the
+The OpenWrt readiness wrapper does not require a reachable mint before launch.
+Create the
 parent of the chosen state directory, but leave that state directory absent.
 See [destination pricing](DESTINATION-PRICING.md) for free local destinations,
 explicit route opening and configuration compatibility.
 For fresh forwarding-data service, `return_allowance: true` enables the
 [bounded reverse-path policy](RETURN-ALLOWANCE.md). It defaults to false and
 does not enable an unrestricted reverse route or authorize wallet spending.
+Optional `return_bandwidth` selects bounded local reply rates for that policy;
+omission preserves its small default. See [mesh-mint bootstrap](TESTBENCH.md#mint-host-configuration)
+for a mint configuration that works before a client has paid credit.
 Optional `price_selection` compares source offers using native end-to-end quality
 and capped trials on forwarding-data accounts. See [PRICE-SELECTION.md](PRICE-SELECTION.md)
 for defaults, watch authority, peer compatibility and current limitations.

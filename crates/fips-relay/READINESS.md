@@ -127,7 +127,48 @@ is in `work/mesh-mint-physical-r2`, with its exact static ARM64 build in
 links; it does not establish paid settlement, radio discovery, arbitrary
 asymmetry or mobile handover for this revision.
 
-The newer standalone `80bf5baec` ARM64 runtime passes the full matched
+The full native lifecycle on `fc3249e17` passes in 31.42 seconds without
+client-specific return tariffs or mint-side watches. An authenticated adjacent
+customer starts empty, imports through its own adapter, funds an eight-sat
+channel, sends a delivered paid payload, settles provider earnings and its
+refund, and collects all 16 original test sats. Both adapter sides and the
+ordinary test-mint upstream proxy participate. The existing metadata request
+deadline remains ten seconds. The case explicitly configures reply budgets of
+8,192 units/s per returning neighbor and 32,768 units/s in aggregate; default
+reply rates, exact-path credit, state bounds and paid-route precedence remain
+unchanged. Default-rate wallet bootstrap passed above, but full settlement at
+that rate was unreliable because mint metadata exceeded its deadline.
+
+This work also found a fixed connection lifetime cutting off active refund
+requests. The adapters now expire inactive streams, while preserving bounded
+slots and buffers, explicit shutdown and the rule against HTTP request replay.
+The test-mint proxy shares the same idle-lifetime behavior; its focused check
+covers half-closed requests, continuing responses and idle expiry. All 66 related
+checks, strict library Clippy, normal library/daemon checks and the source-size
+gate pass. Verified logs and independent native process/cache closure are in
+`work/mesh-mint-r18`; failed investigations are retained in `r10` through `r17`.
+This does not accept interrupted financial HTTP recovery, arbitrary asymmetric
+return paths, mobile handover or hostile-contention fairness.
+
+The same revision passes a paid hardware case on all three Cudys and the Linux
+mint host. The empty client imports 16 test sats over two FIPS hops, funds one
+eight-sat channel to the middle router, and delivers a paid payload to the third
+router. Settlement pays the provider one sat and refunds seven to the client;
+the client and provider then export their balances through FIPS and all 16 sats
+are collected. There are no client-specific free return entries or mint-side
+watches. The configured reply limits match the native case above.
+
+All 132 management checks pass. Independent postflight checks confirm original
+router baselines restored, candidate executables removed, matching released
+buyer/provider settlement records, and clean exits of the owned mint and export
+relay. Evidence is in `work/mesh-mint-physical-r3`, with exact static ARM64 relay
+and test-mint builds in `work/mesh-mint-arm-r5` and `work/mesh-mint-test-arm-r3`.
+The run takes 106.462 seconds including setup and cleanup, not a throughput
+benchmark. It uses FIPS/UDP over the existing LAN; radio-mesh, Android and
+interrupted financial mint requests remain separate acceptance work. Existing
+saved accounts and the earlier retained phone test mint remain unchanged.
+
+The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
 overlay/UBIFS journals. All 93,696 payloads arrive; strict measurement validation
