@@ -70,6 +70,37 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
     let directory = root.path().join("buyer");
     let (buyer, offer, contract) = fixture(&directory, 32_768, Limits::default());
     let buyer = Arc::new(buyer);
+    let ingress = PeerIdentity::from_pubkey_full(
+        Identity::from_secret_bytes(&[4; 32]).unwrap().pubkey_full(),
+    );
+    let seller = Arc::new(
+        crate::durable::DurableRelay::create(&root.path().join("seller"), Limits::default(), 8_000)
+            .unwrap(),
+    );
+    let mut incoming = buyer.state.lock().unwrap().channels[&contract.channel_id]
+        .terms
+        .clone();
+    incoming.id = "incoming".into();
+    incoming.buyer = *ingress.node_addr();
+    seller.open_channel_verified(incoming.clone(), 0).unwrap();
+    seller
+        .add_contract(Contract {
+            id: "incoming-quote".into(),
+            channel_id: incoming.id.clone(),
+            buyer: incoming.buyer,
+            next_hop: offer.provider,
+            ..contract.clone()
+        })
+        .unwrap();
+    let forwarding = PaidForwarder::for_billing(seller.clone(), buyer.clone(), offer.billing);
+    let request = ForwardingRequest {
+        ingress,
+        source: *ingress.node_addr(),
+        destination: contract.destination,
+        next_hop: offer.provider,
+        session_payload: &[7; 200],
+    };
+    let upstream_before = seller.channel_usage(&incoming.id);
     submit(&buyer, &offer, 100);
     buyer.checkpoint().unwrap();
     let before = std::fs::read(directory.join("buyer.json")).unwrap();
@@ -86,7 +117,12 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
             buyer.prepare(&intent(&offer, 200)),
             OriginatedSessionAdmission::Retry
         );
+        assert_eq!(
+            forwarding.decide(&request),
+            fips_core::node::ForwardingDecision::Retry
+        );
     }
+    assert_eq!(seller.channel_usage(&incoming.id), upstream_before);
     buyer.checkpoint().unwrap();
     assert_eq!(std::fs::read(directory.join("buyer.json")).unwrap(), before);
     drop(nested);
@@ -113,13 +149,22 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
         OriginatedSessionAdmission::Retry
     );
     assert_eq!(buyer.evidence_msat(&replacement.id), Some(0));
+    assert_eq!(
+        forwarding.decide(&request),
+        fips_core::node::ForwardingDecision::Retry
+    );
     let previous_evidence = buyer.evidence_msat(&contract.channel_id);
     drop(pause);
+    let admission = forwarding
+        .decide(&request)
+        .admission()
+        .expect("replacement admits held transit");
+    forwarding.complete(admission.token, ForwardingOutcome::Submitted);
     submit(&buyer, &offer, 200);
     assert_eq!(buyer.evidence_msat(&contract.channel_id), previous_evidence);
     assert_eq!(
         buyer.state.lock().unwrap().quotes[&replacement_contract.id].submitted_units,
-        200
+        400
     );
     assert_eq!(buyer.remaining_budget_sat(), Some(64));
     let cancelled = buyer.pause_for_renewal([&replacement_contract]).unwrap();
@@ -128,6 +173,10 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
     assert_eq!(
         buyer.prepare(&intent(&offer, 200)),
         OriginatedSessionAdmission::Reject
+    );
+    assert_eq!(
+        forwarding.decide(&request),
+        fips_core::node::ForwardingDecision::Reject
     );
     assert!(buyer.state.lock().unwrap().renewal_pauses.is_empty());
 }
