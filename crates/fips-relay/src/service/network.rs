@@ -17,6 +17,10 @@ impl ServiceConfig {
             return Err("configure between one and four native transport instances".into());
         }
         for (kind, _) in counts {
+            #[cfg(test)]
+            if kind == "sim" {
+                continue;
+            }
             if !matches!(kind, "udp" | "tcp" | "ethernet" | "websocket") {
                 return Err(format!("paid relay does not yet support transport {kind}"));
             }

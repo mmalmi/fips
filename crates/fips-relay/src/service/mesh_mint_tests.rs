@@ -21,6 +21,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 #[path = "mesh_mint_tests/recovery.rs"]
 mod recovery;
+#[path = "mesh_mint_tests/handover.rs"]
+mod handover;
 
 const PORT: u16 = 44_745;
 

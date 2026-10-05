@@ -58,6 +58,17 @@ pub(super) async fn verify(config: &ServiceConfig) -> Result<(), String> {
                 .map(|(name, _)| ("websocket".to_owned(), name.map(str::to_owned))),
         )
         .collect();
+    #[cfg(test)]
+    let requested: BTreeSet<_> = requested
+        .into_iter()
+        .chain(
+            config
+                .transports
+                .sim
+                .iter()
+                .map(|(name, _)| ("sim".to_owned(), name.map(str::to_owned))),
+        )
+        .collect();
     // The node binds its operator socket from a task started after endpoint bind.
     wait_for_control(config).await?;
     let report = native_request(config, &json!({"command": "show_transports"})).await?;
