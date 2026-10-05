@@ -605,6 +605,25 @@ wrapper under actual procd. Package installation, the installed init/UCI path,
 a reboot, funded recovery during a mint outage and radio payload forwarding
 remain outside this case.
 
+The existing mixed UDP/TCP process case on `6e1281b78034` additionally blocks
+the configured mint before crashing the funded middle provider. The provider
+restarts and forwards fresh paid payloads in both directions while the mint
+remains unreachable. Original funding records, purchase history and debited or
+reserved wallet amounts stay exact; remaining spending allowance cannot increase.
+After restoring mint access, automatic renewal retains the bounded, unbilled
+crash exposure and final settlement conserves all 384 test sats.
+
+This case passes with the native Linux daemon in 51.97 seconds and the unchanged
+r58 ARM64 package under QEMU in 45.00 seconds. The shared self-signed WebSocket
+recovery case and optional provider-acceptance barrier also pass. Strict service
+lint passes both without optional features and with `testbench`; formatting and
+the source-size gate pass. No production code or wire messages changed. Verified
+evidence is in `work/mint-outage-r60/closure.json`, including absent test process
+groups and a released build lock. Earlier preparation/lint failures remain in
+`work/mint-outage-r59`. This accepts an already-funded provider restart over
+loopback carriers, not interrupted buyer funding, physical radio failure or
+power-loss recovery.
+
 The earlier r57 package contains the receiver-wallet and outgoing-wallet recovery
 changes. It uses the identical accepted r56 ARM64 executable, built from private
 FIPS integration `83cb4d7815db`, SDK `ff1678c2b6ca`, CDK `8de95a89c9e0` and
