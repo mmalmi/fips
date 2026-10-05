@@ -192,6 +192,12 @@ mint swap. Saved hardware accounts retain their original mint URLs; Android
 mint integration remains pending. Current acceptance and its limits are recorded in
 [READINESS.md](READINESS.md).
 
+Changing a live radio edge so the provider must reach the mint through its
+former customer currently fails settlement recovery, even after the replacement
+links form. Restoring the original path recovers the saved settlement and funds.
+Keep that deployment limitation until the recorded hardware case passes;
+same-path rejoin and the native alternate-relay test do not cover it.
+
 ## Fund a relay
 
 Initialize the relay as described in SERVICE.md, then leave it stopped. Request

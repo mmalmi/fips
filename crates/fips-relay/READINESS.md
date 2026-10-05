@@ -248,6 +248,31 @@ handover, mint-process restart, physical power-loss recovery or Android mint
 integration. Existing saved accounts and the retained earlier phone mint are
 unchanged.
 
+A subsequent hardware path-change case does **not** pass. After the close swap
+commits, test-EtherType filters cut the provider-to-mint-side radio edge in both
+directions. The response stays blocked for 3.02 seconds. Opening the previously
+excluded customer-to-mint-side edge produces the exact replacement topology,
+with the old edge still blocked. The provider must now reach the mint through
+the customer router. Settlement does not complete within its 100-second recovery
+window. The provider reports a failed mint restore request; a diagnostic snapshot
+shows no admitted free forwarding traffic or incoming free lease on the new
+transit router. The cause is not yet established. This exposes a gap beyond the
+native case above, which replaces an entire transit relay and shares one local
+mint-client adapter between wallets.
+
+The failed run preserves its original accounting and passes all 396 management
+checks, with no cleanup errors. Recovery reopens the same saved router and
+gateway accounts on the original radio path, keeping the original mint process
+and URL. Background workers finish the original settlement without another
+Settle request or mint swap; funding authority remains unchanged and all 16 test
+sats are collected. Independent postflight confirms matching released buyer and
+seller records, restored original device state, and clean exits of the mint and
+both gateway processes. Recovery passes all 117 management checks. Evidence is
+in `work/mesh-mint-radio-r3`, including its failed result and separate recovery
+closure. The path-change result remains failed. Reproduce this edge change with
+the provider's own mint adapter, then repair and recheck route/permission refresh
+before accepting automatic mint access across mobile path changes.
+
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
