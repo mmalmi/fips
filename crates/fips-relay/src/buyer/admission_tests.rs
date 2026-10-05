@@ -87,7 +87,6 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
         .add_contract(Contract {
             id: "incoming-quote".into(),
             channel_id: incoming.id.clone(),
-            buyer: incoming.buyer,
             next_hop: offer.provider,
             ..contract.clone()
         })
