@@ -172,11 +172,15 @@ impl Node {
                     })
             });
 
-        let healthy_direct_route = self
+        // A discovery-capable neighbor need not provide a usable payload route.
+        // Prefer alternatives to a degraded session, but retain the live direct
+        // carrier as a last resort when none of those alternatives can route.
+        let direct_route = self
             .peers
             .get(dest_node_addr)
-            .filter(|peer| peer.is_healthy() && !direct_session_degraded)
+            .filter(|peer| peer.is_healthy())
             .map(|_| *dest_node_addr);
+        let healthy_direct_route = direct_route.filter(|_| !direct_session_degraded);
         let direct_payload_untried = self.sessions.get(dest_node_addr).is_some()
             && self
                 .dataplane
@@ -335,7 +339,7 @@ impl Node {
             {
                 return self.peers.get(&next_hop_addr);
             }
-            if let Some(direct_addr) = healthy_direct_route {
+            if let Some(direct_addr) = direct_route {
                 return self.peers.get(&direct_addr);
             }
             if let Some(direct_addr) = stale_traversal_direct_route {
@@ -402,7 +406,7 @@ impl Node {
             return self.peers.get(&next_hop_addr);
         }
 
-        if let Some(direct_addr) = stale_traversal_direct_route {
+        if let Some(direct_addr) = direct_route.or(stale_traversal_direct_route) {
             return self.peers.get(&direct_addr);
         }
 

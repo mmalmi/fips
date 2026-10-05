@@ -59,6 +59,15 @@ fn test_session_degraded_direct_peer_remains_route_without_fallback() {
         Some(peer_addr),
         "an unrelated neighbor must not suppress the only available direct route"
     );
+
+    let coords = TreeCoordinate::from_addrs(vec![peer_addr, *node.node_addr()]).unwrap();
+    node.coord_cache_mut()
+        .insert(peer_addr, coords, Node::now_ms());
+    assert_eq!(
+        node.find_next_hop(&peer_addr).map(|p| *p.node_addr()),
+        Some(peer_addr),
+        "cached coordinates without a usable alternate route must also retain the direct route"
+    );
 }
 
 #[test]
