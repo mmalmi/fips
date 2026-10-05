@@ -58,10 +58,12 @@ only its ChromeOS ABI recommendation excluded for this arm64 phone prototype.
 ## Bench preparation
 
 Follow [customer entry](../fips-relay/CUSTOMER-ENTRY.md) for the entry listener and
-network restrictions. The customer Wi-Fi must reach both the local FIPS UDP entry
-and the isolated mint without buying ordinary Internet access. Prevent access to
-unrelated LAN services and ordinary Internet forwarding. Keep router management
-and the native wireless relay path separate from the customer network.
+network restrictions. The customer Wi-Fi must reach the local FIPS UDP entry.
+Funding also requires either a bounded free FIPS route to the isolated mint or
+explicit local HTTP access to it, without buying ordinary Internet access.
+Prevent access to unrelated LAN services and ordinary Internet forwarding. Keep
+router management and the native wireless relay path separate from the customer
+network.
 
 The app binds its process to the Wi-Fi whose on-link route contains the configured
 entry IP before opening native sockets. It excludes VPN networks and rejects an
@@ -102,6 +104,30 @@ The entry and mint require explicit numeric local addresses; the mint uses a
 root HTTP URL. Profile limits are 512 test sats lifetime spending, 8–128 sats per
 channel and at most 8,192 msat/KiB. A maximum of twice the channel capacity may be
 locked. Loading funds never resets spending history or those limits.
+
+For mint access through FIPS, use `forwarding_data` billing, replace `mint_url`
+in a **fresh** profile with the mint's agreed loopback URL, and add its pinned
+export identity:
+
+```json
+{
+  "mint_url": "http://127.0.0.1:3338",
+  "mint_mesh": {
+    "npub": "<mint export identity>",
+    "service_port": 44745
+  }
+}
+```
+
+These are fields of the full profile, not a standalone setup profile. The shared
+engine owns the local HTTP adapter, including during stopped-wallet import and
+export. It carries HTTP over authenticated TCP/FIPS with no direct-mint fallback.
+The mint and all participating wallets must use the same URL; the URL and pinned
+identity cannot change on a saved account. Configure bounded free requests to
+the mint and earned reply allowances at the forwarding routers as described in
+[mint HTTP over FIPS](../fips-relay/TESTBENCH.md#mint-http-over-fips).
+Native customer lifecycle and router tests cover this arrangement; physical
+Android acceptance remains outstanding.
 
 `billing` must match the relay network: `forwarding_data` includes bounded free
 connection setup; `forwarding_attempt` uses the original per-attempt policy.

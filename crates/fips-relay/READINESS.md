@@ -285,11 +285,15 @@ in `work/mesh-mint-r28` and `work/mesh-mint-r29`.
 
 The existing funding-and-alternate-relay settlement regression passes on
 `19feea4a3` in 121.158 seconds and collects all 16 simulated sats. Strict library
-Clippy and the source-size check pass. An earlier attempt reached the 30-second
-pre-fault funding-commit deadline; its failed result is retained, and stage
-diagnostics were added without changing that deadline. The cause of that setup
-timeout is not established. Evidence is in `work/mesh-mint-r29` and
-`work/mesh-mint-r30`; this is not a claim of flake-free repeated acceptance.
+Clippy and the source-size check pass. Three consecutive fresh runs of that
+exact diagnostic executable then pass in 117.136, 128.437 and 115.866 seconds,
+each collecting all 16 simulated sats. Their logs, source hashes and independent
+process/cache closure are verified in `work/mesh-mint-r31`; no rebuild or lint
+rerun was needed. An earlier attempt reached the 30-second pre-fault
+funding-commit deadline; its failed result is retained in `work/mesh-mint-r29`.
+Stage diagnostics were added without changing that deadline. The later passes
+in `work/mesh-mint-r30` and `r31` do not establish the cause of that timeout or
+prove it fixed.
 
 The same `19feea4a3` ARM64 runtime then passes the physical edge-handover case
 in `work/mesh-mint-radio-r4`. The original financial reply stays blocked for
