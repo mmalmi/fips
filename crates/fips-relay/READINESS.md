@@ -168,6 +168,27 @@ benchmark. It uses FIPS/UDP over the existing LAN; radio-mesh, Android and
 interrupted financial mint requests remain separate acceptance work. Existing
 saved accounts and the earlier retained phone test mint remain unchanged.
 
+The same executables also pass the full mint lifecycle over the actual radio
+mesh. Three Cudys temporarily join an open 802.11s network and discover their
+authenticated FIPS neighbors without a router peer roster. The empty client's
+only carrier is its mesh interface. Test-only EtherType filters require two
+radio hops to the far router, which alone has the UDP link to the mint host;
+native transport observations and shortcut-drop counters verify this topology.
+The mint HTTP backend remains loopback-only. Import, one eight-sat channel, paid
+delivery, provider redemption, refund and both wallet exports all succeed with
+the same bounded bootstrap policy. The provider receives one sat, seven channel
+sats are refunded, and all 16 originally issued sats are collected.
+
+All 279 management checks pass, and independent postflight verifies restored
+original radio profiles, network settings, accounts and services, matching
+settlement records, removed candidate executables and clean mint/export-relay
+exits. Evidence is in `work/mesh-mint-radio-r1`. Cleanup needed an ordering
+correction: both remaining owned radio guards were invoked before the runner
+could verify the first router's original peers. This assistance is recorded in
+the closure; the financial run required no retry. This accepts radio transport
+for the mint lifecycle, not interruption during a financial request, mobile
+handover or Android mint integration. The earlier phone mint remains unchanged.
+
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
