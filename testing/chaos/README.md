@@ -674,14 +674,26 @@ loopback-only SSH forwarding. It mounts no host directory and changes no host
 network or service configuration. The mint URL stays identical across boots
 through a pinned SSH tunnel; the mint itself stays alive.
 
-After funding and bidirectional paid delivery, the harness kills only the
-UUID/image-verified QEMU process during an active stream. A fresh kernel mounts
+After funding and bidirectional paid delivery, the default `--cut-at traffic`
+case kills the UUID/image-verified QEMU process during an active stream.
+A fresh kernel mounts
 the same disk; original accounts, funding, spending limits and exact unbilled
 crash exposure must survive. Subsequent streams require complete delivery, then
 the existing settlement checks collect all 384 test sats and stop the guest,
 tunnel and mint. The interrupted stream is not replayed. A funded failure keeps
 its original disk and mint for recovery; do not rerun initialization or replace
 that mint. Logs and process identities remain in the output directory.
+
+Use `--cut-at settlement` with a fresh output directory to cut the guest after
+the host mint commits a settlement swap but before its reply reaches the relay.
+The existing test-mint barrier pins this boundary; the relay needs no test
+feature or injected hook. Before restarting services, the recovered filesystem
+must retain the original funding and pending settlement. The provider starts
+alone and must restore the committed response and finish its payout without
+the buyer. Then the buyer must recover its original refund automatically,
+without a new settlement request. Final idempotent settlement and collection
+must reconcile all 384 sats. This case does not offer traffic after closing the
+interrupted channel.
 
 This covers guest kernel/page-cache loss with QEMU's direct host I/O and ext4
 journal recovery. It does not simulate a physical flash-controller failure,
