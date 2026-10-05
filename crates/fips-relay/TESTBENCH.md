@@ -101,10 +101,12 @@ idle. The focused native check is:
 cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
 ```
 
-The case restarts the mint gateway after committed funding and close replies
-are lost. Background recovery must activate the original channel, then finish
-its payout and refund without another swap or wallet spend. See the bounded
-evidence in [READINESS.md](READINESS.md).
+The case restarts the mint gateway after a committed funding reply is lost.
+During settlement, it removes the transit relay after the close swap commits,
+then starts a different relay while the original stays offline. Background
+recovery must activate the original channel, then finish its payout and refund
+through the replacement path without another swap or wallet spend. See the
+bounded evidence in [READINESS.md](READINESS.md).
 
 ### Client configuration and wallet lifetime
 

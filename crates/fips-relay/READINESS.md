@@ -189,13 +189,15 @@ the closure; the financial run required no retry. This accepts radio transport
 for the mint lifecycle, not interruption during a financial request, mobile
 handover or Android mint integration. The earlier phone mint remains unchanged.
 
-The native case on `d162357ab` recovers lost committed replies during both
+The native case on `c006e168d` recovers lost committed replies during both
 channel funding and settlement. It reuses the SDK's response barrier, matching
-the saved opening request or the original channel's funding proofs. Each time,
-it stops the mint's FIPS gateway after the real swap succeeds but before its
-outputs arrive. The HTTP mint stays alive. The original Buy/Finish call fails
-while the gateway is absent; restarting that gateway from its saved profile
-retains the mint identity and wallet URL.
+the saved opening request or the original channel's funding proofs. Funding
+recovery restarts the mint's FIPS gateway after the real swap succeeds but before
+its outputs arrive. Settlement instead removes the transit relay while keeping
+the gateway alive. A different relay, with its own identity and empty wallet,
+then supplies the replacement path; the failed relay stays offline. The original
+Buy/Finish calls fail while their only path is absent. The HTTP mint stays alive
+throughout, with the same pinned FIPS identity and wallet URL.
 
 Journal and status reads observe normal background workers recovering and
 activating the original funding, then later completing its provider payout,
@@ -204,23 +206,26 @@ recovery. All swap submissions are rejected during each recovery window, and
 their counter proves none was attempted. The original wallet operation, funding
 authority, lifetime spending policy, eight-sat debit and single channel remain
 unchanged. Paid delivery succeeds between the two interruptions, and the full
-lifecycle collects all 16 original test sats.
+lifecycle collects all 16 original test sats. Both ends connect to the alternate
+relay, whose counters record forwarded requests and earned reply traffic. No
+client-specific return tariff, mint-side watch or new channel is needed there.
 
-The case passes in 60.15 seconds, with evidence in `work/mesh-mint-r21`; the
-earlier close-only acceptance remains in `r20`. It passes again in 78.32 seconds
-on `11dbda7d2`, which exposes the same SDK response barrier through the test
-mint's private control socket for hardware tests. The existing real-mint bench
-test also verifies that the original import waits for release, duplicate arms
-and incorrect releases fail, and issuance/collection cannot interfere while
-the barrier is active. This adds no production payment protocol or fault control.
+The case passes in 115.32 seconds, along with strict library lint, formatting
+and the source-size gate. Verified logs and independent process/cache closure
+are in `work/mesh-mint-r24`. Earlier same-gateway recovery checks remain in
+`r20` through `r22`. This extends the existing lifecycle test; production code
+and the accepted router executable are unchanged. It verifies a configured
+native UDP path replacement, without accepting physical mobile handover,
+arbitrary asymmetric bootstrap, mint-process restart or Android integration.
 
-Strict library lint, the normal library/daemon build without test features,
-formatting and the source-size gate pass. Verified logs and independent
-process/cache closure are in `work/mesh-mint-r22`; the static ARM64 test-mint
-build and closure are in `work/mesh-mint-test-arm-r4`. The production router
-executable remains unchanged. These native checks verify the two committed
-response boundaries; mint-process restart and Android integration remain
-outside their acceptance.
+The test mint on `11dbda7d2` exposes the same SDK response barrier through its
+private control socket for hardware tests. The existing real-mint bench test
+verifies that an import waits for release, duplicate arms and incorrect releases
+fail, and issuance/collection cannot interfere while the barrier is active.
+That check and the normal library/daemon build without test features pass in
+`work/mesh-mint-r22`; the static ARM64 test-mint build and closure are in
+`work/mesh-mint-test-arm-r4`. No production payment protocol or fault control
+is added.
 
 The same production router executable and the new test mint also pass a
 settlement interruption on the three-router open radio mesh. After the original
