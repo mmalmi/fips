@@ -2533,6 +2533,18 @@ Full peer eviction, moving radios, sustained impairment and physical power loss
 remain separate acceptance cases. The original workload, deadlines, beacon,
 source/dependency graph and financial limits are unchanged.
 
+Current Android build gates also pass on `3f2ed13280d7`, using the same frozen
+dependency graph as these router binaries. The measured ARM64 JNI library builds
+for Android API 30; strict Android-target Clippy, all six existing JVM lifecycle
+checks, APK assembly/lint and signature verification pass. The APK contains the
+exact verified strip of the newly built native library. Independent closure
+checks all 1,614 original source files, two source symlinks, the dependency bundle
+and absent command groups; all 19 artifact/log/receipt files are retained and
+hash-verified. Evidence is `work/android-current-r102`. This qualifies the current
+build and simulated JVM lifecycle checks; physical Pixel paid forwarding,
+mesh-only funding/settlement and background requalification remain pending.
+The acceptance APK is not installed; the phone still has only its main FIPS app.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.
