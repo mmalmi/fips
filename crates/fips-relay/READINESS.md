@@ -23,6 +23,12 @@ require the credit it is needed to obtain. A stable mint identity and URL must
 survive path changes. Ordinary TCP/FIPS and existing forwarding limits should
 carry these requests without a new payment-message family.
 
+The relay's payment boundary is the Cashu mint API. Acceptance exercises real
+mint proof storage, channel funding, settlement, refunds and recovery from lost
+replies or mint restarts. A compatible mint's backing and Lightning operation
+remain the mint operator's responsibility. A persistent Lightning regtest is an
+optional integration check for operating a mint, not a relay-v1 release gate.
+
 Current device evidence covers steady mesh funding, paid delivery, settlement,
 an earlier symmetric edge handover, and persistent one-way return-loss handover
 on `a3adbfca3`. The latter follows a reduced routing regression and passes in
@@ -462,8 +468,8 @@ activity, not deep idle, movement, process restart or customer Internet isolatio
 
 The recorded symmetric and one-way radio-edge changes and Android mint lifecycle
 now pass with bounded free mint access. Broader mobility/background behavior,
-hardware mint-process restart, recovery with a persistent Lightning backend and
-financial power-loss recovery still need their own acceptance.
+hardware mint-process restart and financial power-loss recovery still need their
+own acceptance.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
