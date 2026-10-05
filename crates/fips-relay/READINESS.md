@@ -2259,6 +2259,25 @@ the released cache lock are verified in
 five nodes, their mint and ARM emulation; it does not measure physical-router
 timing or establish quarter-CPU ARM acceptance.
 
+The controller's failure diagnostics now distinguish refusals from temporary
+allowance waits, include bounded current buyer/provider terms and counters, and
+enable the existing renewal progress tracing. On `4dd7adf0a`, formatting, file
+limits and strict controller lint pass. The ARM64 two-CPU control passes in
+48.24 seconds and collects all 1,280 test sats; the quarter-CPU case still misses
+delivery at round 8 in direction 4 to 0. Completed renewals take about 5–18
+seconds under that quota, versus 0.49–0.74 seconds in the control. Several
+renewals overlap; these measurements do not establish a single 30-second
+renewal as the cause. The unchanged executable reproduces failure in a separate
+read-only pacing observation. Its 100 samples cover all five disposable wallets;
+the largest persisted pacing debt is 17.72 seconds, below the default 57-second
+burst tolerance. This does not measure every in-memory request wait. The delay
+remains unattributed, and failed runs do not reach final financial collection.
+Verified evidence is retained in `work/controller-renewal-evidence-r67`,
+`work/controller-renewal-trace-r68` and `work/controller-rate-watch-r71`, each
+with a `closure.json`. The incomplete r69 observer and interrupted r70 observer
+are retained separately and provide no pacing conclusion. No production code,
+delivery deadline or financial limit changes in these diagnostic refinements.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.
