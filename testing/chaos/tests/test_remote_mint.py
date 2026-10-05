@@ -224,6 +224,22 @@ class RemoteMintTests(unittest.TestCase):
                 mint.start()
             self.assertEqual(mint.remote.call_count, 1)
 
+    def test_checks_host_architecture_before_creating_state(self):
+        for machine, architecture, other in ((b"\xb7\x00", b"aarch64", b"x86_64"),
+                                             (b"\x3e\x00", b"x86_64", b"aarch64")):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                binary = root / "mint"
+                binary.write_bytes(b"\x7fELF\x02\x01" + b"\x00" * 12 + machine)
+                mint = RemoteMint({"host": "lab", "state_parent": "/tmp/bench"}, binary,
+                                  "123456789abc", root, "192.0.2.10")
+                mint.remote = Mock(return_value=other)
+                with self.assertRaisesRegex(RuntimeError, "architecture"):
+                    mint.start()
+                mint.remote.assert_called_once_with(["uname", "-m"])
+                with self.assertRaisesRegex(RuntimeError, "already attempted"):
+                    mint.start()
+
 
 if __name__ == "__main__":
     unittest.main()

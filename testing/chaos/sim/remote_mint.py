@@ -25,8 +25,9 @@ class RemoteMint(SshCommands):
         self.spec, self.host = spec, checked_name(spec["host"])
         self.source = Path(binary).resolve(strict=True)
         header = self.source.read_bytes()[:20]
-        if header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\xb7\x00":
-            raise ValueError("mint binary must be Linux ELF64 AArch64")
+        self.architecture = {b"\xb7\x00": b"aarch64", b"\x3e\x00": b"x86_64"}.get(header[18:20])
+        if header[:6] != b"\x7fELF\x02\x01" or self.architecture is None:
+            raise ValueError("mint binary must be Linux ELF64 AArch64 or x86-64")
         self.root = checked_path(spec["state_parent"]) + "/phone-" + run
         self.temporary = "/tmp/fips-mint-" + run
         self.binary = self.temporary + "/fips-relay-test-mint"
@@ -54,8 +55,8 @@ class RemoteMint(SshCommands):
         self.attempted = True
         write_json(self.output / "intent.json", self.info)
         # No service/network configuration changes; refuse another host/address.
-        if self.remote(["uname", "-m"]).strip() != b"aarch64":
-            raise RuntimeError("mint host is not AArch64 Linux")
+        if self.remote(["uname", "-m"]).strip() != self.architecture:
+            raise RuntimeError("mint host architecture differs from the supplied binary")
         addresses = json.loads(self.remote(["ip", "-j", "-4", "addr", "show"]))
         if not any(item.get("local") == self.info["address"]
                    for link in addresses for item in link.get("addr_info", [])):

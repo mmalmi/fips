@@ -304,8 +304,9 @@ Only the source receives 128 test sats, with at most two 64-sat channels and no
 renewal. The owned local mint uses private SSH loopback forwards. Alternatively,
 pass both `--mint-host /private/operator/mint-host.json` (the shared remote-mint
 host specification) and `--mint-address` with that host's assigned private LAN
-IPv4 address. This runs the supplied ARM64 mint there with a 128-sat issuance cap;
-all three routers must reach it before the single source grant. A single watch
+IPv4 address. This runs the supplied ARM64 or x86-64 Linux mint there with a
+128-sat issuance cap; the binary architecture must match the host.
+All three routers must reach it before the single source grant. A single watch
 compares provider tariffs of 128/160 msat per KiB under a 192-msat ceiling. The
 normal selector defaults remain intact, including the 32-KiB trial and 60-second
 retry cooldown. Each phase allows at most sixteen 16-packet, 256-byte bursts,
@@ -843,7 +844,9 @@ route selection, sustained throughput or a latency guarantee.
 
 `sim.remote_mint.RemoteMint` gives routers and a phone one explicit private mint
 URL. The mint host requires Linux, Python with pidfd support, and the supplied
-static ARM64 test-mint binary; the routers do not need Python. Every run uses
+matching ARM64 or x86-64 Linux test-mint binary; the routers do not need Python.
+The harness checks the binary and host architecture before creating remote state.
+Every run uses
 fresh persistent state and an issuance cap of at most 512 test sats. Money
 requests are recorded before submission and never automatically replayed. The
 mint stays running while funds are outstanding; terminal cleanup needs a fresh
