@@ -1,6 +1,10 @@
 use super::*;
 use crate::route_quotes::{RouteOffer, contract_from_offer};
 use fips_core::{Identity, PeerIdentity};
+use std::{
+    future::Future,
+    task::{Context, Waker},
+};
 
 fn fixture(root: &Path, max_units: u64, limits: Limits) -> (BuyerAuthorizer, RouteOffer, Contract) {
     let peer = |n| {
@@ -100,14 +104,29 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
         session_payload: &[7; 200],
     };
     let upstream_before = seller.channel_usage(&incoming.id);
+    let wake = forwarding.admission_notify().unwrap();
+    let take_wake = || {
+        std::pin::pin!(wake.notified())
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    };
+    let _ = take_wake();
     submit(&buyer, &offer, 100);
     buyer.checkpoint().unwrap();
     let before = std::fs::read(directory.join("buyer.json")).unwrap();
-    let pause = buyer.pause_for_renewal([&contract]).unwrap();
-    let nested = buyer.pause_for_renewal([&contract]).unwrap();
+    let pause = buyer
+        .pause_for_renewal([&contract], Some(wake.clone()))
+        .unwrap();
+    let nested = buyer
+        .pause_for_renewal([&contract], Some(wake.clone()))
+        .unwrap();
     let mut mismatched = contract.clone();
     mismatched.max_units += 1;
-    assert!(buyer.pause_for_renewal([&contract, &mismatched]).is_err());
+    assert!(
+        buyer
+            .pause_for_renewal([&contract, &mismatched], Some(wake.clone()))
+            .is_err()
+    );
     let mut direct = intent(&offer, 200);
     direct.next_hop = direct.destination;
     assert_eq!(buyer.prepare(&direct), OriginatedSessionAdmission::Defer);
@@ -125,6 +144,7 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
     buyer.checkpoint().unwrap();
     assert_eq!(std::fs::read(directory.join("buyer.json")).unwrap(), before);
     drop(nested);
+    assert!(!take_wake());
     assert_eq!(
         buyer.prepare(&intent(&offer, 200)),
         OriginatedSessionAdmission::Retry
@@ -154,6 +174,7 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
     );
     let previous_evidence = buyer.evidence_msat(&contract.channel_id);
     drop(pause);
+    assert!(take_wake());
     let admission = forwarding
         .decide(&request)
         .admission()
@@ -166,7 +187,9 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
         400
     );
     assert_eq!(buyer.remaining_budget_sat(), Some(64));
-    let cancelled = buyer.pause_for_renewal([&replacement_contract]).unwrap();
+    let cancelled = buyer
+        .pause_for_renewal([&replacement_contract], Some(wake))
+        .unwrap();
     buyer.close_channel(&replacement.id).unwrap();
     drop(cancelled);
     assert_eq!(
@@ -324,7 +347,7 @@ fn nonquota_denials_and_transit_do_not_mark_source_trial_blocked() {
         next_hop: offer.provider,
         session_payload: &[1; 100],
     };
-    assert!(buyer.begin_admitted(&request, false, || Some(())).is_none());
+    assert!(buyer.begin_admitted(&request, false, || Some(())).is_err());
     assert_eq!(
         buyer.quota_blocked(&offer),
         Ok(Some(false)),

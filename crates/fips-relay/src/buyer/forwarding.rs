@@ -193,7 +193,7 @@ impl PaidForwarder {
         ) {
             (token, None)
         } else {
-            let (buyer_token, seller_token) = self.buyer.begin_admitted(
+            let (buyer_token, seller_token) = match self.buyer.begin_admitted(
                 &OriginatedSessionRequest {
                     source: request.source,
                     destination: request.destination,
@@ -202,7 +202,14 @@ impl PaidForwarder {
                 },
                 false,
                 admit_seller,
-            )?;
+            ) {
+                Ok(admission) => admission,
+                Err(fips_core::node::ForwardingDecision::Retry) => {
+                    *refusal = fips_core::node::ForwardingDecision::Retry;
+                    return None;
+                }
+                Err(_) => return None,
+            };
             (seller_token, Some(buyer_token))
         };
         self.pending

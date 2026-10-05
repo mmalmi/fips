@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ledger::ChannelUsage;
+use fips_core::node::ForwardingPolicy;
 
 #[cfg(test)]
 #[path = "renewal_admission_tests.rs"]
@@ -362,10 +363,13 @@ impl Controller {
     // The caller owns this renewal's claim and a shared pause guard. Settlement
     // separately serializes payment and closure of this particular channel.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
-        let source_pause = self
+        let admission_pause = self
             .services
             .buyer
-            .pause_for_renewal(renewal.previous.iter().map(|old| &old.purchase.contract))
+            .pause_for_renewal(
+                renewal.previous.iter().map(|old| &old.purchase.contract),
+                self.services.seller.admission_notify(),
+            )
             .map_err(|error| error.to_string())?;
         let started = std::time::Instant::now();
         let progress = |phase| {
@@ -451,7 +455,7 @@ impl Controller {
         }
         // Each replacement is accepted, saved and active. The completion marker
         // only closes recovery bookkeeping; fresh traffic can use its own credit.
-        drop(source_pause);
+        drop(admission_pause);
         progress("resumed");
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "renewal-complete").await?;

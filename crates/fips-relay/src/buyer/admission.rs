@@ -1,24 +1,31 @@
 //! Share reservation between pre-seal source admission and admitted transit.
 use super::*;
+use fips_core::node::ForwardingDecision;
 
-/// Only a live controller operation can pause new, unreserved source traffic.
+/// Only a live controller operation can pause new, unreserved paid traffic.
 /// Cancellation releases the pause; retained closed agreements still reject.
 pub(crate) struct RenewalAdmissionPause {
     buyer: Arc<BuyerAuthorizer>,
     contracts: Vec<String>,
+    wake: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Drop for RenewalAdmissionPause {
     fn drop(&mut self) {
+        let mut released = false;
         if let Ok(mut state) = self.buyer.state.lock() {
             for id in &self.contracts {
                 if let Some(count) = state.renewal_pauses.get_mut(id) {
                     *count -= 1;
                     if *count == 0 {
                         state.renewal_pauses.remove(id);
+                        released = true;
                     }
                 }
             }
+        }
+        if released && let Some(wake) = &self.wake {
+            wake.notify_one();
         }
     }
 }
@@ -27,6 +34,7 @@ impl BuyerAuthorizer {
     pub(crate) fn pause_for_renewal<'a>(
         self: &Arc<Self>,
         contracts: impl IntoIterator<Item = &'a Contract>,
+        wake: Option<Arc<tokio::sync::Notify>>,
     ) -> Result<RenewalAdmissionPause, BuyerError> {
         let mut state = self.state.lock().map_err(|_| BuyerError::Format)?;
         let mut pauses = state.renewal_pauses.clone();
@@ -43,6 +51,7 @@ impl BuyerAuthorizer {
         Ok(RenewalAdmissionPause {
             buyer: Arc::clone(self),
             contracts: ids,
+            wake,
         })
     }
 
@@ -52,6 +61,7 @@ impl BuyerAuthorizer {
         local_only: bool,
     ) -> Option<u64> {
         self.begin_admitted(request, local_only, || Some(()))
+            .ok()
             .map(|(token, ())| token)
     }
 
@@ -63,28 +73,30 @@ impl BuyerAuthorizer {
         request: &OriginatedSessionRequest<'_>,
         local_only: bool,
         admit: impl FnOnce() -> Option<T>,
-    ) -> Option<(u64, T)> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-        let mut s = self.state.lock().ok()?;
+    ) -> Result<(u64, T), ForwardingDecision> {
+        use ForwardingDecision::{Reject, Retry};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Reject)?
+            .as_secs();
+        let mut s = self.state.lock().map_err(|_| Reject)?;
         if (local_only && request.source != s.local)
             || request.next_hop == request.destination
             || request.session_payload.is_empty()
         {
-            return None;
+            return Err(Reject);
         }
-        let id = s
-            .quotes
-            .iter()
-            .find(|(_, q)| {
+        if renewal_paused(&s, request.next_hop, request.destination) {
+            return Err(Retry);
+        }
+        let id = matching_route_quotes(&s, request.next_hop, request.destination)
+            .find(|q| {
                 let c = &s.channels[&q.contract.channel_id];
-                q.active
-                    && c.active
-                    && c.provider == request.next_hop
-                    && q.contract.destination == request.destination
-                    && now < q.contract.expires_unix
-                    && now < c.terms.expires_unix
-            })?
-            .0
+                q.active && c.active && now < q.contract.expires_unix && now < c.terms.expires_unix
+            })
+            .ok_or(Reject)?
+            .contract
+            .id
             .clone();
         let billing = s.quotes[&id].contract.billing;
         if billing.has_free_handshakes()
@@ -94,7 +106,7 @@ impl BuyerAuthorizer {
                 request.destination,
             )
         {
-            return None;
+            return Err(Reject);
         }
         let legacy = billing.is_legacy();
         let digest = if legacy {
@@ -102,8 +114,8 @@ impl BuyerAuthorizer {
         } else {
             [0; 32]
         };
-        let units = u64::try_from(request.session_payload.len()).ok()?;
-        Self::reserve_attempt(&mut s, id, digest, units, local_only, admit)
+        let units = u64::try_from(request.session_payload.len()).map_err(|_| Reject)?;
+        Self::reserve_attempt(&mut s, id, digest, units, local_only, admit).ok_or(Reject)
     }
 
     pub(super) fn prepare_intent(
@@ -127,16 +139,10 @@ impl BuyerAuthorizer {
         if intent.next_hop == intent.destination {
             return Defer;
         }
-        let matching = |q: &&PurchaseQuote| {
-            state.channels[&q.contract.channel_id].provider == intent.next_hop
-                && q.contract.destination == intent.destination
-        };
-        if state.quotes.values().filter(matching).any(|q| {
-            !q.contract.billing.is_legacy() && state.renewal_pauses.contains_key(&q.contract.id)
-        }) {
+        if renewal_paused(&state, intent.next_hop, intent.destination) {
             return OriginatedSessionAdmission::Retry;
         }
-        let active = state.quotes.values().filter(matching).find(|q| {
+        let active = matching_route_quotes(&state, intent.next_hop, intent.destination).find(|q| {
             let c = &state.channels[&q.contract.channel_id];
             q.active && c.active && now < q.contract.expires_unix && now < c.terms.expires_unix
         });
@@ -144,10 +150,7 @@ impl BuyerAuthorizer {
             // A retained paid route cannot become an untracked send just because
             // its quota/account was closed, suspended or expired. Unknown routes
             // remain subject to the remote relay's bootstrap/return admission.
-            return if state
-                .quotes
-                .values()
-                .filter(matching)
+            return if matching_route_quotes(&state, intent.next_hop, intent.destination)
                 .any(|q| !q.contract.billing.is_legacy())
             {
                 Reject
@@ -256,6 +259,23 @@ impl BuyerAuthorizer {
             .find(|(quote, channel)| quote.active && channel.active)
             .map(|(quote, _)| quote.quota_blocked))
     }
+}
+
+fn matching_route_quotes(
+    state: &State,
+    provider: NodeAddr,
+    destination: NodeAddr,
+) -> impl Iterator<Item = &PurchaseQuote> {
+    state.quotes.values().filter(move |q| {
+        state.channels[&q.contract.channel_id].provider == provider
+            && q.contract.destination == destination
+    })
+}
+
+fn renewal_paused(state: &State, provider: NodeAddr, destination: NodeAddr) -> bool {
+    matching_route_quotes(state, provider, destination).any(|q| {
+        !q.contract.billing.is_legacy() && state.renewal_pauses.contains_key(&q.contract.id)
+    })
 }
 
 fn matching_quotes<'a>(
