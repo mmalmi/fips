@@ -183,6 +183,14 @@ async fn settle_through_customer(
         }
     })
     .await;
+    if recovered.is_err() {
+        for (i, node) in nodes.iter().enumerate() {
+            for command in ["show_tree", "show_routing", "show_sessions"] {
+                let snapshot = native_request(&node.config, &json!({"command": command})).await;
+                eprintln!("mint handover node {i} {command}: {snapshot:?}");
+            }
+        }
+    }
     assert!(
         recovered.is_ok(),
         "mint handover settlement: provider {:?}; transit {:?}",
@@ -256,6 +264,14 @@ async fn exercise(failure: Failure) {
             network.set_link(a.to_string(), b.to_string(), SimLink::default());
         }
         fips_core::register_sim_network(name.clone(), network.clone());
+        // Hold routing identities fixed as well as link randomness. Keep the
+        // customer as tree root, matching the failed physical return-loss case.
+        let mut keys: Vec<_> = [11, 23, 47, 83]
+            .into_iter()
+            .map(|seed| Identity::from_secret_bytes(&[seed; 32]).unwrap())
+            .collect();
+        keys.sort_by_key(|identity| *identity.node_addr());
+        keys.swap(1, 3);
         let mut configs = Vec::new();
         for i in 0..4 {
             let mut config: ServiceConfig =
@@ -298,15 +314,20 @@ async fn exercise(failure: Failure) {
             backend: proxy.url.strip_prefix("http://").unwrap().parse().unwrap(),
             service_port: PORT,
         });
-        let gateway = RelayService::initialize(configs[3].clone()).await.unwrap();
+        let gateway =
+            RelayService::initialize_with_identity(configs[3].clone(), keys.pop().unwrap())
+                .await
+                .unwrap();
         configs[1].terms.mint_mesh = Some(crate::mint_mesh::MintMesh {
             npub: gateway.clone(),
             service_port: PORT,
         });
         let mut identities = Vec::new();
-        for config in &mut configs[..3] {
+        for (config, key) in configs[..3].iter_mut().zip(keys) {
             config.destination_fees = serde_json::from_value(json!({gateway.clone(): 0})).unwrap();
-            let npub = RelayService::initialize(config.clone()).await.unwrap();
+            let npub = RelayService::initialize_with_identity(config.clone(), key)
+                .await
+                .unwrap();
             identities.push(PeerIdentity::from_npub(&npub).unwrap());
         }
         identities.push(PeerIdentity::from_npub(&gateway).unwrap());
@@ -351,6 +372,12 @@ async fn exercise(failure: Failure) {
                 .unwrap();
         info(initial_address).await.unwrap();
         info(address).await.unwrap();
+        for node in &nodes {
+            let tree = native_request(&node.config, &json!({"command": "show_tree"}))
+                .await
+                .unwrap();
+            assert_eq!(tree["data"]["root"], identities[0].node_addr().to_string());
+        }
         let RouteAccess::Paid(purchase) =
             nodes[0].controller.open_route(identities[2]).await.unwrap()
         else {

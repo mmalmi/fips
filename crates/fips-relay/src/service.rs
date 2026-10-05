@@ -132,10 +132,16 @@ pub struct RelayService {
 
 impl RelayService {
     pub async fn initialize(config: ServiceConfig) -> Result<String, String> {
+        Self::initialize_with_identity(config, Identity::generate()).await
+    }
+
+    async fn initialize_with_identity(
+        config: ServiceConfig,
+        identity: Identity,
+    ) -> Result<String, String> {
         config.validate()?;
         std::fs::DirBuilder::new().mode(0o700).create(&config.state_directory)
             .map_err(|_| "init requires a new state directory; existing or partial state is never replaced")?;
-        let identity = Identity::generate();
         fips_core::config::write_key_file(
             &config.state_directory.join("identity.key"),
             &fips_core::encode_nsec(&identity.keypair().secret_key()),
