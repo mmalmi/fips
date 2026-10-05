@@ -203,8 +203,11 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   the final direct endpoint needs no onward forwarding channel. Together with
   the source observer, it records both source and relay purchases. It checks that
   the onward purchase is usable before reserving upstream allowance. A packet
-  rejected during renewal, before any send was queued, consumes no allowance
-  and can be retried after the replacement is accepted.
+  waiting during a controller-owned renewal reserves neither upstream allowance
+  nor onward payment evidence. Renewal release wakes the existing native queue,
+  which rechecks current route and payment authority before forwarding. Its
+  two-second wait and per-neighbor limits still apply; longer outages require
+  an application retry. Closed agreements continue to reject traffic.
 * `RouteQuotes` asks the native FIPS planner for the next hop, recursively asks
   that neighbor for an offer and adds the local fee. Requests carry the
   destination's public identity so lookup responses can be verified before any
