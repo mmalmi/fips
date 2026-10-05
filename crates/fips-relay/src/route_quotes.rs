@@ -315,7 +315,10 @@ impl RouteQuotes {
             Ok(offer) => QuoteResponse::Offer {
                 offer: Box::new(offer),
             },
-            Err(_) => QuoteResponse::Rejected,
+            Err(error) => {
+                tracing::debug!(peer = %peer.node_addr(), %error, "route quote rejected");
+                QuoteResponse::Rejected
+            }
         }
     }
 

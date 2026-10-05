@@ -44,6 +44,7 @@ pub(super) async fn interrupt_close(
         1,
         proxy,
         (committed, release),
+        &buyer_path,
     )
     .await;
     assert_eq!(counts.swaps, swaps + 1);
@@ -157,15 +158,30 @@ async fn lose_reply(
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
     ),
+    buyer_path: &Path,
 ) -> Counters {
     let (committed, release) = gate;
     tokio::pin!(request);
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let committed = tokio::time::timeout(Duration::from_secs(30), async {
         tokio::select! {
             result = committed => result.unwrap(),
             result = &mut request => panic!("request finished before the committed mint reply: {result:?}"),
         }
-    }).await.expect("the original operation must reach its committed mint response");
+    }).await;
+    if committed.is_err() {
+        let buyer: Value = read_json(buyer_path).unwrap();
+        let pending: Vec<_> = ["funding", "requested", "outgoing", "buyer_settlements"]
+            .iter()
+            .map(|key| (*key, buyer[key].as_object().map(|v| v.len())))
+            .collect();
+        let providers: Vec<_> = nodes
+            .iter()
+            .map(|node| (node.controller.last_error(), node.free.stats()))
+            .collect();
+        panic!(
+            "original operation did not reach committed mint response: buyer {pending:?}; providers {providers:?}"
+        );
+    }
     let counts = Counters {
         swaps: proxy.state.swaps.load(Ordering::SeqCst),
         attempts: proxy.state.swap_attempts.load(Ordering::SeqCst),
@@ -212,7 +228,15 @@ pub(super) async fn interrupt_funding(
                 original.outputs() == request.outputs()
             })
     });
-    let counts = lose_reply(phone.execute(CustomerCommand::Buy), nodes, 2, proxy, gate).await;
+    let counts = lose_reply(
+        phone.execute(CustomerCommand::Buy),
+        nodes,
+        2,
+        proxy,
+        gate,
+        &buyer_path,
+    )
+    .await;
     let original: Value = read_json(&buyer_path).unwrap();
     let intents = original["funding"].as_object().unwrap();
     assert_eq!(intents.len(), 1);
