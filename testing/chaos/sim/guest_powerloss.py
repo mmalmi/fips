@@ -20,7 +20,7 @@ from .paid_finances import financial_snapshot, payments_credited
 from .paid_relay import eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
 from .paid_wifi_mint import LocalMint
-from .wifi_restart_load import QUOTE_UNITS, recovered_exposure, retained_finances
+from .restart_finances import QUOTE_UNITS, recovered_exposure, retained_finances
 
 
 class PowerLossRun:
