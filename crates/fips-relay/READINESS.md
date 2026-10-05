@@ -2327,6 +2327,25 @@ intermittent rejection nor establish performance equivalence with the original
 stripped image. Both outcomes remain in `work/controller-profile-r75` and
 `work/controller-quote-capacity-r76`, with verified closures.
 
+A symbol-retaining build of `3f2ed1328` passes the two-CPU renewal control and
+reconciles all 1,280 test sats. One minute of owned-process, user-CPU sampling
+then captures 1,058 samples during quarter-CPU renewal, with zero reported lost
+samples. Its original helper mistakenly rejects perf's expected SIGINT exit;
+independent reading verifies the retained data without repeating the test or
+rewriting that failure. The traffic case fails at round 8 in direction 4 to 0
+and reaches no final collection. About 50.19% of sampled user CPU lands in QEMU,
+49.53% in translated guest code, and 0.28% elsewhere. Every sampled guest PC
+resolves against the exact retained ELF. Guest self-samples include allocation,
+elliptic-curve arithmetic and PEM certificate parsing; they do not establish the
+calling wallet or FIPS operation. Repeated HTTP-client construction is a candidate
+for separate measurement, not an attributed cause. Kernel CPU and raw user-stack
+capture are excluded. Instrumentation and relinking prevent a same-image timing
+or physical-router performance claim. Source/artifact hashes, absent owned
+process groups/cgroups and removal of the owned temporary symbol map are verified
+in `work/controller-profile-r79` and `work/controller-cpu-profile-r80`; the latter
+retains both capture and guest-symbol analysis closures. No runtime optimization
+is made from this capture.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.
