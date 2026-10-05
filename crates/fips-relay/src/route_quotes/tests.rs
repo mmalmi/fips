@@ -239,7 +239,7 @@ async fn retired_offers_release_capacity_without_reviving_their_bindings() {
             QuoteResponse::Rejected
         ));
         let previous = &retained[0];
-        quotes.stop_reusing(&previous.id).unwrap();
+        quotes.retire_offer(&previous.id).unwrap();
         let QuoteResponse::Offer { offer: fresh } = quotes.handle(buyer, &body).await else {
             panic!("a retired agreement must release its pending quote slot")
         };
@@ -267,8 +267,8 @@ async fn retired_offers_release_capacity_without_reviving_their_bindings() {
         );
         let mut current = fresh;
         for _ in 0..MAX_OFFERS_PER_BUYER * 2 {
-            quotes.stop_reusing(&current.id).unwrap();
-            quotes.stop_reusing(&current.id).unwrap();
+            quotes.retire_offer(&current.id).unwrap();
+            quotes.retire_offer(&current.id).unwrap();
             let QuoteResponse::Offer { offer } = quotes.handle(buyer, &body).await else {
                 panic!("repeated retirements must keep permitting replacements")
             };

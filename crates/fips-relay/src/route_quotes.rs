@@ -56,7 +56,6 @@ pub struct QuotePolicy {
 struct StoredOffer {
     offer: RouteOffer,
     downstream: Option<RouteOffer>,
-    reusable: bool,
 }
 
 struct Offers {
@@ -196,16 +195,14 @@ impl RouteQuotes {
         self.client.invalidate(provider, destination);
     }
 
-    pub(crate) fn stop_reusing(&self, id: &str) -> Result<(), String> {
-        if let Some(offer) = self
-            .offers
+    /// Called after the controller durably stops the agreement. Accepted
+    /// bindings remain in its journal; this slot can no longer fund a new one.
+    pub(crate) fn retire_offer(&self, id: &str) -> Result<(), String> {
+        self.offers
             .lock()
             .map_err(|_| "quote state poisoned")?
             .pending
-            .get_mut(id)
-        {
-            offer.reusable = false;
-        }
+            .remove(id);
         Ok(())
     }
 
@@ -416,7 +413,7 @@ impl RouteQuotes {
             if let Some(stored) = offers
                 .pending
                 .values()
-                .filter(|s| s.reusable && self.free.can_reuse_offer(&s.offer))
+                .filter(|s| self.free.can_reuse_offer(&s.offer))
                 .find(|s| {
                     let o = &s.offer;
                     o.buyer == *peer.node_addr()
@@ -471,7 +468,6 @@ impl RouteQuotes {
             StoredOffer {
                 offer: offer.clone(),
                 downstream,
-                reusable: true,
             },
         );
         Ok(offer)

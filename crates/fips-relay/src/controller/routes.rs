@@ -139,7 +139,7 @@ impl Controller {
         // failures must not leave a withdrawn buyer authorization active.
         let mut first_error = Self::reconcile_withdrawn_routes(j, &services.buyer).err();
         for i in j.incoming.values().filter(|i| i.phase == Phase::Stopped) {
-            if let Err(error) = services.quotes.stop_reusing(&i.offer.id) {
+            if let Err(error) = services.quotes.retire_offer(&i.offer.id) {
                 first_error.get_or_insert(error);
             }
             if services.seller.usage(&i.contract.id).is_some()
@@ -313,7 +313,7 @@ impl Controller {
                 Ok((old.offer.id.clone(), old.channel.clone()))
             })
             .await?;
-        self.services.quotes.stop_reusing(&offer_id)?;
+        self.services.quotes.retire_offer(&offer_id)?;
         let seller = self.services.seller.clone();
         let saved = id.clone();
         blocking(move || {

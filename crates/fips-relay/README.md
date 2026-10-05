@@ -310,7 +310,9 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   background path/price replacement under the existing spending and capital
   limits. No source watch arises from transit or unsolicited traffic. Quotes
   reuse unchanged offers, so polling does not exhaust pending-offer history;
-  stopped or sealed agreements are excluded from reuse. Pending watched offers
+  stopped or sealed agreements release their quote slots after the stop is saved.
+  Their accepted bindings and financial records remain in durable journals; the
+  retired quote cannot fund a fresh binding. Pending watched offers
   recover their exact funding intent. Settlement durably pauses source watches.
   A full native-route offer withdrawn during disconnection can still be cached
   by its provider. An eligible unpaused watch requests a fresh offer at its next

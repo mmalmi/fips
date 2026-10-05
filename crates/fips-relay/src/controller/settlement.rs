@@ -82,7 +82,7 @@ impl Controller {
         .await?;
         let state = self.snapshot().await?;
         for incoming in state.incoming.values().filter(|i| i.channel.id == id) {
-            self.services.quotes.stop_reusing(&incoming.offer.id)?;
+            self.services.quotes.retire_offer(&incoming.offer.id)?;
         }
         if let Some(usage) = state.seller_settlements[&id].usage {
             return Ok(usage);

@@ -555,7 +555,7 @@ impl Controller {
             })
             .await?;
         for incoming in self.snapshot().await?.incoming.values() {
-            self.services.quotes.stop_reusing(&incoming.offer.id)?;
+            self.services.quotes.retire_offer(&incoming.offer.id)?;
         }
         let seller = self.services.seller.clone();
         blocking(move || {
