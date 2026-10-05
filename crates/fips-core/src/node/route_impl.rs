@@ -153,8 +153,8 @@ impl Node {
                 });
         let direct_session_unreturned =
             self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
-        let direct_session_untrusted = !direct_session_degraded
-            && (direct_probe_unvalidated || direct_session_unreturned);
+        let direct_session_untrusted =
+            !direct_session_degraded && (direct_probe_unvalidated || direct_session_unreturned);
         let stale_traversal_direct_route = self
             .peers
             .get(dest_node_addr)

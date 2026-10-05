@@ -53,7 +53,8 @@ fn test_session_degraded_direct_peer_remains_route_without_fallback() {
     let (unrelated, identity) =
         make_completed_connection(&mut node, unrelated_link, transport_id, 1000);
     node.add_connection(unrelated).unwrap();
-    node.promote_connection(unrelated_link, identity, 2000).unwrap();
+    node.promote_connection(unrelated_link, identity, 2000)
+        .unwrap();
     assert_eq!(
         node.find_next_hop(&peer_addr).map(|p| *p.node_addr()),
         Some(peer_addr),
