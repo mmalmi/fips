@@ -103,13 +103,19 @@ cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-
 
 The case restarts the mint gateway after a committed funding reply is lost.
 During settlement, it removes the transit relay after the close swap commits,
-then starts a different relay while the original stays offline. Background
-recovery must activate the original channel, then finish its payout and refund
-through the replacement path without another swap or wallet spend. A second
-case keeps all nodes alive and changes an edge so the provider reaches the mint
-through its former customer. Superseded cached free quotes are refetched without
-reviving their old allowances. See the
-bounded evidence in [READINESS.md](READINESS.md).
+then starts a different relay while the original stays offline. At both losses,
+it also kills the CDK mint subprocess and reopens its original SQLite database
+and keys behind the same URL. Background recovery must activate the original
+channel, then finish its payout and refund through the replacement path without
+another swap or wallet spend. All 16 originally issued test sats must reach the
+collector. The subprocess fixture permits no new simulated funding after a
+restart; it covers Cashu proof-state durability, not recovery of a Lightning
+backend. The hardware test mint still requires a new directory per process.
+
+A second case keeps all nodes alive and changes an edge so the provider reaches
+the mint through its former customer. Superseded cached free quotes are refetched
+without reviving their old allowances. See the bounded evidence in
+[READINESS.md](READINESS.md).
 
 ### Client configuration and wallet lifetime
 

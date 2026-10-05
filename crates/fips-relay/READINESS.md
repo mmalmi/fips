@@ -295,6 +295,19 @@ Stage diagnostics were added without changing that deadline. The later passes
 in `work/mesh-mint-r30` and `r31` do not establish the cause of that timeout or
 prove it fixed.
 
+On `53a005847`, that same lifecycle also kills the real CDK mint subprocess with
+SIGKILL after both the funding swap and the settlement swap commit. Each restart
+reopens the original SQLite database and keyset behind the same URL. Ordinary
+workers recover the saved operations through FIPS without another swap or wallet
+spend, and all 16 originally issued sats are collected. The test passes in
+120.778 seconds; strict library Clippy and the source-size gate pass. Verified
+logs, source hashes and independent process/cache closure are retained in
+`work/mesh-mint-r32`. This replaces the earlier lifecycle fixture rather than
+adding a duplicate scenario. The closed-loop subprocess refuses new funding
+after restart; this accepts Cashu proof-state recovery, not persistence of its
+in-memory simulated Lightning network or a production Lightning backend. The
+hardware test mint still requires a fresh state directory per process.
+
 The same `19feea4a3` ARM64 runtime then passes the physical edge-handover case
 in `work/mesh-mint-radio-r4`. The original financial reply stays blocked for
 2.96 seconds with the path absent. After the customer-to-mint-side radio edge
@@ -309,8 +322,9 @@ and services, removed candidate executables, matching released settlement
 records and clean mint/export-relay exits, without cleanup assistance.
 
 This accepts that specific symmetric radio-edge change with bounded free mint
-access. Arbitrary/asymmetric mobility, mint-process restart, financial power-loss
-recovery and Android mint integration still need their own acceptance.
+access. Arbitrary/asymmetric mobility, hardware mint-process restart, recovery
+with a persistent Lightning backend, financial power-loss recovery and Android
+mint integration still need their own acceptance.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
