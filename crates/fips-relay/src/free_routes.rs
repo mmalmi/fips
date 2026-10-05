@@ -223,6 +223,21 @@ impl FreeRoutes {
         })
     }
 
+    /// Different quote loop contexts still share one outgoing grant. A cached
+    /// response must not resurrect an identity replaced by another request.
+    pub(crate) fn can_reuse_received_offer(&self, offer: &RouteOffer) -> bool {
+        if offer.price.msat != 0 {
+            return true;
+        }
+        let key = (offer.provider, *offer.destination.node_addr());
+        self.state.lock().is_ok_and(|state| {
+            !state
+                .outgoing
+                .retired
+                .contains_key(&(key, offer.id.clone()))
+        })
+    }
+
     /// Remaining quota for the exact current outgoing grant. The caller checks
     /// expiry separately; inspecting an expired grant does not remove it.
     pub(crate) fn remaining_units(&self, offer: &RouteOffer) -> Option<u64> {

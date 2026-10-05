@@ -29,6 +29,7 @@ struct Entry {
 #[derive(Default)]
 struct Cache {
     entries: Mutex<BTreeMap<Key, Entry>>,
+    free: Arc<crate::free_routes::FreeRoutes>,
 }
 
 impl Cache {
@@ -89,7 +90,9 @@ impl Cache {
             {
                 let fresh = match &old.result {
                     Ok(offer) => {
-                        old.checked.elapsed() < FRESH_FOR && offer.expires_unix > unix_now()?
+                        old.checked.elapsed() < FRESH_FOR
+                            && offer.expires_unix > unix_now()?
+                            && self.free.can_reuse_received_offer(offer)
                     }
                     Err(_) => old.checked.elapsed() < REJECT_FOR,
                 };
@@ -136,12 +139,16 @@ impl QuoteClient {
         control: Arc<ControlTransport>,
         policy: Arc<QuotePolicy>,
         local: NodeAddr,
+        free: Arc<crate::free_routes::FreeRoutes>,
     ) -> Self {
         Self {
             control,
             policy,
             local,
-            cache: Cache::default(),
+            cache: Cache {
+                free,
+                ..Cache::default()
+            },
         }
     }
 

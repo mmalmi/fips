@@ -144,6 +144,7 @@ impl RouteQuotes {
             control,
             policy.clone(),
             *endpoint.node_addr(),
+            free.clone(),
         ));
         Ok(Self {
             endpoint,

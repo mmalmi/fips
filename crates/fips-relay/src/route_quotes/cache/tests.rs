@@ -106,6 +106,37 @@ async fn cache_preserves_terms_but_not_past_freshness_expiry_or_a_fresh_request(
 }
 
 #[tokio::test(start_paused = true)]
+async fn superseded_free_offer_is_refetched_without_reviving_its_allowance() {
+    let (key, request, mut offer) = fixture();
+    offer.billing = BillingBasis::ForwardingData;
+    offer.price.msat = 0;
+    let cache = Cache::default();
+    cache
+        .get_or_fetch(key.clone(), &request, || async { Ok(offer.clone()) })
+        .await
+        .unwrap();
+    cache.free.accept(&offer).unwrap();
+    let mut replacement = offer.clone();
+    replacement.id = "another-loop-context".into();
+    cache.free.accept(&replacement).unwrap();
+    assert!(cache.free.accept(&offer).is_err());
+    let refreshed = cache
+        .get_or_fetch(key.clone(), &request, || async { Ok(replacement.clone()) })
+        .await
+        .unwrap();
+    assert_eq!(refreshed, replacement);
+    assert_eq!(cache.free.remaining_units(&offer), None);
+    let retained = cache
+        .get_or_fetch(key, &request, || async {
+            panic!("unchanged current grant should remain cached")
+        })
+        .await
+        .unwrap();
+    assert_eq!(retained, replacement);
+    assert_eq!(cache.free.stats().outgoing_leases, 2);
+}
+
+#[tokio::test(start_paused = true)]
 async fn concurrent_cache_misses_and_short_lived_rejections_share_work() {
     let (key, request, offer) = fixture();
     let cache = Arc::new(Cache::default());
