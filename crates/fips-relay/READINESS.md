@@ -2346,6 +2346,23 @@ in `work/controller-profile-r79` and `work/controller-cpu-profile-r80`; the latt
 retains both capture and guest-symbol analysis closures. No runtime optimization
 is made from this capture.
 
+A separate constructor-only comparison uses the SDK's public
+`HttpSpilmanClientNetworking::new()` and `Clone`, with the same locked dependency
+versions and reqwest 0.12.28 features as the accepted relay harness. Five
+alternating trials per mode and target measure construction/drop against
+clone/drop at matched iteration counts within each target. Median process CPU
+per new client is 2.500 ms on native Linux and 15.505 ms on ARM64 under QEMU;
+median clone cost is below one microsecond on both. Initial construction and
+warmup are excluded. These trials make no HTTP requests, relay transfers or
+account operations. ARM costs include emulation; the comparison establishes
+neither physical-router cost nor a relay speedup or cause of the pressure stalls.
+Receipts, exact executables and source/dependency checks are retained in
+`work/http-client-cost-r82`, with absent owned process groups/cgroups and released
+cache ownership. The preceding r81 runner fails while parsing Cargo warnings
+before any build or measurement; its failed evidence is retained separately.
+Transport reuse warrants a production-path comparison before retaining a runtime
+change. TLS validation, wallet-file checks and financial bounds remain unchanged.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.
