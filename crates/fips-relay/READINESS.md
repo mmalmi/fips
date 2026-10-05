@@ -23,14 +23,13 @@ require the credit it is needed to obtain. A stable mint identity and URL must
 survive path changes. Ordinary TCP/FIPS and existing forwarding limits should
 carry these requests without a new payment-message family.
 
-Current device gate: steady mesh funding, paid delivery, settlement and one
-symmetric edge handover pass. The persistent one-way return-loss case in
-`work/mesh-mint-radio-r5` fails its bounded settlement recovery window despite
-observing the replacement topology. Its original 16 test sats are subsequently
-recovered on the original path, with unchanged funding authority and no further
-mint swap. The instrumented follow-up `work/mesh-mint-radio-r6` passes on the same
-runtime, but does not explain the earlier failure. Mesh-only mint access is
-implemented; reliable asymmetric handover is not accepted.
+Current device evidence covers steady mesh funding, paid delivery, settlement,
+an earlier symmetric edge handover, and persistent one-way return-loss handover
+on `a3adbfca3`. The latter follows a reduced routing regression and passes in
+`work/mesh-mint-radio-r7`, collecting all 16 test sats over the replacement path
+without another settlement swap. The earlier failed run and separate recovery
+remain preserved. This accepts the recorded bounded topology changes, not
+arbitrary mobile bootstrap or production readiness.
 
 The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
 funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
@@ -390,12 +389,49 @@ the full-disconnection case in `work/mesh-mint-r36` after 138.909 seconds.
 Its final snapshots show a converged routing tree but stalled mint quotes and
 no free-data transit through the former customer. The remaining cases in that
 run are not executed after the failure. Logs, source hashes and process/cache
-closure are verified; this provides a native failing case for further diagnosis.
+closure are verified; this preserves the native failure for comparison below.
 
-This accepts the earlier symmetric radio-edge change with bounded free mint
-access. The one-way failure above, broader mobility, hardware mint-process
-restart, recovery with a persistent Lightning backend, financial power-loss
-recovery and Android mint integration still need their own acceptance.
+The reduced core regression in `work/mesh-mint-r37` exposes a routing dead end:
+an unrelated live neighbor counts as a discovery alternative and suppresses a
+session-degraded direct route, even when it cannot route to the destination.
+On `a3adbfca3`, actual usable alternatives still take priority, but the direct
+carrier remains a last resort when it is healthy and has no evidence of
+unanswered payload on that carrier. Stale links and paths with unanswered data
+retain their recovery restrictions; degradation state is not cleared by this
+fallback. The link-dead retry fixture now marks its peer stale as the production
+handler does. Existing fallback, loss, retry and replacement checks remain green.
+
+The same fixed-identity handover fixture now passes all three cases: disconnected
+edge, forward-only loss and return-only loss. Normal workers settle the original
+channels without another swap, and all 48 test sats are collected. The combined
+run takes 287.441 seconds. Its 26 service checks and strict library Clippy also
+pass. Core verification covers 109 checks plus strict library Clippy; source-size
+and affected-file formatting checks pass. Independent source/log/process closure
+is retained in `work/mesh-mint-r40`, `work/mesh-mint-core-extra-r1` and
+`work/mesh-mint-r41`. The same source builds as the standalone static ARM64
+runtime in `work/mesh-mint-arm-r8`. The subsequent source formatting changes only
+whitespace.
+
+The ARM64 runtime then passes the matched three-router return-loss case in
+`work/mesh-mint-radio-r7`. This uses the failed run's original log level without
+the periodic diagnostic observer. Empty-wallet funding, paid delivery and the
+committed-reply interruption all use the mesh-only mint. The replacement topology
+appears at 122.265 seconds; ordinary workers complete settlement at 162.128
+seconds while the old return direction remains blocked. The provider receives
+one sat and the customer receives the seven-sat refund. Swaps and attempts stay
+at three; restore requests increase from two to 39. All 16 original sats are
+collected by 243.279 seconds, and cleanup finishes at 273.435 seconds.
+
+All 360 management checks and independent postflight pass: original router
+settings are restored, candidate executables are removed, and the mint and its
+export relay exit cleanly. The complete 146-file frozen harness and archive also
+match their hashes. This is controlled FIPS-frame loss over real Wi-Fi links,
+not natural RF interference or physical movement.
+
+The recorded symmetric and one-way radio-edge changes now pass with bounded free
+mint access. Broader mobility, hardware mint-process restart, recovery with a
+persistent Lightning backend, financial power-loss recovery and Android mint
+integration still need their own acceptance.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
@@ -1311,14 +1347,20 @@ All four original channels then settle through existing local control APIs while
 the phone remains locked, with payments of 5, 3, 5 and 3 test sats. Router wallets
 hold 123, 133 and 123 sats. All original router baselines pass after cleanup, and
 the settled phone app is stopped with unchanged financial journals. No funding,
-purchase or payload probe is replayed. The phone balance and collection of all
-512 test sats still require the unlocked wallet UI; the original mint and accounts
-are retained. Separate recovery evidence is in `background-settlement-r2`.
+purchase or payload probe is replayed. Separate settlement recovery evidence is
+in `background-settlement-r2`.
 
 These checks establish physical paid transit in the three observed phone states,
-but not a completely closed hardware acceptance run. Collection, mobile/radio
-recovery, representative CPU and battery costs, and mesh-only device mint access
-remain outstanding. The physical run still uses the management-LAN mint.
+with financial closure completed separately after the Pixel is unlocked. The
+original phone balance is 133 sats; the existing wallet UI exports it, and all
+512 original sats are collected from the four settled wallets. Each wallet ends
+empty, the original mint stops, and original router state, saved app accounts,
+foreground app and normal Wi-Fi are restored. The collection performs no new
+funding, purchase or payload probe. Evidence is in the original run's `collection`
+directory. This closes the retained funds without rewriting the failed timed
+acceptance result. Mobile/radio recovery, representative CPU and battery costs,
+and mesh-only Android mint access remain outstanding. This phone run uses the
+management-LAN mint.
 
 The preceding `r13` attempt verifies the live logger but stops before funding
 because retained captures consume its temporary-storage reserve. It closes with

@@ -216,11 +216,20 @@ symmetric topology change does not establish arbitrary or asymmetric mobility.
 The subsequent device case with persistent loss only in the old edge's return
 direction fails to recover settlement within its bounded window, even after
 the replacement topology appears. Its original funds are recovered separately
-on the original path. Treat asymmetric handover as outstanding acceptance;
-do not bypass it by granting unlimited mint forwarding or issuing new funds.
+on the original path. Preserve failed accounts for recovery; do not bypass a
+failure by granting unlimited mint forwarding or issuing new funds.
 A later instrumented run passes on the unchanged runtime and collects all its
 original funds over the replacement path. Its different routing identities and
 passing result do not establish that the earlier failure is fixed.
+
+A reduced routing regression subsequently finds a direct path suppressed by an
+unrelated neighbor with no usable alternative route. The fix retains that direct
+path only as a last resort, while preserving restrictions on stale links and
+unanswered payload. All three fixed-identity native handover cases then pass.
+The updated router runtime also passes the persistent return-loss case with the
+original log level and no periodic observer: ordinary settlement recovers, all
+16 test sats are collected, and original device settings are restored. This
+accepts the recorded topology changes; broader mobile bootstrap remains open.
 
 ## Fund a relay
 
