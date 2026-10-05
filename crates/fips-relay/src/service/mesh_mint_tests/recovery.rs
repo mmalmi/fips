@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 pub(super) async fn interrupt_close(
     phone: &mut CustomerClient,
     configs: &[ServiceConfig],
-    nodes: &mut [RelayService],
+    nodes: &mut Vec<RelayService>,
     proxy: &MintProxy,
     customer_root: &Path,
     channel: &str,
@@ -58,7 +58,7 @@ pub(super) async fn interrupt_close(
 
         // Cut the real TCP/FIPS stream after the mint commits, before the
         // signed outputs reach the provider. The HTTP backend stays alive.
-        nodes[2].mint.take().unwrap().shutdown().await.unwrap();
+        nodes.pop().unwrap().shutdown().await.unwrap();
         proxy.state.reject_swap_replay.store(true, Ordering::SeqCst);
         let _ = release.send(());
         let result = tokio::time::timeout(Duration::from_secs(70), finishing)
@@ -77,16 +77,9 @@ pub(super) async fn interrupt_close(
     assert!(interrupted["seller_settlements"][channel]["payment"].is_object());
     assert!(interrupted["seller_settlements"][channel]["report"].is_null());
 
-    let export = configs[2].mint_export.as_ref().unwrap();
-    nodes[2].mint = Some(
-        MeshMintBridge::serve(
-            nodes[2].endpoint.clone(),
-            export.service_port,
-            export.backend,
-        )
-        .await
-        .unwrap(),
-    );
+    // Service registrations live with the native endpoint. Restart the whole
+    // gateway from its saved profile, retaining the mint process and identity.
+    nodes.push(RelayService::load(configs[2].clone()).await.unwrap());
     // Only read journals until both ordinary workers release the original
     // channel. No second Finish/Settle request may drive recovery.
     let recovered = tokio::time::timeout(Duration::from_secs(60), async {
