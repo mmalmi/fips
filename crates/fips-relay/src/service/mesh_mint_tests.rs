@@ -10,7 +10,7 @@ use crate::{
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
     send_payment_token,
-    simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
+    simulation::{IssuerMode, LocalMint, MintProxy, PaymentNetwork, VirtualClock},
 };
 use fips_core::config::{TransportInstances, TransportsConfig, UdpConfig};
 use std::{
@@ -18,6 +18,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::net::{TcpListener, TcpStream};
+
+#[path = "mesh_mint_tests/recovery.rs"]
+mod recovery;
 
 const PORT: u16 = 44_745;
 
@@ -32,7 +35,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
     let checkpoint =
         |phase| eprintln!("mesh mint {:.2}s: {phase}", started.elapsed().as_secs_f64());
     // Explicit bootstrap rates cover mint metadata as well as small receipts.
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -47,7 +50,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         )
         .await
         .unwrap();
-        let backend = mint.url().strip_prefix("http://").unwrap().parse().unwrap();
+        let fault = MintProxy::start(mint.url()).await;
+        let backend = fault.url.strip_prefix("http://").unwrap().parse().unwrap();
         // Exercise the same fixed-upstream proxy used by the hardware test mint.
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mint_backend = upstream.local_addr().unwrap();
@@ -329,6 +333,16 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         .await
         .expect("payload delivery and automatic provider credit");
         checkpoint("paid payload delivered and provider credited");
+        recovery::interrupt_close(
+            &mut phone,
+            &configs,
+            &mut nodes,
+            &fault,
+            &customer_root,
+            channel,
+        )
+        .await;
+        checkpoint("lost committed close recovered automatically without another swap");
         let finished = phone.execute(CustomerCommand::Finish).await;
         assert!(
             finished.is_ok(),
