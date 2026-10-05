@@ -4,7 +4,11 @@ use fips_core::node::{
 use fips_core::{NodeAddr, protocol::SessionHandshake};
 use fips_relay::buyer::PaidForwarder;
 use sha2::{Digest, Sha256};
-use std::{collections::VecDeque, sync::Mutex, time::Instant};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 const CAPACITY: usize = 128;
 
@@ -123,6 +127,10 @@ impl DeliveryTrace {
 }
 
 impl ForwardingPolicy for DeliveryTrace {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.inner.admission_notify()
+    }
+
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
         self.admit_classified(request)
             .map(|admission| admission.token)

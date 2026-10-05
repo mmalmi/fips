@@ -33,6 +33,10 @@ impl RekeyObservation {
         if !enabled {
             return None;
         }
+        assert!(
+            transit.admission_notify().is_some(),
+            "tracing preserves allowance wakes"
+        );
         let last = peers.len() - 1;
         // Begin during a setup rotation's drain window, covering an observer
         // that arrives after cutover. Routed fault recovery still starts below.
