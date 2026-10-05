@@ -129,7 +129,7 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
         self.inputs.update({str(self.kernel): digest(self.kernel), self.qemu: digest(self.qemu)})
         write_json(self.root / 'inputs.json', {'files': self.inputs,
                    'initramfs_sha256': digest(self.root / 'initramfs.gz'),
-                   'initial_disk_sha256': digest(disk), 'uuid': self.uuid})
+                   'initial_disk_sha256': digest(disk), 'uuid': self.uuid, 'ssh_port': self.port})
 
     def ssh(self):
         return ['ssh', '-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
@@ -165,6 +165,8 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
                 'ExitOnForwardFailure=yes', '-R', f'127.0.0.1:{mint_port}:127.0.0.1:{mint_port}',
                 'root@127.0.0.1'], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                 start_new_session=True)
+        write_json(self.root / f'tunnel-{self.boots}.json',
+                   {'pid': self.tunnel.pid, 'uuid': self.uuid, 'mint_port': mint_port})
         eventually('private mint tunnel', self._tunnel_ready, 15)
         info = json.loads(self.execute(['wget', '-q', '-O', '-',
                                        f'http://127.0.0.1:{mint_port}/v1/info']))
@@ -189,6 +191,8 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
                     'owned guest arguments changed')
             signal.pidfd_send_signal(handle, signal.SIGKILL)
             require(self.process.wait(timeout=15) == -signal.SIGKILL, 'guest was not killed')
+            write_json(self.root / f'power-cut-{self.boots}.json',
+                       {'pid': pid, 'uuid': self.uuid, 'exit_code': self.process.returncode})
         finally:
             os.close(handle)
         self.close_tunnel()
@@ -202,4 +206,7 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
         if self.process is not None and self.process.poll() is None:
             self.execute(['sh', '-c', 'sync; (sleep 1; poweroff -f) >/dev/null 2>&1 &'])
             require(self.process.wait(timeout=15) == 0, 'guest did not power off cleanly')
+            write_json(self.root / f'shutdown-{self.boots}.json',
+                       {'pid': self.process.pid, 'uuid': self.uuid,
+                        'exit_code': self.process.returncode})
         self.close_tunnel()
