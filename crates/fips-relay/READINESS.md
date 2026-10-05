@@ -2392,6 +2392,17 @@ is separately checksum-verified; the accepted dependency bundle is unchanged.
 Five runs of this one refund case establish no relay or physical-router gain and
 leave the ARM pressure failure unresolved.
 
+SDK `8d0cadb` retains only a correction to the existing retirement fixture:
+sequential four-sat channels use distinct valid output ceilings, so their terms
+remain unique when opened within the same Unix second. Actual funding, expiry
+and financial bounds are unchanged. The final fixture-only tree passes all 437
+workspace/all-feature tests, strict all-target/all-feature lint and formatting
+for the SDK's Rust 2021 edition. All 201 final Git files match the verified
+snapshot; the published lock remains unchanged, and the separate test-only
+macro sources match their registry checksum. Sources and receipt hashes verify,
+owned process groups are absent and cache ownership is released. Final-state
+evidence is `work/sdk-fixture-final-r89`; no runtime optimization is retained.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.
