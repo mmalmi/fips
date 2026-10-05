@@ -105,7 +105,10 @@ The case restarts the mint gateway after a committed funding reply is lost.
 During settlement, it removes the transit relay after the close swap commits,
 then starts a different relay while the original stays offline. Background
 recovery must activate the original channel, then finish its payout and refund
-through the replacement path without another swap or wallet spend. See the
+through the replacement path without another swap or wallet spend. A second
+case keeps all nodes alive and changes an edge so the provider reaches the mint
+through its former customer. Superseded cached free quotes are refetched without
+reviving their old allowances. See the
 bounded evidence in [READINESS.md](READINESS.md).
 
 ### Client configuration and wallet lifetime
@@ -192,11 +195,11 @@ mint swap. Saved hardware accounts retain their original mint URLs; Android
 mint integration remains pending. Current acceptance and its limits are recorded in
 [READINESS.md](READINESS.md).
 
-Changing a live radio edge so the provider must reach the mint through its
-former customer currently fails settlement recovery, even after the replacement
-links form. Restoring the original path recovers the saved settlement and funds.
-Keep that deployment limitation until the recorded hardware case passes;
-same-path rejoin and the native alternate-relay test do not cover it.
+The recorded live-edge handover now also passes: the provider reaches the mint
+through its former customer while the old edge stays blocked. Its original
+administrative request times out; background recovery completes the saved
+settlement without another swap, and all test funds are collected. This specific
+symmetric topology change does not establish arbitrary or asymmetric mobility.
 
 ## Fund a relay
 

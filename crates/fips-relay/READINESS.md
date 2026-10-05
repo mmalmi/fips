@@ -248,7 +248,7 @@ handover, mint-process restart, physical power-loss recovery or Android mint
 integration. Existing saved accounts and the retained earlier phone mint are
 unchanged.
 
-A subsequent hardware path-change case does **not** pass. After the close swap
+An initial hardware path-change case does **not** pass. After the close swap
 commits, test-EtherType filters cut the provider-to-mint-side radio edge in both
 directions. The response stays blocked for 3.02 seconds. Opening the previously
 excluded customer-to-mint-side edge produces the exact replacement topology,
@@ -256,7 +256,7 @@ with the old edge still blocked. The provider must now reach the mint through
 the customer router. Settlement does not complete within its 100-second recovery
 window. The provider reports a failed mint restore request; a diagnostic snapshot
 shows no admitted free forwarding traffic or incoming free lease on the new
-transit router. The cause is not yet established. This exposes a gap beyond the
+transit router. This exposes a gap beyond the
 native case above, which replaces an entire transit relay and shares one local
 mint-client adapter between wallets.
 
@@ -269,9 +269,44 @@ sats are collected. Independent postflight confirms matching released buyer and
 seller records, restored original device state, and clean exits of the mint and
 both gateway processes. Recovery passes all 117 management checks. Evidence is
 in `work/mesh-mint-radio-r3`, including its failed result and separate recovery
-closure. The path-change result remains failed. Reproduce this edge change with
-the provider's own mint adapter, then repair and recheck route/permission refresh
-before accepting automatic mint access across mobile path changes.
+closure. That original path-change result remains failed.
+
+The follow-up four-node `SimNetwork` case keeps every router alive and gives
+the provider its own configured mint adapter. It exposes a stale free-quote
+cache entry: a request on behalf of a customer can replace the provider's own
+outgoing grant, while a different loop-context cache entry still returns the
+superseded identity. `e845962d1` shares the live grant book with the cache and
+refetches these obsolete offers. It does not revive retired allowances, change
+paid authority, add protocol messages or poll idle routes. The new cache check,
+36 quote/cache tests and 24 free-route tests pass. The actual settlement handover
+passes in 79.319 seconds, conserving all 16 simulated sats in the wallets and
+retaining the original funding authority without another mint swap. Evidence is
+in `work/mesh-mint-r28` and `work/mesh-mint-r29`.
+
+The existing funding-and-alternate-relay settlement regression passes on
+`19feea4a3` in 121.158 seconds and collects all 16 simulated sats. Strict library
+Clippy and the source-size check pass. An earlier attempt reached the 30-second
+pre-fault funding-commit deadline; its failed result is retained, and stage
+diagnostics were added without changing that deadline. The cause of that setup
+timeout is not established. Evidence is in `work/mesh-mint-r29` and
+`work/mesh-mint-r30`; this is not a claim of flake-free repeated acceptance.
+
+The same `19feea4a3` ARM64 runtime then passes the physical edge-handover case
+in `work/mesh-mint-radio-r4`. The original financial reply stays blocked for
+2.96 seconds with the path absent. After the customer-to-mint-side radio edge
+opens, the old provider edge remains blocked. The original administrative
+request times out, but ordinary workers finish the saved settlement about
+102 seconds after the replacement topology is observed. Mint swaps and attempts
+stay at three after the held close; restores increase from two to 38. The
+provider receives one sat, seven sats are refunded, funding authority is
+unchanged, and all 16 sats are collected by 207.52 seconds. All 303 management
+checks pass. Independent postflight confirms restored original router settings
+and services, removed candidate executables, matching released settlement
+records and clean mint/export-relay exits, without cleanup assistance.
+
+This accepts that specific symmetric radio-edge change with bounded free mint
+access. Arbitrary/asymmetric mobility, mint-process restart, financial power-loss
+recovery and Android mint integration still need their own acceptance.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
