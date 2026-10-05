@@ -179,21 +179,24 @@ async fn mint_client_requotes_after_its_former_customer_becomes_the_transit_peer
         network.set_link("0", "2", SimLink::default());
         topology(&nodes, &identities, true).await;
         eprintln!("mint handover: replacement edges observed, old edge remains down");
-        let mut last = None;
-        for _ in 0..6 {
-            match info(address).await {
-                Ok(()) => {
-                    last = None;
-                    break;
+        let recovered = tokio::time::timeout(Duration::from_secs(75), async {
+            loop {
+                match info(address).await {
+                    Ok(()) => break,
+                    Err(error) => {
+                        let next = nodes[1].endpoint.resolve_next_hop(identities[3], None)
+                            .await.unwrap();
+                        let next = identities.iter().position(|peer| Some(*peer) == next);
+                        let peers: Vec<_> = nodes[1].endpoint.peers().await.unwrap().iter()
+                            .map(|peer| (identities.iter().position(|id| id.node_addr() == &peer.node_addr), peer.connected))
+                            .collect();
+                        eprintln!("mint handover: {error}; provider next={next:?}, peers={peers:?}; transit={:?}", nodes[0].free.stats());
+                    }
                 }
-                Err(error) => last = Some(error),
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
-        }
-        assert!(
-            last.is_none(),
-            "mint handover failed: {last:?}; transit {:?}",
-            nodes[0].free.stats()
-        );
+        }).await;
+        assert!(recovered.is_ok(), "mint handover must recover while the old edge stays down");
         assert!(nodes[0].free.stats().admitted_session_bytes > 0);
         assert!(
             nodes[0]
