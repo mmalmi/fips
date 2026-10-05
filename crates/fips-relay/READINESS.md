@@ -2328,6 +2328,28 @@ released cache ownership and absent owned process groups/cgroups. The first r77
 attempt fails compilation and provides no runtime regression evidence. Physical
 and mixed-link requalification of this runtime remains open.
 
+A read-only journal observer reuses the exact stripped r78 ARM64 executable on
+`3f2ed1328`, preserving the workload, deadlines and financial limits. Its two-CPU
+control passes in 46.450 seconds and collects all 1,280 test sats. Quarter-CPU
+delivery still misses round eight from node zero to node four, ending after
+112.816 seconds without final collection. The 22/52 serial snapshots record
+completed renewal pauses up to 0.760/23.001 seconds. Replacement purchase and
+scheduling account for up to 11.701 seconds after replacement offers are ready;
+this is not isolated funding CPU or wire latency.
+
+A constrained serial snapshot at 102.759 seconds finds no pending renewals or
+unfinished funding on any node. The later native snapshot identifies the source's
+adjacent session to node one as draining; its routed data session to node four is
+not draining. This narrows the next check to adjacent rekey and renewal/control
+interaction, without proving simultaneous native readiness or attributing the
+delay to either alone.
+The observer runs outside the five-node/mint/QEMU quota; no performance-equivalence,
+physical-router or runtime-optimization claim follows. Exact inputs/artifacts,
+quotas and absent owned processes/cgroups are verified in
+`work/controller-pressure-progress-r106`. The preceding Unix control-socket path
+failure provides no traffic acceptance and remains closed in
+`work/controller-pressure-progress-r105`.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
