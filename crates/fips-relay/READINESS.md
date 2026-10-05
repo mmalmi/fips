@@ -1637,7 +1637,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal and quote-retirement runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs, plus five-minute physical renewal with all 84,000 router stream originals delivered, two replacements and complete collection/restoration. Four current native UDP/TCP/WebSocket/self-signed TLS daemon cases retain financial bounds across restart and eight replacement channels with mint key rotation. Current physical brief leaf-radio interruptions retain the original paid channels, deliver all eight recovery replies and fully collect/restore on saved-SAE and temporary open meshes. Their observed bounds are 50.323 and 8.764 seconds; retained diagnostics locate stalled native Wi-Fi admission in the SAE case. A current open-mesh middle-radio interruption also restores both edges and paid channels, delivers all eight recovery replies within an observed 8.862-second bound and fully collects/restores. A current full middle-radio peer eviction also preserves the processes, funding and spending bounds, restores all eight fresh replies within an observed 29.421-second bound and fully collects/restores. The current Pixel completes empty-wallet mesh-only funding, paid delivery and settlement with its activity hidden; all 16 test sats are collected and the completed app is removed with verified recovery archives. | Requalify physical and Android cases after the renewal ownership change; resolve the pre-existing intermittent repurchase timeout and quarter-CPU ARM stalls. Remaining physical mixed-link cases after the transit-renewal and quote-retirement changes; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal and quote-retirement runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs, plus five-minute physical renewal with all 84,000 router stream originals delivered, two replacements and complete collection/restoration. Four current native UDP/TCP/WebSocket/self-signed TLS daemon cases retain financial bounds across restart and eight replacement channels with mint key rotation. Current physical brief leaf-radio interruptions retain the original paid channels, deliver all eight recovery replies and fully collect/restore on saved-SAE and temporary open meshes. Their observed bounds are 50.323 and 8.764 seconds; retained diagnostics locate stalled native Wi-Fi admission in the SAE case. A current open-mesh middle-radio interruption also restores both edges and paid channels, delivers all eight recovery replies within an observed 8.862-second bound and fully collects/restores. A current full middle-radio peer eviction also preserves the processes, funding and spending bounds, restores all eight fresh replies within an observed 29.421-second bound and fully collects/restores. The current Pixel completes empty-wallet mesh-only funding, paid delivery and settlement with its activity hidden; all 16 test sats are collected and the completed app is removed with verified recovery archives. | Requalify ARM pressure, physical and Android cases after the renewal ownership and early-pending changes; extend the now-passing native repurchase checks to controlled slow-mint/loss cases and resolve the quarter-CPU ARM stalls. Remaining physical mixed-link cases after the transit-renewal and quote-retirement changes; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -2391,17 +2391,47 @@ Independent purchases remain attempted and saved funding stays unchanged. All
 310 library checks, strict all-target/all-feature lint, formatting and source-size
 gates pass; evidence is in `work/renewal-purchase-ownership-r111` and `r112`.
 
-The current native controller suite passes six of eight checks; two explicit
+The ownership-only native controller suite passes six of eight checks; two explicit
 repurchases after confirmed refunds time out. The unchanged `3f2ed1328` native
 suite also reproduces a repurchase timeout, passing seven of eight checks, although
 its isolated baseline passes. Current read-only snapshots retain empty renewal
 maps on every node, so old/new recovery selection is equivalent in that observed
 repurchase state. A middle relay retains prepared acceptance while its native
 neighbor sessions remain established; this does not identify the stalled step.
-The existing intermittent repurchase problem remains a release gap. Exact logs,
+Those ownership-only checks retain an intermittent repurchase gap. Exact logs,
 source/artifact hashes and terminal process ownership are verified in
 `work/renewal-purchase-ownership-r113`, `work/repurchase-baseline-r114`,
 `work/repurchase-comparison-r115` and `work/repurchase-observation-r117`.
+
+A private, uniquely identified funding/acceptance trace retains the unchanged
+repurchase scenario and financial limits. It passes, but observes a downstream
+wallet-funding wait of 24.044 seconds and an activation lasting 29.633 seconds,
+close to the control RPC's 30-second timeout. CDK's default pacing earns one
+request every three seconds; the trace does not isolate how much of that wait
+is pacing. Logging and relinking exclude performance-equivalence claims.
+Exact inputs, artifacts and absent owned processes are verified in
+`work/repurchase-phases-r118`.
+
+Controller workers now send the existing `Pending` response after five seconds
+of unfinished handling, while retaining the original operation, its claim and
+its worker slot until completion. Normal completion replies immediately, and
+the client keeps its existing overall acceptance/settlement deadline. This adds
+no wire message, financial intent or spending authority. A focused regression
+fails before the change, then confirms that the early reply neither cancels the
+operation nor releases its capacity slot. All 312 library checks pass; exact
+source/artifacts and terminal ownership are verified in
+`work/controller-pending-reply-red-r119` and `r120`.
+
+The final early-pending source passes strict all-target/all-feature lint,
+formatting, source-size gates, all 312 library checks and all eight native live
+controller checks. Both previously failing refund/repurchase cases pass, alongside
+renewal, route repricing, slow-neighbor isolation and automatic source refresh.
+The suite's existing financial and complete-collection assertions remain intact;
+it finishes in 351.13 seconds. Exact source/artifact and frozen dependency hashes,
+released cache ownership, absent owned processes and empty test directories are
+verified in `work/controller-pending-reply-native-r122`. This is bounded native
+acceptance, without an optimization claim or new ARM/physical/Android qualification.
+Controlled slow-mint/loss coverage and longer intermittent-failure runs remain open.
 
 Both original ARM64 two-CPU renewal cases pass in 61.203/65.050 seconds and collect
 all 1,280 test sats each. Quarter-CPU priced/bounded-handshake cases still miss

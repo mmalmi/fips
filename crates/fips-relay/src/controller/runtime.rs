@@ -180,8 +180,7 @@ impl ControllerTasks {
                         let handler = handler.clone();
                         jobs.spawn(async move {
                             let _permit = permit;
-                            let response = handler.handle(request.peer, &request.body).await;
-                            let _ = request.respond.send(serde_json::to_vec(&response).expect("serializable"));
+                            respond(request.respond, handler.handle(request.peer, &request.body)).await;
                         });
                     }
                     _ = jobs.join_next(), if !jobs.is_empty() => {}
@@ -310,6 +309,24 @@ impl ControllerTasks {
         incoming
     }
 }
+
+async fn respond(
+    responder: tokio::sync::oneshot::Sender<Vec<u8>>,
+    operation: impl std::future::Future<Output = ControllerResponse>,
+) {
+    tokio::pin!(operation);
+    let response = tokio::time::timeout(Duration::from_secs(5), &mut operation).await;
+    let finished = response.is_ok();
+    let _ = responder.send(
+        serde_json::to_vec(&response.unwrap_or(ControllerResponse::Pending)).expect("serializable"),
+    );
+    if !finished {
+        // Reply before the control RPC expires, retaining the original work
+        // and its worker slot. Duplicate requests use the controller's claims.
+        operation.await;
+    }
+}
+
 impl Drop for ControllerTasks {
     fn drop(&mut self) {
         self.requests.abort();
@@ -318,5 +335,47 @@ impl Drop for ControllerTasks {
         self.recovery.abort();
         self.renewals.abort();
         self.refresh.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn pending_reply_retains_the_original_operation_and_worker_slot() {
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = slots.clone().acquire_owned().await.unwrap();
+        let (release, released) = oneshot::channel();
+        let (responder, reply) = oneshot::channel();
+        let job = tokio::spawn(respond(responder, async move {
+            let _permit = permit;
+            released.await.unwrap();
+            ControllerResponse::Rejected
+        }));
+        let bytes = tokio::time::timeout(Duration::from_secs(6), reply)
+            .await
+            .expect("slow work must reply before the control request expires")
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_slice(&bytes).unwrap(),
+            ControllerResponse::Pending
+        ));
+        assert!(!job.is_finished());
+        assert_eq!(slots.available_permits(), 0);
+        release.send(()).unwrap();
+        job.await.unwrap();
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn immediate_replies_preserve_the_handler_result() {
+        let (responder, reply) = oneshot::channel();
+        respond(responder, async { ControllerResponse::Rejected }).await;
+        assert!(matches!(
+            serde_json::from_slice(&reply.await.unwrap()).unwrap(),
+            ControllerResponse::Rejected
+        ));
     }
 }
