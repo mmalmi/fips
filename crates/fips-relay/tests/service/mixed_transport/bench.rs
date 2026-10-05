@@ -79,10 +79,6 @@ pub struct MixedBench {
 }
 
 impl MixedBench {
-    pub async fn start(mint: &str, network: &PaymentNetwork) -> Self {
-        Self::start_with_second_hop(mint, network, SecondHop::Tcp).await
-    }
-
     pub async fn start_with_second_hop(
         mint: &str,
         network: &PaymentNetwork,
