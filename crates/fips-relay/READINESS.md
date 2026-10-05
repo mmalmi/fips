@@ -39,8 +39,9 @@ arbitrary mobile bootstrap or production readiness.
 
 Physical Android mint access also passes on `381eb0bce`: empty-wallet funding,
 paid delivery, settlement while the activity is hidden, and stopped-wallet fund
-return all use the mesh-only mint. All 16 test sats are collected. The detailed
-scope and closure below do not include Android path changes or deep idle.
+return all use the mesh-only mint. A second case also recovers the original
+settlement across controlled radio return-path loss, with no second mint swap.
+Each collects all 16 test sats. Natural movement and deep idle remain unverified.
 
 The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
 funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
@@ -443,28 +444,41 @@ The Android build from `381eb0bce` passes native compilation, Android-target
 Clippy, all six JVM lifecycle tests, Android lint and APK signature/manifest
 checks. The packaged native library exactly matches the stripped library from
 that build. Verified source, artifacts and build closure are retained in
-`work/android-current-r17`; a fresh named installation passes empty startup
-without changing other accounts or normal Wi-Fi.
+`work/android-current-r17`. The second named package in `work/android-current-r18`
+reuses that exact native library and source, with fresh assembly, lint, signature
+and manifest checks. Both pass empty startup before funding.
 
-That APK then passes the physical lifecycle in `work/mesh-mint-phone-r1`, using
-the accepted ARM64 router runtime above. The observed path is phone → entry
-router over UDP, two discovered open radio hops, then UDP to the mint gateway.
-The mint HTTP listener remains loopback-only; bounded free requests and earned
-replies let the empty phone wallet import 16 test sats. The phone opens an
-eight-sat channel and delivers a fresh 1,000-byte payload; the entry records
-provider credit.
-One ordinary settlement request succeeds while the activity is hidden and its
-process remains alive: the provider receives two sats and six are refunded.
-After stopping routing, the phone exports its remaining 14 sats over the same
-mint adapter; the provider exports two. All 16 are collected by 326.325 seconds,
-and cleanup completes at 443.523 seconds.
+Both physical cases use that Android runtime and the accepted ARM64 router
+runtime above. The initial path is phone → entry router over UDP, two discovered
+open radio hops, then UDP to the mint gateway. Its HTTP listener remains
+loopback-only. Bounded free requests and earned replies fund the empty wallet
+with 16 test sats. The phone opens an eight-sat channel and delivers a fresh
+1,000-byte payload; the entry records provider credit. Settlement with the app
+hidden pays the provider two sats and refunds six. Stopped-wallet export returns
+the phone's remaining 14 sats; the provider exports two. Each collects all 16.
+Times below are elapsed from run start and include setup and UI actions.
 
-All 465 management checks and independent postflight pass. Both radio hops and
-shortcut exclusions remain verified; the unfunded routers' financial journals
-are unchanged. Original phone accounts, foreground app, Wi-Fi and router settings
-are restored, candidate router executables are removed, and the mint and export
-relay exit cleanly. This tests a steady path and settlement with a hidden Android
-activity, not deep idle, movement, process restart or customer Internet isolation.
+| Physical Android case | Settlement verified | All funds collected | Cleanup complete | Management checks |
+| --- | ---: | ---: | ---: | ---: |
+| Steady path, `work/mesh-mint-phone-r1` | 268.817 s | 326.325 s | 443.523 s | 465 passed |
+| Return-loss handover, `work/mesh-mint-phone-r2` | 274.576 s | 348.413 s | 383.780 s | 495 passed |
+
+In the second case, the mint close commits before its reply is held. Blocking
+only the old edge's return direction leaves settlement pending; opening another
+radio edge restores a working path while the original direction stays blocked.
+The initial administrative call does not confirm completion. Ordinary background
+workers recover the saved operation without another settlement request, swap or
+increase in funding authority. Swaps and attempts stay at three after commitment;
+restore requests increase from two to 37. The phone's process remains alive and
+its activity hidden throughout recovery.
+
+Independent postflight passes for both cases: topology and filters are verified,
+unfunded routers' financial journals are unchanged, original phone accounts and
+normal Wi-Fi are preserved, router settings are restored, and owned mint/export
+processes exit cleanly. Completed phone test installations are subsequently
+removed with verified recovery archives. These are controlled FIPS-frame tests;
+they do not establish natural RF movement, deep idle, process restart or customer
+Internet isolation.
 
 The recorded symmetric and one-way radio-edge changes and Android mint lifecycle
 now pass with bounded free mint access. Broader mobility/background behavior,
