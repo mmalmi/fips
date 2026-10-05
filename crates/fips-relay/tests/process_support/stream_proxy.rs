@@ -1,4 +1,4 @@
-//! Bounded loopback carrier interruption, shared by WS and TLS process checks.
+//! Bounded loopback interruption for native carriers and mint access.
 use std::{
     net::SocketAddr,
     sync::{
@@ -104,6 +104,26 @@ impl StreamProxy {
 
     pub fn connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
+    }
+
+    /// Close existing streams and prove fresh connections cannot reach upstream.
+    pub async fn deny_connections(&self) -> usize {
+        self.set_available(false).await;
+        let connected = self.connections();
+        assert!(
+            connected > 0,
+            "upstream must have been used before the outage"
+        );
+        let rejected = self.rejected_connections();
+        let mut probe = TcpStream::connect(self.address).await.unwrap();
+        let mut byte = [0];
+        let result = tokio::time::timeout(Duration::from_secs(2), probe.read(&mut byte))
+            .await
+            .expect("unavailable upstream closes a fresh connection");
+        assert!(matches!(result, Ok(0) | Err(_)));
+        assert!(self.rejected_connections() > rejected);
+        assert_eq!(self.connections(), connected);
+        connected
     }
 
     pub fn dropped_bytes(&self) -> usize {

@@ -27,7 +27,7 @@ mod admission_wait;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
-#[path = "mixed_transport/proxy.rs"]
+#[path = "../process_support/stream_proxy.rs"]
 mod proxy;
 #[path = "mixed_transport/renewal_load.rs"]
 mod renewal_load;
@@ -229,7 +229,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
         let blocked_mint_connections = if let Some(gate) = &mint_gate {
-            Some(restart::deny_mint(gate).await)
+            Some(gate.deny_connections().await)
         } else {
             None
         };

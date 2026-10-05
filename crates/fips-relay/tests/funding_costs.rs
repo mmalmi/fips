@@ -28,6 +28,9 @@ mod retirement;
 mod settlement_crash;
 #[path = "funding_costs/setup.rs"]
 mod setup;
+#[allow(dead_code)]
+#[path = "process_support/stream_proxy.rs"]
+mod stream_proxy;
 #[path = "funding_costs/terminal_history.rs"]
 mod terminal_history;
 #[path = "funding_costs/transit_preopening.rs"]

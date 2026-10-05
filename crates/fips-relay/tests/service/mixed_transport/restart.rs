@@ -1,23 +1,6 @@
 //! Restart funded relays while a seed carrier or the mint is unavailable.
 use super::*;
 
-pub(super) async fn deny_mint(gate: &proxy::StreamProxy) -> usize {
-    use tokio::{io::AsyncReadExt, net::TcpStream};
-    gate.set_available(false).await;
-    let connected = gate.connections();
-    assert!(connected > 0, "funding must have used the gated mint");
-    let rejected = gate.rejected_connections();
-    let mut probe = TcpStream::connect(gate.address).await.unwrap();
-    let mut byte = [0];
-    let result = tokio::time::timeout(Duration::from_secs(2), probe.read(&mut byte))
-        .await
-        .expect("unavailable mint closes a fresh connection");
-    assert!(matches!(result, Ok(0) | Err(_)));
-    assert!(gate.rejected_connections() > rejected);
-    assert_eq!(gate.connections(), connected);
-    connected
-}
-
 pub(super) async fn assert_retained_accounts(
     bench: &MixedBench,
     before: &[Value],

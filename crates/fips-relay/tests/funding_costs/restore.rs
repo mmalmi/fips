@@ -42,13 +42,19 @@ async fn interrupted_funding_restores_after_route_expiry_without_new_spending() 
         let root = tempfile::tempdir().unwrap();
         let (mint, network) = setup::start_mint(root.path(), 9620).await;
         let proxy = MintProxy::start(mint.url()).await;
+        let gate = stream_proxy::StreamProxy::start(
+            proxy.url.strip_prefix("http://").unwrap().parse().unwrap(),
+            None,
+        )
+        .await;
+        let mint_url = format!("http://{}", gate.address);
         let setup::Bench {
             mint: _mint,
             configs,
             paths,
             npubs,
             mut children,
-        } = setup::start_nodes(root.path(), mint, network, &proxy.url, 60, 5).await;
+        } = setup::start_nodes(root.path(), mint, network, &mint_url, 60, 5).await;
         let cfg = &configs[0];
         let wallet = cfg.state_directory.join("wallet");
         let store = spilman_client_store_path(&wallet);
@@ -106,7 +112,7 @@ async fn interrupted_funding_restores_after_route_expiry_without_new_spending() 
         let operation = opening["wallet_send"]["operation_id"].clone();
         assert!(operation.as_str().is_some_and(|id| !id.is_empty()));
         let swaps = proxy.state.swaps.load(Ordering::SeqCst);
-        let balance = load_mint_balance(&wallet, &proxy.url)
+        let balance = load_mint_balance(&wallet, &mint_url)
             .await
             .unwrap()
             .balance_sat;
@@ -125,6 +131,9 @@ async fn interrupted_funding_restores_after_route_expiry_without_new_spending() 
         while now() <= expiry {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        let connected = gate.deny_connections().await;
+        let rejected = gate.rejected_connections();
+        let outage_started = tokio::time::Instant::now();
         children[0] = start(&paths[0]).await;
         wait_journal(&journal, 15, |state| {
             state["recovery_only"]
@@ -137,6 +146,35 @@ async fn interrupted_funding_restores_after_route_expiry_without_new_spending() 
         request(cfg, &AdminRequest::PauseRouteRefresh)
             .await
             .unwrap();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                assert!(children[0].try_wait().unwrap().is_none());
+                let offline = read(&journal);
+                assert_eq!(offline["funding"], interrupted["funding"]);
+                assert_eq!(offline["next_funding"], interrupted["next_funding"]);
+                let status = request(cfg, &AdminRequest::Status).await.unwrap();
+                assert_eq!(status["npub"], npubs[0]);
+                assert!(status["purchases"].as_array().unwrap().is_empty());
+                assert_eq!(status["funding_budget"]["wallet_debited_sat"], 0);
+                assert_eq!(
+                    status["funding_budget"]["pending_reserved_sat"],
+                    intent["max_wallet_debit_sat"]
+                );
+                assert_eq!(gate.connections(), connected);
+                if gate.rejected_connections() >= rejected + 2
+                    && outage_started.elapsed() >= Duration::from_secs(3)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("buyer remains available with the original reservation during mint outage");
+        assert_eq!(read(&store)["openings"], pending["openings"]);
+        assert_eq!(proxy.state.swaps.load(Ordering::SeqCst), swaps);
+        assert_eq!(gate.set_available(true).await, 0);
+        eprintln!("buyer restarted with interrupted funding while mint was unavailable");
         let automatic = tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 if !read(&journal)["funding"][id]["funded"].is_null() {
@@ -174,7 +212,7 @@ async fn interrupted_funding_restores_after_route_expiry_without_new_spending() 
         assert!(recovered["outgoing"].as_object().unwrap().is_empty());
         assert_eq!(proxy.state.swaps.load(Ordering::SeqCst), swaps);
         assert_eq!(
-            load_mint_balance(&wallet, &proxy.url)
+            load_mint_balance(&wallet, &mint_url)
                 .await
                 .unwrap()
                 .balance_sat,
@@ -218,7 +256,7 @@ async fn interrupted_funding_restores_after_route_expiry_without_new_spending() 
         }
         let mut spendable = 0;
         for (index, cfg) in configs.iter().enumerate() {
-            let available = load_mint_balance(&cfg.state_directory.join("wallet"), &proxy.url)
+            let available = load_mint_balance(&cfg.state_directory.join("wallet"), &mint_url)
                 .await
                 .unwrap()
                 .balance_sat;
