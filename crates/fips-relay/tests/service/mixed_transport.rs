@@ -93,7 +93,22 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         )
         .await
         .unwrap();
-        let mut bench = MixedBench::start_with_second_hop(mint.url(), &network, second_hop).await;
+        let mint_gate = if second_hop == SecondHop::Tcp {
+            Some(
+                proxy::StreamProxy::start(
+                    mint.url().strip_prefix("http://").unwrap().parse().unwrap(),
+                    None,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let mint_url = mint_gate
+            .as_ref()
+            .map(|gate| format!("http://{}", gate.address))
+            .unwrap_or_else(|| mint.url().to_owned());
+        let mut bench = MixedBench::start_with_second_hop(&mint_url, &network, second_hop).await;
         bench.set_stage("unfunded-admission");
         bench.assert_carriers().await;
         service_carrier::assert_status(&bench, false).await;
@@ -110,7 +125,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             assert_eq!(state["funding_budget"]["wallet_debited_sat"], 0);
             assert!(state["history"].as_array().unwrap().is_empty());
             assert_eq!(
-                load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+                load_mint_balance(&config.state_directory.join("wallet"), &mint_url)
                     .await
                     .unwrap()
                     .balance_sat,
@@ -213,6 +228,11 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
+        let blocked_mint_connections = if let Some(gate) = &mint_gate {
+            Some(restart::deny_mint(gate).await)
+        } else {
+            None
+        };
         let original_funding = bench.funding_intents(false);
         let before = bench.states().await;
         #[cfg(feature = "measurements")]
@@ -224,6 +244,9 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             None
         };
         restart::middle(&mut bench, &before, &original_funding).await;
+        if mint_gate.is_some() {
+            restart::assert_retained_accounts(&bench, &before, &original_funding).await;
+        }
         #[cfg(feature = "measurements")]
         if let Some(failed_credit) = failed_credit {
             failed_credit.assert_recovered(&bench, &before).await;
@@ -233,6 +256,13 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             // Exceed the previous whole-sat payment so both buyers request
             // fresh usage and observe the provider's retained crash exposure.
             bench.deliver_sized(source, destination, 512).await;
+        }
+        if let Some(gate) = &mint_gate {
+            assert_eq!(Some(gate.connections()), blocked_mint_connections);
+            assert_eq!(gate.set_available(true).await, 0);
+            eprintln!(
+                "funded relay restarted and delivered paid traffic while mint was unavailable"
+            );
         }
         bench.set_stage("crash-allowance-renewal");
         let channels: Vec<_> = [0, 2]
@@ -290,7 +320,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         }
         let mut total = 0;
         for (node, config) in bench.configs.iter().enumerate() {
-            let amount = load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+            let amount = load_mint_balance(&config.state_directory.join("wallet"), &mint_url)
                 .await
                 .unwrap()
                 .balance_sat;
