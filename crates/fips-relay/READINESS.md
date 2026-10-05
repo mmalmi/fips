@@ -46,6 +46,12 @@ Each collects all 16 test sats. A subsequent forced-idle characterization on
 networking throughout it. Natural movement and recovery from Android suspending
 network access remain unverified.
 
+Mint-process restart recovery also passes on the existing ARM64 mint host with
+persistent ext4 storage, using `71d6eba90`. Funding and settlement each cross a
+forced process crash, preserve the original database/keyset and collect all 16
+test sats. This case uses local FIPS nodes over loopback UDP; combining mint
+crashes with physical radio faults and sudden power loss remains unverified.
+
 The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
 funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
 and collects all 16 in the isolated collection wallet. Only the client adapter's
@@ -507,10 +513,31 @@ accounts are restored; owned processes exit. The completed temporary app is
 removed with verified account and APK recovery archives. No runtime change or
 battery exemption was introduced for this characterization.
 
-The recorded symmetric and one-way radio-edge changes and Android mint lifecycle
-now pass with bounded free mint access. Broader mobility/background behavior,
-hardware mint-process restart and financial power-loss recovery still need their
-own acceptance.
+The existing mint-restart integration test also passes on the ARM64 mint host's
+persistent ext4 filesystem in 165.282 seconds. The static test executable from
+`71d6eba90` and its frozen dependency/source inputs are verified in
+`work/mesh-mint-arm-test-r1`. It kills the actual mint worker after the funding
+commit, reopens the same database and keys, then repeats that interruption after
+the settlement commit. Original funding recovery completes without another wallet
+spend; settlement recovers through the alternate FIPS relay without another swap.
+All 16 test sats are collected. This reuses
+`service::mesh_mint_tests::empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url`
+without modifying the test or its deadlines.
+
+Independent closure in `work/mesh-mint-hardware-restart-r2` verifies stopped test
+processes, removal of the temporary executable, closed isolated wallet state,
+and preserved identities of the three existing host service processes. All 21
+management checks pass. An earlier preflight fails before starting the test or
+issuing funds because its monitor tries to read a protected system-process
+executable link; checking PID/start time instead resolves that harness issue.
+Its separate zero-issuance closure remains recorded.
+
+This runs real mint/wallet code and FIPS nodes on the ARM host, with loopback UDP
+links. It does not combine the crashes with physical radio links or remove power.
+The standalone disposable hardware mint still requires a fresh state directory;
+this test resumes only proof operations after initial issuance, not its simulated
+Lightning state. Broader mobility/background behavior and financial power-loss
+recovery still need their own acceptance.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,

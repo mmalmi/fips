@@ -430,7 +430,9 @@ Output preparation also bounds cached mint-key comparison before SQL driver
 projection and decoding. The ceiling is 4 MiB or the larger caller-owned original,
 measured with the production key encoder. Full typed equality and keyset identity
 checks remain; rejection preserves keys, metadata, counters, recovery records and
-storage allowances. This does not bound ordinary initial key-cache loads.
+storage allowances. Separate service-configured metadata limits bound ordinary
+initial key-cache reads before SQL projection and check the cumulative cache size
+as each keyset is loaded.
 
 The version-4 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
