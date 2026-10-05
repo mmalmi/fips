@@ -147,7 +147,7 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
         require(self.process is None or self.process.poll() is not None, 'guest already running')
         self.boots += 1
         args = [self.qemu, '-enable-kvm', '-machine', 'q35', '-cpu', 'host',
-                '-smp', '2', '-m', '768', '-uuid', self.uuid,
+                '-smp', '2', '-m', '1536', '-uuid', self.uuid,
                 '-kernel', str(self.kernel), '-initrd', str(self.root / 'initramfs.gz'),
                 '-append', 'console=ttyS0 rdinit=/init panic=-1', '-nodefaults', '-no-reboot',
                 '-display', 'none', '-monitor', 'none', '-serial', 'stdio',
@@ -158,8 +158,13 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
             self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log,
                                             stderr=log, start_new_session=True)
         write_json(self.root / f'boot-{self.boots}.json', {'pid': self.process.pid, 'args': args})
-        boot_id = eventually('disposable guest SSH', lambda: self.execute(
-            ['cat', '/proc/sys/kernel/random/boot_id'], timeout=5).decode().strip(), 45)
+        def boot_identifier():
+            if self.process.poll() is not None:
+                raise ChildProcessError('guest exited before SSH; inspect the retained boot log')
+            return self.execute(['cat', '/proc/sys/kernel/random/boot_id'],
+                                timeout=5).decode().strip()
+
+        boot_id = eventually('disposable guest SSH', boot_identifier, 45)
         with (self.root / f'tunnel-{self.boots}.log').open('xb') as log:
             self.tunnel = subprocess.Popen([*self.ssh(), '-M', '-N', '-o',
                 'ExitOnForwardFailure=yes', '-R', f'127.0.0.1:{mint_port}:127.0.0.1:{mint_port}',
