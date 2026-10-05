@@ -138,8 +138,11 @@ case funds an empty wallet, delivers paid data, settles while the activity is
 hidden, and returns funds after stopping routing; all 16 test sats are collected.
 Its verified mint path includes two radio hops. A second case recovers the
 original settlement over an alternate radio path after its committed reply is
-lost, without another mint swap. Natural movement, deep idle and process restart
-remain outside these cases; see the revision and scope
+lost, without another mint swap. A forced-idle characterization on Android 17
+also completes settlement, but the foreground service retains network access;
+it does not test recovery from Android suspending networking. Natural movement,
+natural suspend, battery cost and process restart remain outside these cases;
+see the revision and scope
 in [paid-relay readiness](../fips-relay/READINESS.md#scope-and-outstanding-acceptance).
 
 `billing` must match the relay network: `forwarding_data` includes bounded free

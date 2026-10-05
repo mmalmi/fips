@@ -41,7 +41,10 @@ Physical Android mint access also passes on `381eb0bce`: empty-wallet funding,
 paid delivery, settlement while the activity is hidden, and stopped-wallet fund
 return all use the mesh-only mint. A second case also recovers the original
 settlement across controlled radio return-path loss, with no second mint swap.
-Each collects all 16 test sats. Natural movement and deep idle remain unverified.
+Each collects all 16 test sats. A subsequent forced-idle characterization on
+`a49e01ae2` also closes financially, but Android permits foreground-service
+networking throughout it. Natural movement and recovery from Android suspending
+network access remain unverified.
 
 The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
 funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
@@ -479,6 +482,30 @@ processes exit cleanly. Completed phone test installations are subsequently
 removed with verified recovery archives. These are controlled FIPS-frame tests;
 they do not establish natural RF movement, deep idle, process restart or customer
 Internet isolation.
+
+The subsequent `work/mesh-mint-phone-r3` characterizes forced deep idle on the
+physical Android 17/API 37 phone. Fresh Android and static ARM64 builds use
+`a49e01ae2`; Android-target Clippy, six JVM lifecycle checks, Android lint and
+packaged-library/signature checks pass. Sources and artifacts are retained in
+`work/android-current-r19` and `work/mesh-mint-arm-r9`.
+
+After the settlement swap commits, its held reply is released while Android is
+forced into deep idle. All six observations over 43.525 seconds report `IDLE`,
+but network policy permits the foreground service: its effective blocking reason
+is `NONE`. The buyer has completed release and refund by the 8.696-second
+observation, during idle. The original request succeeds, funding authority is
+unchanged, and swap/attempt counts stay at three after commitment. Thus this
+case **does not exercise recovery from Android blocking networking**; the
+original interruption criteria and explicit `not_exercised` assessment remain
+with the evidence. USB, charging and the screen stay active, so this is also not
+natural suspend or a battery-cost measurement.
+
+Independent financial and device closure passes: two sats reach the provider,
+six return from the channel, all 16 test sats are collected, and all 459
+management checks pass. Normal power state, Wi-Fi, router settings and original
+accounts are restored; owned processes exit. The completed temporary app is
+removed with verified account and APK recovery archives. No runtime change or
+battery exemption was introduced for this characterization.
 
 The recorded symmetric and one-way radio-edge changes and Android mint lifecycle
 now pass with bounded free mint access. Broader mobility/background behavior,
