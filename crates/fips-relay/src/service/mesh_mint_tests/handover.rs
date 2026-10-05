@@ -3,6 +3,39 @@ use super::*;
 use fips_core::{SimLink, SimNetwork, config::SimTransportConfig};
 use std::{collections::BTreeSet, net::SocketAddr};
 
+#[derive(Clone, Copy, Debug)]
+enum Failure {
+    Disconnected,
+    ForwardLoss,
+    ReturnLoss,
+}
+
+impl Failure {
+    fn apply(self, network: &SimNetwork, proxy: &MintProxy) {
+        let (source, destination) = match self {
+            Self::Disconnected => {
+                network.set_link_up("1", "2", false);
+                return;
+            }
+            Self::ForwardLoss => ("1", "2"),
+            Self::ReturnLoss => ("2", "1"),
+        };
+        // Discovery still advertises an up link; only encrypted packets in one
+        // direction disappear. Never repair this leg to obtain settlement.
+        network.set_directed_link(
+            source,
+            destination,
+            Some(SimLink {
+                loss_probability: 1.0,
+                ..Default::default()
+            }),
+        );
+        // A forward-only loss can still deliver the already committed reply.
+        // Discard that response so both directed cases exercise restoration.
+        proxy.state.lose_swap_reply.store(true, Ordering::SeqCst);
+    }
+}
+
 async fn info(address: SocketAddr) -> Result<(), String> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut socket = TcpStream::connect(address)
@@ -70,6 +103,7 @@ async fn settle_through_customer(
     network: &SimNetwork,
     proxy: &MintProxy,
     channel: &str,
+    failure: Failure,
 ) -> u64 {
     let buyer_path = configs[0]
         .state_directory
@@ -110,7 +144,8 @@ async fn settle_through_customer(
     let attempts = proxy.state.swap_attempts.load(Ordering::SeqCst);
     let restores = proxy.state.restores.load(Ordering::SeqCst);
     proxy.state.reject_swap_replay.store(true, Ordering::SeqCst);
-    network.set_link_up("1", "2", false);
+    let before = network.stats();
+    failure.apply(network, proxy);
     release.send(()).unwrap();
     tokio::time::sleep(Duration::from_secs(2)).await;
     let interrupted: Value = read_json(&seller_path).unwrap();
@@ -160,6 +195,10 @@ async fn settle_through_customer(
         .unwrap();
     eprintln!("mint handover: original close result {original_result:?}");
     assert!(proxy.state.restores.load(Ordering::SeqCst) > restores);
+    if !matches!(failure, Failure::Disconnected) {
+        assert!(network.stats().delta_since(&before).packets_dropped_loss > 0);
+        assert!(!proxy.state.lose_swap_reply.load(Ordering::SeqCst));
+    }
     proxy
         .state
         .reject_swap_replay
@@ -169,11 +208,26 @@ async fn settle_through_customer(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settlement_requotes_after_its_customer_becomes_the_mint_transit_peer() {
+    exercise(Failure::Disconnected).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settlement_recovers_after_forward_only_link_loss() {
+    exercise(Failure::ForwardLoss).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settlement_recovers_after_return_only_link_loss() {
+    exercise(Failure::ReturnLoss).await;
+}
+
+async fn exercise(failure: Failure) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
         .try_init();
     tokio::time::timeout(Duration::from_secs(240), async {
+        eprintln!("mint handover: {failure:?}");
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -318,8 +372,16 @@ async fn settlement_requotes_after_its_customer_becomes_the_mint_transit_peer() 
         })
         .await
         .unwrap();
-        let paid =
-            settle_through_customer(&nodes, &configs, &identities, &network, &proxy, channel).await;
+        let paid = settle_through_customer(
+            &nodes,
+            &configs,
+            &identities,
+            &network,
+            &proxy,
+            channel,
+            failure,
+        )
+        .await;
         assert!(nodes[0].free.stats().admitted_session_bytes > 0);
         assert!(
             nodes[0]
