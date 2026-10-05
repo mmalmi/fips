@@ -206,13 +206,42 @@ authority, lifetime spending policy, eight-sat debit and single channel remain
 unchanged. Paid delivery succeeds between the two interruptions, and the full
 lifecycle collects all 16 original test sats.
 
-The case passes in 60.15 seconds, along with strict library lint, formatting and
-the source-size gate. Verified logs and independent process/cache closure are
-in `work/mesh-mint-r21`; the earlier close-only acceptance remains in `r20`.
-This verifies native recovery at these two committed-response boundaries, not
-mint-process restart, radio interruption during a financial request or Android
-integration. The change extends the existing test with a shared fault helper;
-production code and the previously accepted router executables are unchanged.
+The case passes in 60.15 seconds, with evidence in `work/mesh-mint-r21`; the
+earlier close-only acceptance remains in `r20`. It passes again in 78.32 seconds
+on `11dbda7d2`, which exposes the same SDK response barrier through the test
+mint's private control socket for hardware tests. The existing real-mint bench
+test also verifies that the original import waits for release, duplicate arms
+and incorrect releases fail, and issuance/collection cannot interfere while
+the barrier is active. This adds no production payment protocol or fault control.
+
+Strict library lint, the normal library/daemon build without test features,
+formatting and the source-size gate pass. Verified logs and independent
+process/cache closure are in `work/mesh-mint-r22`; the static ARM64 test-mint
+build and closure are in `work/mesh-mint-test-arm-r4`. The production router
+executable remains unchanged. These native checks verify the two committed
+response boundaries; mint-process restart and Android integration remain
+outside their acceptance.
+
+The same production router executable and the new test mint also pass a
+settlement interruption on the three-router open radio mesh. After the original
+channel-close swap commits, the private barrier holds its response. Taking the
+far router's mesh interface down removes its radio stations; releasing the
+response then leaves both settlement records incomplete for a measured 2.95
+seconds. Restoring the original radio path lets the original settlement call
+finish, without another administrative request or mint swap attempt. The same
+funding authority, spending policy and channel remain in force. Provider payout
+and buyer refund agree, and all 16 original test sats are collected.
+
+The 168.971-second run, including setup and cleanup, passes all 216 management
+checks. Independent postflight confirms restored original router profiles and
+services, removed candidate executables, matching released settlement records,
+and clean mint/export-relay exits. Cleanup restores every radio before checking
+their original peers and needs no manual assistance. Evidence is in
+`work/mesh-mint-radio-r2`. This accepts a temporary departure and return on the
+same radio path during committed settlement; it does not establish alternate-path
+handover, mint-process restart, physical power-loss recovery or Android mint
+integration. Existing saved accounts and the retained earlier phone mint are
+unchanged.
 
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,

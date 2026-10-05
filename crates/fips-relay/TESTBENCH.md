@@ -50,6 +50,31 @@ resumed. Keep this mint process alive across the relay restart tests. Settle and
 collect the run's balances before ending it. SIGTERM/Ctrl-C ends the fixture;
 this tool does not claim production mint restart support.
 
+### Interrupt a committed mint reply
+
+The private administrator socket can hold the next successful swap response
+after the real mint commits it. This reuses the SDK's response barrier; no fault
+controls are exposed through mint HTTP or a normal relay build. Send these
+requests through `fips-relay-test-mint ctl`:
+
+```json
+{"type":"fault","command":{"action":"arm_swap_reply"}}
+{"type":"fault","command":{"action":"status"}}
+{"type":"fault","command":{"action":"release","generation":1}}
+```
+
+Use the generation returned by the arm request. Status reports `idle`, `armed`,
+`held` or `released`, plus cumulative swap-attempt, successful-swap and restore
+counters. Interrupt the link only after `held`, then release that generation
+and restore the link. This distinguishes a committed response lost in transit
+from a request that never reached the mint.
+
+Only one barrier can be active. Issuance and collection are refused while it is
+armed or held; status remains available. Release before `held` or with another
+generation fails. Releasing the same completed generation again is harmless.
+After an interrupted test, preserve the original mint and financial operation
+until recovery and collection finish. Do not issue replacement funds.
+
 ## Mint HTTP over FIPS
 
 The relay library exposes `mint_mesh::MeshMintBridge`: `serve`
@@ -157,10 +182,12 @@ It is still a bounded bootstrap tier, without a delivery or fairness guarantee
 under contention. A changed or asymmetric response path needs matching
 forward admission on its edges; this does not establish general mobile bootstrap.
 
-A fresh two-router UDP check verifies offline import/export without known-client
-return entries and restores the original devices afterward. Saved hardware
-accounts retain their LAN-mint URLs; radio-mesh and Android acceptance for this
-configuration remain pending. Current acceptance is recorded in
+Fresh router accounts pass the complete mint lifecycle over UDP and over two
+discovered open Wi-Fi mesh hops, without known-client return entries. The native
+case also recovers lost committed funding and settlement replies; the routers
+complete settlement after an interrupted radio path rejoins, without another
+mint swap. Saved hardware accounts retain their original mint URLs; Android
+mint integration remains pending. Current acceptance and its limits are recorded in
 [READINESS.md](READINESS.md).
 
 ## Fund a relay
