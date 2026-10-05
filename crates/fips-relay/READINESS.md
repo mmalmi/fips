@@ -2471,6 +2471,29 @@ Exact inputs/artifacts and semantic verification are retained in
 recovery, without sustained-load, mobile-roaming, physical power-loss or current
 Android acceptance.
 
+A read-only pacing observation on the unchanged current ARM executable passes its
+normal-CPU control and reproduces constrained delivery failure. At the final
+constrained snapshot, unfinished renewal/funding work remains while every available
+saved wallet pacing deadline is already past. This weakens pacing as an explanation
+of the tail, without excluding earlier scheduled waits. Exact executable, source,
+quota, absent process/cgroup and observation files are verified in
+`work/wallet-pacing-observation-r126`. No mint limit or wallet policy is changed.
+
+Private, unique-span fund/refund probes retain the original bounded-handshake
+scenario, financial caps and deadlines. The normal-CPU control collects all 1,280
+test sats; the quarter-CPU run misses reverse delivery at round nine. Completed
+constrained channel opens have median/maximum durations of 2.004/6.907 seconds;
+refund calls have 2.195/4.801 seconds. The two longest calls each consume 0.14
+seconds on their own blocking worker, including QEMU overhead and excluding other
+SDK/mint workers. Blocking-worker queue, wallet-lock and wallet-open maxima are
+0.097, 0.903 and 0.598 seconds. The verified host cgroup consumes 0.246 CPU over
+106.170 seconds, including the five nodes and mint. Guest process-stat counters
+are uninformative and excluded. These completed-span observations locate elapsed
+time inside SDK calls, without isolating a CPU/wait cause or proving a service-reuse
+optimization. Logging/relinking exclude performance-equivalence claims. Exact
+source/artifacts, quotas, terminal ownership and retained financial residue are
+verified in `work/wallet-stage-cpu-r127`; no probe is integrated into production.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
