@@ -447,9 +447,9 @@ async fn controller_scenario(
                             if received.iter().any(|m| m.data.as_slice() == payload) { break; }
                         }
                         if !automatic_renewal {
-                            for (node, trace) in forwarding.iter().enumerate() { trace.dump(node); }
-                            #[cfg(unix)]
-                            controller_support::delivery_snapshot(root.path(), &peers).await;
+                            controller_support::delivery_evidence(
+                                root.path(), &peers, &forwarding, &ledgers, &buyers,
+                            ).await;
                         }
                         assert!(automatic_renewal,
                             "ordinary delivery needed a retry: round={round} direction={source}->{destination}; received={:?}; errors={:?}; usage={:?}",
@@ -459,9 +459,9 @@ async fn controller_scenario(
                 })
                 .await;
                 if delivery.is_err() {
-                    for (node, trace) in forwarding.iter().enumerate() { trace.dump(node); }
-                    #[cfg(unix)]
-                    controller_support::delivery_snapshot(root.path(), &peers).await;
+                    controller_support::delivery_evidence(
+                        root.path(), &peers, &forwarding, &ledgers, &buyers,
+                    ).await;
                 }
                 delivery.unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
             }

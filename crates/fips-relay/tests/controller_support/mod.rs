@@ -143,10 +143,62 @@ pub(super) fn errors(controllers: &[Arc<Controller>]) -> Vec<(usize, String)> {
         .filter_map(|(i, c)| c.last_error().map(|e| (i, e)))
         .collect::<Vec<_>>()
 }
+
+pub(super) async fn delivery_evidence(
+    root: &std::path::Path,
+    peers: &[PeerIdentity],
+    traces: &[Arc<DeliveryTrace>],
+    ledgers: &[Arc<DurableRelay>],
+    buyers: &[Arc<BuyerAuthorizer>],
+) {
+    for (node, trace) in traces.iter().enumerate() {
+        trace.dump(node);
+    }
+    #[cfg(unix)]
+    delivery_snapshot(root, peers).await;
+    // Inspect only fixture terms and counters, never wallet proofs or payment tokens.
+    let journals: Vec<_> = (0..peers.len())
+        .map(|i| controller_journal(root, i))
+        .collect();
+    for (buyer, journal) in journals.iter().enumerate() {
+        for row in journal["outgoing"].as_object().unwrap().values().take(32) {
+            let purchase: Purchase = serde_json::from_value(row["purchase"].clone()).unwrap();
+            let seller = peers
+                .iter()
+                .position(|p| *p.node_addr() == purchase.provider)
+                .unwrap();
+            let channel = &purchase.channel.id;
+            let contract = &purchase.contract.id;
+            let incoming = &journals[seller]["incoming"][contract];
+            let terms_match =
+                ledgers[seller].channel_terms(channel).as_ref() == Some(&purchase.channel);
+            eprintln!(
+                "controller delivery credit {}",
+                serde_json::json!({
+                    "buyer": buyer, "seller": seller, "channel": channel, "contract": contract,
+                    "destination": peers.iter().position(|p| *p.node_addr() == purchase.contract.destination),
+                    "accepted": row["accepted"], "retired": row["retired"],
+                    "provider_phase": incoming["phase"], "terms_match": terms_match,
+                    "capacity_sat": purchase.channel.capacity_sat, "max_units": purchase.contract.max_units,
+                    "observed_units": buyers[buyer].observed_units(contract),
+                    "evidence_msat": buyers[buyer].evidence_msat(channel),
+                    "authorized_sat": buyers[buyer].authorized_sat(channel),
+                    "seller_usage": ledgers[seller].usage(contract),
+                    "seller_channel_usage": ledgers[seller].channel_usage(channel)
+                })
+            );
+        }
+    }
+}
+
+fn controller_journal(root: &std::path::Path, node: usize) -> serde_json::Value {
+    let path = root.join(format!("controller-{node}/controller.json"));
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
 pub(super) fn recovery_stages(root: &std::path::Path) -> Vec<serde_json::Value> {
     (0..5).map(|i| {
-        let path = root.join(format!("controller-{i}/controller.json"));
-        let j: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let j = controller_journal(root, i);
         let rows = |name: &str, fields: &[&str]| j[name].as_object().unwrap().values().map(|row| {
             fields.iter().map(|field| match &row[*field] {
                 serde_json::Value::Null => "none".to_string(),

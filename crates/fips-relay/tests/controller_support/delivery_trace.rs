@@ -1,5 +1,5 @@
 use fips_core::node::{
-    ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest,
+    ForwardingAdmission, ForwardingDecision, ForwardingOutcome, ForwardingPolicy, ForwardingRequest,
 };
 use fips_core::{NodeAddr, protocol::SessionHandshake};
 use fips_relay::buyer::PaidForwarder;
@@ -21,7 +21,7 @@ struct Record {
     next_hop: String,
     bytes: usize,
     digest: String,
-    admission: Option<ForwardingAdmission>,
+    decision: ForwardingDecision,
     outcome: Option<ForwardingOutcome>,
 }
 
@@ -111,7 +111,7 @@ impl DeliveryTrace {
     pub(crate) fn dump(&self, node: usize) {
         for row in self.records.lock().unwrap().iter() {
             eprintln!(
-                "controller forwarding node={node} ms={} source={} destination={} ingress={} next={} bytes={} digest={} admission={:?} outcome={:?}",
+                "controller forwarding node={node} ms={} source={} destination={} ingress={} next={} bytes={} digest={} decision={:?} outcome={:?}",
                 row.elapsed_ms,
                 row.source,
                 row.destination,
@@ -119,7 +119,7 @@ impl DeliveryTrace {
                 row.next_hop,
                 row.bytes,
                 row.digest,
-                row.admission,
+                row.decision,
                 row.outcome,
             );
         }
@@ -177,7 +177,7 @@ impl ForwardingPolicy for DeliveryTrace {
                 next_hop: request.next_hop.to_string(),
                 bytes: request.session_payload.len(),
                 digest: format!("{:x}", Sha256::digest(request.session_payload)),
-                admission,
+                decision,
                 outcome: None,
             };
             let mut records = self.records.lock().unwrap();
@@ -194,7 +194,8 @@ impl ForwardingPolicy for DeliveryTrace {
         // Zero is shared by untracked admissions, so it cannot identify a row.
         if token != 0
             && let Some(row) = self.records.lock().unwrap().iter_mut().rev().find(|row| {
-                row.admission
+                row.decision
+                    .admission()
                     .is_some_and(|admission| admission.token == token)
             })
         {
