@@ -2363,6 +2363,35 @@ before any build or measurement; its failed evidence is retained separately.
 Transport reuse warrants a production-path comparison before retaining a runtime
 change. TLS validation, wallet-file checks and financial bounds remain unchanged.
 
+An operation-local HTTP-client reuse experiment shows no measurable improvement
+in the existing mint-backed refund, reload and spend case. Five alternating
+native Linux pairs measure median first-refund process CPU of 20.533 ms before
+and 20.567 ms after; only two pairs use less CPU with reuse. Median wall times
+are 20.253 and 20.262 ms. Setup and funding are outside the timed interval;
+process CPU includes the isolated mint and wallet. A separate diagnostic confirms
+that the first refund exercises the changed metadata-client path and the second
+call uses the completed-refund path. Its instrumented timings are excluded.
+The runtime experiment is discarded, preserving the original SDK implementation.
+Constructor costs alone do not justify this additional code.
+
+The candidate passes all 437 SDK workspace/all-feature tests and strict
+all-target/all-feature lint. Its optimized native and emulated ARM64 two-CPU
+renewal controls collect all 1,280 test sats each in 42.321 and 49.636 seconds.
+ARM64 at a quarter CPU still misses round-8 delivery from node 0 to node 4 after
+112.023 seconds, without final collection or quote-capacity rejection. The main
+failure report has no controller errors; shutdown additionally records a Tokio
+context panic. These candidate controls do not requalify physical devices or the
+retained source graph. Original workload, deadline and financial bounds remain
+unchanged.
+
+Evidence is retained in `work/controller-http-reuse-r86` and
+`work/controller-http-coverage-r87`, with equivalent before/after dependency
+feature graphs, unchanged source/artifact hashes, absent owned process
+groups/cgroups and released cache ownership. The SDK test-only macro dependency
+is separately checksum-verified; the accepted dependency bundle is unchanged.
+Five runs of this one refund case establish no relay or physical-router gain and
+leave the ARM pressure failure unresolved.
+
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
 preparation apply the configured 4 MiB budget through the same receipt reader.
