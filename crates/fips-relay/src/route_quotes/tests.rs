@@ -218,10 +218,9 @@ async fn retired_offers_release_capacity_without_reviving_their_bindings() {
         while !nodes[0].peers().await.unwrap().iter().any(|p| p.connected) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let (control, _) =
-            ControlTransport::start(nodes[0].clone(), 44_730, HashSet::from([destination]), 20)
-                .await
-                .unwrap();
+        let (control, _) = ControlTransport::start(nodes[0].clone(), 44_730, vec![destination], 20)
+            .await
+            .unwrap();
         let (policy, mut request, _) = quote_fixture();
         request.destination = destination;
         request.deadline_unix = unix_now().unwrap() + 10;
