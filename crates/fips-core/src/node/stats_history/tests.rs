@@ -513,4 +513,118 @@ fn nan_serializes_to_json_null() {
     assert!(values[1].is_null());
     assert!(values[2].is_f64());
 }
+#[test]
+fn history_queries_preserve_exact_samples_across_block_and_ring_boundaries() {
+    let mut h = StatsHistory::new();
+    let start = Instant::now();
+    let mut expected = VecDeque::new();
+    for tick in 0..(FAST_RING_CAPACITY * 3 + 61) {
+        // Constant runs, noisy runs, gaps, signed zero and distinct NaNs must
+        // all survive storage exactly; compression must not round samples.
+        let value = match (tick / 73) % 6 {
+            0 => 0.0,
+            1 => -0.0,
+            2 => f64::NAN,
+            3 => f64::from_bits(0x7ff8_0000_0000_0042),
+            4 => 12.5,
+            _ => tick as f64 / 13.0,
+        };
+        let mut snap = make_snap(tick as u64);
+        snap.loss_rate = value;
+        h.tick(start + Duration::from_secs(tick as u64), &snap, &[]);
+        if expected.len() == FAST_RING_CAPACITY {
+            expected.pop_front();
+        }
+        expected.push_back(value);
+        assert_eq!(
+            h.latest(Metric::LossRate).unwrap().to_bits(),
+            value.to_bits()
+        );
+        if tick % 59 == 0 || tick == FAST_RING_CAPACITY * 3 + 60 {
+            for width in [0, 1, 59, 60, 61, 3599, 3600, 7200] {
+                let want = width.min(FAST_RING_CAPACITY);
+                let mut reference = vec![f64::NAN; want.saturating_sub(expected.len())];
+                reference.extend(expected.iter().skip(expected.len().saturating_sub(want)));
+                let series = h.query(
+                    Metric::LossRate,
+                    Duration::from_secs(width as u64),
+                    Granularity::Fast,
+                );
+                assert_eq!(
+                    series
+                        .values
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>(),
+                    reference.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                );
+                let recent = h.recent(Metric::LossRate, width);
+                assert_eq!(
+                    recent.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    expected
+                        .iter()
+                        .skip(expected.len().saturating_sub(width))
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn peer_slow_history_preserves_late_arrival_gaps_and_full_day_rollover() {
+    let mut h = StatsHistory::new();
+    let start = Instant::now();
+    let mut expected = VecDeque::new();
+    let mut sum = 0.0;
+    let mut count = 0;
+    for tick in 0..(SLOW_RING_CAPACITY * DOWNSAMPLE_FACTOR * 2 + 61) {
+        let now = start + Duration::from_secs(tick as u64);
+        let present = tick >= 3617 && (tick / 119) % 3 != 1;
+        let peers = if present {
+            let mut peer = make_peer_snap(1, now, tick as u64);
+            peer.srtt_ms = Some((tick % 83) as f64 / 7.0);
+            sum += peer.srtt_ms.unwrap();
+            count += 1;
+            vec![peer]
+        } else {
+            vec![]
+        };
+        h.tick(now, &make_snap(tick as u64), &peers);
+        if (tick + 1) % DOWNSAMPLE_FACTOR == 0 {
+            if expected.len() == SLOW_RING_CAPACITY {
+                expected.pop_front();
+            }
+            expected.push_back(if count == 0 {
+                f64::NAN
+            } else {
+                sum / count as f64
+            });
+            sum = 0.0;
+            count = 0;
+            if h.has_peer(&make_addr(1)) {
+                let series = h
+                    .peer_query(
+                        &make_addr(1),
+                        PeerMetric::SrttMs,
+                        Duration::from_secs(24 * 3600),
+                        Granularity::Slow,
+                    )
+                    .unwrap();
+                let mut reference = vec![f64::NAN; SLOW_RING_CAPACITY - expected.len()];
+                reference.extend(&expected);
+                assert_eq!(
+                    series
+                        .values
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>(),
+                    reference.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+}
+
 use super::*;

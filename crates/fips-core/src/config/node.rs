@@ -534,7 +534,7 @@ impl SessionMmpConfig {
 /// Control socket configuration (`node.control.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlConfig {
-    /// Enable the control socket (`node.control.enabled`).
+    /// Enable the control socket and diagnostic history (`node.control.enabled`).
     #[serde(default = "ControlConfig::default_enabled")]
     pub enabled: bool,
     /// Unix socket path (`node.control.socket_path`).

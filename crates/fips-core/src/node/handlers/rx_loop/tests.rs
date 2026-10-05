@@ -17,6 +17,35 @@ use super::{
 use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
+#[tokio::test]
+async fn stats_history_requires_enabled_diagnostic_control() {
+    use crate::transport::LinkId;
+    use crate::{ActivePeer, Identity, PeerIdentity};
+
+    for enabled in [false, true] {
+        let mut config = crate::config::Config::new();
+        config.node.control.enabled = enabled;
+        let mut node = crate::node::Node::new(config).unwrap();
+        let peer = PeerIdentity::from_pubkey(Identity::generate().pubkey());
+        let addr = *peer.node_addr();
+        node.peers
+            .insert(addr, ActivePeer::new(peer, LinkId::new(1), 0));
+        node.stats.forwarding.received_packets = 42;
+
+        for _ in 0..3 {
+            node.run_rx_loop_slow_maintenance_tick().await;
+        }
+
+        assert_eq!(node.stats_history().has_data(), enabled);
+        assert_eq!(
+            node.stats_history().tracked_peer_count(),
+            usize::from(enabled)
+        );
+        assert_eq!(node.stats.forwarding.received_packets, 42);
+        assert!(node.get_peer(&addr).is_some());
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn fast_maintenance_loses_no_more_than_its_total_budget() {
     let started = tokio::time::Instant::now();

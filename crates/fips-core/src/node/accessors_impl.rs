@@ -428,7 +428,7 @@ impl Node {
         &mut self.stats
     }
 
-    /// Get the stats history collector.
+    /// Get diagnostic history. Empty when the control interface is disabled.
     pub fn stats_history(&self) -> &stats_history::StatsHistory {
         &self.stats_history
     }
@@ -436,6 +436,11 @@ impl Node {
     /// Sample the current node state into the stats history ring.
     /// Called once per tick from the RX loop.
     pub(crate) fn record_stats_history(&mut self) {
+        // Embedded endpoints disable the diagnostic interface. Keep current
+        // routing counters, but do not retain graphs that nobody can query.
+        if !self.config.node.control.enabled {
+            return;
+        }
         let fwd = &self.stats.forwarding;
         let now = std::time::Instant::now();
         let peers_with_mmp: Vec<f64> = self

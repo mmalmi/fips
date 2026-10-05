@@ -297,10 +297,99 @@ impl FromStr for Granularity {
     }
 }
 
+// Compress constant/gap blocks without rounding samples or changing retention.
+// Varying blocks use the original f64 representation, so noisy histories have
+// bounded overhead rather than a run-length entry for every sample.
+const SAMPLES_PER_BLOCK: usize = 60;
+
+enum SampleBlock {
+    Constant(f64),
+    Varying(Box<[f64; SAMPLES_PER_BLOCK]>),
+}
+
+struct Samples {
+    blocks: VecDeque<SampleBlock>,
+    front_offset: usize,
+    len: usize,
+    capacity: usize,
+}
+
+impl Samples {
+    fn new(capacity: usize) -> Self {
+        Self {
+            blocks: VecDeque::new(),
+            front_offset: 0,
+            len: 0,
+            capacity,
+        }
+    }
+
+    fn prefill_gaps(&mut self, len: usize) {
+        debug_assert_eq!(self.len, 0);
+        debug_assert!(len <= self.capacity);
+        self.blocks
+            .extend((0..len.div_ceil(SAMPLES_PER_BLOCK)).map(|_| SampleBlock::Constant(f64::NAN)));
+        self.len = len;
+    }
+
+    fn push(&mut self, value: f64) {
+        if self.len == self.capacity {
+            self.len -= 1;
+            self.front_offset += 1;
+            if self.front_offset == SAMPLES_PER_BLOCK {
+                self.blocks.pop_front();
+                self.front_offset = 0;
+            }
+        }
+        let offset = (self.front_offset + self.len) % SAMPLES_PER_BLOCK;
+        if offset == 0 {
+            self.blocks.push_back(SampleBlock::Constant(value));
+        } else {
+            let block = self.blocks.back_mut().unwrap();
+            match block {
+                SampleBlock::Constant(previous) if previous.to_bits() == value.to_bits() => {}
+                SampleBlock::Constant(previous) => {
+                    let mut values = Box::new([*previous; SAMPLES_PER_BLOCK]);
+                    values[offset] = value;
+                    *block = SampleBlock::Varying(values);
+                }
+                SampleBlock::Varying(values) => values[offset] = value,
+            }
+        }
+        self.len += 1;
+    }
+
+    fn latest(&self) -> Option<f64> {
+        let offset = (self.front_offset + self.len.checked_sub(1)?) % SAMPLES_PER_BLOCK;
+        self.blocks.back().map(|block| match block {
+            SampleBlock::Constant(value) => *value,
+            SampleBlock::Varying(values) => values[offset],
+        })
+    }
+
+    fn tail(&self, n: usize) -> Vec<f64> {
+        let take = n.min(self.len);
+        let start = self.front_offset + self.len - take;
+        let mut offset = start % SAMPLES_PER_BLOCK;
+        let mut out = Vec::with_capacity(take);
+        for block in self.blocks.iter().skip(start / SAMPLES_PER_BLOCK) {
+            let count = (take - out.len()).min(SAMPLES_PER_BLOCK - offset);
+            match block {
+                SampleBlock::Constant(value) => out.resize(out.len() + count, *value),
+                SampleBlock::Varying(values) => {
+                    out.extend_from_slice(&values[offset..offset + count]);
+                }
+            }
+            offset = 0;
+        }
+        out
+    }
+}
+
 /// One metric's dual-tier ring.
 struct Ring {
-    fast: VecDeque<f64>,
-    slow: VecDeque<f64>,
+    fast: Samples,
+    slow: Samples,
     /// Accumulator used for downsampling fast → slow on minute boundaries.
     accum: DownsampleAccum,
     aggregation: Aggregation,
@@ -363,8 +452,8 @@ impl DownsampleAccum {
 impl Ring {
     fn new(aggregation: Aggregation) -> Self {
         Self {
-            fast: VecDeque::with_capacity(FAST_RING_CAPACITY),
-            slow: VecDeque::with_capacity(SLOW_RING_CAPACITY),
+            fast: Samples::new(FAST_RING_CAPACITY),
+            slow: Samples::new(SLOW_RING_CAPACITY),
             accum: DownsampleAccum::new(),
             aggregation,
             prev_total: None,
@@ -372,19 +461,13 @@ impl Ring {
     }
 
     fn push_fast(&mut self, value: f64) {
-        if self.fast.len() == FAST_RING_CAPACITY {
-            self.fast.pop_front();
-        }
-        self.fast.push_back(value);
+        self.fast.push(value);
         self.accum.push(value);
     }
 
     fn flush_slow(&mut self) {
         if let Some(v) = self.accum.reduce(self.aggregation) {
-            if self.slow.len() == SLOW_RING_CAPACITY {
-                self.slow.pop_front();
-            }
-            self.slow.push_back(v);
+            self.slow.push(v);
         }
         self.accum.reset();
     }
@@ -450,12 +533,8 @@ impl PeerStatsRings {
         let n_fast = (fast_pushes_so_far as usize).min(FAST_RING_CAPACITY);
         let n_slow = ((fast_pushes_so_far as usize) / DOWNSAMPLE_FACTOR).min(SLOW_RING_CAPACITY);
         for ring in &mut rings {
-            for _ in 0..n_fast {
-                ring.fast.push_back(f64::NAN);
-            }
-            for _ in 0..n_slow {
-                ring.slow.push_back(f64::NAN);
-            }
+            ring.fast.prefill_gaps(n_fast);
+            ring.slow.prefill_gaps(n_slow);
         }
 
         Self {
@@ -694,15 +773,14 @@ impl StatsHistory {
         window: Duration,
         granularity: Granularity,
     ) -> Series {
-        let (source, capacity): (&VecDeque<f64>, usize) = match granularity {
+        let (source, capacity) = match granularity {
             Granularity::Fast => (&ring.fast, FAST_RING_CAPACITY),
             Granularity::Slow => (&ring.slow, SLOW_RING_CAPACITY),
         };
 
         let want = (window.as_secs() / granularity.seconds()) as usize;
         let want = want.min(capacity);
-        let take = source.len().min(want);
-        let tail: Vec<f64> = source.iter().rev().take(take).rev().copied().collect();
+        let tail = source.tail(want);
         let values = if tail.len() < want {
             let pad = want - tail.len();
             let mut out = Vec::with_capacity(want);
@@ -724,15 +802,13 @@ impl StatsHistory {
     /// Most recent node-level value for a metric, reading from the fast
     /// ring.
     pub fn latest(&self, metric: Metric) -> Option<f64> {
-        self.ring(metric).fast.back().copied()
+        self.ring(metric).fast.latest()
     }
 
     /// Return the last `n` node-level samples from the fast ring,
     /// oldest-first.
     pub fn recent(&self, metric: Metric, n: usize) -> Vec<f64> {
-        let ring = self.ring(metric);
-        let n = n.min(ring.fast.len());
-        ring.fast.iter().rev().take(n).rev().copied().collect()
+        self.ring(metric).fast.tail(n)
     }
 
     /// Iterate tracked peer addresses.
