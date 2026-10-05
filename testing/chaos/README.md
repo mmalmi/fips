@@ -649,6 +649,46 @@ and settlement, including after an uncertain crash response.
 Focused checks: `python3 -m unittest tests.test_wifi_restart_load
 tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
 
+### Guest kernel and filesystem power loss
+
+`sim.guest_powerloss` runs three relay accounts inside a disposable x86-64 KVM
+guest, with a separate host test mint. It needs existing QEMU/KVM access, BusyBox,
+Debian-style OpenSSH tools, `cpio`, `gzip` and `mkfs.ext4`, plus a readable Linux
+kernel with built-in virtio block/network, ext4 and gzip initramfs support.
+Supply matching native relay and test-mint executables from the locked source
+graph; build the relay without optional features and the mint with `testbench`.
+The harness records their hashes and copies their existing runtime libraries.
+
+From `testing/chaos`, with `KERNEL`, `BINARIES` and `REVISION` set to those inputs:
+
+```sh
+run_parent="$(mktemp -d /tmp/fips-power.XXXXXXXX)"
+python3 -B -m sim.guest_powerloss --kernel "$KERNEL" \
+  --binary-dir "$BINARIES" --source-revision "$REVISION" \
+  --output "$run_parent/case"
+```
+
+The output must be new and short enough for the mint's 100-byte control-socket
+limit. The guest uses two vCPUs, 1.5 GiB RAM, an owned 128 MiB ext4 image and
+loopback-only SSH forwarding. It mounts no host directory and changes no host
+network or service configuration. The mint URL stays identical across boots
+through a pinned SSH tunnel; the mint itself stays alive.
+
+After funding and bidirectional paid delivery, the harness kills only the
+UUID/image-verified QEMU process during an active stream. A fresh kernel mounts
+the same disk; original accounts, funding, spending limits and exact unbilled
+crash exposure must survive. Subsequent streams require complete delivery, then
+the existing settlement checks collect all 384 test sats and stop the guest,
+tunnel and mint. The interrupted stream is not replayed. A funded failure keeps
+its original disk and mint for recovery; do not rerun initialization or replace
+that mint. Logs and process identities remain in the output directory.
+
+This covers guest kernel/page-cache loss with QEMU's direct host I/O and ext4
+journal recovery. It does not simulate a physical flash-controller failure,
+host/mint power loss or radio interruption. The existing restart/settlement
+checks and the wrong-process refusal test run with
+`python3 -B -m unittest tests.test_guest_system tests.test_wifi_restart_load tests.test_paid_settlement`.
+
 ### Continuous paid Wi-Fi renewal
 
 `sim.wifi_renewal_load` runs two simultaneous five-minute streams through one
