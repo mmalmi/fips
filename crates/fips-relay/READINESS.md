@@ -1629,7 +1629,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen; current native optimized five-node renewal/rekey recovery at two and quarter CPU. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts and the unattributed historical ARM rekey delay under CPU pressure described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen; current optimized five-node renewal/rekey recovery on native Linux at two and quarter CPU and ARM64 under QEMU at two CPUs. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -2233,6 +2233,31 @@ are absent, and the build-cache lock is released. Evidence is
 [relay test instructions](README.md). The historical 33-second ARM gap did not
 reproduce here. This native comparison does not attribute or close that ARM
 failure, nor accept current hardware or sustained radio workloads.
+
+Current ARM64 checks on `49397eb14` use the same optimized controller workload
+and dependency graph under QEMU user emulation. The fully priced case passes
+at two CPUs, while both fully priced and bounded-handshake cases exceed the
+30-second delivery deadline at a quarter CPU. These failures occur at rounds
+8 and 12, respectively; final financial collection is not reached. Evidence,
+including bounded forwarding and native session snapshots, is retained under
+`work/controller-arm-pressure-r65/closure.json`.
+
+The controller fixture's tracing wrapper omitted the production forwarding
+policy's admission wake signal. It now delegates that hook, and the existing
+renewal scenarios check its presence. On `314bf62ff`, strict controller lint,
+formatting and file limits pass. The repaired fixture passes ARM64 at two CPUs
+and native Linux at a quarter CPU in 53.09 and 51.63 seconds, respectively,
+including handshake-loss recovery, all ten session directions rotating and
+collection of 1,280 test sats per case. Both ARM64 quarter-CPU cases still fail
+the delivery deadline at round 9, so the wake repair does not resolve that stall.
+The fully priced failure captures policy refusals and unfinished renewal work,
+with no native route or send errors. The current payment/admission delay remains
+unattributed. Original deadlines, traffic and financial limits are unchanged;
+source/artifact hashes, actual cgroup quotas, absent process groups/cgroups and
+the released cache lock are verified in
+`work/controller-admission-wake-r66/closure.json`. This aggregate quota covers
+five nodes, their mint and ARM emulation; it does not measure physical-router
+timing or establish quarter-CPU ARM acceptance.
 
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
