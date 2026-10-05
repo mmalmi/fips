@@ -1629,7 +1629,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | UDP, TCP, native Ethernet and WebSocket service paths, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; current ARM64 paid Wi-Fi leaf-outage recovery and current Pixel paid sessions through three routers, including force-stop/reopen; current optimized five-node renewal/rekey recovery on native Linux at two and quarter CPU and ARM64 under QEMU at two CPUs. | Sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs. | Requalify physical and mixed-link cases after the transit-renewal change; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -2277,6 +2277,26 @@ Verified evidence is retained in `work/controller-renewal-evidence-r67`,
 with a `closure.json`. The incomplete r69 observer and interrupted r70 observer
 are retained separately and provide no pacing conclusion. No production code,
 delivery deadline or financial limit changes in these diagnostic refinements.
+
+Transit now shares the controller-owned renewal pause with source admission.
+The existing buyer regression first reproduces admission into a paused onward
+channel, then passes on `f3f523bac`: neither neighbor's allowance is reserved,
+nested pauses stay closed, and release wakes the existing bounded native queue.
+Replacement and closed-channel checks retain their ordinary spending authority.
+All 308 library, 12 buyer and two bootstrap checks, strict library/test lint,
+formatting and source-size checks pass. Optimized native quarter-CPU and ARM64
+two-CPU cases collect all 1,280 test sats each in 61.86 and 48.99 seconds.
+Both ARM64 quarter-CPU cases still fail delivery in direction 0 to 4, at rounds
+8 and 9, without final collection or a recorded controller error. This closes
+the transit admission gap without attributing or resolving the entire delay.
+Evidence is retained in `work/controller-transit-renewal-r72-red2`,
+`work/controller-transit-renewal-r73` and `work/controller-transit-renewal-r74`,
+with verified source/artifact hashes and absent owned process groups/cgroups.
+The unselected r73 handshake invocation provides no acceptance; r74 selects the
+correct case. Original queue, deadline, traffic and financial bounds remain in
+force. Some failure-only counter lines interleave with concurrent tracing; those
+malformed rows provide no counter evidence. Physical and mixed-link acceptance
+of this runtime remains open.
 
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
