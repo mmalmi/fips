@@ -28,8 +28,9 @@ symmetric edge handover pass. The persistent one-way return-loss case in
 `work/mesh-mint-radio-r5` fails its bounded settlement recovery window despite
 observing the replacement topology. Its original 16 test sats are subsequently
 recovered on the original path, with unchanged funding authority and no further
-mint swap. Mesh-only mint access is implemented; general asymmetric handover is
-not accepted.
+mint swap. The instrumented follow-up `work/mesh-mint-radio-r6` passes on the same
+runtime, but does not explain the earlier failure. Mesh-only mint access is
+implemented; reliable asymmetric handover is not accepted.
 
 The first native mint-over-FIPS check passes on `0388b2c12`: a fresh empty wallet
 funds 16 test sats through client → relay → mint TCP/FIPS streams, transfers them,
@@ -362,6 +363,34 @@ settlement records, restored device state and clean exits of the mint and both
 export-relay processes. The failed result and separate recovery closure are
 preserved. Its complete frozen harness/archive (146 files) also matches the
 recorded hashes. Recovery does not turn the failed handover into a pass.
+
+The instrumented follow-up in `work/mesh-mint-radio-r6` uses the same runtime,
+financial limits and deadlines. It records routing-tree, session and forwarding
+state without issuing a probe, quote or financial request. This run passes:
+the replacement neighbor topology appears at 125.19 seconds, the saved
+settlement completes at 200.03 seconds, and all 16 sats are collected by
+249.58 seconds. The old return direction remains blocked. Mint swaps and
+attempts remain at three; restores increase from two to 38. All 396 management
+checks and independent postflight pass, including restored original settings,
+removed candidate executables and clean mint/export-relay exits. All 146 frozen
+harness files and the archive match their recorded hashes.
+
+The observations show temporarily different routing roots after the link loss,
+then a common tree before financial recovery. Node identities are freshly
+generated, so this run has a different routing-tree root from the failed case.
+Neither that difference nor the passing result establishes the cause of the
+earlier failure. The handover simulation now uses fixed routing identities and
+verifies the customer-root baseline; its ordinary initialization path still
+generates a fresh identity. The return-loss case on `b124da7f9` passes in
+79.323 seconds and collects all 16 sats, with strict library Clippy and the
+source-size check passing. Verified source/log/process evidence is in
+`work/mesh-mint-r35`. This makes the routing arrangement reproducible; it does
+not establish a fix for the failed device run. The same executable then fails
+the full-disconnection case in `work/mesh-mint-r36` after 138.909 seconds.
+Its final snapshots show a converged routing tree but stalled mint quotes and
+no free-data transit through the former customer. The remaining cases in that
+run are not executed after the failure. Logs, source hashes and process/cache
+closure are verified; this provides a native failing case for further diagnosis.
 
 This accepts the earlier symmetric radio-edge change with bounded free mint
 access. The one-way failure above, broader mobility, hardware mint-process

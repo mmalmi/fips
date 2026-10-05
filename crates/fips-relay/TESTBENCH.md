@@ -120,7 +120,9 @@ stays broken throughout recovery. Superseded cached free quotes are refetched
 without reviving their old allowances; no additional
 swap or wallet spend is allowed during recovery. After normal workers settle the
 original channel, the fixture redeems all 16 test sats through the remaining
-mint-side FIPS endpoint. See the bounded evidence in [READINESS.md](READINESS.md).
+mint-side FIPS endpoint. Fixed identities and a checked customer-root baseline
+keep the routing arrangement reproducible. See the bounded evidence in
+[READINESS.md](READINESS.md).
 
 ### Client configuration and wallet lifetime
 
@@ -216,6 +218,9 @@ direction fails to recover settlement within its bounded window, even after
 the replacement topology appears. Its original funds are recovered separately
 on the original path. Treat asymmetric handover as outstanding acceptance;
 do not bypass it by granting unlimited mint forwarding or issuing new funds.
+A later instrumented run passes on the unchanged runtime and collects all its
+original funds over the replacement path. Its different routing identities and
+passing result do not establish that the earlier failure is fixed.
 
 ## Fund a relay
 
