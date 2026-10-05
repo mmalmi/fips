@@ -91,6 +91,7 @@ async fn controller_scenario(
 ) {
     let automatic_renewal = renewal_billing.is_some();
     let _network = NETWORK_SCENARIO.lock().await;
+    controller_support::initialize_tracing();
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()

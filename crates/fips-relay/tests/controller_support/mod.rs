@@ -7,6 +7,15 @@ mod rekey;
 #[cfg(unix)]
 pub(super) use rekey::RekeyObservation;
 
+pub(super) fn initialize_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_timer(tracing_subscriber::fmt::time::Uptime::default())
+        .with_ansi(false)
+        .with_test_writer()
+        .try_init();
+}
+
 pub(super) fn controller(result: Result<Controller, String>, renewal: bool) -> Arc<Controller> {
     // The small-channel renewal workload owns its disposable mint. Its request
     // allowance is independent of channel capital, payment and delivery limits.
