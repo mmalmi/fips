@@ -40,9 +40,9 @@ initializes accounts or enables boot startup. Procd bounds crash respawns and
 allows 65 seconds for orderly shutdown.
 
 The wrapper requires persistent account storage and waits for a valid NTP event,
-unbridged native interfaces with carrier, disabled mesh forwarding where relevant,
-and the configured mint. Waiting does not consume financial allowance or the crash
-restart budget. Query the actual relay's private control socket to establish
+unbridged native interfaces with carrier, and disabled mesh forwarding where
+relevant. Mint reachability does not block startup. Waiting does not consume
+financial allowance or the crash restart budget. Query the actual relay's private control socket to establish
 readiness; a running wrapper alone is insufficient. The package changes no radio,
 bridge, DHCP or firewall configuration. Firmware sysupgrade and older opkg/IPK
 packaging remain separate work.
