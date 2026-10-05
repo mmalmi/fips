@@ -151,9 +151,10 @@ impl Node {
                         self.session_direct_path_exclusive_trust_timeout_ms(),
                     )
                 });
+        let direct_session_unreturned =
+            self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
         let direct_session_untrusted = !direct_session_degraded
-            && (direct_probe_unvalidated
-                || self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms));
+            && (direct_probe_unvalidated || direct_session_unreturned);
         let stale_traversal_direct_route = self
             .peers
             .get(dest_node_addr)
@@ -174,11 +175,13 @@ impl Node {
 
         // A discovery-capable neighbor need not provide a usable payload route.
         // Prefer alternatives to a degraded session, but retain the live direct
-        // carrier as a last resort when none of those alternatives can route.
+        // carrier as a last resort unless its own payload has gone unanswered.
         let direct_route = self
             .peers
             .get(dest_node_addr)
-            .filter(|peer| peer.is_healthy())
+            .filter(|peer| {
+                peer.is_healthy() && (!direct_session_degraded || !direct_session_unreturned)
+            })
             .map(|_| *dest_node_addr);
         let healthy_direct_route = direct_route.filter(|_| !direct_session_degraded);
         let direct_payload_untried = self.sessions.get(dest_node_addr).is_some()

@@ -143,6 +143,7 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
     );
 
     let now_ms = Node::now_ms();
+    node.peers.get_mut(&peer_addr).unwrap().mark_stale();
     node.schedule_link_dead_reprobe(peer_addr, now_ms);
     node.mark_session_direct_path_degraded(peer_addr, now_ms);
     assert!(
