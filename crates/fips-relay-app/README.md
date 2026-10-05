@@ -50,6 +50,13 @@ acceptance scenario. Each name has separate Android account storage; reusing a
 name retains that account. Runs verify that all other installed bench accounts
 remain unchanged, including earlier named installations.
 
+Remove completed acceptance installations after their funds, settlements and
+device restoration are verified and their diagnostics are no longer needed.
+Retain the exact APK, private account recovery data and test evidence; keep the
+main app and any installation with unresolved financial work. Do not accumulate
+finished test apps on the phone. Uninstalling with retained Android data preserves
+the old account if that same signed package is installed again.
+
 The existing `scripts/check-rust-file-lines.sh` gate also checks Java. Paid-relay
 Rust and Android source files have a 600-line limit. Integration scenarios retain
 the workspace's 1,000-line limit. Android lint treats warnings as errors, with
