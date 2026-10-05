@@ -1629,7 +1629,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal and quote-retirement runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs, plus five-minute physical renewal with all 84,000 router stream originals delivered, two replacements and complete collection/restoration. Four current native UDP/TCP/WebSocket/self-signed TLS daemon cases retain financial bounds across restart and eight replacement channels with mint key rotation. A current physical brief leaf-radio interruption retains the original paid channels, delivers all eight recovery replies and fully collects/restores, with a 50.323-second observed recovery bound. | Requalify remaining physical middle-router outage and mixed-link cases after the transit-renewal and quote-retirement changes; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | Prior UDP, TCP, native Ethernet and WebSocket service acceptance, including local TLS certificate validation and explicit FIPS-authenticated self-signed TLS; paid/free destination policies, bounded bootstrap and price/quality selection; earlier ARM64 paid Wi-Fi leaf-outage recovery and Pixel paid sessions through three routers, including force-stop/reopen. The latest transit-renewal and quote-retirement runtime passes optimized five-node renewal/rekey recovery on native Linux at a quarter CPU and ARM64 under QEMU at two CPUs, plus five-minute physical renewal with all 84,000 router stream originals delivered, two replacements and complete collection/restoration. Four current native UDP/TCP/WebSocket/self-signed TLS daemon cases retain financial bounds across restart and eight replacement channels with mint key rotation. Current physical brief leaf-radio interruptions retain the original paid channels, deliver all eight recovery replies and fully collect/restore on saved-SAE and temporary open meshes. Their observed bounds are 50.323 and 8.764 seconds; retained diagnostics locate stalled native Wi-Fi admission in the SAE case. | Requalify remaining physical middle-router outage and mixed-link cases after the transit-renewal and quote-retirement changes; sustained and impaired Android/router workloads, remote WebSocket/TLS deployment, remaining delivery/payment timeouts including current quarter-CPU ARM64 emulation failures and the historical rekey delay described below, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -2467,12 +2467,51 @@ Recovery remains slow in this observation: the radio rejoin command completes
 after 1.276 seconds, the serial peer observations first confirm the two-hop
 connected topology after 47.496 seconds, and eight fresh replies are observed
 after 50.323 seconds. The two peers adjoining the interrupted radio remain
-reported disconnected until the final readiness sample. These are observation
-brackets, not exact native transition times or an attribution to beacon, rekey
-or payment work. Original diagnostics and a result-bound summary are retained;
-no runtime timing policy changes. This closes one stationary brief-interruption
-case, not fast handover, moving-radio, middle-router outage, longer impaired
-service or physical power-loss acceptance.
+reported disconnected until the final readiness sample. Subsequent result-bound
+analysis of all 35 serial samples finds that the required Wi-Fi neighbor remains
+in `LISTEN`, unauthenticated and unauthorized in the first 34. The last such
+station read spans 45.959–46.119 seconds after rejoin; the first authorized
+`ESTAB` read spans 47.328–47.487 seconds. The interrupted router's FIPS adapter
+receives no new data or beacons before that final sample: received frames stay
+at 504, then increase to 517. A different, filtered-out radio neighbor is already
+authorized in the first sample, so generic station membership would misattribute
+the delay. Evidence is `work/physical-outage-r99/radio-recovery-analysis.json`.
+
+These observations locate the unavailable physical edge, but do not explain why
+SAE peering stalls or isolate FIPS recovery after radio authorization. They are
+serial brackets, not exact native transition times, a beacon/rekey attribution
+or a payment delay. Original diagnostics remain retained and no runtime timing
+policy changes. This closes one stationary brief-interruption case, not fast
+handover, moving-radio, middle-router outage, longer impaired service or physical
+power-loss acceptance.
+
+The same frozen runtime also passes the existing brief leaf-outage scenario on
+a temporary open mesh, with the default 30-second FIPS beacon interval. The
+third router joins after the first two have authenticated, without a configured
+peer roster. Rejoin preserves FIPS authentication, processes, funding and the
+original channels; all eight fresh replies arrive, automatic payments advance
+in both directions, and both channels settle. All 384 test sats are collected
+and 324 management checks pass. Independent closure verifies all saved fields,
+including restored radio capacity/inactivity limits, original accounts, normal
+AP/Internet availability, absent owned processes and a clean mint exit.
+Evidence is `work/physical-open-outage-r100`.
+
+The rejoin command completes after 1.555 seconds; the first serial readiness
+sample confirms the FIPS line after 2.389 seconds and the required Wi-Fi neighbor
+is already authenticated and authorized. All eight replies are observed after
+8.764 seconds, including profile/process checks, probe setup and paced sending.
+The result-bound comparison verifies identical runtime/mint binaries, dependency
+bundle, harness, devices, stream shapes/pacing, default beacon interval and
+financial bounds. Only the existing `open_mesh` option changes. Different setup,
+beacon phases and uncontrolled RF prevent a matched speedup or mobile-handover
+claim. No timer tuning or new recovery protocol is needed for this case.
+
+The open radio retains the existing eight-neighbor and 60-second inactivity caps,
+no IP/bridge attachment and disabled layer-two forwarding. FIPS authenticates
+identities and protects its traffic independently of SAE. This run does not test
+hostile radio saturation or arbitrary moving peers. Its corrected read-only
+closure observer includes the original radio-limit snapshot rather than omitting
+those fields; the initial observer mismatch remains recorded separately.
 
 CDK `7c250132ae57` closes the internal original-receipt read during
 reclaim storage reservation. Both ordinary saga updates and atomic output
