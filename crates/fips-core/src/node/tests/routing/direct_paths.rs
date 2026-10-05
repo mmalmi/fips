@@ -46,6 +46,19 @@ fn test_session_degraded_direct_peer_remains_route_without_fallback() {
         &peer_addr,
         "a healthy direct peer must remain the payload route when no fallback can carry traffic"
     );
+
+    // Another live neighbor is useful for discovery but is not, by itself,
+    // an alternate route to this destination.
+    let unrelated_link = LinkId::new(2);
+    let (unrelated, identity) =
+        make_completed_connection(&mut node, unrelated_link, transport_id, 1000);
+    node.add_connection(unrelated).unwrap();
+    node.promote_connection(unrelated_link, identity, 2000).unwrap();
+    assert_eq!(
+        node.find_next_hop(&peer_addr).map(|p| *p.node_addr()),
+        Some(peer_addr),
+        "an unrelated neighbor must not suppress the only available direct route"
+    );
 }
 
 #[test]
