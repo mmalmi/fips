@@ -580,9 +580,30 @@ confirms absent process groups, removed temporary wallet state and a released
 build lock. Evidence is under `work/openwrt-current-r58/closure.json` in the
 private recovery bundle. This accepts those four process cases and two wrapper
 checks; it does not transfer the older customer/route-quality results to this
-artifact or establish device installation, upgrade space, actual procd behavior,
+artifact or establish device installation, upgrade space, reboot behavior,
 physical power-loss recovery, performance or production readiness. No device
 software was replaced and no package was published.
+
+The same r58 archive subsequently passes four wrapper/supervisor checks on one
+Cudy TR3000 v1 running OpenWrt 25.12.5. Its extracted binary and wrapper run under
+an isolated procd service with the package's respawn/shutdown settings, a fresh
+persistent-overlay account, loopback-only UDP and no neighbors. The installed
+service and its account remain running throughout. With the configured mint
+unreachable, the account initializes, starts and returns its private status;
+a forced candidate-process crash respawns the same identity, journals and limits.
+A bridged native interface keeps one waiting wrapper across seven checks,
+without launching the relay or repeatedly respawning. The actual filesystem
+guard also rejects a RAM-backed fixture.
+
+All thirteen management checks pass. Independent closure confirms the original
+service process, saved-account hashes, radio/network configuration, ordinary
+Wi-Fi and Internet/DNS remain unchanged. The candidate wallet stays empty;
+no funds are issued. The candidate service, independent expiry guard, extracted
+package and temporary account are removed after verification. The private
+receipt is `work/openwrt-procd-r58-r1/closure.json`. This checks the exact extracted
+wrapper under actual procd. Package installation, the installed init/UCI path,
+a reboot, funded recovery during a mint outage and radio payload forwarding
+remain outside this case.
 
 The earlier r57 package contains the receiver-wallet and outgoing-wallet recovery
 changes. It uses the identical accepted r56 ARM64 executable, built from private
@@ -618,8 +639,9 @@ The r57 wrapper removes the extra mint HTTP startup prerequisite and its unused
 package dependency. Storage, account, clock and native-link guards remain.
 Two shell regressions reproduce the old wrapper's outage block and pass on the
 extracted r57 wrapper while retaining the clock control. These checks substitute
-OpenWrt commands and the clock marker; actual device startup/outage recovery
-remains pending. The r57 receipt is
+OpenWrt commands and the clock marker. The later r58 device check above covers
+unfunded startup with an unavailable mint; funded recovery remains separate.
+The r57 receipt is
 `work/openwrt-offline-start/acceptance.json`. The six daemon/customer cases retain
 their r56 execution provenance and apply to the identical binary in r57.
 
