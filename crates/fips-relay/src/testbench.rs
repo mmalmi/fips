@@ -27,6 +27,9 @@ use tokio::{
     task::JoinHandle,
 };
 
+mod faults;
+pub use faults::FaultAction;
+use faults::MintFaults;
 pub(crate) mod proxy;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -79,6 +82,7 @@ pub enum BenchRequest {
     Issue { id: String, amount_sat: u64 },
     Collect { token: String },
     Report,
+    Fault { command: FaultAction },
 }
 
 pub struct BenchMint {
@@ -86,6 +90,7 @@ pub struct BenchMint {
     url: String,
     network: PaymentNetwork,
     _mint: LocalMint,
+    faults: MintFaults,
     proxy: JoinHandle<()>,
     issued: BTreeMap<String, u64>,
 }
@@ -123,7 +128,8 @@ impl BenchMint {
         )
         .await
         .map_err(|e| e.to_string())?;
-        let backend: SocketAddr = mint
+        let faults = MintFaults::start(mint.url()).await;
+        let backend: SocketAddr = faults
             .url()
             .strip_prefix("http://")
             .ok_or("invalid local mint URL")?
@@ -143,6 +149,7 @@ impl BenchMint {
             url,
             network,
             _mint: mint,
+            faults,
             proxy,
             issued: BTreeMap::new(),
         };
@@ -164,7 +171,16 @@ impl BenchMint {
     }
 
     pub async fn handle(&mut self, request: BenchRequest) -> Result<Value, String> {
+        if self.faults.active()
+            && matches!(
+                &request,
+                BenchRequest::Issue { .. } | BenchRequest::Collect { .. }
+            )
+        {
+            return Err("release the test barrier before issuing or collecting funds".into());
+        }
         match request {
+            BenchRequest::Fault { command } => self.faults.request(command),
             BenchRequest::Issue { id, amount_sat } => {
                 if !valid_id(&id) || amount_sat == 0 {
                     return Err("invalid test grant".into());

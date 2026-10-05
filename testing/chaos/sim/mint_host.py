@@ -146,6 +146,8 @@ class MintHost:
                 kind = body.get("type")
                 if kind == "report":
                     return self.report()
+                if kind == "fault":
+                    return self.control(body)
                 if kind == "issue":
                     name, amount = body.get("id"), body.get("amount_sat")
                     if (not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name)

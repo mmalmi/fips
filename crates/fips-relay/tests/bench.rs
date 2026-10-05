@@ -2,7 +2,7 @@
 
 use fips_relay::{
     service::{RelayService, ServiceConfig},
-    testbench::{BenchConfig, BenchMint, BenchRequest},
+    testbench::{BenchConfig, BenchMint, BenchRequest, FaultAction},
     wallet_tools::{WalletRequest, offline_wallet},
 };
 use serde_json::{Value, json};
@@ -93,14 +93,93 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
         "the unfunded export retains its original request"
     );
     drop(wallet);
-    let received = offline_wallet(
-        &cfg,
-        WalletRequest::Import {
-            token: token.clone(),
-        },
-    )
+    let armed = mint
+        .handle(BenchRequest::Fault {
+            command: FaultAction::ArmSwapReply,
+        })
+        .await
+        .unwrap();
+    assert_eq!(armed["phase"], "armed");
+    assert!(
+        mint.handle(BenchRequest::Fault {
+            command: FaultAction::ArmSwapReply
+        })
+        .await
+        .is_err()
+    );
+    assert!(
+        mint.handle(BenchRequest::Collect {
+            token: token.clone()
+        })
+        .await
+        .unwrap_err()
+        .contains("barrier")
+    );
+    assert!(
+        mint.handle(BenchRequest::Issue {
+            id: "blocked".into(),
+            amount_sat: 1
+        })
+        .await
+        .unwrap_err()
+        .contains("barrier")
+    );
+    let generation = armed["generation"].as_u64().unwrap();
+    assert!(
+        mint.handle(BenchRequest::Fault {
+            command: FaultAction::Release { generation }
+        })
+        .await
+        .is_err()
+    );
+    let owner = cfg.clone();
+    let incoming = token.clone();
+    let import = tokio::spawn(async move {
+        offline_wallet(&owner, WalletRequest::Import { token: incoming }).await
+    });
+    let held = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let state = mint
+                .handle(BenchRequest::Fault {
+                    command: FaultAction::Status,
+                })
+                .await
+                .unwrap();
+            if state["phase"] == "held" {
+                break state;
+            }
+            assert!(!import.is_finished());
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
     .await
     .unwrap();
+    assert!(
+        !import.is_finished(),
+        "committed outputs must stay withheld"
+    );
+    assert_eq!(
+        held["swaps"].as_u64().unwrap(),
+        armed["swaps"].as_u64().unwrap() + 1
+    );
+    assert!(
+        mint.handle(BenchRequest::Fault {
+            command: FaultAction::Release {
+                generation: generation + 1
+            }
+        })
+        .await
+        .is_err()
+    );
+    let release = BenchRequest::Fault {
+        command: FaultAction::Release { generation },
+    };
+    assert_eq!(
+        mint.handle(release.clone()).await.unwrap()["phase"],
+        "released"
+    );
+    assert_eq!(mint.handle(release).await.unwrap()["phase"], "released");
+    let received = import.await.unwrap().unwrap();
     assert_eq!(received["amount_sat"], 256);
     assert!(!received.to_string().contains("cashuB"));
     assert_eq!(
