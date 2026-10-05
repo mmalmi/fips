@@ -394,20 +394,46 @@ async fn exercise(failure: Failure) {
                 > 0
         );
         customer.shutdown().await.unwrap();
-        for node in nodes {
-            node.shutdown().await.unwrap();
+        nodes.remove(1).shutdown().await.unwrap();
+        nodes.remove(0).shutdown().await.unwrap();
+        // Both account owners are stopped. Collect through the remaining
+        // mint-side FIPS endpoint to verify the recovered proofs are spendable.
+        let collection = MeshMintBridge::connect(
+            nodes[0].endpoint.clone(),
+            PORT,
+            identities[3],
+            TcpListener::bind(address).await.unwrap(),
+        )
+        .await
+        .unwrap();
+        let collected = root.path().join("collected");
+        for (config, balance) in [(&configs[0], 16 - paid), (&configs[1], paid)] {
+            let wallet = config.state_directory.join("wallet");
+            assert_eq!(
+                load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
+                balance
+            );
+            let payment = send_payment_token(&wallet, &url, balance).await.unwrap();
+            receive_payment_token(&collected, &payment.token)
+                .await
+                .unwrap();
+            assert_eq!(
+                load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
+                0
+            );
         }
         assert_eq!(
-            load_mint_balance(&wallet, &url).await.unwrap().balance_sat,
-            16 - paid
-        );
-        assert_eq!(
-            load_mint_balance(&configs[1].state_directory.join("wallet"), &url)
+            load_mint_balance(&collected, &url)
                 .await
                 .unwrap()
                 .balance_sat,
-            paid
+            16
         );
+        eprintln!("mint handover: {failure:?} collected all sixteen test sats");
+        collection.shutdown().await.unwrap();
+        for node in nodes {
+            node.shutdown().await.unwrap();
+        }
         fips_core::unregister_sim_network(&name);
     })
     .await
