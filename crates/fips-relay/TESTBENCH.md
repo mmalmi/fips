@@ -76,6 +76,10 @@ idle. The focused native check is:
 cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
 ```
 
+The case also restarts the mint gateway after a committed close loses its reply.
+Background recovery must finish the original payout and refund without another
+swap or new funding; see the bounded evidence in [READINESS.md](READINESS.md).
+
 ### Client configuration and wallet lifetime
 
 Configure fresh accounts before initialization:

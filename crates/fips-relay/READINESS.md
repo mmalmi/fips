@@ -189,6 +189,27 @@ the closure; the financial run required no retry. This accepts radio transport
 for the mint lifecycle, not interruption during a financial request, mobile
 handover or Android mint integration. The earlier phone mint remains unchanged.
 
+The native case on `2b1e7e38a` additionally recovers a lost committed mint-close
+reply. It reuses the SDK's response barrier, matching the original channel's
+funding proofs, and stops the mint's FIPS gateway after the real swap succeeds
+but before its outputs reach the provider. The HTTP mint stays alive. The
+original settlement call fails while the gateway is absent; restarting that
+gateway from its saved profile retains the mint identity and wallet URL.
+
+Journal reads then observe both normal recovery workers completing the original
+provider payout, buyer refund and channel release before another Finish/Settle
+call. All swap submissions are rejected during recovery, and their counter
+proves none was attempted. The funding authority, lifetime spending policy,
+eight-sat debit and single channel remain unchanged. The same full lifecycle
+then collects all 16 original test sats. It passes in 37.92 seconds, along with
+strict library lint, formatting and the source-size gate. Verified logs and
+independent process/cache closure are in `work/mesh-mint-r20`. The preceding
+`r19` reached the financial boundary but
+tried restarting only the adapter on a still-registered service port; the fixed
+fixture uses the complete service lifecycle. This verifies native recovery at
+one committed-close boundary, not mint-process restart, interrupted channel
+funding, radio interruption during a financial request or Android integration.
+
 The standalone `80bf5baec` ARM64 runtime passes the full matched
 three-router cadence matrix: two opposite-order repetitions of the 250-ms,
 500-ms, 1-s and 2-s policies, with default financial limits and persistent
