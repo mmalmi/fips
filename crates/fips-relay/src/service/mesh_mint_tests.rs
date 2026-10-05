@@ -23,6 +23,8 @@ use tokio::net::{TcpListener, TcpStream};
 mod handover;
 #[path = "mesh_mint_tests/recovery.rs"]
 mod recovery;
+#[path = "mesh_mint_tests/restart.rs"]
+mod restart;
 
 const PORT: u16 = 44_745;
 
@@ -39,21 +41,14 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
     // Explicit bootstrap rates cover mint metadata as well as small receipts.
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let mut mint = restart::ProcessMint::start(root.path()).await;
+        let backend = mint
+            .proxy
+            .url
+            .strip_prefix("http://")
             .unwrap()
-            .as_secs();
-        let network = PaymentNetwork::new(317, 0, Arc::new(VirtualClock::new(now)));
-        let mint = LocalMint::start(
-            root.path(),
-            network.clone(),
-            "mesh-mint",
-            IssuerMode::ClosedLoop,
-        )
-        .await
-        .unwrap();
-        let fault = MintProxy::start(mint.url()).await;
-        let backend = fault.url.strip_prefix("http://").unwrap().parse().unwrap();
+            .parse()
+            .unwrap();
         // Exercise the same fixed-upstream proxy used by the hardware test mint.
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mint_backend = upstream.local_addr().unwrap();
@@ -61,7 +56,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let url = format!("http://{address}");
-        assert_ne!(url, mint.url());
+        assert_ne!(url, mint.proxy.url);
         let reservations: Vec<_> = (0..4)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
             .collect();
@@ -249,10 +244,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         drop(request);
         checkpoint("original HTTP response recovered");
         let quote = create_topup_quote(&wallet, &url, 16).await.unwrap();
-        network
-            .orchestrator_funding()
-            .settle_external(&quote.payment_request)
-            .unwrap();
+        mint.fund(&quote.payment_request).await;
         let overview = load_wallet_overview(&wallet, true).await.unwrap();
         assert!(overview.warnings.is_empty(), "{:?}", overview.warnings);
         assert_eq!(
@@ -300,7 +292,8 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         checkpoint("customer offline import complete");
         phone.execute(CustomerCommand::Start).await.unwrap();
         // Payment, provider redemption and buyer refund all use the mesh mint.
-        recovery::interrupt_funding(&mut phone, &configs, &mut nodes, &fault, &customer_root).await;
+        recovery::interrupt_funding(&mut phone, &configs, &mut nodes, &mut mint, &customer_root)
+            .await;
         checkpoint("lost committed funding recovered without another wallet spend");
         let funded = phone.execute(CustomerCommand::Status).await.unwrap();
         assert_eq!(funded["relay"]["locked_sat"], 8);
@@ -334,7 +327,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             &mut phone,
             &configs,
             &mut nodes,
-            &fault,
+            &mut mint,
             &customer_root,
             channel,
         )
@@ -489,6 +482,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
         }
         proxy.abort();
         assert!(proxy.await.unwrap_err().is_cancelled());
+        mint.shutdown().await;
     })
     .await
     .expect("mesh mint acceptance deadline");

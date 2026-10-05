@@ -7,7 +7,7 @@ pub(super) async fn interrupt_close(
     phone: &mut CustomerClient,
     configs: &[ServiceConfig],
     nodes: &mut Vec<RelayService>,
-    proxy: &MintProxy,
+    mint: &mut restart::ProcessMint,
     customer_root: &Path,
     channel: &str,
 ) {
@@ -29,20 +29,20 @@ pub(super) async fn interrupt_close(
         .map(|proof| proof.y().unwrap().to_string())
         .collect();
     assert!(!originals.is_empty());
-    let (committed, release) = proxy.state.pause_matching_swap_reply(move |swap| {
+    let (committed, release) = mint.proxy.state.pause_matching_swap_reply(move |swap| {
         swap.inputs().len() == originals.len()
             && swap
                 .inputs()
                 .iter()
                 .all(|proof| proof.y().is_ok_and(|y| originals.contains(&y.to_string())))
     });
-    let swaps = proxy.state.swaps.load(Ordering::SeqCst);
+    let swaps = mint.proxy.state.swaps.load(Ordering::SeqCst);
     let failed_relay = *nodes[1].endpoint.node_addr();
     let counts = lose_reply(
         phone.execute(CustomerCommand::Finish),
         nodes,
         1,
-        proxy,
+        mint,
         (committed, release),
         &buyer_path,
     )
@@ -58,6 +58,7 @@ pub(super) async fn interrupt_close(
 
     // Keep the original transit relay offline. The replacement has its own
     // identity and empty journals, and needs no client-specific return tariff.
+    mint.reopen().await;
     nodes.insert(1, RelayService::load(configs[3].clone()).await.unwrap());
     let alternate = *nodes[1].endpoint.node_addr();
     // Only read journals until both ordinary workers release the original
@@ -69,7 +70,7 @@ pub(super) async fn interrupt_close(
             assert_eq!(buyer["funding"], original["funding"]);
             assert_eq!(buyer["next_funding"], original["next_funding"]);
             assert_eq!(buyer["policy"], original["policy"]);
-            counts.unchanged(proxy);
+            counts.unchanged(&mint.proxy);
             let purchase = &buyer["buyer_settlements"][channel];
             let sale = &seller["seller_settlements"][channel];
             if purchase["released"] == true
@@ -91,7 +92,7 @@ pub(super) async fn interrupt_close(
         "automatic mesh settlement recovery: provider {:?}",
         nodes[0].controller.last_error()
     );
-    counts.recovered(proxy);
+    counts.recovered(&mint.proxy);
     assert_ne!(alternate, failed_relay);
     for node in [&nodes[0], &nodes[2]] {
         let peers = node.endpoint.peers().await.unwrap();
@@ -153,7 +154,7 @@ async fn lose_reply(
     request: impl std::future::Future<Output = Result<Value, String>>,
     nodes: &mut Vec<RelayService>,
     failed: usize,
-    proxy: &MintProxy,
+    mint: &mut restart::ProcessMint,
     gate: (
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
@@ -183,14 +184,18 @@ async fn lose_reply(
         );
     }
     let counts = Counters {
-        swaps: proxy.state.swaps.load(Ordering::SeqCst),
-        attempts: proxy.state.swap_attempts.load(Ordering::SeqCst),
-        restores: proxy.state.restores.load(Ordering::SeqCst),
+        swaps: mint.proxy.state.swaps.load(Ordering::SeqCst),
+        attempts: mint.proxy.state.swap_attempts.load(Ordering::SeqCst),
+        restores: mint.proxy.state.restores.load(Ordering::SeqCst),
     };
-    proxy.state.reject_swap_replay.store(true, Ordering::SeqCst);
-    // Remove the only path before the committed outputs can arrive. The mint
-    // itself stays alive; neither its identity nor its URL changes.
+    mint.proxy
+        .state
+        .reject_swap_replay
+        .store(true, Ordering::SeqCst);
+    // Lose the committed reply and the mint process itself. Preserve its
+    // SQLite database, keys and fixed URL for the eventual background recovery.
     nodes.remove(failed).shutdown().await.unwrap();
+    mint.crash().await;
     let _ = release.send(());
     let result = tokio::time::timeout(Duration::from_secs(70), request)
         .await
@@ -199,7 +204,7 @@ async fn lose_reply(
         result.is_err(),
         "financial request bypassed the absent mint path"
     );
-    counts.unchanged(proxy);
+    counts.unchanged(&mint.proxy);
     counts
 }
 
@@ -207,14 +212,14 @@ pub(super) async fn interrupt_funding(
     phone: &mut CustomerClient,
     configs: &[ServiceConfig],
     nodes: &mut Vec<RelayService>,
-    proxy: &MintProxy,
+    mint: &mut restart::ProcessMint,
     customer_root: &Path,
 ) {
     let buyer_path = customer_root.join("state/controller/controller.json");
     let store = spilman_client_store_path(&customer_root.join("state/wallet"));
     let retained = store.clone();
     // Match the durable channel-opening request, not an earlier wallet split.
-    let gate = proxy.state.pause_matching_swap_reply(move |request| {
+    let gate = mint.proxy.state.pause_matching_swap_reply(move |request| {
         let Ok(saved) = read_json::<Value>(&retained) else {
             return false;
         };
@@ -232,7 +237,7 @@ pub(super) async fn interrupt_funding(
         phone.execute(CustomerCommand::Buy),
         nodes,
         2,
-        proxy,
+        mint,
         gate,
         &buyer_path,
     )
@@ -249,13 +254,14 @@ pub(super) async fn interrupt_funding(
     let operation = opening["wallet_send"]["operation_id"].clone();
     assert!(operation.as_str().is_some_and(|s| !s.is_empty()));
 
+    mint.reopen().await;
     nodes.push(RelayService::load(configs[2].clone()).await.unwrap());
     // Observe automatic funding recovery and activation; do not retry Buy or
     // open another wallet service, which could repair state during observation.
     let restored = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let buyer: Value = read_json(&buyer_path).unwrap();
-            counts.unchanged(proxy);
+            counts.unchanged(&mint.proxy);
             assert_eq!(buyer["next_funding"], original["next_funding"]);
             assert_eq!(buyer["policy"], original["policy"]);
             assert_eq!(buyer["funding"].as_object().unwrap().len(), 1);
@@ -280,7 +286,7 @@ pub(super) async fn interrupt_funding(
     })
     .await
     .expect("background recovery must activate only the original funded channel");
-    counts.recovered(proxy);
+    counts.recovered(&mint.proxy);
     assert_eq!(restored["relay"]["funding_budget"]["wallet_debited_sat"], 8);
     assert_eq!(restored["relay"]["locked_sat"], 8);
     assert_eq!(restored["relay"]["history"].as_array().unwrap().len(), 1);
