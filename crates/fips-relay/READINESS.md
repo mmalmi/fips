@@ -552,7 +552,39 @@ workload; the 500-ms default remains unchanged pending sustained/impaired
 comparisons. This does not accept a new package, physical power loss, mobile
 handover, flash lifetime or production deployment.
 
-The current r57 package contains the receiver-wallet and outgoing-wallet recovery
+The current private r58 package is rebuilt from `221851c4dd741`, including the
+later routing, mesh-mint and diagnostic-memory changes. Its 36,190-file portable
+bundle resolves all 697 packages offline with an empty Cargo home; all 2,374
+patched dependency files match the graph used for the current hardware checks.
+The build reuses an inactive output cache and keeps the normal `openwrt` profile
+with optional relay features disabled. It produces a static ARM64 binary of
+25,805,648 bytes and an 11,805,220-byte APKv3 package. The build is offline;
+bit-identical rebuilding and a fresh output cache were not tested.
+
+All eleven extracted payload files pass hash, mode and root-ownership checks;
+the service remains disabled by default. Both extracted-wrapper regressions
+pass. Four existing cases also pass against the extracted ARM64 daemon and CLI
+under QEMU, with current native Linux harnesses and local test mints:
+initialization and saved-account protection; wallet fees, refunds, restart and
+lifetime limits; mixed UDP/TCP exhaustion, renewal and restart; and self-signed
+WebSocket authentication, reconnect and restart. The initial harness attempt
+stopped before launching the package because its temporary path exceeded the
+control-socket limit; the corrected short path is recorded separately.
+
+The package SHA-256 is
+`678956c10e451fba1ecd048a6aea4c873e5a7f6d43b4120dbfd8880284b42553`;
+the binary SHA-256 is
+`e36ddc3d4709ccac39f4b47adc781263e2b0ab8ff2df0691d8da1cf40bb9b182`.
+Source integrity was verified after the runtime checks. Independent closure
+confirms absent process groups, removed temporary wallet state and a released
+build lock. Evidence is under `work/openwrt-current-r58/closure.json` in the
+private recovery bundle. This accepts those four process cases and two wrapper
+checks; it does not transfer the older customer/route-quality results to this
+artifact or establish device installation, upgrade space, actual procd behavior,
+physical power-loss recovery, performance or production readiness. No device
+software was replaced and no package was published.
+
+The earlier r57 package contains the receiver-wallet and outgoing-wallet recovery
 changes. It uses the identical accepted r56 ARM64 executable, built from private
 FIPS integration `83cb4d7815db`, SDK `ff1678c2b6ca`, CDK `8de95a89c9e0` and
 isolated bitreq cancellation commit `f59be760bcc5`. The complete portable source
@@ -587,7 +619,7 @@ package dependency. Storage, account, clock and native-link guards remain.
 Two shell regressions reproduce the old wrapper's outage block and pass on the
 extracted r57 wrapper while retaining the clock control. These checks substitute
 OpenWrt commands and the clock marker; actual device startup/outage recovery
-remains pending. The consolidated current receipt is
+remains pending. The r57 receipt is
 `work/openwrt-offline-start/acceptance.json`. The six daemon/customer cases retain
 their r56 execution provenance and apply to the identical binary in r57.
 
