@@ -133,7 +133,10 @@ fn funded_replacement(journal: &mut Journal, old: &Outgoing, provider: NodeAddr)
 }
 
 fn accepted_before_completion(directory: &Path) -> (Store, Outgoing, Outgoing) {
-    let (mut store, old) = fixture(directory);
+    accepted_replacement(fixture(directory))
+}
+
+fn accepted_replacement((mut store, old): (Store, Outgoing)) -> (Store, Outgoing, Outgoing) {
     let replacement = store
         .change(|journal| {
             Controller::reserve_renewal(journal, old.purchase.channel.id.clone())?;
@@ -288,5 +291,59 @@ fn incomplete_predecessor_does_not_reserve_an_unrelated_provider() {
     assert_eq!(
         serde_json::to_value(&store.journal.funding).unwrap(),
         funding
+    );
+}
+
+#[tokio::test]
+async fn recovery_defers_replacement_purchases_to_their_unfinished_renewal() {
+    let root = tempfile::tempdir().unwrap();
+    let controller = crate::controller::refresh::tests::disconnected_controller(root.path()).await;
+    let services = controller.services.clone();
+    let policy = controller.policy.clone();
+    let local = *services.endpoint.node_addr();
+    drop(controller);
+    let (mut store, old, replacement) =
+        accepted_replacement(crate::controller::transition_tests::fixture_for_local(
+            &root.path().join("controller"),
+            local,
+        ));
+    store
+        .change(|j| {
+            j.outgoing
+                .get_mut(&replacement.purchase.contract.id)
+                .unwrap()
+                .accepted = false;
+            Ok(())
+        })
+        .unwrap();
+    let directory = store.directory.clone();
+    drop(store);
+    let controller = Controller::load(&directory, policy, services).unwrap();
+    let saved = controller.snapshot().await.unwrap();
+    // Recovery must not duplicate the renewal worker's purchase, even while
+    // that replacement cannot reach its provider after a restart.
+    controller.resume_recovery().await.unwrap();
+    assert_eq!(
+        controller.pending_renewals().await.unwrap().0,
+        vec![old.purchase.channel.id]
+    );
+    let mut independent = replacement.offer.clone();
+    independent.id = "independent-offer".into();
+    independent.provider = NodeAddr::from_bytes([3; 16]);
+    independent.path[0] = independent.provider;
+    controller
+        .change(move |j| {
+            j.requested.insert(independent.id.clone(), independent);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        controller.resume_recovery().await.is_err(),
+        "recovery still attempts the independent purchase's disconnected provider"
+    );
+    assert_eq!(
+        serde_json::to_value(saved.funding).unwrap(),
+        serde_json::to_value(controller.snapshot().await.unwrap().funding).unwrap()
     );
 }

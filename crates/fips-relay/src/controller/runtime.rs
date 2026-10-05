@@ -17,7 +17,7 @@ impl Controller {
         error.map_or(Ok(()), Err)
     }
 
-    async fn resume_recovery(&self) -> Result<(), String> {
+    pub(super) async fn resume_recovery(&self) -> Result<(), String> {
         self.withdraw_expired_purchases().await?;
         self.retire_unfunded_reservations().await?;
         self.withdraw_disconnected_purchases().await?;
@@ -103,14 +103,17 @@ impl Controller {
             drop(claim);
         }
         for offer in snapshot.requested.into_values().filter(|offer| {
-            let paused = snapshot.renewals_paused
-                && snapshot.renewals.values().any(|r| r.requests(&offer.id))
-                || paused_offers.contains(&offer.id);
+            // The renewal worker resumes its replacement offers after restart.
+            // Recovery must not race the same funding and acceptance work.
+            let renewal_owned = snapshot
+                .renewals
+                .values()
+                .any(|r| !r.is_completed() && r.requests(&offer.id));
             let accepted = snapshot
                 .outgoing
                 .values()
                 .any(|o| o.offer.id == offer.id && o.accepted);
-            !(paused || accepted)
+            !(renewal_owned || paused_offers.contains(&offer.id) || accepted)
         }) {
             if let Err(error) = self.purchase_offer(offer).await {
                 first_error.get_or_insert(error);

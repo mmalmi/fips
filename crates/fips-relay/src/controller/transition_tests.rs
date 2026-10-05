@@ -2,7 +2,12 @@
 use super::*;
 
 pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
+    fixture_for_local(directory, NodeAddr::from_bytes([1; 16]))
+}
+
+pub(super) fn fixture_for_local(directory: &Path, local: NodeAddr) -> (Store, Outgoing) {
     let mut j = tests::unresolved_journal();
+    j.local = local;
     let funding = j.funding.get_mut("test-1").unwrap();
     funding.created_unix = now().unwrap();
     funding.expires_unix = funding.created_unix + j.policy.channel_lifetime_secs;
