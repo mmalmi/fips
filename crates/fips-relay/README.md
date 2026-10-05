@@ -377,6 +377,30 @@ cargo test -p fips-relay --features testbench
 The settlement test owns temporary wallets/mint state and binds the mint to a
 random loopback port. It does not use a user's wallet or contact a public mint.
 
+For the focused CPU-pressure recovery check on Linux with a user systemd
+manager, first build the existing controller test using the deployment
+optimization profile:
+
+```sh
+cargo test --offline --locked -p fips-relay --no-default-features \
+  --test controller --profile openwrt --no-run
+```
+
+Set `CONTROLLER_TEST` to the executable path printed by Cargo, then run:
+
+```sh
+systemd-run --user --scope -p CPUQuota=200% "$CONTROLLER_TEST" \
+  exhausted_channels_renew_automatically_without_resetting_capital_or_spending \
+  --exact --test-threads=1 --nocapture
+```
+
+Repeat with `CPUQuota=25%`, then run
+`bounded_handshakes_survive_paid_channel_renewal` at that same quota. The quota
+covers all five nodes and their test mint together. Both policies require
+recovery from each dropped session-handshake phase, fresh bidirectional delivery,
+automatic renewal and collection of all 1,280 test sats. These are finite
+functional checks; they do not establish router throughput or ARM timing.
+
 ### Code organization
 
 The existing CI file-length check caps relay source modules at 600 lines and
