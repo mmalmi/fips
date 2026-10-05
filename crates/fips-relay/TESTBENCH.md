@@ -112,10 +112,14 @@ collector. The subprocess fixture permits no new simulated funding after a
 restart; it covers Cashu proof-state durability, not recovery of a Lightning
 backend. The hardware test mint still requires a new directory per process.
 
-A second case keeps all nodes alive and changes an edge so the provider reaches
-the mint through its former customer. Superseded cached free quotes are refetched
-without reviving their old allowances. See the bounded evidence in
-[READINESS.md](READINESS.md).
+The handover cases keep all nodes alive while the provider's mint route moves
+through its former customer. They cover a disconnected edge and persistent
+packet loss in either direction of an edge that discovery still advertises as
+up. The failed direction stays broken throughout recovery. Superseded cached
+free quotes are refetched without reviving their old allowances; no additional
+swap or wallet spend is allowed during recovery. After normal workers settle the
+original channel, the fixture redeems all 16 test sats through the remaining
+mint-side FIPS endpoint. See the bounded evidence in [READINESS.md](READINESS.md).
 
 ### Client configuration and wallet lifetime
 

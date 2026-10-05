@@ -283,6 +283,19 @@ passes in 79.319 seconds, conserving all 16 simulated sats in the wallets and
 retaining the original funding authority without another mint swap. Evidence is
 in `work/mesh-mint-r28` and `work/mesh-mint-r29`.
 
+The extended handover fixture on `793248a25` also passes with persistent packet
+loss in either direction of the former provider-to-mint-side edge. Discovery
+continues advertising that edge as up; neither failed direction is repaired.
+Both cases and the original full-disconnection case observe the replacement
+topology, recover the original settlement through ordinary workers without
+another swap or wallet spend, and confirm actual mint transit through the former
+customer. Each then redeems all 16 original test sats into a collection wallet,
+leaving buyer and provider wallets empty. All three pass in 337.913 seconds;
+strict library Clippy and the source-size check pass. Logs, source hashes and
+independent process/cache closure are verified in `work/mesh-mint-r34`. This
+accepts those controlled transport failures; physical radio asymmetry,
+interference and moving-router handover remain separate acceptance work.
+
 The existing funding-and-alternate-relay settlement regression passes on
 `19feea4a3` in 121.158 seconds and collects all 16 simulated sats. Strict library
 Clippy and the source-size check pass. Three consecutive fresh runs of that
@@ -322,7 +335,7 @@ and services, removed candidate executables, matching released settlement
 records and clean mint/export-relay exits, without cleanup assistance.
 
 This accepts that specific symmetric radio-edge change with bounded free mint
-access. Arbitrary/asymmetric mobility, hardware mint-process restart, recovery
+access. Broader asymmetric mobility, hardware mint-process restart, recovery
 with a persistent Lightning backend, financial power-loss recovery and Android
 mint integration still need their own acceptance.
 
