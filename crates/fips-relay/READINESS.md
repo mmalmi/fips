@@ -2589,6 +2589,22 @@ queues synchronously. The failed setup check and source audit are retained in
 change was applied. TCP renewal delivery and the original quarter-CPU datagram
 acceptance remain open.
 
+A separate TCP/FIPS defect is reproduced in both implementations: a cumulative
+recovery ACK can incorrectly time an old, buffered original segment after a
+retransmission. Local TCP master `9b94dd2dc8ca` suppresses that ambiguous sample
+until fresh data can be timed. Shared wraparound/recovery vectors, the Rust and
+TypeScript suites, bidirectional live interoperability, the pinned smoltcp oracle
+and real FIPS endpoint checks pass. This changes no wire format or timer bounds.
+The three changed Rust source files are also tested against the frozen relay
+graph, with strict Linux lint. That uninstrumented two-CPU comparison still
+misses the original 60-second bound: endpoints receive 6,700 and 8,213 of their
+18,000 bytes, and no final collection is claimed. All saved renewals complete,
+with active accepted contracts and no recorded controller errors. The TCP fix
+is locally integrated; it does not resolve or accept paid-renewal delivery.
+Verified artifacts and dependency/source custody are in
+`work/reliable-renewal-trace-r147`, `work/tcp-rtt-unit-r148` and
+`work/reliable-renewal-rtt-r149`.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
