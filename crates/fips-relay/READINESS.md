@@ -52,6 +52,26 @@ file error, send no financial operation and preserve the original financial and
 router state. They do not explain or fix the first export failure; investigate
 its failing stage before accepting the current mesh-only mint workflow.
 
+Offline-wallet errors now identify mint-network startup, endpoint binding,
+transport verification, bridge attachment, export preparation/send and shutdown.
+This changes diagnostics only; it adds no payment retries or authority. The
+ordinary native and ARM builds and strict runtime lint pass in
+`work/wallet-export-diagnostics-r192`. Its first test selection compiled out the
+mesh-mint module and ran zero tests; the verifier rejected that result. With the
+required test feature enabled, the real regression recovers committed funding,
+settlement and refunds, then fails during the reopened customer's export while
+refreshing mint keys after an HTTP connection reset. The qualification remains
+failed and is closed with its source, binaries and terminal processes verified.
+
+A fresh run of that exact test binary with bridge tracing passes in
+`work/wallet-export-trace-r194`, collecting all 16 simulated test sats. The
+reopened export takes about 46 seconds. This records intermittent post-reopen
+mint access, not a fix for that failure or the earlier provider file error. Both
+results remain preserved. The prepared hardware case rejects the failed
+qualification receipt; no new router test or phone installation was started.
+Investigate the slow/intermittent export connection before qualifying this
+workflow on the devices.
+
 Current device evidence covers steady mesh funding, paid delivery, settlement,
 an earlier symmetric edge handover, and persistent one-way return-loss handover
 on `a3adbfca3`. The latter follows a reduced routing regression and passes in
