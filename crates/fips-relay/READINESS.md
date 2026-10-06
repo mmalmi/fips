@@ -2759,8 +2759,14 @@ APIs, financial checks and wallet ownership remain unchanged. With the same
 construction witness, normal ARM renewal passes and collects all 1,280 test
 sats. It builds 189 clients, using 2.94 construction CPU seconds; whole-case CPU
 is 44.144 seconds, so no end-to-end speedup is established. Quarter-CPU delivery
-still fails at round nine, direction 0 → 4, after 121.027 seconds. It has no final
-collection claim. Exact current SDK tracked source, candidate changes, frozen
+still fails at round nine, direction 0 → 4, after 121.027 seconds. Its final source
+renewal spends 15.800 seconds reaching settlement and 17.502 seconds reaching
+replacement offers; it is canceled after 31.301 seconds without resuming.
+Overlapping replacement funding at node two remains unfinished. These are wall
+stages under the shared quarter-CPU limit, not isolated CPU attribution or proof
+of a cause. The checked timeline is in
+`work/scoped-refund-http-r166/validated-critical-timeline.json`. The failed case
+has no final collection claim. Exact current SDK tracked source, candidate changes, frozen
 dependency custody and stopped ownership are verified in
 `work/scoped-refund-http-r166`; no residual temporary files remain. Full SDK
 verification and local integration of this candidate are still pending. The
