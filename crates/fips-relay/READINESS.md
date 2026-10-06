@@ -29,6 +29,29 @@ replies or mint restarts. A compatible mint's backing and Lightning operation
 remain the mint operator's responsibility. A persistent Lightning regtest is an
 optional integration check for operating a mint, not a relay-v1 release gate.
 
+The current ordinary router and native Linux gateway binaries exercise mesh-only
+mint access in `work/mesh-mint-production-r190`. An empty client imports 16 test
+sats through two open radio hops and one UDP gateway link, then funds a paid
+route and delivers a payload with provider credit. After the mint commits a
+settlement and holds its reply, a persistent one-way return-path cut blocks the
+reply. Opening the alternative radio edge lets the same channel settle and refund
+without another administrative settlement request, swap or swap attempt; funding
+authority remains unchanged. The original administrative call reports an error,
+while the service subsequently recovers the original settlement.
+
+The complete acceptance case remains failed: the stopped provider's subsequent
+fund export reports a file-not-found error before any SDK export request or token
+is recorded. A separate recovery restores the original path, collects all 16
+original test sats and closes the mint and both gateway processes. Independent
+checks verify the original channel, financial authority, restored router profiles
+and limits, removed candidate executables and complete private evidence. All 321
+initial-run and 87 recovery management checks pass. The failed result remains
+failed. Twelve bounded invalid-token startup checks on the recovered, stopped
+provider in `work/mesh-mint-file-diagnostic-r191` reach token validation without a
+file error, send no financial operation and preserve the original financial and
+router state. They do not explain or fix the first export failure; investigate
+its failing stage before accepting the current mesh-only mint workflow.
+
 Current device evidence covers steady mesh funding, paid delivery, settlement,
 an earlier symmetric edge handover, and persistent one-way return-loss handover
 on `a3adbfca3`. The latter follows a reduced routing regression and passes in
