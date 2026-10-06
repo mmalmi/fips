@@ -2635,22 +2635,45 @@ binary, emulator and quotas, stopped ownership and one archived residual file
 are verified in `work/signed-capacity-arm-r154`. ARM pressure acceptance remains
 open, and these emulated results do not qualify physical-router performance.
 
-Two private admission traces of the original stream also miss its unchanged
-60-second bound, with all saved renewals completed and no controller errors.
-The more detailed trace records 58 permanent capacity rejections between the
-application endpoints: each packet's incremental cost fits a fresh 16-sat
-channel, but not the old channel's remaining capacity. These endpoint pairs also
-carry ordinary priced control traffic, so this is not per-stream attribution.
-Retained buyer evidence reaches 33,189 msat on one 16-sat channel while signed
-authority remains capped at 16 sats. Buyer admission currently permits that
-over-capacity traffic before renewal pauses it. A focused production-path buyer
-regression reproduces the problem: an over-capacity source reservation returns
-`Track` instead of `Retry`. The fix and the regression's remaining assertions
-are not yet accepted. Temporary diagnostics change no financial decisions and
-can affect timing; no performance or final collection claim follows. Exact
-artifacts, stopped ownership and unchanged dependency custody are verified in
-`work/stream-admission-probe-r155`, `work/stream-ledger-refusal-r156` and
-`work/buyer-channel-capacity-red-r157`.
+Local FIPS master `0d09ac49ca45` defers modern paid traffic before a source
+or onward reservation would exceed its funded channel capacity. Reservations
+include pending and uncertain sends, retained usage and every quote on that
+channel. Local demand or an accepted upstream relationship can signal renewal
+of the existing approved channel; unknown upstream demand and packets exceeding
+a fresh channel's capacity are rejected. The transient hint is not payment
+evidence or authority. Deferral uses the existing retry decision and reserves
+no upstream credit.
+
+The focused buyer regression fails before the fix, then passes for both modern
+tariffs, multiple quotes, pending reservations and upstream authorization. All
+318 relay library tests, strict Linux lint, formatting and source-size checks
+pass. With the frozen qualification graph and TCP `9b94dd2dc8ca`, all seven
+existing native controller scenarios pass, as does quarter-CPU bounded-handshake
+datagram renewal. The original stream also passes twice without replaying its
+application prefix or changing its 60-second bound. In the final build, both
+endpoints deliver and acknowledge all 18,000 bytes with matching digests after
+an observed 20.80 seconds. All four final renewal/stream cases complete their
+full capital, lifetime-spending, replay/reload and 1,280-sat collection checks.
+These are bounded simulations, not hardware or performance qualification.
+
+The detailed pre-fix trace records 58 capacity rejections between the application
+endpoints, each small enough to fit a fresh channel. Those endpoint pairs also
+carry priced control traffic, so this is not per-stream attribution. Retained
+buyer evidence reaches 33,189 msat on one 16-sat channel while signed authority
+stays capped at 16 sats. Earlier diagnostic runs and the red regression remain
+verified in `work/stream-admission-probe-r155`,
+`work/stream-ledger-refusal-r156` and `work/buyer-channel-capacity-red-r157`.
+The green library/stream check, existing control matrix and final acceptance
+are verified in `work/buyer-channel-capacity-green-r158`,
+`work/buyer-capacity-controller-matrix-r159` and
+`work/buyer-capacity-controller-assertion-r160`. Two initial datagram runs finish
+delivery before failing an obsolete assertion requiring fully used or fully
+authorized capacity. Its replacement also checks the actual capacity-blocked
+hint; it retains every delivery and financial requirement. These six runs have
+no running owned processes or residual temporary files; their artifacts and
+dependency custody are verified. ARM, physical-router and phone acceptance of this admission
+change, sustained/impaired workloads and the broader production scope remain
+open.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
