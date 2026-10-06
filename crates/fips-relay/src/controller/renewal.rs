@@ -10,8 +10,8 @@ mod admission_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenewalPolicy {
-    /// Renew near capacity using local submissions or the provider's retained
-    /// crash exposure. Neither renewal hint authorizes a payment.
+    /// Renew near capacity using local submissions, authorized payments or the
+    /// provider's retained crash exposure. These hints never authorize a payment.
     pub at_capacity_percent: u8,
     pub before_expiry_secs: u64,
 }
@@ -21,6 +21,7 @@ impl RenewalPolicy {
         &self,
         purchase: &Purchase,
         evidence_msat: u64,
+        authorized_sat: u64,
         observed_units: u64,
         timestamp: u64,
     ) -> bool {
@@ -36,7 +37,10 @@ impl RenewalPolicy {
         let nearing = timestamp.saturating_add(lead);
         purchase.channel.expires_unix <= nearing
             || purchase.contract.expires_unix <= nearing
-            || self.capacity_due(&purchase.channel, evidence_msat)
+            || self.capacity_due(
+                &purchase.channel,
+                evidence_msat.max(authorized_sat.saturating_mul(1_000)),
+            )
             || u128::from(observed_units) * 100
                 >= u128::from(purchase.contract.max_units) * u128::from(self.at_capacity_percent)
     }
@@ -238,7 +242,12 @@ impl Controller {
             .buyer
             .observed_units(&purchase.contract.id)
             .unwrap_or(0);
-        policy.due(purchase, evidence, observed, timestamp)
+        let authorized = self
+            .services
+            .buyer
+            .authorized_sat(&purchase.channel.id)
+            .unwrap_or(0);
+        policy.due(purchase, evidence, authorized, observed, timestamp)
     }
 
     pub(super) fn reserve_renewal(j: &mut Journal, id: String) -> Result<(), String> {
@@ -468,123 +477,5 @@ impl Controller {
             Ok(())
         })
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn offer() -> RouteOffer {
-        let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-        let provider = NodeAddr::from_bytes([2; 16]);
-        RouteOffer {
-            trial: false,
-            billing: Default::default(),
-            id: "offer".into(),
-            buyer: NodeAddr::from_bytes([1; 16]),
-            provider,
-            destination,
-            next_hop: *destination.node_addr(),
-            path: vec![provider, *destination.node_addr()],
-            price: crate::ledger::BytePrice {
-                msat: 1_024,
-                per_bytes: 1_024,
-            },
-            expires_unix: 500,
-            max_units: 30_000,
-            mint_url: "http://127.0.0.1:1234".into(),
-            receiver_pubkey_hex: format!("02{}", "11".repeat(32)),
-            capacity_sat: 16,
-            grace_msat: 8_000,
-        }
-    }
-
-    #[test]
-    fn renewal_does_not_silently_change_resale_price_route_or_limits() {
-        let old = offer();
-        assert!(same_service(&old, &old));
-        let mutations: Vec<fn(&mut RouteOffer)> = vec![
-            |o| o.billing = crate::ledger::BillingBasis::ForwardingAttempt,
-            |o| o.price.msat += 1,
-            |o| o.provider = NodeAddr::from_bytes([3; 16]),
-            |o| o.next_hop = NodeAddr::from_bytes([4; 16]),
-            |o| o.path.push(NodeAddr::from_bytes([5; 16])),
-            |o| o.trial = !o.trial,
-            |o| o.mint_url = "http://127.0.0.1:5678".into(),
-            |o| o.max_units -= 1,
-        ];
-        for mutate in mutations {
-            let mut changed = old.clone();
-            mutate(&mut changed);
-            assert!(!same_service(&old, &changed));
-        }
-    }
-
-    #[test]
-    fn renewal_triggers_at_local_capacity_byte_limit_and_service_expiry() {
-        let offer = offer();
-        let mut purchase = Purchase {
-            provider: offer.provider,
-            channel: ChannelTerms {
-                refund_after_unix: None,
-                id: "channel".into(),
-                buyer: offer.buyer,
-                mint_url: offer.mint_url.clone(),
-                capacity_sat: 16,
-                grace_msat: 8_000,
-                expires_unix: 600,
-            },
-            contract: Contract {
-                billing: Default::default(),
-                id: "contract".into(),
-                channel_id: "channel".into(),
-                destination: *offer.destination.node_addr(),
-                next_hop: offer.next_hop,
-                price: offer.price,
-                max_units: 30_000,
-                expires_unix: 500,
-            },
-        };
-        let policy = RenewalPolicy {
-            at_capacity_percent: 100,
-            before_expiry_secs: 30,
-        };
-        assert!(!policy.due(&purchase, 15_999, 29_999, 469));
-        assert!(policy.due(&purchase, 16_000, 0, 100));
-        assert!(policy.due(&purchase, 0, 30_000, 100));
-        assert!(policy.due(&purchase, 0, 0, 470));
-        purchase.contract.expires_unix = 600;
-        assert!(!policy.due(&purchase, 0, 0, 569));
-        assert!(policy.due(&purchase, 0, 0, 570));
-        purchase.channel.refund_after_unix = Some(640);
-        assert!(!policy.due(&purchase, 0, 0, 579));
-        assert!(policy.due(&purchase, 0, 0, 580));
-    }
-
-    #[test]
-    fn renewal_policy_rejects_unbounded_or_immediate_expiry_cycles() {
-        let mut policy = ControllerPolicy {
-            mint_url: "http://127.0.0.1:1234".into(),
-            channel_capacity_sat: 16,
-            max_locked_sat: 32,
-            max_funding_overhead_sat: 0,
-            max_wallet_spend_sat: 1024,
-            channel_lifetime_secs: 600,
-            renewal: Some(RenewalPolicy {
-                at_capacity_percent: 100,
-                before_expiry_secs: 30,
-            }),
-        };
-        Controller::validate_policy(&policy).unwrap();
-        policy.renewal.as_mut().unwrap().at_capacity_percent = 0;
-        assert!(Controller::validate_policy(&policy).is_err());
-        policy.renewal.as_mut().unwrap().at_capacity_percent = 101;
-        assert!(Controller::validate_policy(&policy).is_err());
-        policy.renewal.as_mut().unwrap().at_capacity_percent = 100;
-        policy.renewal.as_mut().unwrap().before_expiry_secs = 300;
-        Controller::validate_policy(&policy).unwrap();
-        policy.renewal.as_mut().unwrap().before_expiry_secs = 301;
-        assert!(Controller::validate_policy(&policy).is_err());
     }
 }

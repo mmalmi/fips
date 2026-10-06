@@ -846,8 +846,9 @@ async fn controller_scenario(
             for (buyer, _, old) in &links {
                 let current = controllers[*buyer].purchases().await.unwrap();
                 assert!(current.iter().any(|p| p.provider == old.provider && p.channel.id != old.channel.id), "each original direction needs a replacement channel");
-                assert!(buyers[*buyer].evidence_msat(&old.channel.id).unwrap() >= capacity * 1_000,
-                    "original channels were replaced because of local capacity evidence");
+                assert!(buyers[*buyer].evidence_msat(&old.channel.id).unwrap() >= capacity * 1_000
+                    || buyers[*buyer].authorized_sat(&old.channel.id).unwrap() == capacity,
+                    "original channels were replaced at evidenced or authorized capacity");
             }
             let mut active_before = Vec::new();
             let mut funding_before = Vec::new();
