@@ -1,5 +1,8 @@
-use fips_core::config::{TransportInstances, UdpConfig, WebRtcConfig};
+#[cfg(feature = "webrtc-transport")]
+use fips_core::config::WebRtcConfig;
+use fips_core::config::{TransportInstances, UdpConfig};
 use fips_core::{Config, FipsEndpoint};
+#[cfg(feature = "webrtc-transport")]
 use std::time::Duration;
 
 fn config() -> Config {
@@ -18,6 +21,7 @@ fn config() -> Config {
 }
 
 #[tokio::test]
+#[cfg(feature = "webrtc-transport")]
 async fn endpoint_transport_stats_are_aggregate_and_include_webrtc_conservation() {
     let mut config = config();
     config.transports.webrtc = TransportInstances::Single(WebRtcConfig {

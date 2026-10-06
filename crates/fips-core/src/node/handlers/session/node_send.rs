@@ -121,12 +121,8 @@ impl Node {
         batch: NodeEndpointDataBatch,
     ) {
         let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
-        self.queue_dataplane_unrouted_endpoint_batch(
-            remote,
-            payloads,
-            enqueued_at_ms,
-        )
-        .await;
+        self.queue_dataplane_unrouted_endpoint_batch(remote, payloads, enqueued_at_ms)
+            .await;
     }
 
     pub(in crate::node) async fn handle_endpoint_control(
@@ -155,10 +151,9 @@ impl Node {
                 previous_hop,
                 response_tx,
             } => {
-                if !self.register_endpoint_identity(
-                    *destination.node_addr(),
-                    destination.pubkey_full(),
-                ) {
+                if !self
+                    .register_endpoint_identity(*destination.node_addr(), destination.pubkey_full())
+                {
                     let _ = response_tx.send(None);
                     return None;
                 }
@@ -453,5 +448,4 @@ impl Node {
         }
         None
     }
-
 }
