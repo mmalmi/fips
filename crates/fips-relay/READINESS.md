@@ -2837,10 +2837,14 @@ temporary financial residue. Offline lock resolution preserves all 697 package
 identities and dependency lists. The first locked preflight is retained separately
 in `work/controller-purchase-production-r175`. The optimization is integrated
 locally. The [current native cadence matrix](CADENCE-RESULTS.md#current-native-matrix--6-october-2026)
-also passes all eight trials with strict boundaries, all 285,696 payloads delivered
-and all 40,960 test sats collected. It retains the original workloads and default
-financial limits; the 500-ms policy remains unchanged. Current physical-device,
-impaired-link and complete payment-cost attribution remain separate acceptance.
+also passes all eight trials on the ordinary measurements-enabled daemon, without
+core `sim-transport` or wallet SDK `simulation`. Strict boundaries hold, all
+285,696 payloads arrive and all 40,960 test sats are collected. The identical
+workloads and default financial limits remain; the 500-ms policy is unchanged.
+Source, dependency, stopped-process and ten-file local archive custody pass in
+`work/normal-runtime-cadence-r183`. The earlier test-feature matrix remains
+preserved. Current physical-device, impaired-link and complete payment-cost
+attribution remain separate acceptance.
 Two additional runs on the identical ARM image produce one complete pressure pass
 and one failure after delivery, at the fixture's 30-second wait for a funded,
 non-exhausted checkpoint before reply-recovery testing. The passing repeat collects

@@ -9,29 +9,33 @@ loopback. Policies run in forward and reverse order with unchanged idle, bursty,
 steady and high-rate workloads, 8,000-msat grace, 4,000-msat windows, 256-sat channel
 capacities, one-msat/KiB tariff and three-second payment tail. Setup and settlement
 remain outside workload measurements.
-Cargo's integration-test build also enables core `sim-transport` and SDK
-`simulation` features. The service processes use real UDP; this records the
-tested image and does not substitute for a normal-feature deployment build.
+The measured daemon uses the ordinary measurements-enabled binary, core default
+features without `sim-transport`, and the wallet SDK without `simulation`. The
+existing test harness retains simulation support for its capped test mint.
 
 All 285,696 payloads arrive, with zero duplicates, invalid payloads, invalid
 timestamps or controller errors. Strict delivery, payment-boundary and cost
 validation passes. All 40,960 test sats are collected. Source, binary, dependency,
-stopped-process and 11-file local archive verification passes in
-`work/current-cadence-r177`, with no temporary financial residue.
+stopped-process and ten-file local archive verification passes in
+`work/normal-runtime-cadence-r183`, with no temporary financial residue. Its
+borrowed daemon and harness also match their closed build archives. No competing
+builds or tests run during the matrix. The earlier matrix in
+`work/current-cadence-r177` remains preserved; its daemon also enabled core
+`sim-transport` and SDK `simulation`, so it has a separate image scope.
 
 High-rate values average two trials per policy. Each trial delivers 32,000,000
 application bytes; costs sum all five service processes.
 
 | Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Process CPU s / delivered MiB |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 250 ms | 60.5 | 10.75 | 432.46 | 139.73 | 0.170 |
-| 500 ms | 44 | 7.86 | 314.27 | 101.63 | 0.168 |
-| 1 s | 40 | 7.12 | 281.60 | 92.39 | 0.168 |
-| 2 s | 40 | 7.07 | 281.02 | 92.39 | 0.165 |
+| 250 ms | 61 | 10.51 | 435.88 | 140.88 | 0.169 |
+| 500 ms | 44 | 7.81 | 311.58 | 101.63 | 0.167 |
+| 1 s | 40 | 6.90 | 280.07 | 92.39 | 0.164 |
+| 2 s | 40 | 6.98 | 279.04 | 92.39 | 0.166 |
 
 Idle windows record zero payment updates, CPU and journal work. Bursty windows
 average two updates under every policy. Steady windows average 19/19/14/10 updates
-and 33.19/34.38/24.35/17.27 payment CPU ms per delivered MiB respectively. All
+and 33.09/34.61/25.42/17.18 payment CPU ms per delivered MiB respectively. All
 high-rate latency histograms place their 95th percentile within the one-ms bucket,
 using the shared-host clock assumption. These observations do not establish
 independent-router latency or an optimal policy; the 500-ms default stays unchanged.
