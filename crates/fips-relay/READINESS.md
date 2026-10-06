@@ -2836,7 +2836,11 @@ archive are verified in `work/controller-purchase-production-r176`, with no
 temporary financial residue. Offline lock resolution preserves all 697 package
 identities and dependency lists. The first locked preflight is retained separately
 in `work/controller-purchase-production-r175`. The optimization is integrated
-locally; current physical-device and matched-cadence acceptance remain separate.
+locally. The [current native cadence matrix](CADENCE-RESULTS.md#current-native-matrix--6-october-2026)
+also passes all eight trials with strict boundaries, all 285,696 payloads delivered
+and all 40,960 test sats collected. It retains the original workloads and default
+financial limits; the 500-ms policy remains unchanged. Current physical-device,
+impaired-link and complete payment-cost attribution remain separate acceptance.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same

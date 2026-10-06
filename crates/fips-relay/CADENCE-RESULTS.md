@@ -1,5 +1,46 @@
 # Paid-relay cadence measurements
 
+## Current native matrix — 6 October 2026
+
+The current production source on `6a33df2f7`, with the integrated refund-client
+reuse and purchase projection, passes the existing eight-trial matrix. Five real
+service processes and the test mint share a two-core native Linux scope over UDP
+loopback. Policies run in forward and reverse order with unchanged idle, bursty,
+steady and high-rate workloads, 8,000-msat grace, 4,000-msat windows, 256-sat channel
+capacities, one-msat/KiB tariff and three-second payment tail. Setup and settlement
+remain outside workload measurements.
+
+All 285,696 payloads arrive, with zero duplicates, invalid payloads, invalid
+timestamps or controller errors. Strict delivery, payment-boundary and cost
+validation passes. All 40,960 test sats are collected. Source, binary, dependency,
+stopped-process and 11-file local archive verification passes in
+`work/current-cadence-r177`, with no temporary financial residue.
+
+High-rate values average two trials per policy. Each trial delivers 32,000,000
+application bytes; costs sum all five service processes.
+
+| Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Process CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 60.5 | 10.75 | 432.46 | 139.73 | 0.170 |
+| 500 ms | 44 | 7.86 | 314.27 | 101.63 | 0.168 |
+| 1 s | 40 | 7.12 | 281.60 | 92.39 | 0.168 |
+| 2 s | 40 | 7.07 | 281.02 | 92.39 | 0.165 |
+
+Idle windows record zero payment updates, CPU and journal work. Bursty windows
+average two updates under every policy. Steady windows average 19/19/14/10 updates
+and 33.19/34.38/24.35/17.27 payment CPU ms per delivered MiB respectively. All
+high-rate latency histograms place their 95th percentile within the one-ms bucket,
+using the shared-host clock assumption. These observations do not establish
+independent-router latency or an optimal policy; the 500-ms default stays unchanged.
+
+Payment CPU covers synchronous measurement spans. Journal bytes are logical relay
+writes, excluding wallet SQLite and physical storage. Local payment-carrier bytes
+include submitted TCP/FIPS segments, acknowledgments and retries, excluding opaque
+transit and UDP/kernel/radio framing; they are not complete physical wire cost.
+Whole-process CPU includes routing and observation work. This matched current-build
+result does not isolate either optimization's effect or accept physical devices,
+impaired links, sustained capacity, power loss or production deployment.
+
 ## Matched router cadence matrix — 3 October 2026
 
 The full eight-trial hardware matrix passes on the standalone `80bf5baec`
