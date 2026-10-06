@@ -2798,11 +2798,16 @@ financial files remain.
 The next candidate consolidates the timing correction into one shared
 30-second fixture lifetime and adjusts the receiver-history expiry wait.
 Every financial, early-refund, real-expiry and recovery assertion remains.
-Touched-source formatting and dependency resolution pass; the full suite with
-default test parallelism is running in `work/scoped-refund-sdk-gates-r171`.
-Its result and local SDK integration remain pending. These test changes do not
-alter production deadlines, resolve ARM pressure acceptance or accept current
-software on physical devices.
+Touched-source formatting, dependency resolution and the full workspace
+all-features suite with default test parallelism pass in
+`work/scoped-refund-sdk-gates-r171`: all 56 target groups complete with 437
+passed tests, no failures and one ignored long-running proof-history soak.
+Source/dependency hashes, stopped process ownership, released build-cache
+ownership and the byte-for-byte local evidence archive are verified; no
+residual temporary financial files remain. Strict workspace library lint is
+running separately in `work/scoped-refund-sdk-lint-r173`; local SDK integration
+is pending. These test changes do not alter production deadlines, resolve ARM
+pressure acceptance or accept current software on physical devices.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
