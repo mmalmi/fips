@@ -2565,7 +2565,23 @@ terminal ownership and residual test-state custody are verified in
 `work/renewal-critical-path-r139`; that earlier run has interleaved phase records
 and is excluded from the timing summary. No probe or performance change is
 integrated into production. Reliable-traffic behavior through these successive
-renewal pauses needs comparison before changing payment or admission policy.
+renewal pauses remains unqualified.
+
+A private native TCP/FIPS comparison built from `256d3b1c5` and the frozen graph
+accepts one 18,000-byte prefix per endpoint into the existing stream adapter.
+It retains the five-node fixture's tariffs, channel terms and spending bounds,
+uses natural rekey without injected handshake loss, and does not replay application
+bytes. Both two-CPU runs miss exact delivery and acknowledgment at the 60-second
+bound. Failure snapshots show active accepted contracts, completed renewals, no
+unfinished funding and no recorded controller error. They do not exclude earlier
+pauses or establish the cause. No final test-fund collection is claimed. Artifacts,
+source/dependencies, quotas and stopped ownership are verified in
+`work/reliable-renewal-r141` and `work/reliable-renewal-diagnostics-r143`.
+A suspected cancellation point is inapplicable to the pinned core: its send API
+queues synchronously. The failed setup check and source audit are retained in
+`work/tcp-cancellation-red-r145`; its proposed test was discarded and no adapter
+change was applied. TCP renewal delivery and the original quarter-CPU datagram
+acceptance remain open.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
