@@ -346,7 +346,11 @@ async fn send_non_udp_transport_plan_group(
                 .await
                 {
                     Ok(bytes) => {
-                        output.record_service_carrier(transport.transport_type().name, bytes);
+                        output.record_service_carrier(
+                            transport.transport_type().name,
+                            bytes,
+                            output.payload(),
+                        );
                         output.record_originated_submission();
                         *sent += 1;
                         if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
@@ -368,7 +372,9 @@ async fn send_non_udp_transport_plan_group(
                     match send_non_udp_transport_payload(transport, &remote_addr, lane, &payload).await
                     {
                         Ok(bytes) => segments.output.record_service_carrier(
-                            transport.transport_type().name, bytes,
+                            transport.transport_type().name,
+                            bytes,
+                            &payload,
                         ),
                         Err(error) => {
                             send_error = Some(dataplane_output_error_for_transport(&error));

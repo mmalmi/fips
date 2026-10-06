@@ -124,6 +124,88 @@ fn service_carrier_counts_repeated_encoded_segments_but_not_unrelated_service_ou
 }
 
 #[test]
+fn service_wire_trace_matches_submitted_ciphertext_fragments_and_retries() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    use std::sync::{Arc, Mutex, Weak};
+
+    #[derive(Clone)]
+    struct Log(Weak<Mutex<Vec<u8>>>);
+    impl Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if let Some(log) = self.0.upgrade() {
+                log.lock().unwrap().extend_from_slice(bytes);
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let writer = Log(Arc::downgrade(&log));
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("off,fips_core::service_wire=trace")
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    // Callsite interest is process-wide: another test can register the first
+    // submission on a different thread. Give all threads the same subscriber.
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+    let counters = ServiceCarrierDiagnostics::new(44743);
+    let whole = sealed_service_packet(Some(counters.clone()), true);
+    let mut fragmented = sealed_service_packet(Some(counters.clone()), false);
+    fragmented.path_mtu = 220;
+    let DataplaneDirectFspTransportOutput::Segments(segments) =
+        dataplane_direct_fsp_transport_output(fragmented)
+    else {
+        panic!("expected real FSP fragments");
+    };
+    let payloads = [
+        whole.payload().to_vec(),
+        whole.payload().to_vec(),
+        segments.contiguous_payload(0),
+        segments.contiguous_payload(1),
+    ];
+    let mut batch = DataplaneTransportPayloadBatch::with_capacity(4);
+    batch.push_whole(whole.clone());
+    batch.push_whole(whole);
+    batch.push_direct_fsp_segments(segments);
+    batch.push_whole(sealed_service_packet(None, false));
+    // Stop after two fragments; neither the unsent tail nor the untagged
+    // record can create a trace or erase the submitted prefix.
+    batch.finish_send(4, &mut Vec::new(), &mut None, &mut 0);
+    // Two endpoints can use the same port in one process; keep their ordinals
+    // distinct even when they submit identical encrypted packets.
+    let other = ServiceCarrierDiagnostics::new(44743);
+    other.submitted_payloads("udp", payloads[0].len(), [&payloads[0][..]]);
+    assert_ne!(other.counter_id(), counters.counter_id());
+    let text = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    let counter_field = format!("counter_id={} ", counters.counter_id());
+    let events: Vec<_> = text
+        .lines()
+        .filter(|l| l.contains("FIPS service packet submitted") && l.contains(&counter_field))
+        .collect();
+    assert_eq!(
+        events.len(),
+        payloads.len(),
+        "missing successful packet traces"
+    );
+    for (index, (event, payload)) in events.iter().zip(&payloads).enumerate() {
+        assert!(event.contains("service_port=44743"));
+        assert!(event.contains(&format!("packet_number={}", index + 1)));
+        assert!(event.contains(&format!("payload_bytes={}", payload.len())));
+        assert!(event.contains(&hex::encode(Sha256::digest(payload))));
+    }
+    assert_eq!(udp_counters(&counters).submitted_packets, 4);
+    assert_eq!(
+        udp_counters(&counters).fips_payload_bytes,
+        payloads.iter().map(|p| p.len() as u64).sum::<u64>()
+    );
+}
+
+#[test]
 fn service_carrier_partial_fragment_batch_retains_sent_prefix_cost_and_rejects_the_output() {
     let counters = ServiceCarrierDiagnostics::new(44743);
     let mut output = sealed_service_packet(Some(counters.clone()), false);
@@ -217,6 +299,14 @@ fn service_carrier_partial_batch_counts_only_the_submitted_prefix_of_each_record
 
 #[tokio::test]
 async fn service_carrier_actual_udp_submission_matches_received_fragment_bytes() {
+    let capture_wire = std::env::var_os("FIPS_SERVICE_WIRE_CAPTURE").is_some();
+    if capture_wire {
+        tracing_subscriber::fmt()
+            .with_env_filter("off,fips_core::service_wire=trace")
+            .with_ansi(false)
+            .without_time()
+            .init();
+    }
     let listener = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let transport_id = TransportId::new(812);
     let mut transport = unstarted_udp_transport(transport_id);
@@ -265,4 +355,9 @@ async fn service_carrier_actual_udp_submission_matches_received_fragment_bytes()
     );
     assert_eq!(udp_counters(&counters).ethernet_framing_bytes, 0);
     assert_eq!(counters.snapshot().discarded_outputs, 0);
+    if capture_wire {
+        let mut snapshot = serde_json::to_value(counters.snapshot()).unwrap();
+        snapshot["process_id"] = std::process::id().into();
+        eprintln!("FIPS_SERVICE_CARRIER_FINAL {snapshot}");
+    }
 }

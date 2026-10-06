@@ -54,6 +54,36 @@ comparison below covers wallet/receiver syscall writes. Physical media,
 memory-mapped storage, complete wire attribution, current device regression
 and impaired/sustained workloads remain outstanding.
 
+## Independent packet attribution check — 7 October 2026
+
+Opt-in `fips_core::service_wire` traces now identify successful encrypted service
+submissions by process, counter identity and per-transport packet number. Separate
+endpoints using the same service port retain distinct ordinals. Whole packets,
+fragments and retries hash their actual submitted ciphertext; unsent tails and
+untagged traffic produce no event. Hashing runs only when the trace target is
+enabled. This adds local diagnostics, with no network message or financial-state
+change. The analyzer matches each trace to one independent captured packet and
+requires agreement with final carrier counters; shared and opaque traffic remains
+unattributed.
+
+The real UDP fragment regression in `work/wire-trace-r206` submits and receives
+four fragments totaling 818 FIPS bytes. An isolated Linux loopback capture matches
+all four fingerprints, 930 IPv4/UDP bytes and 986 captured link bytes. The latter
+includes 56 bytes of synthetic loopback Ethernet headers, not physical framing.
+Linux suppresses outgoing loopback capture duplicates, so this isolated case uses
+incoming capture. Its first offloaded capture contains one aggregate packet and
+is rejected. A fresh namespace with UDP segmentation, GSO, GRO and TSO disabled
+passes; both records remain preserved. Neither case uses funds or claims radio
+airtime, delivery guarantees beyond the regression, or a performance result.
+
+All 28 selected carrier/UDP tests and 19 analyzer checks pass, along with strict
+core and measured/unmeasured relay lint and the optimized ordinary Linux daemon
+build. The daemon uses core default features and the wallet SDK without simulation.
+This qualifies packet attribution for the recorded case. The matched payment
+cadence capture matrix, Ethernet device captures and complete shared/transit or
+physical-radio attribution remain open. Trace hashing and disabled offloads alter
+execution cost; these capture runs cannot replace the untraced CPU measurements.
+
 ## Current storage syscall comparison — 7 October 2026
 
 The current ordinary Linux ARM64 executable on `29a88d481`, with measurement

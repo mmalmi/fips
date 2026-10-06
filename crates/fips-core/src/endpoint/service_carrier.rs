@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 /// Maximum distinct services measured by one endpoint during its lifetime.
 pub const SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES: usize = 16;
+static NEXT_COUNTER_ID: AtomicU64 = AtomicU64::new(1);
 const TRANSPORTS: [&str; 9] = [
     "udp",
     "ethernet",
@@ -61,6 +62,7 @@ struct TransportCounters {
 
 #[derive(Debug)]
 struct ServiceCounters {
+    id: u64,
     port: u16,
     ambiguous: AtomicU64,
     discarded: AtomicU64,
@@ -79,20 +81,28 @@ impl PartialEq for ServiceCarrierDiagnostics {
 
 impl Eq for ServiceCarrierDiagnostics {}
 
-fn add(counter: &AtomicU64, amount: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(amount))
-    });
+fn add(counter: &AtomicU64, amount: u64) -> u64 {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_add(amount))
+        })
+        .expect("saturating counter update cannot reject")
+        .saturating_add(amount)
 }
 
 impl ServiceCarrierDiagnostics {
     pub(crate) fn new(port: u16) -> Self {
         Self(Arc::new(ServiceCounters {
+            id: NEXT_COUNTER_ID.fetch_add(1, Ordering::Relaxed),
             port,
             ambiguous: AtomicU64::new(0),
             discarded: AtomicU64::new(0),
             transports: std::array::from_fn(|_| TransportCounters::default()),
         }))
+    }
+
+    pub(crate) fn counter_id(&self) -> u64 {
+        self.0.id
     }
 
     pub fn snapshot(&self) -> ServiceCarrierSnapshot {
@@ -112,17 +122,43 @@ impl ServiceCarrierDiagnostics {
         }
     }
 
-    pub(crate) fn submitted(&self, transport: &str, payload_bytes: usize) {
+    pub(crate) fn submitted(&self, transport: &str, payload_bytes: usize) -> u64 {
         let index = TRANSPORTS
             .iter()
             .position(|name| *name == transport)
             .unwrap_or(8);
         let counters = &self.0.transports[index];
-        add(&counters.packets, 1);
+        let packet_number = add(&counters.packets, 1);
         add(&counters.payload_bytes, payload_bytes as u64);
         if transport == "ethernet" {
             add(&counters.ethernet_framing_bytes, 3);
         }
+        packet_number
+    }
+
+    /// Opt-in traces correlate encrypted submissions with independent captures.
+    /// Hashing is disabled unless this target is enabled; no payload is logged.
+    pub(crate) fn submitted_payloads<'a>(
+        &self,
+        transport: &str,
+        bytes: usize,
+        payloads: impl IntoIterator<Item = &'a [u8]>,
+    ) {
+        let packet_number = self.submitted(transport, bytes);
+        // tracing evaluates fields only when this event is enabled.
+        tracing::trace!(target: "fips_core::service_wire",
+            process_id = std::process::id(), counter_id = self.counter_id(),
+            service_port = self.0.port,
+            packet_number, transport, payload_bytes = bytes,
+            fingerprint = %{
+                use sha2::{Digest, Sha256};
+                let mut fingerprint = Sha256::new();
+                for payload in payloads {
+                    fingerprint.update(payload);
+                }
+                hex::encode(fingerprint.finalize())
+            },
+            "FIPS service packet submitted");
     }
 
     pub(crate) fn discarded(&self) {
