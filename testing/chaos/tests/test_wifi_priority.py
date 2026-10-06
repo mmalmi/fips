@@ -110,11 +110,11 @@ class EvidenceTests(unittest.TestCase):
 
     def test_payment_must_advance_and_acknowledge_the_same_process_and_channel(self):
         first, last = payment(payment_status()), payment(payment_status(2000, 2, 2000))
-        for version in (1, 2):
+        for version in (1, 2, 3):
             current = payment_status()
             current["measurements"]["version"] = version
             self.assertEqual(payment(current), first)
-        for version in (True, 3):
+        for version in (True, 4):
             current["measurements"]["version"] = version
             with self.assertRaises(RuntimeError):
                 payment(current)

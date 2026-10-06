@@ -334,7 +334,7 @@ fn now() -> Result<u64, String> {
 async fn blocking<T: Send + 'static>(
     job: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::task::spawn_blocking(job)
+    tokio::task::spawn_blocking(crate::measurements::inherit(job))
         .await
         .map_err(|e| e.to_string())?
 }

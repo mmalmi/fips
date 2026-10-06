@@ -1,5 +1,6 @@
 //! Optional, process-local diagnostics. These counters have no financial authority.
-//! Synchronous spans use the current thread's CPU clock, never time across an await.
+//! Exclusive spans use the current thread's CPU clock, never time across an await.
+//! Futures are measured per poll; blocking workers explicitly inherit attribution.
 //! Journal bytes are logical writes, excluding Cashu SQLite and physical I/O.
 
 #[cfg(feature = "measurements")]
@@ -15,8 +16,17 @@ pub(crate) enum Operation {
     PaymentUsage,
     PaymentUpdate,
     WindowCheckpoint,
+    PaymentExchange,
     #[cfg(all(test, feature = "measurements"))]
     Test,
+    #[cfg(all(test, feature = "measurements"))]
+    TestOuter,
+    #[cfg(all(test, feature = "measurements"))]
+    TestChild,
+    #[cfg(all(test, feature = "measurements"))]
+    TestPoll,
+    #[cfg(all(test, feature = "measurements"))]
+    TestBlocking,
 }
 
 pub(crate) enum JournalEvent {
@@ -46,6 +56,36 @@ pub(crate) fn measure<T>(operation: Operation, work: impl FnOnce() -> T) -> T {
     #[cfg(not(feature = "measurements"))]
     let _ = operation;
     work()
+}
+
+/// End each span before yielding: a later poll may run on another thread.
+pub(crate) async fn measure_async<F: std::future::Future>(
+    operation: Operation,
+    work: F,
+) -> F::Output {
+    #[cfg(feature = "measurements")]
+    {
+        let mut work = std::pin::pin!(work);
+        std::future::poll_fn(|cx| measure(operation, || work.as_mut().poll(cx))).await
+    }
+    #[cfg(not(feature = "measurements"))]
+    {
+        let _ = operation;
+        work.await
+    }
+}
+
+/// Capture attribution before spawning; worker CPU belongs to its own thread.
+pub(crate) fn inherit<T>(work: impl FnOnce() -> T) -> impl FnOnce() -> T {
+    #[cfg(feature = "measurements")]
+    let operation = enabled::current_operation();
+    move || {
+        #[cfg(feature = "measurements")]
+        if let Some(operation) = operation {
+            return measure(operation, work);
+        }
+        work()
+    }
 }
 
 #[inline]

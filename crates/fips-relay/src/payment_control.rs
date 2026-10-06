@@ -187,16 +187,20 @@ impl PaymentServer {
                         request
                     }
                 };
-                let handler = Arc::clone(&control);
-                let result = tokio::task::spawn_blocking(move || {
-                    handler.handle(request.peer, &request.body)
+                crate::measurements::measure_async(Operation::PaymentExchange, async {
+                    let handler = Arc::clone(&control);
+                    let result =
+                        tokio::task::spawn_blocking(crate::measurements::inherit(move || {
+                            handler.handle(request.peer, &request.body)
+                        }))
+                        .await;
+                    if let Ok(reply) = result {
+                        let _ = request.respond.send(
+                            serde_json::to_vec(&reply).expect("serializable payment response"),
+                        );
+                    }
                 })
                 .await;
-                if let Ok(reply) = result {
-                    let _ = request
-                        .respond
-                        .send(serde_json::to_vec(&reply).expect("serializable payment response"));
-                }
             }
         });
         Self { task, stopping }

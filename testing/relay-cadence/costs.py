@@ -1,7 +1,7 @@
 """Integer counter deltas shared by workload summaries and complete intervals."""
 from collections import defaultdict
 
-from validation import PAYMENT_OPERATIONS, payment_counters, unsigned, validate_measurements
+from validation import PAYMENT_CPU_OPERATIONS, payment_counters, unsigned, validate_measurements
 
 JOURNALS = ('journal_writes', 'journal_bytes_written', 'journal_syncs', 'journal_commits')
 LINKS = ('sent_bytes', 'received_bytes', 'sent_packets', 'received_packets')
@@ -86,9 +86,9 @@ def summarize_costs(costs):
         for suffix, key in (('writes', 'journal_writes'), ('bytes', 'journal_bytes_written'),
                             ('syncs', 'journal_syncs'), ('commits', 'journal_commits')):
             result['journal_' + suffix] += c[key]
-            if name in PAYMENT_OPERATIONS:
+            if name in PAYMENT_CPU_OPERATIONS:
                 result['payment_journal_' + suffix] += c[key]
-        if name in PAYMENT_OPERATIONS:
+        if name in PAYMENT_CPU_OPERATIONS:
             result['payment_cpu_ms'] += c['thread_cpu_ns'] / 1e6
             result['payment_spans'] += c['spans']
         if name == 'payment_sign':

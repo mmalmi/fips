@@ -13,7 +13,7 @@ from .paid_relay import write_json
 from .paid_settlement import require
 from .paid_storage import DURABILITY_COUNTERS as DURABILITY, StorageRun, quiet_usage, validate_storage
 from .wifi_remote import digest
-from validation import (COUNTERS, OPERATIONS, PAYMENT_OPERATIONS, reconciled_payment, unsigned,
+from validation import (COUNTERS, OPERATIONS, CURRENT_OPERATIONS, PAYMENT_CPU_OPERATIONS, reconciled_payment, unsigned,
                         validate_hardware_schedule, validate_probe)
 
 NODES = {"n01", "n02", "n03"}
@@ -32,14 +32,14 @@ def boundary_sample(record):
             require(value["progress"] is None, "forwarder acquired unexpected buyer authority")
         else:
             reconciled_payment(value["progress"])
-        require(set(value["operations"]) == set(PAYMENT_OPERATIONS)
+        require(set(value["operations"]) == set(value["durability"]) & set(PAYMENT_CPU_OPERATIONS)
                 and set(value["control"]) == CONTROL, "payment measurements changed shape")
-        require(set(value["durability"]) == OPERATIONS, "durability operations changed shape")
+        require(set(value["durability"]) in (OPERATIONS, CURRENT_OPERATIONS), "durability operations changed shape")
         for operation, counters in value["durability"].items():
             require(set(counters) == set(DURABILITY), "durability counters are missing")
             for key, amount in counters.items():
                 unsigned(amount)
-                if operation in PAYMENT_OPERATIONS:
+                if operation in PAYMENT_CPU_OPERATIONS:
                     require(amount == value["operations"][operation][key],
                             "payment and durability evidence disagree")
         for counters in value["operations"].values():
@@ -91,10 +91,12 @@ def summarize_window(record):
         control = difference(old["control"], new["control"])
         record_bytes += control["stream_bytes_sent"]
         changed |= any(control.values())
-        for operation in OPERATIONS:
+        require(old["durability"].keys() == new["durability"].keys()
+                and old["operations"].keys() == new["operations"].keys(), "measurement schema changed")
+        for operation in old["durability"]:
             changed |= any(difference(old["durability"][operation],
                                       new["durability"][operation]).values())
-        for operation in PAYMENT_OPERATIONS:
+        for operation in old["operations"]:
             delta = difference(old["operations"][operation], new["operations"][operation])
             require(delta["cpu_samples"] == delta["spans"], "payment CPU samples are missing")
             partial_cpu_ns += delta["thread_cpu_ns"]
@@ -103,7 +105,7 @@ def summarize_window(record):
                 updates += delta["spans"]
             elif operation == "payment_sign":
                 signs += delta["spans"]
-            else:
+            elif operation == "payment_usage":
                 usage += delta["spans"]
         if old["progress"] is not None:
             difference(

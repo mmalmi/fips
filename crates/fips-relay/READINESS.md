@@ -11,6 +11,21 @@ requirement to the current milestone. Existing accounts remain untouched.
 
 ## Scope and outstanding acceptance
 
+Measurement version 3 adds exclusive payment CPU attribution: each payer/provider
+future poll ends its span before yielding, blocking workers inherit its operation,
+and nested signing/usage/update spans are counted once. Five focused measurement
+checks, five payment-worker checks, three provider checks, strict lint with and
+without measurements, the ordinary optimized Linux build and 219 diagnostic
+checks pass in `work/payment-cpu-scope-r200`. The old implementation fails the
+new nested-work regression. This changes local diagnostics, not payment messages
+or authority. Scheduler scans and TCP/FIPS/core transport work remain outside
+payment-specific CPU; wallet/physical storage and complete wire attribution still
+require their separate measurements. The new matched native matrix passes in `work/payment-cpu-cadence-r201`, delivering
+all 285,696 payloads and collecting all 40,960 test sats with closed processes and
+source evidence. See [the current cadence results](CADENCE-RESULTS.md#current-native-matrix--7-october-2026).
+The dependency graph is the accepted frozen runtime graph; the unrelated local
+lockfile edit is excluded.
+
 Each linked result applies to its recorded revision and workload. Earlier router
 and phone demonstrations do not accept the latest software for deployment.
 
@@ -1808,7 +1823,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices; the latest native matrix passes with exclusive controller/poll CPU counters, all 285,696 originals delivered and 40,960 test sats collected. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; complete payment CPU/storage/wire attribution remains distinct from controller spans, logical relay writes and local carrier counters. |
 | Shared forwarding and route policy | Current ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. The matching Android r198 build passes native, lifecycle and package gates. Physical r199 phone transit delivers three MiB over the same process and channels in foreground, hidden activity and screen-off/ambient-display windows; all 512 test sats are collected and 495 management checks pass. Independent device, financial, artifact and app-removal closure passes. Earlier renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, sustained transit, renewal and suspension; remaining physical/mixed-link qualification, sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |

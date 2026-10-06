@@ -64,6 +64,21 @@ def window(name="idle"):
 
 
 class StorageWindowTests(unittest.TestCase):
+    def test_async_exchange_cpu_does_not_count_as_a_usage_poll(self):
+        record = window("steady")
+        for section in ("payment_previous", "payment_before", "payment_after", "payment_after_detach"):
+            for pass_name in ("guard", "sample"):
+                for value in record[section][pass_name].values():
+                    value["operations"]["payment_exchange"] = dict.fromkeys(COUNTERS, 0)
+                    value["durability"]["payment_exchange"] = dict.fromkeys(DURABILITY, 0)
+                if section in ("payment_after", "payment_after_detach"):
+                    record[section][pass_name]["n01"]["operations"]["payment_exchange"].update(
+                        spans=2, cpu_samples=2, thread_cpu_ns=7000, elapsed_ns=10000)
+        result = summarize_window(record)
+        self.assertEqual(result["partial_payment_cpu_ns_under_trace"], 7000)
+        self.assertEqual(result["payment_updates"], 0)
+        self.assertEqual(result["usage_polls"], 0)
+
     def test_idle_and_prepaid_delivery_allow_zero_storage_work(self):
         for name, delivered in (("idle", 0), ("steady", 3200000)):
             result = summarize_window(window(name))

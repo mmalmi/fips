@@ -200,7 +200,7 @@ def payment(status):
     require(type(value["in_flight"]) is bool, "invalid payment scheduler evidence")
     pid = natural(status["measurements"]["process_id"])
     version = status["measurements"]["version"]
-    require(pid > 0 and type(version) is int and version in (1, 2), "measurement-enabled source required")
+    require(pid > 0 and type(version) is int and version in (1, 2, 3), "measurement-enabled source required")
     return {"channel": channel, "process_id": pid, **value}
 
 

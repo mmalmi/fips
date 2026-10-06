@@ -93,7 +93,7 @@ class PaymentBoundaryTests(unittest.TestCase):
             finances[node] = {"signed": dict.fromkeys(channels, 1)}
             statuses[node] = {
                 "last_error": None, "payment_progress": channels,
-                "measurements": {"version": 1, "process_id": index, "operations": {
+                "measurements": {"version": 2, "process_id": index, "operations": {
                     name: dict.fromkeys(COUNTERS, 1) for name in OPERATIONS}},
                 "control_traffic": [{"service_port": 44743, "counters": dict.fromkeys((
                     "stream_bytes_sent", "stream_bytes_received", "requests_started", "requests_received"), 1)}],

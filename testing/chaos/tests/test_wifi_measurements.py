@@ -44,18 +44,26 @@ def node(raw=None):
 
 class MeasurementTests(unittest.TestCase):
     def test_current_measurement_schema_preserves_admission_denials(self):
-        current = status()
-        value = current["measurements"]
-        value["version"] = 2
-        for operation in ("payment_open", "payment_stop"):
-            del value["operations"][operation]
-        value["admission_denials"] = {"credit_limit": 7, "durable_window": 11}
-        observed = snapshot(node(frame(relay=json.dumps(current))), "n01")
-        self.assertEqual(observed["measurements"], value)
-        for bad in ({}, {"credit_limit": 7}, {"credit_limit": True, "durable_window": 11}):
-            value["admission_denials"] = bad
-            with self.subTest(denials=bad), self.assertRaises(ValueError):
-                snapshot(node(frame(relay=json.dumps(current))), "n01")
+        for version in (2, 3):
+            current = status()
+            value = current["measurements"]
+            value["version"] = version
+            for operation in ("payment_open", "payment_stop"):
+                del value["operations"][operation]
+            if version == 3:
+                value["operations"]["payment_exchange"] = dict.fromkeys(COUNTERS, 0)
+            value["admission_denials"] = {"credit_limit": 7, "durable_window": 11}
+            observed = snapshot(node(frame(relay=json.dumps(current))), "n01")
+            self.assertEqual(observed["measurements"], value)
+            if version == 3:
+                del value["operations"]["payment_exchange"]
+                with self.assertRaises(ValueError):
+                    snapshot(node(frame(relay=json.dumps(current))), "n01")
+                value["operations"]["payment_exchange"] = dict.fromkeys(COUNTERS, 0)
+            for bad in ({}, {"credit_limit": 7}, {"credit_limit": True, "durable_window": 11}):
+                value["admission_denials"] = bad
+                with self.subTest(version=version, bad=bad), self.assertRaises(ValueError):
+                    snapshot(node(frame(relay=json.dumps(current))), "n01")
 
     def test_native_observations_are_opt_in_and_bound_to_the_same_process(self):
         native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",

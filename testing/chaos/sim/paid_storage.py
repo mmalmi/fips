@@ -20,7 +20,7 @@ DIAGNOSTICS = Path(__file__).resolve().parents[2] / "relay-cadence"
 sys.path.insert(0, str(DIAGNOSTICS))
 from storage_trace import analyze
 from storage_worker import trace_directory
-from validation import OPERATIONS, reconciled_payment, unsigned
+from validation import measurement_operations, reconciled_payment, unsigned
 
 DURABILITY_COUNTERS = ("journal_bytes_written", "journal_writes", "journal_syncs", "journal_commits")
 
@@ -52,7 +52,7 @@ def quiet_usage(before, after):
 def durability_counters(measurements):
     try:
         operations = measurements["operations"]
-        if not isinstance(operations, dict) or set(operations) != OPERATIONS:
+        if not isinstance(operations, dict) or set(operations) != measurement_operations(measurements["version"]):
             raise ValueError("storage boundary requires every measurement operation")
         return {name: {key: unsigned(counters[key]) for key in DURABILITY_COUNTERS}
                 for name, counters in operations.items()}

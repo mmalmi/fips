@@ -2,7 +2,7 @@
 use super::cadence::ChannelSchedule;
 use super::*;
 use crate::ledger::ChannelUsage;
-use crate::measurements::{Operation, measure};
+use crate::measurements::{Operation, measure, measure_async};
 
 /// Local diagnostic labels; they are never sent to the payment peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -94,6 +94,18 @@ impl Controller {
     }
 
     async fn pay_channel(
+        &self,
+        purchase: Purchase,
+        observation: PaymentObservation,
+    ) -> PaymentResult {
+        measure_async(
+            Operation::PaymentExchange,
+            self.pay_channel_inner(purchase, observation),
+        )
+        .await
+    }
+
+    async fn pay_channel_inner(
         &self,
         purchase: Purchase,
         observation: PaymentObservation,

@@ -1,6 +1,58 @@
 # Paid-relay cadence measurements
 
-## Current native matrix — 6 October 2026
+## Current native matrix — 7 October 2026
+
+The ordinary Linux daemon now reports measurement version 3. Payer and provider
+future polls each use a thread-local CPU span that ends before yielding; blocking
+workers inherit the operation, and nested signing/usage/update work is counted
+once. The five measurement regressions, eight payment worker/provider checks,
+strict lint with and without measurements, normal optimized build and 219
+benchmark/device-tool checks pass in `work/payment-cpu-scope-r200`. The old span
+implementation fails the new nested-work regression.
+
+The accepted frozen runtime graph, including the TCP/FIPS reopen fix, runs the
+unchanged eight-trial matrix in `work/payment-cpu-cadence-r201`: five real service
+processes and a capped test mint in a two-core Linux scope over UDP loopback,
+250/500/1000/2000/2000/1000/500/250-ms order, original idle/bursty/steady/high-rate
+schedules, 8,000-msat allowance, 4,000-msat durable windows, 256-sat channels,
+one-msat/KiB tariff and three-second payment tail. Setup and settlement remain
+outside the measured windows. The daemon has core default features and wallet SDK
+without simulation; the unchanged harness retains simulation for its test mint.
+
+All 285,696 payloads arrive, with zero duplicates, invalid payloads, invalid
+timestamps or controller errors. Strict delivery, quiet-boundary and cost
+validation passes. All 40,960 test sats are collected. Independent closure verifies
+source/dependency/binary hashes, stopped processes, the removed CPU scope and an
+empty temporary directory. No competing builds were present at preflight.
+
+High-rate values average two trials per policy. Each delivers 32,000,000 application
+bytes; costs sum all five service processes.
+
+| Maximum age | Payment updates | Controller payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Process CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 61.5 | 11.15 | 439.52 | 142.04 | 0.172 |
+| 500 ms | 44.0 | 8.06 | 312.82 | 101.63 | 0.168 |
+| 1 s | 40.0 | 7.18 | 280.93 | 92.39 | 0.166 |
+| 2 s | 40.0 | 7.26 | 280.09 | 92.39 | 0.165 |
+
+Idle windows record zero payment requests, attributed CPU and journal work.
+Bursty windows average two updates at every policy. Steady windows average
+19/19/14/10 updates and 34.97/34.88/25.23/17.72 controller payment CPU ms per
+MiB respectively. Every high-rate latency histogram puts its 95th percentile
+within the one-ms bucket, using the shared-host clock assumption. The 500-ms
+default stays unchanged; these finite clean-link trials do not establish an
+optimal policy or independent-router latency.
+
+CPU now includes controller future polls and inherited blocking work, while
+scheduler scans, TCP/FIPS carrier processing and core transport CPU remain outside
+payment attribution. It is not complete payment CPU. Journal bytes remain logical
+relay writes, excluding wallet SQLite and physical storage. Local payment carrier
+bytes include submitted TCP/FIPS segments, ACKs and retries, excluding opaque
+transit and UDP/kernel/radio framing. Earlier CPU results use a narrower scope and
+must not be used to claim a before/after optimization. Full storage/wire cost,
+physical-device regression and impaired/sustained workloads remain outstanding.
+
+## Earlier native matrix — 6 October 2026
 
 The current production source on `6a33df2f7`, with the integrated refund-client
 reuse and purchase projection, passes the existing eight-trial matrix. Five real
