@@ -37,6 +37,12 @@ without another settlement swap. The earlier failed run and separate recovery
 remain preserved. This accepts the recorded bounded topology changes, not
 arbitrary mobile bootstrap or production readiness.
 
+Phone acceptance teardown removes completed test app installations after their
+test funds are settled and their exact APK and account recovery archives are
+verified. Keep installations only while an active test or recovery needs them,
+then verify that no test packages or routing services remain. Preserve the
+original app and its accounts.
+
 Current physical Android mint access passes on `256d3b1c5`: empty-wallet
 funding, paid delivery, settlement with the activity hidden, and stopped-wallet
 fund return use a loopback-only mint reached through two open radio hops. The
