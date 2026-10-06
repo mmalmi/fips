@@ -4,8 +4,8 @@ use crate::control::queries;
 use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::dataplane::DataplaneFastIngressRx;
 use crate::node::{
-    EndpointDataBatchRx, EndpointEventSender, Node, NodeError, endpoint_data_batch_channel,
-    lifecycle::NetworkRebindCompletion,
+    EndpointDataBatchRx, EndpointEventSender, Node, NodeEndpointControlCommand, NodeError,
+    endpoint_data_batch_channel, lifecycle::NetworkRebindCompletion,
 };
 use crate::transport::PacketRx;
 use crate::upper::tun::TunOutboundRx;
@@ -24,6 +24,32 @@ mod tests;
 use budget::*;
 use drain::*;
 use wake::*;
+
+// Keep the endpoint receiver Node-owned for completed-handler snapshot reads,
+// but retain the old loop-local lifetime even when the loop future is cancelled.
+struct RxLoopEndpointLifetime<'a>(&'a mut Node);
+
+impl Drop for RxLoopEndpointLifetime<'_> {
+    fn drop(&mut self) {
+        self.0.endpoint_control_rx.take();
+        self.0.pending_endpoint_control.take();
+    }
+}
+
+async fn next_endpoint_control(
+    pending: &mut Option<NodeEndpointControlCommand>,
+    receiver: &mut Option<Receiver<NodeEndpointControlCommand>>,
+) -> Option<NodeEndpointControlCommand> {
+    if let Some(command) = pending.take() {
+        // No await after taking the FIFO barrier: select cancellation must not
+        // lose an already-dequeued command.
+        return Some(command);
+    }
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
 
 pub(in crate::node) struct RxLoopDataplaneIo<'a> {
     packet_rx: &'a mut PacketRx,
@@ -111,7 +137,11 @@ impl Node {
     /// until the channel is closed (typically when stop() is called).
     pub async fn run_rx_loop(&mut self) -> Result<(), NodeError> {
         let packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
+        let lifetime = RxLoopEndpointLifetime(self);
+        lifetime.0.run_rx_loop_inner(packet_rx).await
+    }
 
+    async fn run_rx_loop_inner(&mut self, packet_rx: PacketRx) -> Result<(), NodeError> {
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
         // the channel from closing.
@@ -133,16 +163,6 @@ impl Node {
             }
         };
 
-        // Take the endpoint control receiver, or create a dummy channel
-        // when the embedded endpoint API is not in use.
-        let (mut endpoint_control_rx, _endpoint_control_guard) =
-            match self.endpoint_control_rx.take() {
-                Some(rx) => (rx, None),
-                None => {
-                    let (tx, rx) = tokio::sync::mpsc::channel(1);
-                    (rx, Some(tx))
-                }
-            };
         let (endpoint_data_rx, _endpoint_data_guard) = match self.endpoint_data_rx.take() {
             Some(rx) => (rx, None),
             None => {
@@ -229,6 +249,12 @@ impl Node {
                 .forwarding_policy
                 .as_ref()
                 .and_then(|policy| policy.admission_notify());
+            let admission_deadline = self.admission_work_deadline_ms();
+            let lookup_deadline = self
+                .discovery_work_deadline_ms()
+                .map(|due| due.max(lookup_not_before_ms));
+            let report_deadline = self.dataplane.fmp_report_deadline();
+            let routing_deadline = self.pending_routing_announce_deadline_ms();
             tokio::select! {
                 biased;
                 // Timer-driven liveness is a reserved-progress branch. It
@@ -296,7 +322,7 @@ impl Node {
                     }
                 }
                 changed = wait_for_admission_retry(
-                    self.admission_work_deadline_ms(),
+                    admission_deadline,
                     admission_not_before_ms,
                     admission_notify.as_ref(),
                 ) => {
@@ -314,7 +340,7 @@ impl Node {
                     ).await;
                 }
                 _ = wait_for_optional_epoch_deadline(
-                    self.discovery_work_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
+                    lookup_deadline,
                 ) => {
                     let (completed, drained) = self.run_rx_loop_lookup_turn(
                         &mut dataplane_runtime.io(),
@@ -351,7 +377,9 @@ impl Node {
                 // Endpoint payload batches stay on the data lane; this branch
                 // keeps control work from waiting behind hot raw receive.
                 // Endpoint data batches intentionally remain below packet_rx.
-                Some(command) = endpoint_control_rx.recv() => {
+                Some(command) = next_endpoint_control(
+                    &mut self.pending_endpoint_control, &mut self.endpoint_control_rx,
+                ) => {
                     if let Some(request) = self.handle_endpoint_control(command).await {
                         if network_rebind_in_progress {
                             request.reject(NodeError::TransportError(
@@ -367,7 +395,7 @@ impl Node {
                     }
                 }
                 _ = wait_for_optional_deadline(
-                    self.dataplane.fmp_report_deadline(),
+                    report_deadline,
                     mmp_report_not_before,
                 ) => {
                     let (completed, drained) = self.run_rx_loop_link_report_turn(
@@ -387,7 +415,7 @@ impl Node {
                         warn!("Link MMP report send timed out; continuing packet processing");
                     }
                 }
-                _ = wait_for_optional_epoch_deadline(self.pending_routing_announce_deadline_ms()) => {
+                _ = wait_for_optional_epoch_deadline(routing_deadline) => {
                     let (completed, drained) = self.run_rx_loop_routing_announce_turn(
                         &mut dataplane_runtime.io(),
                     ).await;
@@ -558,6 +586,35 @@ impl Node {
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    async fn drain_endpoint_snapshots(&mut self) {
+        if self.pending_endpoint_control.is_some() {
+            return;
+        }
+        for _ in 0..CONTROL_QUERY_INTERLEAVE_BUDGET {
+            let Some(command) = self
+                .endpoint_control_rx
+                .as_mut()
+                .and_then(|receiver| receiver.try_recv().ok())
+            else {
+                break;
+            };
+            match command {
+                NodeEndpointControlCommand::PeerSnapshot { .. }
+                | NodeEndpointControlCommand::TransportStatsSnapshot { .. } => {
+                    // These exact arms only read state and send a oneshot reply.
+                    // Never dispatch mutations or async discovery between handlers.
+                    let request = Box::pin(self.handle_endpoint_control(command)).await;
+                    debug_assert!(request.is_none());
+                }
+                command => {
+                    // Preserve FIFO, including commands whose caller has gone away.
+                    self.pending_endpoint_control = Some(command);
+                    break;
+                }
+            }
+        }
     }
 
     async fn run_rx_loop_routing_announce_turn(
