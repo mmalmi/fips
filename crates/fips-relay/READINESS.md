@@ -2740,6 +2740,43 @@ financial file is retained and archived. ARM pressure acceptance and physical
 performance remain open. The next attribution must cover work outside those
 completed worker intervals, including mint and runtime operations.
 
+A private reqwest construction witness then measures 249 default client builds
+in the passing normal-CPU case: 4.16 CPU seconds out of 43.245 case CPU seconds.
+The quarter-CPU case fails at round ten, direction 0 → 4, after 121.166 seconds;
+its 106 client builds account for 1.95 of 30.157 CPU seconds. Construction uses
+about 9.6% and 6.5% of case CPU respectively at 10-ms proc-stat resolution,
+including witness overhead. Completed funding/refund spans account for only
+some builds; neither whole-case CPU nor overlapping wall times can be assigned
+to one renewal. All original requests and TLS settings remain unchanged. Normal
+operation collects all 1,280 test sats; no final collection is claimed for the
+failed pressure case. Verified source/binary/dependency custody and stopped
+ownership are in `work/http-client-build-phases-r165`; its remaining financial
+file is retained and archived byte-for-byte.
+
+A two-file SDK candidate shares one HTTP client across each refund's metadata,
+proof-state and restore requests, while still fetching fresh metadata. Its public
+APIs, financial checks and wallet ownership remain unchanged. With the same
+construction witness, normal ARM renewal passes and collects all 1,280 test
+sats. It builds 189 clients, using 2.94 construction CPU seconds; whole-case CPU
+is 44.144 seconds, so no end-to-end speedup is established. Quarter-CPU delivery
+still fails at round nine, direction 0 → 4, after 121.027 seconds. It has no final
+collection claim. Exact current SDK tracked source, candidate changes, frozen
+dependency custody and stopped ownership are verified in
+`work/scoped-refund-http-r166`; no residual temporary files remain. Full SDK
+verification and local integration of this candidate are still pending. The
+first native all-features setup lacks the existing optional `axum-macros`
+dependency; the retry adds version 0.5.1 from the SDK lockfile and verifies its
+registry checksum, without changing production dependencies. In unoptimized
+debug code, 214 completed tests pass before the retirement group reports three
+passes and two channels expiring during setup. One failure occurs during initial
+receiver acceptance, before refund-client reuse; the same compiled prefix test
+passes alone. The failed full run and all original assertions are preserved in
+`work/scoped-refund-sdk-gates-r168`, with stopped ownership and no residual test
+files. An optimized-test rerun keeps those lifetimes and assertions unchanged;
+its result remains pending. This candidate reduces measured repeated
+construction but does not resolve ARM pressure acceptance or accept current
+software on physical devices.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
