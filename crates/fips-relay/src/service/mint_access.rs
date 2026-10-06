@@ -85,10 +85,12 @@ impl OfflineMint {
                 .without_system_tun()
                 .bind()
                 .await
-                .map_err(|e| e.to_string())?,
+                .map_err(|e| format!("bind wallet endpoint: {e}"))?,
         );
         let initialized = async {
-            transport_startup::verify(config).await?;
+            transport_startup::verify(config)
+                .await
+                .map_err(|e| format!("verify wallet transports: {e}"))?;
             let neighbors = config
                 .neighbors
                 .iter()
@@ -113,7 +115,9 @@ impl OfflineMint {
                 config.quote_policy(manifest.receiver_pubkey)?,
                 free,
             )?);
-            let bridge = attach(config, endpoint.clone(), quotes.clone()).await?;
+            let bridge = attach(config, endpoint.clone(), quotes.clone())
+                .await
+                .map_err(|e| format!("attach wallet mint bridge: {e}"))?;
             Ok::<_, String>((bridge, quotes))
         }
         .await;

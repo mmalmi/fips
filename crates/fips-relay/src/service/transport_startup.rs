@@ -71,7 +71,9 @@ pub(super) async fn verify(config: &ServiceConfig) -> Result<(), String> {
         .collect();
     // The node binds its operator socket from a task started after endpoint bind.
     wait_for_control(config).await?;
-    let report = native_request(config, &json!({"command": "show_transports"})).await?;
+    let report = native_request(config, &json!({"command": "show_transports"}))
+        .await
+        .map_err(|e| format!("native transport startup inspection failed: {e}"))?;
     if report["status"] != "ok" {
         let message = report["message"]
             .as_str()

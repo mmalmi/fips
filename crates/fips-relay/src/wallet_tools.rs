@@ -194,7 +194,9 @@ pub async fn offline_wallet(
         &command,
         WalletRequest::Import { .. } | WalletRequest::Export { .. }
     ) {
-        crate::service::OfflineMint::start(config).await?
+        crate::service::OfflineMint::start(config)
+            .await
+            .map_err(|e| format!("start wallet mint network: {e}"))?
     } else {
         None
     };
@@ -216,7 +218,9 @@ pub async fn offline_wallet(
                 .map_err(|e| e.to_string())
             }
             WalletRequest::Export { id, amount_sat } => {
-                let request_id = history::prepare_export(&config.state_directory, mint, id).await?;
+                let request_id = history::prepare_export(&config.state_directory, mint, id)
+                    .await
+                    .map_err(|e| format!("prepare wallet export: {e}"))?;
                 export_payment(
                     &config.state_directory,
                     mint,
@@ -225,6 +229,7 @@ pub async fn offline_wallet(
                     request_id,
                 )
                 .await
+                .map_err(|e| format!("send wallet export: {e}"))
             }
             WalletRequest::AcknowledgeExports { through } => {
                 history::acknowledge(&config.state_directory, mint, through).await
@@ -233,7 +238,10 @@ pub async fn offline_wallet(
     }
     .await;
     if let Some(network) = network {
-        network.shutdown().await?;
+        network
+            .shutdown()
+            .await
+            .map_err(|e| format!("stop wallet mint network: {e}"))?;
     }
     result
 }
