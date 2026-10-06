@@ -2779,14 +2779,24 @@ original five-second term is rejected before refund-client reuse. Source and
 dependency custody, stopped ownership and no residual test files are verified
 in `work/scoped-refund-sdk-gates-r169`.
 
-The candidate now makes test optimization level 1 the workspace default. Its
+The candidate makes test optimization level 1 the workspace default. Its
 two-payout test allows 30 seconds for funding and still waits for real expiry
-before retirement, preserving every financial and retry assertion. Formatting
-of the touched test file also passes. The full workspace all-features rerun in
-`work/scoped-refund-sdk-gates-r170` reports every target rather than stopping at
-the first failure; its result and local integration remain pending. These
-changes do not alter production deadlines or resolve ARM pressure acceptance,
-and they do not accept current software on physical devices.
+before retirement. The full workspace all-features run in
+`work/scoped-refund-sdk-gates-r170` completes all 56 target groups: 410 tests
+pass, 27 fail and one is ignored. Every failure occurs at opening/admission or
+an early-refund precondition because the shared five-second fixture expires
+during concurrent real-cryptography setup. The original failures, source and
+dependency custody are verified; owned processes are stopped and no temporary
+financial files remain.
+
+The next candidate consolidates the timing correction into one shared
+30-second fixture lifetime and adjusts the receiver-history expiry wait.
+Every financial, early-refund, real-expiry and recovery assertion remains.
+Touched-source formatting and dependency resolution pass; the full suite with
+default test parallelism is running in `work/scoped-refund-sdk-gates-r171`.
+Its result and local SDK integration remain pending. These test changes do not
+alter production deadlines, resolve ARM pressure acceptance or accept current
+software on physical devices.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
