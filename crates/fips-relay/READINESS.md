@@ -29,7 +29,24 @@ replies or mint restarts. A compatible mint's backing and Lightning operation
 remain the mint operator's responsibility. A persistent Lightning regtest is an
 optional integration check for operating a mint, not a relay-v1 release gate.
 
-The current ordinary router and native Linux gateway binaries exercise mesh-only
+The latest qualified ordinary router and native Linux gateway binaries pass the
+complete mesh-only mint workflow in `work/mesh-mint-production-r197`: empty-wallet
+import across two open radio hops and one UDP gateway link, paid delivery,
+settlement committed before a held reply, persistent one-way return loss,
+alternate-path recovery of the original settlement without another mint swap,
+refunds and exports from both stopped wallets. All 16 test sats are collected,
+both wallets end empty and all 444 management checks pass. Independent checks
+verify restored router profiles and radio limits, stopped mint and gateway
+processes, removed candidate executables and unchanged financial journals. The
+retained buyer route intent is paused. Postflight comparisons use the same
+financial projection captured by the run; rejected raw-journal and empty-intent
+assumptions remain archived, and the stopped mint's leftover executable is
+removed before closure. No test or financial operation is replayed for these
+corrections. This accepts the recorded bounded topology
+and frozen dependency graph with the TCP/FIPS handshake backport; the earlier
+provider file error remains unexplained and its failed result is preserved.
+
+Earlier ordinary router and native Linux gateway binaries exercise mesh-only
 mint access in `work/mesh-mint-production-r190`. An empty client imports 16 test
 sats through two open radio hops and one UDP gateway link, then funds a paid
 route and delivers a payload with provider credit. After the mint commits a
@@ -39,7 +56,7 @@ without another administrative settlement request, swap or swap attempt; funding
 authority remains unchanged. The original administrative call reports an error,
 while the service subsequently recovers the original settlement.
 
-The complete acceptance case remains failed: the stopped provider's subsequent
+That acceptance case remains failed: the stopped provider's subsequent
 fund export reports a file-not-found error before any SDK export request or token
 is recorded. A separate recovery restores the original path, collects all 16
 original test sats and closes the mint and both gateway processes. Independent
@@ -67,12 +84,29 @@ A fresh run of that exact test binary with bridge tracing passes in
 `work/wallet-export-trace-r194`, collecting all 16 simulated test sats. The
 reopened export takes about 46 seconds. This records intermittent post-reopen
 mint access, not a fix for that failure or the earlier provider file error. Both
-results remain preserved. The prepared hardware case rejects the failed
-qualification receipt; no new router test or phone installation was started.
-Investigate the slow/intermittent export connection before qualifying this
-workflow on the devices.
+results remain preserved. The prepared hardware case rejected that failed
+qualification receipt, so that stage started no new router test or phone
+installation. The subsequent handshake fix and acceptance are recorded below.
 
-Current device evidence covers steady mesh funding, paid delivery, settlement,
+TCP/FIPS now recovers a restarted client whose surviving peer retains the old
+port tuple after a lost reset. The shared Rust and TypeScript handshake fix on
+`a402b4f` passes 38 Rust tests, strict core/driver lint, 60 TypeScript tests,
+shared sequence-boundary vectors and live reopening in both implementation
+directions. The frozen wallet-runtime candidate in
+`work/wallet-reopen-production-r196` passes the actual interrupted-funding,
+alternate-route settlement and reopened-export regression, collecting all 16
+simulated test sats. The reopened export follows settlement by 2.08 seconds in
+this run, compared with 45.88 seconds in the earlier traced run. This is one
+functional observation, not a matched performance result or a fix for the
+earlier provider file error. A checkpoint spelling error in the verifier is
+corrected using the completed test log without replaying financial operations.
+Strict ordinary-runtime lint and the native Linux and ARM64 router builds pass;
+their core default features and wallet SDK exclude simulation. Independent source,
+artifact and stopped-process checks close the qualification, and all 12 evidence
+files are archived with matching hashes. The following physical acceptance is
+the bounded case described above; broader production acceptance remains open.
+
+Earlier device evidence covers steady mesh funding, paid delivery, settlement,
 an earlier symmetric edge handover, and persistent one-way return-loss handover
 on `a3adbfca3`. The latter follows a reduced routing regression and passes in
 `work/mesh-mint-radio-r7`, collecting all 16 test sats over the replacement path
@@ -142,7 +176,9 @@ Phone acceptance teardown removes completed test app installations after their
 test funds are settled and their exact APK and account recovery archives are
 verified. Keep installations only while an active test or recovery needs them,
 then verify that no test packages or routing services remain. Preserve the
-original app and its accounts.
+original app and its accounts. The fresh inventory in `work/phone-app-cleanup-r8`
+confirms zero temporary FIPS apps and preserves the original FIPS and Nostr VPN
+apps; no phone app was installed for the current reconnect or router tests.
 
 Latest completed physical Android mint access passes on `256d3b1c5`: empty-wallet
 funding, paid delivery, settlement with the activity hidden, and stopped-wallet
