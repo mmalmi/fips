@@ -173,17 +173,20 @@ These cases accept the recorded three-router, shared-channel topologies, not
 mesh-only mint access, arbitrary movement, hostile radio load, power loss or
 sustained performance on the current runtime.
 
-The current Android build from `1856b7183`, with the qualified TCP/FIPS handshake
-backport, passes ARM64 JNI compilation, strict
-Android-target lint, all six JVM lifecycle tests, APK lint and signature/manifest
+The current Android build from `65766fab1`, including the qualified TCP/FIPS
+handshake backport and version-three payment CPU measurements, passes ARM64 JNI
+compilation, strict Android-target lint, all six JVM lifecycle tests, APK lint and signature/manifest
 checks. The packaged native library matches the independently stripped compiled
 library. The production dependency feature tree excludes dev edges and confirms
 core default features and a wallet SDK without simulation. The frozen lock graph
 is unchanged. Source, dependency, artifact and stopped-process checks pass in
-`work/android-reconnect-production-r198`; all 20 evidence files are archived with
-matching hashes. Its shared runtime sources match the qualified router binaries.
+`work/android-current-measurements-r204`; all 20 evidence files are archived with
+matching hashes. Its shared runtime sources match the qualified router binaries
+in `work/storage-arm-build-r203`. This APK has not been installed on the phone;
+current-build physical acceptance remains pending.
 
-That APK and the ordinary router daemon pass physical Pixel transit in
+The preceding APK in `work/android-reconnect-production-r198` and the ordinary
+router daemon pass physical Pixel transit in
 `work/phone-screenoff-production-r199`. The exact router → phone → router →
 router line stays authenticated over existing-LAN UDP. Both endpoints deliver
 and acknowledge 512 KiB in each direction, with matching digests, in each of
@@ -213,9 +216,10 @@ Phone acceptance teardown removes completed test app installations after their
 test funds are settled and their exact APK and account recovery archives are
 verified. Keep installations only while an active test or recovery needs them,
 then verify that no test packages or routing services remain. Preserve the
-original app and its accounts. The fresh inventory in `work/phone-app-cleanup-r9`
-confirms zero temporary FIPS apps and preserves the original FIPS and Nostr VPN
-apps after the completed screen-off test is removed.
+original app and its accounts. A subsequent full-package inventory in
+`work/mesh-mint-phone-production-r205/phone-packages-before.json` confirms zero
+temporary FIPS apps or processes, both original FIPS and Nostr VPN apps present,
+and the original FIPS account files unchanged from the verified cleanup above.
 
 Latest completed physical Android mint access passes on `256d3b1c5`: empty-wallet
 funding, paid delivery, settlement with the activity hidden, and stopped-wallet
