@@ -37,13 +37,39 @@ without another settlement swap. The earlier failed run and separate recovery
 remain preserved. This accepts the recorded bounded topology changes, not
 arbitrary mobile bootstrap or production readiness.
 
+The current ordinary ARM64 daemon from `6a33df2f7`, with the integrated SDK
+refund-client reuse and active-purchase projection, passes paid forwarding on all
+three physical OpenWrt routers. The saved SAE mesh authenticates without a FIPS
+peer roster, then exercises a paid two-hop line, automatic payments, active leaf
+radio eviction and automatic rejoin with the original processes and channels.
+Fresh paid round trips resume and all 384 test sats are collected; each test
+wallet ends empty. All 414 management checks and independent original-state,
+stopped-process and evidence-hash checks pass in `work/hardware-production-r187`.
+The daemon has core default features without `sim-transport` and its wallet SDK
+without `simulation`. Its isolated native test mint uses an existing permitted
+LAN test port; no firewall change or Umbrel service change is needed. The first
+attempt in `work/hardware-production-r186` rejects random-port mint access before
+issuance and closes with zero funds, restored routers and a stopped mint.
+This accepts the recorded saved-radio rejoin case, not current open joining,
+mesh-only mint access, arbitrary movement, power loss or sustained performance.
+
+The current Android source on `406e2f62b` passes ARM64 JNI compilation, strict
+Android-target lint, all six JVM lifecycle tests, APK lint and signature/manifest
+checks. The packaged native library matches the independently stripped compiled
+library. The production dependency feature tree excludes dev edges and confirms
+core default features and a wallet SDK without simulation. The native compile
+is reused after correcting feature-report collection/parsing; both rejected
+reports remain preserved. Source/dependency/stopped-process custody and the local
+archive pass in `work/android-production-r184`. The APK is not installed on the
+phone; current-runtime physical Pixel acceptance remains required.
+
 Phone acceptance teardown removes completed test app installations after their
 test funds are settled and their exact APK and account recovery archives are
 verified. Keep installations only while an active test or recovery needs them,
 then verify that no test packages or routing services remain. Preserve the
 original app and its accounts.
 
-Current physical Android mint access passes on `256d3b1c5`: empty-wallet
+Latest completed physical Android mint access passes on `256d3b1c5`: empty-wallet
 funding, paid delivery, settlement with the activity hidden, and stopped-wallet
 fund return use a loopback-only mint reached through two open radio hops. The
 Android app, routers and Linux gateway use that runtime and the same frozen
@@ -54,7 +80,7 @@ original accounts and normal Wi-Fi remain unchanged. Evidence is
 `work/android-current-r130`, `work/mesh-mint-phone-current-r132` and
 `work/phone-app-cleanup-r5`.
 
-Current physical paid phone transit also passes on `256d3b1c5`. Both endpoints
+Latest completed physical paid phone transit also passes on `256d3b1c5`. Both endpoints
 deliver and acknowledge 512 KiB in each direction with matching digests in each
 of two windows: app visible and activity hidden with its foreground service
 active. The exact router → phone → router → router line stays authenticated over
@@ -1663,7 +1689,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices. The latest turn-retention runtime delivers all 84,000 router originals with 1.74/1.57-second renewal pauses and full closure; native checks cover 320 held originals and eight mixed-link replacements. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify slower renewal near configured expiry, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; physical wire cost remains distinct from local submission counters. |
-| Shared forwarding and route policy | On `256d3b1c5`, all eight native controller checks and both normal-CPU ARM renewal cases pass. Current physical full middle-radio eviction/rejoin preserves the paid channels, delivers all eight recovery replies within an observed 31.596-second bound, collects all 384 test sats and fully restores the routers; all 465 management checks pass. Current Pixel mesh-only funding/delivery/background settlement collects all 16 test sats, passes 348 management checks and removes its completed app with the original account preserved. Current Pixel paid transit delivers and acknowledges 2 MiB with the app visible and hidden, settles four original channels, collects all 512 test sats, passes 441 management checks and removes the completed app. Current native delayed/lost mint-close renewal creates one replacement while another buyer keeps forwarding and paying, with all 384 test sats accounted for including fees. Earlier UDP, TCP, native Ethernet, WebSocket and explicit self-signed TLS service checks cover paid/free destination rules, bounded bootstrap and price/quality selection. Preceding-runtime evidence includes five-minute physical renewal with all 84,000 originals delivered, mixed-link restart/renewal with mint key rotation and leaf/middle radio recovery. | Quarter-CPU ARM delivery stalls; broader/intermittent mint-failure and native repurchase checks; Android screen-off/deep-idle, sustained transit, renewal and suspension; remaining physical/mixed-link qualification, sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | The current ordinary `6a33df2f7` ARM runtime passes three-router paid radio rejoin, retains its original channels, collects all 384 test sats and passes 414 management checks with full restoration. Its current Android build passes native/lifecycle/package gates; physical Pixel acceptance is pending. Earlier on `256d3b1c5`, all eight native controller checks and both normal-CPU ARM renewal cases pass. Current physical full middle-radio eviction/rejoin preserves the paid channels, delivers all eight recovery replies within an observed 31.596-second bound, collects all 384 test sats and fully restores the routers; all 465 management checks pass. Current Pixel mesh-only funding/delivery/background settlement collects all 16 test sats, passes 348 management checks and removes its completed app with the original account preserved. Current Pixel paid transit delivers and acknowledges 2 MiB with the app visible and hidden, settles four original channels, collects all 512 test sats, passes 441 management checks and removes the completed app. Current native delayed/lost mint-close renewal creates one replacement while another buyer keeps forwarding and paying, with all 384 test sats accounted for including fees. Earlier UDP, TCP, native Ethernet, WebSocket and explicit self-signed TLS service checks cover paid/free destination rules, bounded bootstrap and price/quality selection. Preceding-runtime evidence includes five-minute physical renewal with all 84,000 originals delivered, mixed-link restart/renewal with mint key rotation and leaf/middle radio recovery. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android screen-off/deep-idle, sustained transit, renewal and suspension; remaining physical/mixed-link qualification, sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
