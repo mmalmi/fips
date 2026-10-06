@@ -65,7 +65,9 @@ def storage_paths():
     return {
         "sdk_private_snapshot": [f"{root}/wallet/.cashu-private-*", f"{root}/wallet/spilman-client.json"],
         "receiver_sqlite": [f"{root}/receiver/spilman-receiver.sqlite*"],
-        "wallet_sqlite": [f"{root}/wallet/cashu/*"],
+        "wallet_sqlite": [f"{root}/wallet/cashu/wallet.sqlite{suffix}"
+                          for suffix in ("", "-wal", "-journal")],
+        "wallet_sqlite_shared_memory": [f"{root}/wallet/cashu/wallet.sqlite-shm"],
         "relay_journals": [f"{root}/{name}/*" for name in ("buyer", "seller", "controller")],
         "directory_syncs": [root, *(f"{root}/{name}" for name in (
             "buyer", "seller", "controller", "wallet", "receiver"))],
@@ -80,12 +82,13 @@ def validate_storage(summaries, lifecycles, require_activity=True):
         if lifecycles[node].get("accepted") is not True:
             raise RuntimeError("storage tracer lifecycle is incomplete")
         for category in ("sdk_private_snapshot", "receiver_sqlite", "wallet_sqlite",
+                         "wallet_sqlite_shared_memory",
                          "relay_journals", "directory_syncs"):
             value = summary["categories"][category]
             if value["write_errors"] or value["sync_errors"]:
                 raise RuntimeError("storage capture observed a failed file operation")
-        if summary["categories"]["wallet_sqlite"]["write_calls"]:
-            raise RuntimeError("ordinary payment window wrote to the funding wallet")
+        if any(summary["categories"]["wallet_sqlite"][key] for key in ("write_calls", "sync_calls")):
+            raise RuntimeError("ordinary payment window wrote or synced the funding wallet")
     if require_activity:
         for node in ("n01", "n03"):
             if summaries[node]["categories"]["sdk_private_snapshot"]["write_bytes"] <= 0:

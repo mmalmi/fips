@@ -19,10 +19,23 @@ without measurements, the ordinary optimized Linux build and 219 diagnostic
 checks pass in `work/payment-cpu-scope-r200`. The old implementation fails the
 new nested-work regression. This changes local diagnostics, not payment messages
 or authority. Scheduler scans and TCP/FIPS/core transport work remain outside
-payment-specific CPU; wallet/physical storage and complete wire attribution still
-require their separate measurements. The new matched native matrix passes in `work/payment-cpu-cadence-r201`, delivering
+payment-specific CPU; physical media, memory-mapped storage and complete wire
+attribution still require their separate measurements.
+
+The new matched native matrix passes in `work/payment-cpu-cadence-r201`, delivering
 all 285,696 payloads and collecting all 40,960 test sats with closed processes and
 source evidence. See [the current cadence results](CADENCE-RESULTS.md#current-native-matrix--7-october-2026).
+
+The separate current ARM64 virtual-Ethernet storage matrix passes all eight
+trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
+sats are collected, all 96 raw traces reproduce and all 40 resources are removed.
+Funding-wallet shared-memory upkeep is separately counted and included in file
+totals; wallet database/WAL/rollback-journal writes remain zero. Idle payment and
+financial storage activity remain forbidden. The initial classification failure
+is preserved with its money collected; the correction, fresh pilot and 170 focused
+storage/diagnostic checks pass. These traces are not CPU/timing or physical-media
+measurements. See [the current storage results](CADENCE-RESULTS.md#current-storage-syscall-comparison--7-october-2026).
+
 The dependency graph is the accepted frozen runtime graph; the unrelated local
 lockfile edit is excluded.
 

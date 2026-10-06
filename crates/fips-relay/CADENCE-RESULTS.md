@@ -49,8 +49,81 @@ payment attribution. It is not complete payment CPU. Journal bytes remain logica
 relay writes, excluding wallet SQLite and physical storage. Local payment carrier
 bytes include submitted TCP/FIPS segments, ACKs and retries, excluding opaque
 transit and UDP/kernel/radio framing. Earlier CPU results use a narrower scope and
-must not be used to claim a before/after optimization. Full storage/wire cost,
-physical-device regression and impaired/sustained workloads remain outstanding.
+must not be used to claim a before/after optimization. The separate storage
+comparison below covers wallet/receiver syscall writes. Physical media,
+memory-mapped storage, complete wire attribution, current device regression
+and impaired/sustained workloads remain outstanding.
+
+## Current storage syscall comparison — 7 October 2026
+
+The current ordinary Linux ARM64 executable on `29a88d481`, with measurement
+version 3 and the accepted frozen dependency graph, passes all eight virtual
+Ethernet storage trials in `work/storage-current-r202`: payment ages of
+250/500/1000/2000 ms followed by the reverse order. All 93,696 application
+packets arrive, with 323 out of order and no duplicates or invalid
+packets. Each trial settles its two original 32-sat channels and collects all
+384 test sats; the matrix collects all 3,072. Independent analysis reproduces
+all 96 raw traces and workload summaries, reconciles wallet/settlement amounts,
+and verifies that all 40 owned containers/networks are absent.
+
+Three relay processes use core default features and the wallet SDK without
+simulation. Only the capped test mint enables simulation. The relay SHA-256 is
+`b7d3ef44541af66f9896e690c7a51ecd1f539f868f03ffabfdffc95204755acc`.
+The fixed idle/bursty/steady/high-rate workloads match the earlier hardware
+storage schedule, with a three-second tail, one-msat/KiB tariff, 8,000-msat
+grace and 4,000-msat durable windows. Tracing changes execution cost; CPU and
+timing under tracing are not benchmark results. The native CPU matrix above
+uses a different topology and high-rate workload, so their figures are separate.
+
+The current history collector opens the funding wallet during background
+upkeep. SQLite touches its transient `wallet.sqlite-shm` index even when there
+is no financial operation. These syscall bytes/calls are a separate category
+and remain included in total file cost. All funding-wallet main database, WAL
+and rollback-journal writes and syncs remain zero in every workload window.
+Idle windows have zero payment activity, SDK/receiver/journal writes and syncs;
+they include 120 shared-memory bytes/calls across the three processes.
+Bursty windows have zero payment updates and financial writes, plus
+168–176 shared-memory bytes/calls while using prepaid credit.
+Nothing is subtracted as a background baseline.
+
+Each steady window delivers 3,200,000 bytes, performs three payment updates and
+36 file/directory sync calls, and writes 131,242–131,641 total file bytes.
+Every high-rate window delivers 8,000,000 bytes. Both repetitions appear below
+in trial order; totals include independent allowance checkpoints and upkeep.
+
+| Maximum age (ms) | Updates | SDK snapshot bytes | Receiver SQLite family bytes | Relay journal bytes | Wallet shared-memory bytes | Total file bytes | File/directory sync calls |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 250 | 4 / 4 | 58,083 / 58,083 | 67,696 / 67,696 | 44,287 / 45,129 | 88 / 80 | 170,154 / 170,988 | 50 / 52 |
+| 500 | 3 / 3 | 43,562 / 43,562 | 50,772 / 50,772 | 35,645 / 42,232 | 88 / 88 | 130,067 / 136,654 | 42 / 42 |
+| 1000 | 2 / 2 | 29,041 / 29,041 | 33,848 / 33,848 | 27,968 / 24,403 | 88 / 80 | 90,945 / 87,372 | 30 / 30 |
+| 2000 | 2 / 2 | 29,042 / 29,041 | 33,848 / 33,848 | 98,851 / 41,847 | 88 / 88 | 161,829 / 104,824 | 48 / 34 |
+
+The two traced repetitions per policy do not establish an optimal payment
+cadence. At 1 s, the high-rate pair writes about 0.0109–0.0114 file bytes per
+delivered application byte, versus 0.0163–0.0171 at 500 ms. Two seconds does not
+consistently lower total writes because independent checkpoints also contribute.
+The 500-ms default remains unchanged. These are successful write-like
+syscall lengths and sync calls, not physical media writes, flash wear, SQLite
+commit counts or memory-mapped write traffic. See SQLite's
+[WAL-index description](https://sqlite.org/walformat.html) and the
+[capture contract](../../testing/relay-cadence/README.md#matched-storage-cadence-capture).
+
+Every boundary preserves authorization, acknowledged credit, payment activity
+and durable-operation counters. 8 msat of already-covered usage appear outside
+workload windows and remain separately reported. 3 verified tracer detach
+events interrupt event-counter writes; they are counted without inventing
+successful bytes. No file operation is incomplete, failed or unmatched, and
+all target processes survive clean detachment.
+
+The initial current pilot remains failed: its older guard classified 120 bytes
+of wallet shared-memory upkeep as a financial write. All 384 test sats were
+collected and its five resources removed. The new classification retains those
+costs, rejects financial database/WAL/rollback-journal writes and idle payment
+activity, and passes all 41 storage and 129 diagnostic checks, including the
+new classification regression. A fresh 500-ms pilot passes before this full
+matrix; it delivers all 11,712
+payloads, collects all 384 test sats and reproduces all 12 raw traces. Runtime
+binaries and financial policy are unchanged by the classification correction.
 
 ## Earlier native matrix — 6 October 2026
 
@@ -1252,61 +1325,6 @@ VmHWM decreases were retained without weakening process or counter checks.
 The 500-ms default remains unchanged. Two repetitions with diagnostic sampling
 establish this bounded comparison, not an optimal universal payment age or
 proof that the earlier packet loss is resolved.
-
-## Matched storage syscall comparison — 19 September 2026
-
-The separate Linux ARM64 storage comparison passes all eight trials: maximum
-payment ages of 250/500/1000/2000 ms followed by the reverse order. All 93,696
-application packets arrive, with 101 out of order and no duplicates or invalid
-packets. Each trial settles its original two 32-sat channels and collects all
-384 test sats; the complete matrix conserves 3,072 sats. Independent replay of
-all 96 raw traces matches the saved summaries, settlement and wallet equations
-reconcile, and all 40 owned containers/networks are absent after cleanup.
-
-The fixture uses three relay processes and native Ethernet over virtual links,
-with the same finite workloads as the hardware comparison and a fixed three-second
-tail. The tariff is 1 msat/KiB. The optimized relay executable is unchanged during
-measurement (SHA-256 `9a17f2df6a147028ad894724e2d0dcd89a39ab8deb93e4c214f39a7e89ca1ce2`).
-No task builds or tests run concurrently. These are successful syscall write
-lengths and sync calls, not physical media writes or flash wear. Tracing changes
-execution cost; its CPU/timing observations are not compared with the untraced
-Wi-Fi experiment. The virtual carrier, platform and warmup also differ.
-
-All eight idle and all eight bursty windows have zero payment updates, file
-writes and syncs. Bursty traffic consumes already-paid credit; its metered usage
-still increases. Every steady window delivers 3,200,000 bytes, performs three
-updates and 42 syncs, and writes between 140,225 and 140,655 bytes. Each high-rate
-window delivers 8,000,000 bytes. The pairs below retain both repetitions in trial
-order; file writes include independent allowance checkpoints as well as payments.
-
-| Maximum age | Updates | SDK snapshot bytes | Receiver SQLite bytes | Relay journal bytes | Total file bytes | File/directory sync calls |
-| --- | --- | --- | --- | --- | --- | --- |
-| 250 ms | 3 / 4 | 45,344 / 60,459 | 50,772 / 67,696 | 51,606 / 53,154 | 147,722 / 181,309 | 46 / 58 |
-| 500 ms | 3 / 3 | 45,344 / 45,344 | 50,772 / 50,772 | 45,444 / 52,439 | 141,560 / 148,555 | 46 / 46 |
-| 1,000 ms | 2 / 2 | 30,229 / 30,229 | 33,848 / 33,848 | 30,952 / 31,434 | 95,029 / 95,511 | 34 / 34 |
-| 2,000 ms | 2 / 2 | 30,229 / 30,230 | 33,848 / 33,848 | 36,557 / 55,105 | 100,634 / 119,183 | 34 / 44 |
-
-Funding-wallet SQLite files have zero writes or syncs in every workload window.
-The 1-second high-rate pair writes about 0.0119 file bytes per delivered application
-byte, versus 0.0177–0.0186 at 500 ms. Fewer updates reduce SDK/receiver writes;
-independent checkpoints and snapshot lengths also affect the total. Two seconds
-does not consistently reduce total writes further. These two traced repetitions
-do not establish an optimal policy; the production default remains 500 ms.
-
-Every boundary verifies unchanged authorization, acknowledged credit, payment
-activity and all durable-operation counters. Already-covered usage may advance
-without another payment: six msat of such usage appear outside the workload
-windows and are reported separately, never subtracted from workload cost. Five
-explicit tracer detach events interrupt event-counter writes; they are counted
-separately without inventing successful bytes. All file operations are complete
-and attributed, and all traced processes survive clean detachment.
-
-The preceding matrix attempt stopped on its fourth trial because its guard
-incorrectly required already-covered usage to remain fixed between windows.
-It remains an incomplete result; all 1,536 test sats from its four trials were
-collected. The corrected guard permits only monotonic covered usage, preserving
-all payment, credit and durability checks. A fresh pilot and this complete matrix
-pass that guard. See the [capture contract](../../testing/relay-cadence/README.md#matched-storage-cadence-capture).
 
 ## Payment connection costs on Wi-Fi — 19 September 2026
 

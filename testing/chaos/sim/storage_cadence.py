@@ -17,7 +17,8 @@ from validation import (COUNTERS, OPERATIONS, CURRENT_OPERATIONS, PAYMENT_CPU_OP
                         validate_hardware_schedule, validate_probe)
 
 NODES = {"n01", "n02", "n03"}
-FILES = ("sdk_private_snapshot", "receiver_sqlite", "wallet_sqlite", "relay_journals")
+WALLET_SHARED_MEMORY = "wallet_sqlite_shared_memory"
+FILES = ("sdk_private_snapshot", "receiver_sqlite", "wallet_sqlite", WALLET_SHARED_MEMORY, "relay_journals")
 CONTROL = {"stream_bytes_sent", "stream_bytes_received", "requests_started", "requests_received"}
 MAX_SAMPLING_MS = 2000
 
@@ -122,7 +123,11 @@ def summarize_window(record):
     writes = sum(categories[k]["write_bytes"] for k in FILES)
     syncs = sum(value["sync_calls"] for value in categories.values())
     if name == "idle":
-        require(not changed and not any(value for category in categories.values() for value in category.values()),
+        # Opening the upkeep wallet may touch SQLite's transient WAL index.
+        # Count those syscalls without treating them as a financial DB write.
+        require(not changed and syncs == 0
+                and not any(value for kind, category in categories.items()
+                            if kind != WALLET_SHARED_MEMORY for value in category.values()),
                 "idle payment/storage work did not quiesce")
     delivered = sum(expected) * 1000
     usage_msat = after["n01"]["progress"]["evidence_msat"] - before["n01"]["progress"]["evidence_msat"]

@@ -732,8 +732,12 @@ reports usage before its workload and after its final sample; the next window
 starts from the post-detachment sample to avoid counting the same gap twice.
 No payment or storage cost is subtracted. Every payload must arrive, and source
 usage must cover at least its payload-derived tariff. Prepaid traffic need not cause another signature, but
-must still advance usage. Idle windows require no payment or tracked storage
-work; zero-write traces still require verified attachment and clean detachment.
+must still advance usage. Idle windows require no payment activity, financial
+file writes or syncs. Wallet upkeep may reopen SQLite and touch its transient
+`wallet.sqlite-shm` index; those successful syscall bytes and calls are separately
+reported and remain included in total file cost. Main database, WAL and rollback
+journal writes remain forbidden in every ordinary payment window. Zero-write
+traces still require verified attachment and clean detachment.
 Idle metered usage can advance without an application probe or another payment;
 that background usage remains reported and is never subtracted from other windows.
 Unmatched file operations, including failed operations, reject the window.
@@ -741,8 +745,11 @@ An explicitly detached eight-byte event-counter write may lack a return value;
 after verified tracer shutdown, it is counted separately without inventing
 successful bytes. Incomplete file writes and unknown descriptors still reject.
 
-Summaries separate SDK snapshots, receiver SQLite, funding-wallet files, relay
-journals and directory syncs. CPU counters collected under tracing are labeled
+Summaries separate SDK snapshots, receiver SQLite, funding-wallet database files,
+the funding wallet's shared-memory index, relay journals and directory syncs.
+SQLite's [WAL index](https://sqlite.org/walformat.html) contains transient shared
+state; this capture does not measure memory-mapped changes or physical media
+writes. CPU counters collected under tracing are labeled
 partial and unsuitable for timing comparisons. Successful syscall bytes are
 not physical media writes. A pilot validates one policy only; it cannot establish
 which payment cadence is preferable.

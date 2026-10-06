@@ -43,6 +43,8 @@ class StorageAcceptanceTests(unittest.TestCase):
             lambda s, l: s["n02"]["categories"]["receiver_sqlite"].update(sync_errors=1),
             lambda s, l: s["n01"]["categories"]["directory_syncs"].update(sync_errors=1),
             lambda s, l: s["n03"]["categories"]["wallet_sqlite"].update(write_calls=1),
+            lambda s, l: s["n03"]["categories"]["wallet_sqlite"].update(sync_calls=1),
+            lambda s, l: s["n03"]["categories"]["wallet_sqlite_shared_memory"].update(write_errors=1),
         )
         for edit in edits:
             with self.subTest(edit=edit):

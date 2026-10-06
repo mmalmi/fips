@@ -64,6 +64,23 @@ def window(name="idle"):
 
 
 class StorageWindowTests(unittest.TestCase):
+    def test_idle_wallet_shared_memory_upkeep_is_counted_without_financial_writes(self):
+        record = window()
+        path = "/tmp/bench-state/wallet/cashu/wallet.sqlite"
+        record["storage"]["n01"] = analyze(
+            [f'10 pwrite64(5<{path}-shm>, ""..., 1, 4095) = 1\n'] * 40, storage_paths())
+        result = summarize_window(record)
+        self.assertEqual(result["file_write_bytes"], 40)
+        self.assertEqual(result["file_write_calls"], 40)
+        self.assertEqual(result["categories"]["wallet_sqlite_shared_memory"]["write_bytes"], 40)
+        self.assertEqual(result["categories"]["wallet_sqlite"]["write_bytes"], 0)
+        self.assertEqual(result["payment_updates"], 0)
+        for suffix in ("", "-wal", "-journal"):
+            record["storage"]["n01"] = analyze(
+                [f'10 pwrite64(5<{path}{suffix}>, ""..., 1, 4095) = 1\n'], storage_paths())
+            with self.assertRaisesRegex(RuntimeError, "funding wallet"):
+                summarize_window(record)
+
     def test_async_exchange_cpu_does_not_count_as_a_usage_poll(self):
         record = window("steady")
         for section in ("payment_previous", "payment_before", "payment_after", "payment_after_detach"):
