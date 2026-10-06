@@ -495,16 +495,23 @@ impl Controller {
         .await
     }
 
-    async fn snapshot(&self) -> Result<Journal, String> {
+    async fn read<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(&Journal) -> T + Send + 'static,
+    ) -> Result<T, String> {
         let store = self.store.clone();
         blocking(move || {
             let store = store.lock().map_err(|_| "controller state poisoned")?;
             if !store.ready {
                 return Err("controller journal suspended".into());
             }
-            Ok(store.journal.clone())
+            Ok(read(&store.journal))
         })
         .await
+    }
+
+    async fn snapshot(&self) -> Result<Journal, String> {
+        self.read(Clone::clone).await
     }
 
     async fn neighbor(&self, address: NodeAddr) -> Result<PeerIdentity, String> {
@@ -522,19 +529,21 @@ impl Controller {
     }
 
     pub async fn purchases(&self) -> Result<Vec<Purchase>, String> {
-        let snapshot = self.snapshot().await?;
-        Ok(snapshot
-            .outgoing
-            .values()
-            .filter(|o| {
-                o.accepted
-                    && Self::routing_eligible(&snapshot, o)
-                    && !snapshot
-                        .buyer_settlements
-                        .contains_key(&o.purchase.channel.id)
-            })
-            .map(|o| o.purchase.clone())
-            .collect())
+        self.read(|journal| {
+            journal
+                .outgoing
+                .values()
+                .filter(|o| {
+                    o.accepted
+                        && Self::routing_eligible(journal, o)
+                        && !journal
+                            .buyer_settlements
+                            .contains_key(&o.purchase.channel.id)
+                })
+                .map(|o| o.purchase.clone())
+                .collect()
+        })
+        .await
     }
 
     /// Quiesce upstream service without erasing the funded accounts. Payment

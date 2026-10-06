@@ -2811,7 +2811,7 @@ owned merged worktree and branch are removed. Nothing is published. These test
 changes do not alter production deadlines, resolve ARM pressure acceptance or
 accept current software on physical devices.
 
-A controller candidate selects active purchases under the existing journal lock,
+The controller selects active purchases under the existing journal lock,
 cloning only the returned purchases instead of all retained financial history.
 The same readiness check and purchase eligibility rules remain. All 318 library
 tests pass with two concurrent tests and a short private temporary path, without
@@ -2824,9 +2824,19 @@ aggregated. Worker spans cover different portions of the operation; these loop
 results do not establish whole-controller or physical-router performance.
 Source, binary, dependency and stopped-process custody are closed and archived
 in `work/controller-purchase-read-r172` and `work/controller-purchase-read-r174`.
-The candidate remains unintegrated pending clean production lint, build and ARM
-acceptance. Its first clean-build preflight requires offline lock resolution for
-the frozen local dependencies; no production test ran in that attempt.
+Clean production verification with the integrated SDK and standard reqwest passes
+all 318 unit tests, strict all-feature library lint, native data renewal, ARM data
+renewal at both two-core and quarter-core quotas, and ARM stream renewal. All four
+scenarios collect their 5,120 test sats with the original deadlines and financial
+assertions. The quarter-core case takes 190.441 seconds overall; each delivery
+window retains its original bound. This accepts one pressure run on the combined
+build, without attributing the improvement to a single change or establishing
+general liveness. The source/dependency/process checks and 24-file local evidence
+archive are verified in `work/controller-purchase-production-r176`, with no
+temporary financial residue. Offline lock resolution preserves all 697 package
+identities and dependency lists. The first locked preflight is retained separately
+in `work/controller-purchase-production-r175`. The optimization is integrated
+locally; current physical-device and matched-cadence acceptance remain separate.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
