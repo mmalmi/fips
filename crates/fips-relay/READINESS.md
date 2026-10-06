@@ -2542,6 +2542,31 @@ the remaining CPU or establishing a speedup. Exact source/artifacts, unchanged f
 dependencies, actual quotas, terminal ownership and financial residue custody
 are verified in `work/control-task-cpu-r129`; the probes remain private.
 
+Private monotonic phase tracing on the same runtime narrows the constrained
+renewal pipeline. The normal two-CPU run passes in 63.262 seconds and collects
+all 1,280 test sats; the quarter-CPU run misses forward delivery at round eight
+in 112.811 seconds. Completed renewal pauses have a 9.508-second median and
+14.608-second maximum, with successive pauses at different hops. Onward
+activation and acceptance take up to 6.706 and 7.697 seconds; observed channel-open
+and refund call spans reach 4.604 and 4.498 seconds. Metadata preparation is at
+most 0.302 ms in this fixture. The separate wallet-held verification/admission
+and journal window reaches 1.599 seconds; provider wallet-lock acquisition takes
+at most 0.201 seconds.
+No instrumented quote-quota or source-no-active-route denial is recorded in the
+constrained case. At shutdown, the source SDK open call has returned, without
+a witnessed join or installation, and another relay awaits acceptance. The final
+call's success is not witnessed. These marks locate unfinished
+work without proving one CPU bottleneck, a continuous outage or a causal fix.
+Nested wall intervals must not be summed; QEMU and probe overhead exclude
+physical performance or equivalence claims. The shared quota covers five nodes
+and the test mint. Exact source/artifact/dependency/quotas, complete phase records,
+terminal ownership and residual test-state custody are verified in
+`work/renewal-critical-path-r140`. Its identical executable comes from
+`work/renewal-critical-path-r139`; that earlier run has interleaved phase records
+and is excluded from the timing summary. No probe or performance change is
+integrated into production. Reliable-traffic behavior through these successive
+renewal pauses needs comparison before changing payment or admission policy.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
