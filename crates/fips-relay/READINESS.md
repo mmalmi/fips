@@ -2625,6 +2625,16 @@ Evidence, stopped ownership and dependency/source custody are verified in
 renewal runs finish data delivery before failing the obsolete usage-only
 assertion; the corrected runs complete the full financial checks.
 
+The same immutable qualification source also builds for ARM64 musl. Its
+emulated two-CPU bounded-handshake datagram run passes in 44.835 seconds and
+collects all 1,280 test sats. The quarter-CPU run still misses forward delivery
+at round nine in 113.027 seconds. Its snapshot has unfinished source funding
+and an unfinished reverse-source settlement/renewal; it does not isolate a
+single cause. No final collection is claimed for that case. Exact source,
+binary, emulator and quotas, stopped ownership and one archived residual file
+are verified in `work/signed-capacity-arm-r154`. ARM pressure acceptance remains
+open, and these emulated results do not qualify physical-router performance.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
