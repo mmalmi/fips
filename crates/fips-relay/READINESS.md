@@ -2706,7 +2706,39 @@ The last unfinished funding worker returns from channel opening after its
 async caller is cancelled, retaining wallet ownership until that return as
 required. Exact source/dependency custody, observations and stopped ownership
 are verified in `work/renewal-funding-phases-r162`; no residual temporary files
-remain. Receiver verification and mint-processing attribution remain open.
+remain. The narrower receiver measurement and host-counter validation below
+extend this diagnostic; mint-processing attribution remains open.
+
+The same private diagnostic also measures actual receiver funding verification
+on its existing blocking worker. Normal-CPU renewal passes and collects all
+1,280 test sats; quarter-CPU delivery fails at round eleven, direction 4 → 0,
+after 143.465 seconds, with no final collection claimed. Its 21 completed
+low-CPU verification spans use at most 0.03 seconds of matched worker CPU each,
+against median/max wall times of 0.301/1.103 seconds. This measures verification,
+not the whole request. Guest process CPU readings stay at zero while thread
+counters advance, so they are rejected. Host cgroup counters instead record
+35.696 CPU seconds over 143.465 wall seconds, averaging 0.249 cores against the
+0.25-core limit, with 1,425 of 1,435 quota periods throttled. These observations
+establish saturation under the imposed quota, not its operation-level cause.
+Source/dependency custody and stopped ownership are verified in
+`work/receiver-funding-phases-r163`; its remaining financial file is retained
+and archived byte-for-byte.
+
+A host-side sampler reuses that exact closed ARM binary, without rebuilding or
+changing the original workload, deadlines or financial checks. The normal run
+passes and collects all 1,280 test sats. Quarter-CPU delivery fails at round
+nine, direction 0 → 4, after 118.452 seconds. Host counters record 29.351 CPU
+seconds, averaging 0.248 cores, with 1,169 of 1,184 quota periods throttled.
+Sampled thread totals account for 96.5% of recorded CPU; their gap includes
+sampling overhead and unobserved thread boundaries. Completed, nonoverlapping
+channel-opening, refund and receiver-admission worker intervals account for
+2.27, 1.51 and 0.22 CPU seconds respectively. This partial accounting excludes
+unfinished intervals and does not attribute the remaining CPU or prove a
+speedup. Source, binary and dependency custody, stopped process groups and
+removed quota scopes are verified in `work/host-cpu-phases-r164`; one remaining
+financial file is retained and archived. ARM pressure acceptance and physical
+performance remain open. The next attribution must cover work outside those
+completed worker intervals, including mint and runtime operations.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
