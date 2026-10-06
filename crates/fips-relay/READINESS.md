@@ -182,8 +182,8 @@ core default features and a wallet SDK without simulation. The frozen lock graph
 is unchanged. Source, dependency, artifact and stopped-process checks pass in
 `work/android-current-measurements-r204`; all 20 evidence files are archived with
 matching hashes. Its shared runtime sources match the qualified router binaries
-in `work/storage-arm-build-r203`. This APK has not been installed on the phone;
-current-build physical acceptance remains pending.
+in `work/storage-arm-build-r203`. The physical phone mesh-mint acceptance below
+uses this exact APK.
 
 The preceding APK in `work/android-reconnect-production-r198` and the ordinary
 router daemon pass physical Pixel transit in
@@ -207,8 +207,8 @@ reconciled without repeating installation, acceptance or financial operations;
 the rejected checks remain archived. The stopped native mint copy is removed.
 This case uses a LAN HTTP mint and USB power. It accepts the recorded display
 states, not natural deep idle, battery cost or recovery from Android blocking
-networking. Current phone mesh-only mint access, renewal, network suspension,
-radio handover and sustained/impaired-traffic acceptance remain open. Earlier
+networking. Current phone renewal, network suspension, phone movement and
+sustained/impaired-traffic acceptance remain open. Earlier
 awake-only acceptance and its cleanup remain in `work/phone-transit-production-r188`
 and `work/phone-app-cleanup-r7`.
 
@@ -216,20 +216,35 @@ Phone acceptance teardown removes completed test app installations after their
 test funds are settled and their exact APK and account recovery archives are
 verified. Keep installations only while an active test or recovery needs them,
 then verify that no test packages or routing services remain. Preserve the
-original app and its accounts. A subsequent full-package inventory in
-`work/mesh-mint-phone-production-r205/phone-packages-before.json` confirms zero
-temporary FIPS apps or processes, both original FIPS and Nostr VPN apps present,
-and the original FIPS account files unchanged from the verified cleanup above.
+original app and its accounts. `work/phone-app-cleanup-r10` verifies the exact
+APK and complete private account archive before removing the latest completed
+app. Android recovery data is retained, no temporary FIPS packages or processes
+remain, and the original FIPS account files and Nostr VPN installation are
+preserved.
 
-Latest completed physical Android mint access passes on `256d3b1c5`: empty-wallet
-funding, paid delivery, settlement with the activity hidden, and stopped-wallet
-fund return use a loopback-only mint reached through two open radio hops. The
-Android app, routers and Linux gateway use that runtime and the same frozen
-dependency graph. All 16 test sats are collected and 348 management checks pass.
-The completed test app is removed after verifying its APK/account recovery
-archives; the main app,
-original accounts and normal Wi-Fi remain unchanged. Evidence is
-`work/android-current-r130`, `work/mesh-mint-phone-current-r132` and
+Current physical Android mesh-mint access and settlement recovery pass on
+`65766fab1` in `work/mesh-mint-phone-production-r205`. The empty phone wallet
+imports 16 test sats from a loopback-only mint through two discovered open radio
+hops and a UDP gateway, buys one eight-sat channel and delivers a paid payload.
+With the activity hidden and the same process running, the mint commits the
+original settlement while its reply is held. A one-way radio cut blocks that
+reply; opening an alternate radio edge restores a discovered FIPS path while
+the failed edge remains blocked. The original control request fails, then the
+background service recovers matching buyer/provider settlement records without
+another administrative settlement request or mint swap attempt. Spending
+authority remains unchanged. The provider earns two sats, unused capacity
+refunds six, and stopped-wallet exports return all 16 test sats to the mint.
+
+All 594 management checks pass. Independent checks verify ordinary router,
+Android and gateway dependency features, unchanged capped-issuer code and SDK,
+restored router profiles and radio limits, stopped processes, empty wallets,
+original phone accounts and normal Wi-Fi. All 224 private acceptance records
+are verified. The audit's initial stopped-mint executable failure is preserved;
+only that verified inactive copy is removed before rechecking, without payment
+replay. This accepts durable recovery during the recorded router-link failure,
+not an uninterrupted control response, phone movement, arbitrary mobility,
+natural deep idle, process loss or sustained performance. The preceding steady
+phone mesh-mint baseline remains in `work/mesh-mint-phone-current-r132` and
 `work/phone-app-cleanup-r5`.
 
 Earlier physical paid phone transit passes on `256d3b1c5`. Both endpoints
