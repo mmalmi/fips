@@ -270,6 +270,9 @@ pub(crate) enum NodeEndpointControlCommand {
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
+    TransportStatsSnapshot {
+        response_tx: tokio::sync::oneshot::Sender<Vec<serde_json::Value>>,
+    },
     PeerRatingEvents {
         scope: String,
         response_tx: tokio::sync::oneshot::Sender<Result<Vec<nostr::Event>, NodeError>>,

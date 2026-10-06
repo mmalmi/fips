@@ -220,6 +220,19 @@ impl Node {
                 };
                 let _ = response_tx.send(accepted);
             }
+            NodeEndpointControlCommand::TransportStatsSnapshot { response_tx } => {
+                let rows = self
+                    .transport_ids()
+                    .filter_map(|id| self.get_transport(id))
+                    .map(|handle| {
+                        serde_json::json!({
+                            "type": handle.transport_type().name,
+                            "stats": handle.transport_stats(),
+                        })
+                    })
+                    .collect();
+                let _ = response_tx.send(rows);
+            }
             NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self

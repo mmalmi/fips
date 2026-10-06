@@ -479,6 +479,16 @@ impl WebRtcTransport {
         self.physical.snapshot()
     }
 
+    /// Borrow counts without blocking on negotiation or exposing peer records.
+    pub(crate) fn logical_connection_counts(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pooled": self.pool.try_lock().ok().map(|pool| pool.len()),
+            "pending": self.pending.try_lock().ok().map(|pending| pending.len()),
+            "ready": self.ready.try_lock().ok().map(|ready| ready.len()),
+            "failed": self.failed.try_lock().ok().map(|failed| failed.len()),
+        })
+    }
+
     /// Drain SDP negotiation messages for delivery over encrypted FIPS
     /// sessions. External discovery providers never consume this queue.
     pub(crate) fn drain_link_negotiations(&mut self, limit: usize) -> Vec<OutboundLinkNegotiation> {

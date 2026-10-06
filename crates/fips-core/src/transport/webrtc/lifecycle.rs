@@ -45,7 +45,7 @@ struct PhysicalResourceInner {
 }
 
 /// Conservation counters for physical WebRTC peer connections.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub struct WebRtcResourceSnapshot {
     /// Configured maximum simultaneous physical peer connections.
     pub capacity: usize,

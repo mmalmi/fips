@@ -580,6 +580,8 @@ impl TransportHandle {
             TransportHandle::WebRtc(t) => serde_json::json!({
                 "mtu": t.mtu(),
                 "state": t.state().to_string(),
+                "resources": t.resource_snapshot(),
+                "logical": t.logical_connection_counts(),
             }),
             #[cfg(any(target_os = "linux", feature = "host-ble-transport", test))]
             TransportHandle::Ble(t) => {

@@ -880,6 +880,17 @@ impl FipsEndpoint {
         .await
     }
 
+    /// Snapshot aggregate transport counters without peer identities or addresses.
+    pub async fn transport_stats(&self) -> Result<Vec<serde_json::Value>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "transport statistics snapshot",
+            NodeEndpointControlCommand::TransportStatsSnapshot { response_tx },
+            response_rx,
+        )
+        .await
+    }
+
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
