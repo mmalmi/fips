@@ -2671,9 +2671,23 @@ delivery before failing an obsolete assertion requiring fully used or fully
 authorized capacity. Its replacement also checks the actual capacity-blocked
 hint; it retains every delivery and financial requirement. These six runs have
 no running owned processes or residual temporary files; their artifacts and
-dependency custody are verified. ARM, physical-router and phone acceptance of this admission
-change, sustained/impaired workloads and the broader production scope remain
-open.
+dependency custody are verified. Physical-router and phone acceptance of this
+admission change, sustained/impaired workloads and the broader production scope
+remain open.
+
+The same immutable source also builds for ARM64 musl. Under the pinned emulator,
+normal-CPU bounded-handshake datagram renewal passes in 53.042 seconds, and both
+stream endpoints deliver and acknowledge all 18,000 bytes with matching digests
+after an observed 52.75 seconds, within the unchanged 60-second bound. Both cases
+complete all financial checks and collect all 1,280 test sats. The quarter-CPU
+datagram case still fails delivery at round ten, direction 0 → 4, after 141.336
+seconds. Its snapshot has no controller errors, but four nodes have unfinished
+funding and no active outgoing purchase; the middle node has two incomplete
+renewals. This does not isolate a single cause. No final collection is claimed
+for the failed case. Source, dependency, binary, emulator and quota custody,
+stopped processes and no residual temporary files are verified in
+`work/buyer-capacity-arm-r161`. ARM pressure acceptance remains open, and these
+emulated checks do not establish physical-router performance.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
