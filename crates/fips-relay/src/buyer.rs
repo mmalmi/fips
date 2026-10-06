@@ -75,6 +75,8 @@ struct PurchaseChannel {
     #[serde(default)]
     retired: Option<RetiredRouteEvidence>,
     active: bool,
+    #[serde(skip)]
+    capacity_blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,12 +136,26 @@ struct State {
 
 impl State {
     fn evidence_msat(&self, id: &str) -> Option<u64> {
+        self.amount_msat(id, true)
+    }
+
+    fn amount_msat(&self, id: &str, submitted: bool) -> Option<u64> {
         let retired = self.channels.get(id)?.retired?;
+        let initial = if submitted {
+            retired.submitted_msat
+        } else {
+            retired.reserved_msat
+        };
         self.quotes
             .values()
             .filter(|q| q.contract.channel_id == id)
-            .try_fold(retired.submitted_msat, |sum, q| {
-                sum.checked_add(q.contract.price.amount_due_msat(q.submitted_units)?)
+            .try_fold(initial, |sum, q| {
+                let units = if submitted {
+                    q.submitted_units
+                } else {
+                    q.observed_units
+                };
+                sum.checked_add(q.contract.price.amount_due_msat(units)?)
             })
     }
 

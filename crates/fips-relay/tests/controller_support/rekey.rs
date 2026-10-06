@@ -64,11 +64,7 @@ impl RekeyObservation {
         })
         .await
         .expect("setup payment session must rotate before late observation");
-        let expected = (0..last)
-            .flat_map(|node| [(node, node + 1), (node + 1, node)])
-            .chain([(0, last), (last, 0)])
-            .collect();
-        let mut observation = Self::start_with_pairs(root, peers, expected).await;
+        let mut observation = Self::start_with_pairs(root, peers, Self::all_pairs(peers)).await;
         observation.handshake_loss = Some((transit.clone(), false));
         Some(observation)
     }
@@ -98,6 +94,19 @@ impl RekeyObservation {
             started.elapsed().as_millis()
         );
         observation
+    }
+
+    fn all_pairs(peers: &[PeerIdentity]) -> BTreeSet<(usize, usize)> {
+        let last = peers.len() - 1;
+        (0..last)
+            .flat_map(|node| [(node, node + 1), (node + 1, node)])
+            .chain([(0, last), (last, 0)])
+            .collect()
+    }
+
+    #[cfg(feature = "measurements")]
+    pub(crate) async fn start_unfaulted(root: &Path, peers: &[PeerIdentity]) -> Self {
+        Self::start_with_pairs(root, peers, Self::all_pairs(peers)).await
     }
 
     async fn start_with_pairs(

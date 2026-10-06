@@ -60,7 +60,7 @@ impl BuyerAuthorizer {
         request: &OriginatedSessionRequest<'_>,
         local_only: bool,
     ) -> Option<u64> {
-        self.begin_admitted(request, local_only, || Some(()))
+        self.begin_admitted(request, local_only, || Some(()), || local_only)
             .ok()
             .map(|(token, ())| token)
     }
@@ -73,6 +73,7 @@ impl BuyerAuthorizer {
         request: &OriginatedSessionRequest<'_>,
         local_only: bool,
         admit: impl FnOnce() -> Option<T>,
+        can_renew: impl FnOnce() -> bool,
     ) -> Result<(u64, T), ForwardingDecision> {
         use ForwardingDecision::{Reject, Retry};
         let now = SystemTime::now()
@@ -115,7 +116,7 @@ impl BuyerAuthorizer {
             [0; 32]
         };
         let units = u64::try_from(request.session_payload.len()).map_err(|_| Reject)?;
-        Self::reserve_attempt(&mut s, id, digest, units, local_only, admit).ok_or(Reject)
+        Self::reserve_attempt(&mut s, id, digest, units, local_only, admit, can_renew)
     }
 
     pub(super) fn prepare_intent(
@@ -165,8 +166,11 @@ impl BuyerAuthorizer {
         let Ok(units) = u64::try_from(intent.session_bytes) else {
             return Reject;
         };
-        Self::reserve_attempt(&mut state, id, [0; 32], units, true, || Some(()))
-            .map_or(Reject, |(token, ())| Track(token))
+        match Self::reserve_attempt(&mut state, id, [0; 32], units, true, || Some(()), || true) {
+            Ok((token, ())) => Track(token),
+            Err(ForwardingDecision::Retry) => OriginatedSessionAdmission::Retry,
+            Err(_) => Reject,
+        }
     }
 
     fn reserve_attempt<T>(
@@ -176,22 +180,25 @@ impl BuyerAuthorizer {
         units: u64,
         source_admission: bool,
         admit: impl FnOnce() -> Option<T>,
-    ) -> Option<(u64, T)> {
+        can_renew: impl FnOnce() -> bool,
+    ) -> Result<(u64, T), ForwardingDecision> {
+        use ForwardingDecision::{Reject, Retry};
         if units == 0 || s.pending.len() >= s.limits.max_pending {
-            return None;
+            return Err(Reject);
         }
-        let quote = s.quotes.get(&id)?;
-        let provider = s.channels.get(&quote.contract.channel_id)?.provider;
+        let quote = s.quotes.get(&id).ok_or(Reject)?;
+        let channel_id = quote.contract.channel_id.clone();
+        let provider = s.channels.get(&channel_id).ok_or(Reject)?.provider;
         let legacy = quote.contract.billing.is_legacy();
         if legacy && s.seen.contains(&(provider, digest)) {
-            return None;
+            return Err(Reject);
         }
         let limit = s.limits.max_packets_per_contract;
         let token = s.next_token;
-        let next_token = token.checked_add(1)?;
-        let q = s.quotes.get_mut(&id)?;
+        let next_token = token.checked_add(1).ok_or(Reject)?;
+        let q = s.quotes.get_mut(&id).ok_or(Reject)?;
         if legacy && q.attempts.len() >= limit {
-            return None;
+            return Err(Reject);
         }
         let Some(observed) = q
             .observed_units
@@ -199,9 +206,36 @@ impl BuyerAuthorizer {
             .filter(|n| *n <= q.contract.max_units)
         else {
             q.quota_blocked |= source_admission;
-            return None;
+            return Err(Reject);
         };
-        let admitted = admit()?;
+        if !legacy {
+            let incremental = q
+                .contract
+                .price
+                .amount_due_msat(observed)
+                .ok_or(Reject)?
+                .checked_sub(
+                    q.contract
+                        .price
+                        .amount_due_msat(q.observed_units)
+                        .ok_or(Reject)?,
+                )
+                .ok_or(Reject)?;
+            let reserved = s.amount_msat(&channel_id, false).ok_or(Reject)?;
+            let channel = s.channels.get_mut(&channel_id).ok_or(Reject)?;
+            let capacity = channel.terms.capacity_sat.checked_mul(1000).ok_or(Reject)?;
+            if reserved.checked_add(incremental).ok_or(Reject)? > capacity {
+                if incremental > capacity || !can_renew() {
+                    return Err(Reject);
+                }
+                // This is only a scheduling hint for an already approved
+                // channel. Unadmitted traffic creates no spending evidence.
+                channel.capacity_blocked = true;
+                return Err(Retry);
+            }
+        }
+        let admitted = admit().ok_or(Reject)?;
+        let q = s.quotes.get_mut(&id).ok_or(Reject)?;
         q.observed_units = observed;
         let index = q.attempts.len();
         q.attempts.push(Attempt {
@@ -215,11 +249,21 @@ impl BuyerAuthorizer {
             s.seen.insert((provider, digest));
         }
         s.next_token = next_token;
-        Some((token, admitted))
+        Ok((token, admitted))
     }
 }
 
 impl BuyerAuthorizer {
+    /// Approved traffic encountered this channel's remaining capacity limit.
+    /// This in-memory renewal hint is not payment evidence or authority.
+    pub fn capacity_blocked(&self, id: &str) -> bool {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|s| s.channels.get(id).map(|c| c.capacity_blocked))
+            .unwrap_or(false)
+    }
+
     pub(crate) fn is_local(&self, local: NodeAddr) -> Result<bool, String> {
         Ok(self.state.lock().map_err(|_| "buyer state poisoned")?.local == local)
     }

@@ -54,6 +54,7 @@ impl BuyerAuthorizer {
                     authorized_sat: 0,
                     retired: Some(RetiredRouteEvidence::default()),
                     active: true,
+                    capacity_blocked: false,
                 },
             );
             Ok(true)

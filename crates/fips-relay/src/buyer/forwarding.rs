@@ -202,6 +202,17 @@ impl PaidForwarder {
                 },
                 false,
                 admit_seller,
+                || {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .is_ok_and(|now| {
+                            self.seller.has_active_route(
+                                *request.ingress.node_addr(),
+                                request.destination,
+                                now.as_secs(),
+                            )
+                        })
+                },
             ) {
                 Ok(admission) => admission,
                 Err(fips_core::node::ForwardingDecision::Retry) => {

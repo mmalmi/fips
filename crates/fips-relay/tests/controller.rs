@@ -2,6 +2,7 @@
 #[path = "controller_support/admission.rs"]
 mod admission;
 mod controller_support;
+use controller_support::traffic::{Traffic, TrafficKind};
 #[path = "controller_support/funding_recovery.rs"]
 mod funding_recovery;
 #[path = "controller_support/payment_mobility.rs"]
@@ -42,39 +43,69 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authenticated_adjacent_routers_fund_accept_and_pay_without_a_control_roster() {
-    controller_scenario(None, false, false, false, false).await;
+    controller_scenario(None, false, false, false, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(Some(ForwardingAttempt), false, false, false, false).await;
+    controller_scenario(
+        Some(ForwardingAttempt),
+        false,
+        false,
+        false,
+        false,
+        TrafficKind::Datagrams,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bounded_handshakes_survive_paid_channel_renewal() {
-    controller_scenario(Some(ForwardingData), false, false, false, false).await;
+    controller_scenario(
+        Some(ForwardingData),
+        false,
+        false,
+        false,
+        false,
+        TrafficKind::Datagrams,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
-    controller_scenario(None, true, false, false, false).await;
+    controller_scenario(None, true, false, false, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn changed_native_paths_reprice_routes_and_reuse_unchanged_neighbor_channels() {
-    controller_scenario(None, false, true, false, false).await;
+    controller_scenario(None, false, true, false, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn source_authorized_routes_refresh_automatically_within_price_and_spending_caps() {
-    controller_scenario(None, false, true, true, false).await;
+    controller_scenario(None, false, true, true, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels() {
-    controller_scenario(None, false, false, false, true).await;
+    controller_scenario(None, false, false, false, true, TrafficKind::Datagrams).await;
+}
+
+#[cfg(feature = "measurements")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reliable_stream_survives_paid_channel_renewal() {
+    controller_scenario(
+        Some(ForwardingData),
+        false,
+        false,
+        false,
+        false,
+        TrafficKind::Stream,
+    )
+    .await;
 }
 
 // Each scenario owns five live nodes and several signing workers. Keep the
@@ -88,6 +119,7 @@ async fn controller_scenario(
     route_change: bool,
     automatic_routes: bool,
     slow_neighbor: bool,
+    traffic: TrafficKind,
 ) {
     let automatic_renewal = renewal_billing.is_some();
     let _network = NETWORK_SCENARIO.lock().await;
@@ -428,54 +460,14 @@ async fn controller_scenario(
                 "provider-only evidence cannot create a payment obligation");
         }
         #[cfg(unix)]
-        let mut rekey = controller_support::RekeyObservation::start(root.path(), &peers, automatic_renewal, &forwarding[2]).await;
-        // A final handshake retry can outlive the original 18 traffic rounds.
-        // Keep driving delivery until recovery is observed, with a finite cap
-        // and the existing overall scenario deadline and spending bounds.
-        for round in 0..if automatic_renewal { 36 } else { 8 } {
-            for (source, destination) in [(0, 4), (4, 0)] {
-                let mut payload = vec![round; 1_000];
-                payload[0] = source as u8;
-                let delivery = tokio::time::timeout(Duration::from_secs(30), async {
-                    loop {
-                        nodes[source].send_datagram(peers[destination], 44_740, 44_740, payload.clone()).await.unwrap();
-                        let mut received = Vec::new();
-                        if let Ok(result) = tokio::time::timeout(
-                            Duration::from_millis(if automatic_renewal { 750 } else { 10_000 }),
-                            data[destination].recv_batch_into(&mut received, 8),
-                        ).await {
-                            result.unwrap();
-                            if received.iter().any(|m| m.data.as_slice() == payload) { break; }
-                        }
-                        if !automatic_renewal {
-                            controller_support::delivery_evidence(
-                                root.path(), &peers, &forwarding, &ledgers, &buyers,
-                            ).await;
-                        }
-                        assert!(automatic_renewal,
-                            "ordinary delivery needed a retry: round={round} direction={source}->{destination}; received={:?}; errors={:?}; usage={:?}",
-                            received.iter().map(|m| (m.source_port, m.destination_port, m.data.len(), m.data.as_slice().iter().copied().take(2).collect::<Vec<_>>())).collect::<Vec<_>>(),
-                            errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>());
-                    }
-                })
-                .await;
-                if delivery.is_err() {
-                    controller_support::delivery_evidence(
-                        root.path(), &peers, &forwarding, &ledgers, &buyers,
-                    ).await;
-                }
-                delivery.unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
-            }
-            for controller in &controllers {
-                assert!(controller.locked_capital_sat().await.unwrap() <= capacity * 2);
-            }
-            // Payments are driven only by each controller's periodic task.
-            tokio::time::sleep(Duration::from_millis(600)).await;
+        let mut rekey = traffic.rekey(root.path(), &peers, automatic_renewal, &forwarding[2]).await;
+        Traffic {
+            root: root.path(), nodes: &nodes, peers: &peers, data: &mut data,
+            controllers: &controllers, ledgers: &ledgers, buyers: &buyers,
+            forwarding: &forwarding, links: &links, capacity, automatic_renewal,
             #[cfg(unix)]
-            if let Some(rekey) = &mut rekey { rekey.observe(root.path(), &peers).await; }
-            #[cfg(unix)]
-            if round >= 17 && rekey.as_ref().is_some_and(|rekey| rekey.recovered()) { break; }
-        }
+            rekey: &mut rekey,
+        }.run(traffic).await;
         #[cfg(unix)]
         if let Some(rekey) = rekey { rekey.assert_rotated("paid renewal"); }
         if billing.has_free_handshakes() {
@@ -847,8 +839,9 @@ async fn controller_scenario(
                 let current = controllers[*buyer].purchases().await.unwrap();
                 assert!(current.iter().any(|p| p.provider == old.provider && p.channel.id != old.channel.id), "each original direction needs a replacement channel");
                 assert!(buyers[*buyer].evidence_msat(&old.channel.id).unwrap() >= capacity * 1_000
-                    || buyers[*buyer].authorized_sat(&old.channel.id).unwrap() == capacity,
-                    "original channels were replaced at evidenced or authorized capacity");
+                    || buyers[*buyer].authorized_sat(&old.channel.id).unwrap() == capacity
+                    || buyers[*buyer].capacity_blocked(&old.channel.id),
+                    "original channels were replaced at capacity or for approved traffic that could not fit");
             }
             let mut active_before = Vec::new();
             let mut funding_before = Vec::new();

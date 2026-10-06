@@ -247,7 +247,8 @@ impl Controller {
             .buyer
             .authorized_sat(&purchase.channel.id)
             .unwrap_or(0);
-        policy.due(purchase, evidence, authorized, observed, timestamp)
+        self.services.buyer.capacity_blocked(&purchase.channel.id)
+            || policy.due(purchase, evidence, authorized, observed, timestamp)
     }
 
     pub(super) fn reserve_renewal(j: &mut Journal, id: String) -> Result<(), String> {

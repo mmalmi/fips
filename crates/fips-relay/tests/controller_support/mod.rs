@@ -1,6 +1,9 @@
 use super::*;
 use fips_relay::controller::{Purchase, RouteAccess};
 mod delivery_trace;
+#[cfg(feature = "measurements")]
+mod reliable;
+pub(super) mod traffic;
 pub(super) use delivery_trace::DeliveryTrace;
 #[cfg(unix)]
 mod rekey;
