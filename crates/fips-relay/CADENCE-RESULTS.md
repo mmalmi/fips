@@ -9,6 +9,9 @@ loopback. Policies run in forward and reverse order with unchanged idle, bursty,
 steady and high-rate workloads, 8,000-msat grace, 4,000-msat windows, 256-sat channel
 capacities, one-msat/KiB tariff and three-second payment tail. Setup and settlement
 remain outside workload measurements.
+Cargo's integration-test build also enables core `sim-transport` and SDK
+`simulation` features. The service processes use real UDP; this records the
+tested image and does not substitute for a normal-feature deployment build.
 
 All 285,696 payloads arrive, with zero duplicates, invalid payloads, invalid
 timestamps or controller errors. Strict delivery, payment-boundary and cost

@@ -2841,6 +2841,14 @@ also passes all eight trials with strict boundaries, all 285,696 payloads delive
 and all 40,960 test sats collected. It retains the original workloads and default
 financial limits; the 500-ms policy remains unchanged. Current physical-device,
 impaired-link and complete payment-cost attribution remain separate acceptance.
+Two additional runs on the identical ARM image produce one complete pressure pass
+and one failure after delivery, at the fixture's 30-second wait for a funded,
+non-exhausted checkpoint before reply-recovery testing. The passing repeat collects
+all 1,280 test sats; the failed repeat has no final collection claim. Exact binary,
+source, dependency, stopped-process and seven-file local archive checks pass in
+`work/purchase-read-pressure-r178`, with no temporary financial residue. Pressure
+acceptance remains mixed; the original passing run does not establish general
+low-resource liveness.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
