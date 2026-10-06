@@ -1,6 +1,49 @@
 //! Cancel acceptance, then hold a real Seal while another route is requested.
 use super::*;
 
+pub(super) async fn freeze_replacements(
+    controllers: &[Arc<Controller>],
+    buyers: &[Arc<BuyerAuthorizer>],
+    automatic_renewal: bool,
+) {
+    // A delivered datagram can exhaust its channel. Queue every router's pause
+    // before waiting for renewal workers to drain.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let mut pauses = tokio::task::JoinSet::new();
+            for controller in controllers {
+                let controller = controller.clone();
+                pauses.spawn(async move { controller.pause_renewals().await });
+            }
+            while let Some(result) = pauses.join_next().await {
+                result.unwrap().unwrap();
+            }
+            let mut stable = true;
+            if automatic_renewal {
+                for (i, controller) in controllers.iter().enumerate() {
+                    let active = controller.purchases().await.unwrap();
+                    stable &= active.len() == if i == 2 { 2 } else { 1 };
+                    for p in active {
+                        stable &= buyers[i].evidence_msat(&p.channel.id).unwrap()
+                            < p.channel.capacity_sat * 1000;
+                        stable &= buyers[i].observed_units(&p.contract.id).unwrap()
+                            < p.contract.max_units;
+                    }
+                }
+            }
+            if stable {
+                break;
+            }
+            for controller in controllers {
+                controller.resume_renewals().await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("renewal fixture reaches a funded, non-exhausted checkpoint");
+}
+
 pub(super) struct BudgetSnapshot {
     limit: u64,
     retired: u64,

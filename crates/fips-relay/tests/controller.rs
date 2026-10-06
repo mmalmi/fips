@@ -751,33 +751,7 @@ async fn controller_scenario(
                 "only the two new neighbour pairs need additional funding"
             );
         }
-        // Freeze a quiescent replacement for the lost-acceptance-reply check.
-        // A last in-flight datagram can exhaust a channel after its delivery
-        // was observed. Resuming that already-due channel legitimately opens
-        // another replacement, which is a different event from reply recovery.
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                for controller in &controllers {
-                    controller.pause_renewals().await.unwrap();
-                }
-                let mut stable = true;
-                if automatic_renewal {
-                    for (i, controller) in controllers.iter().enumerate() {
-                        let active = controller.purchases().await.unwrap();
-                        stable &= active.len() == if i == 2 { 2 } else { 1 };
-                        for p in active {
-                            stable &= buyers[i].evidence_msat(&p.channel.id).unwrap()
-                                < p.channel.capacity_sat * 1000;
-                            stable &= buyers[i].observed_units(&p.contract.id).unwrap()
-                                < p.contract.max_units;
-                        }
-                    }
-                }
-                if stable { break; }
-                for controller in &controllers { controller.resume_renewals().await.unwrap(); }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }).await.expect("renewal fixture reaches a funded, non-exhausted checkpoint");
+        purchase_closure::freeze_replacements(&controllers, &buyers, automatic_renewal).await;
         if paid_quote_traffic {
             let incoming = tasks.remove(0).stop().await.unwrap();
             purchase_closure::exercise(&controllers, &services, &peers, &settlement_gates, root.path()).await;

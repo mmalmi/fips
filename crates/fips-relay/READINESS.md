@@ -2847,8 +2847,21 @@ non-exhausted checkpoint before reply-recovery testing. The passing repeat colle
 all 1,280 test sats; the failed repeat has no final collection claim. Exact binary,
 source, dependency, stopped-process and seven-file local archive checks pass in
 `work/purchase-read-pressure-r178`, with no temporary financial residue. Pressure
-acceptance remains mixed; the original passing run does not establish general
-low-resource liveness.
+acceptance remains mixed on that original fixture; its passing runs do not
+establish general low-resource liveness.
+
+The fixture now queues all five renewal pauses before waiting for workers to
+drain, so waiting on one router does not let later routers start more renewals.
+The original 30-second checkpoint limit, active-purchase counts, non-exhaustion
+checks, resume/retry behavior and all runtime rules remain. Strict controller-test
+lint and both native and ARM builds pass. Native data renewal, two quarter-CPU
+ARM data repeats and ARM reliable-stream renewal all pass and collect their
+5,120 test sats. The pressure repeats take 215.332 and 235.010 seconds overall,
+with every original delivery and reply-recovery bound retained. This accepts
+those finite fixture runs, not a production liveness guarantee or physical-router
+performance. Source, dependency, stopped-process and local archive custody are
+verified in `work/controller-checkpoint-pause-r182`; the earlier failed pressure
+run remains preserved.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
