@@ -2494,6 +2494,19 @@ optimization. Logging/relinking exclude performance-equivalence claims. Exact
 source/artifacts, quotas, terminal ownership and retained financial residue are
 verified in `work/wallet-stage-cpu-r127`; no probe is integrated into production.
 
+Private synchronous future-poll spans measure all control tasks at 1.675/1.073
+CPU seconds in normal/constrained runs, or 4.93%/4.14% of verified host cgroup
+CPU. Nested TCP timer polling accounts for 0.169/0.112 CPU seconds, under 0.5%
+of each total; these counters must not be added to their parent task spans.
+The normal run collects all 1,280 test sats, while the quarter-CPU run still
+misses forward delivery at round nine after 105.148 seconds. Spans finish when
+each future poll returns, include QEMU/probe overhead and exclude scheduler work
+outside that poll. Final snapshots may straddle other active polls. This narrows
+measured control-loop execution cost without isolating idle wakeup cost, attributing
+the remaining CPU or establishing a speedup. Exact source/artifacts, unchanged frozen
+dependencies, actual quotas, terminal ownership and financial residue custody
+are verified in `work/control-task-cpu-r129`; the probes remain private.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
