@@ -440,7 +440,10 @@ counts against capital after service stops until settlement and refund recovery
 complete. Settlement and renewal history are capped at 16 channels each.
 Same-service channel replacement requires an explicit renewal policy and
 remaining lifetime budget; changed routes require a source watch ceiling or a
-fresh explicit purchase. `settle_all` pauses watches and renewal before closure;
+fresh explicit purchase. Renewal considers local usage, authorized whole-sat
+balances and retained recovery exposure; payment authorization remains bounded
+separately by evidence and the lifetime budget.
+`settle_all` pauses watches and renewal before closure;
 saved replacement requests stay paused until explicitly resumed. Expired or
 withdrawn offers cannot regain routing authority during financial recovery;
 unresolved operations retain their capital and evidence.

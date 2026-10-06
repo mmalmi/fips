@@ -2586,8 +2586,8 @@ source/dependencies, quotas and stopped ownership are verified in
 A suspected cancellation point is inapplicable to the pinned core: its send API
 queues synchronously. The failed setup check and source audit are retained in
 `work/tcp-cancellation-red-r145`; its proposed test was discarded and no adapter
-change was applied. TCP renewal delivery and the original quarter-CPU datagram
-acceptance remain open.
+change was applied. TCP renewal delivery and ARM quarter-CPU datagram
+acceptance remain open; the later native qualification below passes.
 
 A separate TCP/FIPS defect is reproduced in both implementations: a cumulative
 recovery ACK can incorrectly time an old, buffered original segment after a
@@ -2604,6 +2604,26 @@ is locally integrated; it does not resolve or accept paid-renewal delivery.
 Verified artifacts and dependency/source custody are in
 `work/reliable-renewal-trace-r147`, `work/tcp-rtt-unit-r148` and
 `work/reliable-renewal-rtt-r149`.
+
+Local FIPS master `1fb14907369c` also treats the buyer's already authorized
+whole-sat balance as a renewal hint. At a 100% threshold, a channel can authorize
+all 16 sats while metered usage remains at 15.809 sats; checking usage alone
+can leave an unusable remainder. The focused regression fails before the fix,
+then all eight renewal checks pass with strict Linux lint. Related tests are
+consolidated, and the integration assertion accepts fully evidenced or fully
+authorized capacity while retaining delivery and financial requirements.
+With the frozen qualification graph and TCP `9b94dd2dc8ca`, all seven existing
+native controller scenarios pass. The native quarter-CPU bounded-handshake
+datagram case also passes in 45.976 seconds and collects all 1,280 test sats.
+This accepts that recorded workload, not ARM, physical-router performance or
+the separate stream case. The stream comparison still misses its 60-second bound,
+receiving 7,604 and 11,480 of 18,000 bytes with no final collection claimed.
+Evidence, stopped ownership and dependency/source custody are verified in
+`work/renewal-signed-capacity-red-r150`, `work/renewal-signed-capacity-green-r151`,
+`work/signed-capacity-controller-matrix-r152` and
+`work/signed-capacity-controller-assertion-r153`. The matrix's three initial
+renewal runs finish data delivery before failing the obsolete usage-only
+assertion; the corrected runs complete the full financial checks.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
