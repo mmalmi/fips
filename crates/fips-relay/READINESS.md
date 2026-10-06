@@ -2635,6 +2635,23 @@ binary, emulator and quotas, stopped ownership and one archived residual file
 are verified in `work/signed-capacity-arm-r154`. ARM pressure acceptance remains
 open, and these emulated results do not qualify physical-router performance.
 
+Two private admission traces of the original stream also miss its unchanged
+60-second bound, with all saved renewals completed and no controller errors.
+The more detailed trace records 58 permanent capacity rejections between the
+application endpoints: each packet's incremental cost fits a fresh 16-sat
+channel, but not the old channel's remaining capacity. These endpoint pairs also
+carry ordinary priced control traffic, so this is not per-stream attribution.
+Retained buyer evidence reaches 33,189 msat on one 16-sat channel while signed
+authority remains capped at 16 sats. Buyer admission currently permits that
+over-capacity traffic before renewal pauses it. A focused production-path buyer
+regression reproduces the problem: an over-capacity source reservation returns
+`Track` instead of `Retry`. The fix and the regression's remaining assertions
+are not yet accepted. Temporary diagnostics change no financial decisions and
+can affect timing; no performance or final collection claim follows. Exact
+artifacts, stopped ownership and unchanged dependency custody are verified in
+`work/stream-admission-probe-r155`, `work/stream-ledger-refusal-r156` and
+`work/buyer-channel-capacity-red-r157`.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
