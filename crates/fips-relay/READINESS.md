@@ -2811,6 +2811,23 @@ owned merged worktree and branch are removed. Nothing is published. These test
 changes do not alter production deadlines, resolve ARM pressure acceptance or
 accept current software on physical devices.
 
+A controller candidate selects active purchases under the existing journal lock,
+cloning only the returned purchases instead of all retained financial history.
+The same readiness check and purchase eligibility rules remain. All 318 library
+tests pass with two concurrent tests and a short private temporary path, without
+changing assertions or deadlines. Six paired native renewal runs also pass and
+collect all 7,680 test sats. For the identical active-funded record shapes, three
+repeats per variant reduce median whole-process CPU in the 10,000-read loop from
+15.887 to 9.171 microseconds per call (42.27%). Returned purchases and saved
+journals remain unchanged. Settled-history shapes differ across runs and are not
+aggregated. Worker spans cover different portions of the operation; these loop
+results do not establish whole-controller or physical-router performance.
+Source, binary, dependency and stopped-process custody are closed and archived
+in `work/controller-purchase-read-r172` and `work/controller-purchase-read-r174`.
+The candidate remains unintegrated pending clean production lint, build and ARM
+acceptance. Its first clean-build preflight requires offline lock resolution for
+the frozen local dependencies; no production test ran in that attempt.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
