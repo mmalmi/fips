@@ -2689,6 +2689,25 @@ stopped processes and no residual temporary files are verified in
 `work/buyer-capacity-arm-r161`. ARM pressure acceptance remains open, and these
 emulated checks do not establish physical-router performance.
 
+A private phase diagnostic on the same admission code passes the normal-CPU
+ARM renewal case and collects all 1,280 test sats. The quarter-CPU case fails
+round fourteen, direction 0 → 4, after 207.821 seconds; no final collection is
+claimed. Added observations affect timing, so this does not establish a change
+from the uninstrumented result. Completed renewal pauses reach 28.702 seconds
+against the original 30-second per-payload delivery window. Completed SDK
+channel-opening spans have median/max wall times of 4.800/13.604 seconds, but
+matched dedicated-worker CPU deltas have median/max values of 0.17/0.26 seconds.
+Refund spans reach 10.000 seconds wall time and 0.23 seconds worker CPU. These
+nested maxima must not be added or attributed to one failed renewal. Worker CPU
+excludes other threads, receiver verification, mint and transport work; only
+same-thread pairs are used, at the host's proc-stat tick resolution. The result
+supports inspecting waits and work elsewhere before optimizing wallet crypto.
+The last unfinished funding worker returns from channel opening after its
+async caller is cancelled, retaining wallet ownership until that return as
+required. Exact source/dependency custody, observations and stopped ownership
+are verified in `work/renewal-funding-phases-r162`; no residual temporary files
+remain. Receiver verification and mint-processing attribution remain open.
+
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
 image passes and reconciles all test funds. These results neither attribute that
