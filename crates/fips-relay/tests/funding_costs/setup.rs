@@ -120,6 +120,35 @@ pub(super) struct Bench {
     pub children: Vec<Child>,
 }
 
+pub(super) fn pause_channel_close(
+    proxy: &MintProxy,
+    wallet: &Path,
+    channel: &str,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let store = restore::read(&cashu_service::spilman_client_store_path(wallet));
+    let funding: Vec<cashu::nuts::Proof> = serde_json::from_str(
+        store["funding"][channel]["funding_proofs_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let originals: std::collections::BTreeSet<_> = funding
+        .iter()
+        .map(|proof| proof.y().unwrap().to_string())
+        .collect();
+    assert!(!originals.is_empty());
+    proxy.state.pause_matching_swap_reply(move |swap| {
+        swap.inputs().len() == originals.len()
+            && swap
+                .inputs()
+                .iter()
+                .all(|proof| proof.y().is_ok_and(|y| originals.contains(&y.to_string())))
+    })
+}
+
 // Observe the small fixture's stored balance without competing with the running
 // service for exclusive SDK wallet ownership or invoking recovery on its behalf.
 pub(super) async fn load_mint_balance(

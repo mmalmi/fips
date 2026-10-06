@@ -1,9 +1,7 @@
 //! A held payout must not block signing and collection by another provider.
 use super::*;
-use cashu_service::spilman_client_store_path;
 use fips_relay::service::ServiceConfig;
 use serde_json::Value;
-use std::collections::BTreeSet;
 use tokio::task::JoinSet;
 
 pub(super) async fn settle(
@@ -16,27 +14,8 @@ pub(super) async fn settle(
     let middle = request(&configs[1], &AdminRequest::Status).await.unwrap();
     let incoming = source["purchases"][0]["channel"]["id"].as_str().unwrap();
     let outgoing = middle["purchases"][0]["channel"]["id"].as_str().unwrap();
-    let store = restore::read(&spilman_client_store_path(
-        &configs[0].state_directory.join("wallet"),
-    ));
-    let funding: Vec<cashu::nuts::Proof> = serde_json::from_str(
-        store["funding"][incoming]["funding_proofs_json"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    let originals: BTreeSet<_> = funding
-        .iter()
-        .map(|proof| proof.y().unwrap().to_string())
-        .collect();
-    assert!(!originals.is_empty());
-    let (committed, release) = proxy.state.pause_matching_swap_reply(move |swap| {
-        swap.inputs().len() == originals.len()
-            && swap
-                .inputs()
-                .iter()
-                .all(|proof| proof.y().is_ok_and(|y| originals.contains(&y.to_string())))
-    });
+    let (committed, release) =
+        setup::pause_channel_close(proxy, &configs[0].state_directory.join("wallet"), incoming);
     let mut requests = JoinSet::new();
     spawn_settlement(&mut requests, 0, configs[0].clone());
     tokio::time::timeout(Duration::from_secs(30), committed)

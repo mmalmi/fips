@@ -16,6 +16,8 @@ mod preopening;
 mod preopening_support;
 #[allow(dead_code)]
 mod process_support;
+#[path = "funding_costs/renewal_mint_loss.rs"]
+mod renewal_mint_loss;
 #[cfg(feature = "testbench")]
 #[path = "funding_costs/renewal_refund_restart.rs"]
 mod renewal_refund_restart;
