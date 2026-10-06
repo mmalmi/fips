@@ -339,6 +339,8 @@ pub struct Node {
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
     /// Endpoint control receiver used by embedded/no-daemon integrations.
     endpoint_control_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointControlCommand>>,
+    /// First non-snapshot command encountered at a completed-handler boundary.
+    pending_endpoint_control: Option<NodeEndpointControlCommand>,
     /// Endpoint data batch receiver used by embedded/no-daemon integrations.
     endpoint_data_rx: Option<EndpointDataBatchRx>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
