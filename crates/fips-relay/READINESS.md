@@ -50,8 +50,23 @@ without `simulation`. Its isolated native test mint uses an existing permitted
 LAN test port; no firewall change or Umbrel service change is needed. The first
 attempt in `work/hardware-production-r186` rejects random-port mint access before
 issuance and closes with zero funds, restored routers and a stopped mint.
-This accepts the recorded saved-radio rejoin case, not current open joining,
-mesh-only mint access, arbitrary movement, power loss or sustained performance.
+
+The same ordinary daemon also passes open 802.11s late joining and paid radio
+rejoin in `work/hardware-open-production-r189`. Two routers authenticate before
+the third joins, without a Wi-Fi password or FIPS peer roster. The owned open
+profile limits radio peers to eight and inactivity to 60 seconds; kernel mesh
+forwarding remains disabled, so FIPS carries and accounts for the relay hops.
+The paid two-hop line survives an active leaf outage and actual peer eviction,
+then delivers fresh paid round trips and streams with the same processes,
+identities, funding and channels. All 384 test sats are collected, every wallet
+ends empty and all 348 management checks pass. Independent postflight checks
+verify restored saved SAE profiles and original radio limits, stopped guards and
+mint, removed candidate executables and complete evidence hashes. Rejected
+postflight wrappers remain preserved; neither acceptance nor funding is replayed
+when correcting the restoration snapshot to include the open-radio limit fields.
+These cases accept the recorded three-router, shared-channel topologies, not
+mesh-only mint access, arbitrary movement, hostile radio load, power loss or
+sustained performance on the current runtime.
 
 The current Android source on `406e2f62b` passes ARM64 JNI compilation, strict
 Android-target lint, all six JVM lifecycle tests, APK lint and signature/manifest
@@ -60,8 +75,25 @@ library. The production dependency feature tree excludes dev edges and confirms
 core default features and a wallet SDK without simulation. The native compile
 is reused after correcting feature-report collection/parsing; both rejected
 reports remain preserved. Source/dependency/stopped-process custody and the local
-archive pass in `work/android-production-r184`. The APK is not installed on the
-phone; current-runtime physical Pixel acceptance remains required.
+archive pass in `work/android-production-r184`.
+
+That APK and the ordinary router daemon pass the current physical Pixel transit
+case in `work/phone-transit-production-r188`. The exact router → phone → router →
+router line stays authenticated over existing-LAN UDP. Both endpoints deliver
+and acknowledge 512 KiB in each direction, with matching digests, in each of two
+windows: app visible and activity hidden with its foreground service active.
+Unpaid traffic delivers zero bytes. The phone keeps the same process, credits two
+provider channels, pays one onward channel and receives zero application packets.
+All four original channels settle, all 512 test sats are collected, four wallets
+end empty and all 432 management checks pass. Independent checks verify source
+and artifact custody, restored router state, stopped processes, unchanged original
+phone accounts and normal Wi-Fi. `work/phone-app-cleanup-r7` verifies the exact APK
+and complete account recovery archive, then removes the completed test app; no
+acceptance apps remain installed. The install wrapper's rejected uninitialized
+wallet check is reconciled before funding, without repeating installation.
+This case uses a LAN HTTP mint and an awake, USB-connected phone. Current
+mesh-only mint access, screen-off/deep-idle, renewal, network suspension, radio
+handover and sustained/impaired-traffic acceptance remain open.
 
 Phone acceptance teardown removes completed test app installations after their
 test funds are settled and their exact APK and account recovery archives are
@@ -80,7 +112,7 @@ original accounts and normal Wi-Fi remain unchanged. Evidence is
 `work/android-current-r130`, `work/mesh-mint-phone-current-r132` and
 `work/phone-app-cleanup-r5`.
 
-Latest completed physical paid phone transit also passes on `256d3b1c5`. Both endpoints
+Earlier physical paid phone transit passes on `256d3b1c5`. Both endpoints
 deliver and acknowledge 512 KiB in each direction with matching digests in each
 of two windows: app visible and activity hidden with its foreground service
 active. The exact router → phone → router → router line stays authenticated over
