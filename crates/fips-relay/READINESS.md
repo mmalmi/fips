@@ -2772,10 +2772,21 @@ passes and two channels expiring during setup. One failure occurs during initial
 receiver acceptance, before refund-client reuse; the same compiled prefix test
 passes alone. The failed full run and all original assertions are preserved in
 `work/scoped-refund-sdk-gates-r168`, with stopped ownership and no residual test
-files. An optimized-test rerun keeps those lifetimes and assertions unchanged;
-its result remains pending. This candidate reduces measured repeated
-construction but does not resolve ARM pressure acceptance or accept current
-software on physical devices.
+files. The optimized rerun passes all five retirement cases, including the full
+130-channel recycling case. It then stops with 233 passed tests and one
+two-payout admission case whose second channel expires during setup; the
+original five-second term is rejected before refund-client reuse. Source and
+dependency custody, stopped ownership and no residual test files are verified
+in `work/scoped-refund-sdk-gates-r169`.
+
+The candidate now makes test optimization level 1 the workspace default. Its
+two-payout test allows 30 seconds for funding and still waits for real expiry
+before retirement, preserving every financial and retry assertion. Formatting
+of the touched test file also passes. The full workspace all-features rerun in
+`work/scoped-refund-sdk-gates-r170` reports every target rather than stopping at
+the first failure; its result and local integration remain pending. These
+changes do not alter production deadlines or resolve ARM pressure acceptance,
+and they do not accept current software on physical devices.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
