@@ -2768,8 +2768,8 @@ of a cause. The checked timeline is in
 `work/scoped-refund-http-r166/validated-critical-timeline.json`. The failed case
 has no final collection claim. Exact current SDK tracked source, candidate changes, frozen
 dependency custody and stopped ownership are verified in
-`work/scoped-refund-http-r166`; no residual temporary files remain. Full SDK
-verification and local integration of this candidate are still pending. The
+`work/scoped-refund-http-r166`; no residual temporary files remain. The native
+SDK verification and subsequent local integration are recorded below. The
 first native all-features setup lacks the existing optional `axum-macros`
 dependency; the retry adds version 0.5.1 from the SDK lockfile and verifies its
 registry checksum, without changing production dependencies. In unoptimized
@@ -2795,7 +2795,7 @@ during concurrent real-cryptography setup. The original failures, source and
 dependency custody are verified; owned processes are stopped and no temporary
 financial files remain.
 
-The next candidate consolidates the timing correction into one shared
+The SDK test correction consolidates the timing correction into one shared
 30-second fixture lifetime and adjusts the receiver-history expiry wait.
 Every financial, early-refund, real-expiry and recovery assertion remains.
 Touched-source formatting, dependency resolution and the full workspace
@@ -2804,10 +2804,12 @@ all-features suite with default test parallelism pass in
 passed tests, no failures and one ignored long-running proof-history soak.
 Source/dependency hashes, stopped process ownership, released build-cache
 ownership and the byte-for-byte local evidence archive are verified; no
-residual temporary financial files remain. Strict workspace library lint is
-running separately in `work/scoped-refund-sdk-lint-r173`; local SDK integration
-is pending. These test changes do not alter production deadlines, resolve ARM
-pressure acceptance or accept current software on physical devices.
+residual temporary financial files remain. Strict all-features workspace
+library lint also passes in `work/scoped-refund-sdk-lint-r173`. The exact 201
+tracked SDK files are integrated into local master at `4c9e2e3`; only its clean,
+owned merged worktree and branch are removed. Nothing is published. These test
+changes do not alter production deadlines, resolve ARM pressure acceptance or
+accept current software on physical devices.
 
 The earlier symbol-retaining relink has a different runtime image. Its two-CPU
 control fails with quote rejections; a subsequent diagnostic trace on the same
