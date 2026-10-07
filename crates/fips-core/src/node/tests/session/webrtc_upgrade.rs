@@ -9,6 +9,8 @@ use crate::transport::{ConnectionState, TransportHandle, packet_channel};
 const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
+mod terminal_candidate;
+
 #[test]
 fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
     run_large_stack_async_test("fips-webrtc-admission", || async {
