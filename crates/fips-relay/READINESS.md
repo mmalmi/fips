@@ -306,6 +306,27 @@ prioritize wallet funding/refund work over wallet reopening for further profilin
 they do not demonstrate a performance improvement or explain individual loss.
 The timing-only patch changes no financial transition, message, limit or format.
 
+Renewal preopening on `b0a9f4491` moves successor funding before the forwarding
+pause when both channels fit the existing capital and exposure limits. Exactly
+one successor belongs to the retained renewal; it grants no forwarding authority
+before the original channel is settled. Insufficient capital keeps the existing
+settlement-first path. The old channel continues delivering and paying while a
+committed mint funding reply is held, and restarting the buyer recovers that same
+operation without reserving another funding ID. Eleven ownership/recovery checks
+and three ordinary native service cases pass in `work/renewal-preopening-native-r245`,
+accounting for all 1,152 test sats. Strict lint and source-size checks pass, and
+the exact ordinary ARM64 build closes in `work/renewal-preopening-arm-r246`.
+The unchanged six-renewal physical workload remains rejected in
+`work/renewal-preopening-routers-r247`: 72,984 of 84,000 originals arrive, below
+the original loss bound. Completed pauses fall to 1.127–1.599 seconds, with no
+source-queue expiry, but one buyer makes eleven incomplete pause attempts before
+recovering. All six successors have live payment/delivery observations; all 128
+healthy recovery originals arrive, all eight channels settle, all 384 test sats
+return and all 648 management checks pass. Independent closure verifies restored
+routers, stopped test processes/mint and three retained account archives. This
+candidate stays isolated: shorter completed pauses do not establish continuity
+through the failed attempts or explain the greater total loss.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.
@@ -2164,7 +2185,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Adaptive usage/age payments, independent durable checkpoints and idle suppression pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Native r236 qualifies bounded control-connection reuse with 41 focused checks and three rounding repetitions. Its ordinary ARM64 r237 artifact fails the unchanged repeated-loss case in r238: both directions exceed the loss bound, all six pauses exceed two seconds and 176/322 queued originals expire. All funds return and device state is restored; reuse alone has not demonstrated a solution. Ordinary ARM64 r233 passes one expiry replacement per direction under scoped frame loss. Repeated r235 completes all six replacements and financial recovery, but one direction exceeds the original loss bound; four pauses exceed two seconds and source queues expire 349/97 packets. All 384 test sats return, all 648 management checks pass and routers are restored. The shared harness has 69 passing focused checks. The r240 diagnostic repeat still fails; correlated timings identify wallet funding (916–1,353 ms) and refund recovery (288–410 ms) as substantial serial costs, while wallet reopening takes 10–27 ms. Exact successes and failures remain above. | Reduce renewal suspension under repeated impairment; higher sustained pressure, rapid successive restarts and slow storage. Complete payment CPU/storage/wire attribution remains distinct from controller spans, logical writes and local carrier counters. |
+| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). The isolated renewal preopening candidate passes native money/recovery checks and the ordinary ARM64 build. Its repeated physical test still fails: completed pauses shrink below two seconds and queue expiry stops, but one buyer repeatedly fails renewal attempts and total delivery worsens. Exact evidence is retained above. | Diagnose the failed attempts and qualify unchanged repeated-loss acceptance. Then cover higher sustained pressure, rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r219 passes all native, lifecycle and package gates. Physical r220 phone transit delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
