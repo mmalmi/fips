@@ -3785,7 +3785,9 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-tcp"
-version = "0.2.2"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47ca8e4600759514be32023c39147420a1af0b1cbd802a63b1aac5adf0a51ad1"
 
 [[package]]
 name = "nvpn-fips-tcp-endpoint"

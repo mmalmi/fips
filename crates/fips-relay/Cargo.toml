@@ -29,7 +29,7 @@ fs2 = "0.4"
 sha2 = "0.10"
 thiserror = "2"
 tempfile = "3"
-nvpn-fips-tcp = { version = "=0.2.2" }
+nvpn-fips-tcp = { version = "=0.2.4" }
 nvpn-fips-tcp-endpoint = { version = "=0.2.23" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "signal"] }
 tracing = "0.1"
