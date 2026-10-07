@@ -104,8 +104,6 @@ async fn scenario() {
         .unwrap(),
         b"baseline"
     );
-    // Let the baseline's TCP closing tuples expire before opening another pair.
-    tokio::time::sleep(Duration::from_millis(300)).await;
     let client = transport.clone();
     let checking = tokio::spawn(async move { client.request(unknown, vec![0]).await });
     tokio::time::timeout(Duration::from_millis(250), async {

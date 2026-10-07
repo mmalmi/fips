@@ -91,6 +91,14 @@ snake-case `type` tag; quote requests are plain objects. Amounts, byte counts an
 Unix-second deadlines are integers. Clients must preserve their exact values,
 including unsigned 64-bit values that exceed floating-point integer precision.
 
+Completed exchanges may reuse their TCP connection for a later request. Each
+service port retains at most eight idle connections, with one per peer and
+direction, for up to five seconds. Clients serialize requests on a reused stream.
+Every request acquires fresh admission and revalidates membership; completion
+releases its record buffers and admission permit. Idle eviction closes TCP
+gracefully so an unacknowledged response is not discarded. A failed exchange is
+reported without replaying a transmitted request.
+
 These three services do not negotiate a wire version or capabilities. Acceptance
 uses matching software builds; independent clients and mixed-version upgrades
 remain unverified. Top-level request and response schemas reject unknown fields

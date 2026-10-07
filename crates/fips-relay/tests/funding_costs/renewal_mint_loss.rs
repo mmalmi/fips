@@ -168,7 +168,7 @@ async fn scenario(root: &Path, boundary: Boundary) {
     // A different buyer needs no new mint funds to keep forwarding and paying.
     send(&configs, &npubs, 2, 100).await;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while !new_usage_paid(&configs[1], reverse_id, reverse_before) {
+        while !new_usage_paid(&configs[1], reverse_id, reverse_before, 1) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
@@ -286,19 +286,37 @@ async fn scenario(root: &Path, boundary: Boundary) {
         None
     };
     let before_usage = usage(&configs[1], replacement);
-    send(&configs, &npubs, 0, 101).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !new_usage_paid(&configs[1], replacement, before_usage) {
+    let mut fresh_bytes = send(&configs, &npubs, 0, 101).await;
+    let first_send = request(&configs[0], &AdminRequest::Status).await.unwrap();
+    // A single small payload can fit within an already rounded sat of credit.
+    // Two payloads exceed that rounding allowance without forcing a payment.
+    fresh_bytes += send(&configs, &npubs, 0, 102).await;
+    let price: fips_relay::ledger::BytePrice =
+        serde_json::from_value(after["purchases"][0]["contract"]["price"].clone()).unwrap();
+    assert_eq!(
+        price.msat, price.per_bytes,
+        "fixture costs one msat per byte"
+    );
+    let minimum_new_msat = price.amount_due_msat(fresh_bytes).unwrap();
+    let payment = tokio::time::timeout(Duration::from_secs(5), async {
+        while !new_usage_paid(&configs[1], replacement, before_usage, minimum_new_msat) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .expect("replacement must resume automatic payment");
+    .await;
+    let paid_usage = usage(&configs[1], replacement);
+    let progress = request(&configs[0], &AdminRequest::Status).await.unwrap();
+    eprintln!(
+        "replacement payment: before={before_usage:?} minimum_new_msat={minimum_new_msat} first_send_evidence={} after={paid_usage:?} progress={} error={}",
+        first_send["payment_progress"][replacement]["evidence_msat"],
+        progress["payment_progress"][replacement],
+        progress["last_error"]
+    );
     if let Some(received) = expired_probe {
         assert_eq!(
             request(&configs[2], &AdminRequest::Status).await.unwrap()["received"]["packets"],
-            received + 1,
-            "only the fresh replacement payload arrives"
+            received + 2,
+            "only the fresh replacement payloads arrive"
         );
     }
     for config in &configs {
@@ -342,6 +360,7 @@ async fn scenario(root: &Path, boundary: Boundary) {
     eprintln!(
         "Delayed/lost committed mint reply: one replacement, other buyer paid, all 384 test sats accounted for"
     );
+    assert!(payment.is_ok(), "replacement must resume automatic payment");
 }
 
 async fn admission_cohorts(configs: &[ServiceConfig], npubs: &[String], channel: &str) {
@@ -426,14 +445,20 @@ fn usage(config: &ServiceConfig, channel: &str) -> (u64, u64) {
     )
 }
 
-fn new_usage_paid(config: &ServiceConfig, channel: &str, before: (u64, u64)) -> bool {
+fn new_usage_paid(
+    config: &ServiceConfig,
+    channel: &str,
+    before: (u64, u64),
+    minimum_new_msat: u64,
+) -> bool {
     let (submitted, paid) = usage(config, channel);
-    submitted > before.0 && paid > before.1 && paid >= submitted
+    submitted >= before.0 + minimum_new_msat && paid > before.1 && paid >= submitted
 }
 
-async fn send(configs: &[ServiceConfig], npubs: &[String], source: usize, round: u8) {
+async fn send(configs: &[ServiceConfig], npubs: &[String], source: usize, round: u8) -> u64 {
     let destination = 2 - source;
     let payload = format!("renewal-mint-loss-{source}-{round}:{}", "x".repeat(700));
+    let bytes = payload.len() as u64;
     let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
     request(
         &configs[source],
@@ -457,4 +482,5 @@ async fn send(configs: &[ServiceConfig], npubs: &[String], source: usize, round:
     })
     .await
     .expect("fresh paid payload must arrive without retries");
+    bytes
 }
