@@ -1,4 +1,4 @@
-"""Explicit schema-2 prepaid usage accounting; historical reports stay strict.
+"""Explicit prepaid usage accounting; historical reports stay strict.
 
 Intervals partition cumulative observations, not atomic wall-clock snapshots.
 All counters use exact integers. Evidence is usage, not another payment or a
@@ -22,19 +22,17 @@ def enabled(metadata):
     value = metadata['boundary_accounting']
     if type(value) is not str or value != CONTRACT:
         raise ValueError('unsupported boundary accounting contract')
-    if metadata['schema'] != 2:
-        raise ValueError('prepaid boundary accounting requires schema 2')
     if metadata.get('payment_service_carrier') is not True:
         raise ValueError('prepaid boundary accounting requires declared carrier measurements')
     return True
 
 
-def observe(data, previous, carrier_intervals):
+def observe(data, previous, carrier_intervals, schema=2):
     observed = {}
     for name, before, after in intervals(data, previous):
         if name != 'before_to_after':
-            validate_gap(before, after, prepaid_usage=True)
-        elif quiet_boundary(before) != quiet_boundary(after):
+            validate_gap(before, after, schema, prepaid_usage=True)
+        elif quiet_boundary(before, schema) != quiet_boundary(after, schema):
             raise ValueError('paying channels changed during measurement')
         nodes = {}
         for prior, current in zip(before, after):
@@ -53,7 +51,7 @@ def observe(data, previous, carrier_intervals):
     return observed
 
 
-def finish_trial(windows, first, last):
+def finish_trial(windows, first, last, schema=2):
     measured = [value for row in windows for value in row['observed_intervals'].values()]
     nodes = {key: sum_counts(interval['nodes'][key] for interval in measured)
              for key in measured[0]['nodes']}
@@ -61,7 +59,8 @@ def finish_trial(windows, first, last):
     for before, after in zip(first, last):
         key = identity(before)[0]
         costs = node_costs(before, after, complete=True)
-        costs['service_carrier'] = difference(snapshot(before, True), snapshot(after, True))
+        costs['service_carrier'] = difference(snapshot(before, True, native_ethernet=schema == 3),
+                                             snapshot(after, True, native_ethernet=schema == 3))
         expected[key] = costs
     # Exact integer reconciliation covers every nested operation, channel and
     # transport, including the last guard after the final measured workload.

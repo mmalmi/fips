@@ -290,6 +290,17 @@ completed trials, accepted measurements and a completed policy comparison.
 
 Schema 3 retains the same workload/boundary row structure, with these changes:
 
+For a new hardware run, `sim.wifi_cadence --prepaid-boundaries` declares
+`boundary_accounting: "prepaid-usage-v1"` before starting any trial. It reuses
+the native interval accounting described above, binding each counter to its
+host, node identity, PID and process start time. Already-paid usage may increase
+across a guard only within unchanged acknowledged credit. Payments, financial
+state changes, durable writes, process changes and missing Ethernet evidence
+still reject the report. Every guard/inter-workload interval and complete trial
+cost is retained and reconciled using integers. The option leaves historical
+reports strict; do not change the metadata of a finished run to accept it.
+Use JSON output because the comparison table omits those complete intervals.
+
 - High rate offers **8,000** packets at 4,000 packets/s. Idle, bursty and steady
   counts and rates remain as above. Every one of the eight bursts includes its
   final 800 ms sleep. Metadata records the exact `workload_schedule` and

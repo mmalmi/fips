@@ -48,7 +48,7 @@ def metadata(args):
             and verified["target"] == "aarch64-unknown-linux-musl"
             and verified["source_changes_during_build"] == [],
             "supplied relay does not match its optimized measurement build evidence")
-    return {
+    report = {
         "schema": 3, "funded_directions": 2, "optimized": True,
         "nodes": 3, "paid_relays": 1, "active_channels": 2, "repeats": 2,
         "unpaid_percent": 50, "window_msat": 4000, "grace_msat": 8000,
@@ -71,6 +71,9 @@ def metadata(args):
         "mint_sha256": digest(args.mint_binary.read_bytes()),
         "provenance": provenance,
     }
+    if getattr(args, "prepaid_boundaries", False):
+        report["boundary_accounting"] = "prepaid-usage-v1"
+    return report
 
 
 class CadenceRun(PaidWifiRun):
@@ -237,6 +240,8 @@ def main():
                         help="capture existing native forwarding/drop counters at each boundary")
     parser.add_argument("--service-wire-trace", action="store_true",
                         help="retain encrypted service submission fingerprints for independent packet captures")
+    parser.add_argument("--prepaid-boundaries", action="store_true",
+                        help="record every interval and credit-bounded prepaid usage across quiet guards")
     parser.add_argument("--dataplane-drop-logs", action="store_true",
                         help="pin existing dataplane drop logging and capture per-window byte offsets")
     parser.add_argument("--post-gap-probes", action="store_true",

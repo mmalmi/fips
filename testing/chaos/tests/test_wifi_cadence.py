@@ -89,6 +89,10 @@ class CadenceTests(unittest.TestCase):
                 with self.subTest(command=command, profile=profile):
                     if accepted:
                         self.assertTrue(metadata(args)["optimized"])
+                        self.assertNotIn("boundary_accounting", metadata(args))
+                        args.prepaid_boundaries = True
+                        self.assertEqual(metadata(args)["boundary_accounting"], "prepaid-usage-v1")
+                        args.prepaid_boundaries = False
                     else:
                         with self.assertRaisesRegex(RuntimeError, "optimized measurement build"):
                             metadata(args)

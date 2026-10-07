@@ -8,7 +8,7 @@ from statistics import mean
 from costs import delta, node_costs, summarize_costs
 import prepaid_boundaries
 from native_counters import record as record_native_counters
-from service_carrier import measure_intervals, record as record_service_carrier
+from service_carrier import identity, measure_intervals, record as record_service_carrier
 from validation import (HARDWARE_SCHEDULE, HARDWARE_WORKLOADS, OS_IO_COUNTERS,
                         POLICIES, WORKLOADS, probe_delivery_loss,
                         post_gap_probes,
@@ -73,7 +73,7 @@ def summarize(row, schema=2, delivery_rejections=None, observed_intervals=None):
     for before, after in paired(data["before"], data["after"]):
         measured = (summarize_node(before, after) if observed_intervals is None else
                     summarize_costs(observed_intervals['before_to_after']['nodes'][
-                        str(before['measurements']['process_id'])]))
+                        identity(before)[0]]))
         for key, value in measured.items():
             result[key] += value
         if schema == 3:
@@ -283,9 +283,9 @@ def validated_rows(rows, pilot, delivery_rejections=None):
         for row in trial_records:
             if row["max_delay_ms"] != delay:
                 raise ValueError("unmatched policy order")
-            carrier_intervals = (measure_intervals(row['data'], previous, True)
+            carrier_intervals = (measure_intervals(row['data'], previous, True, native_ethernet=schema == 3)
                                  if prepaid_usage else None)
-            observed_intervals = (prepaid_boundaries.observe(row['data'], previous, carrier_intervals)
+            observed_intervals = (prepaid_boundaries.observe(row['data'], previous, carrier_intervals, schema)
                                   if prepaid_usage else None)
             result = summarize(row, schema, delivery_rejections, observed_intervals)
             observations = post_gap_probes(row["data"], post_gap)
@@ -307,7 +307,7 @@ def validated_rows(rows, pilot, delivery_rejections=None):
             observed_trial.append(trials[-1])
         if prepaid_usage:
             prepaid_boundaries.finish_trial(observed_trial, trial_records[0]['data']['before_guard'],
-                                            trial_records[-1]['data']['after_guard'])
+                                            trial_records[-1]['data']['after_guard'], schema)
     return metadata, trials, grouped
 
 
