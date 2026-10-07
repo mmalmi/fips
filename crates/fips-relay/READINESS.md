@@ -108,6 +108,19 @@ pass. This covers already-committed mint settlement and bounded native UDP denia
 physical expiry, sustained impairment and power loss remain separate acceptance
 work.
 
+The first physical expiry variant in `work/router-expiry-r225` fails acceptance
+on that same ordinary ARM64 runtime. It retains the five-minute streams and all
+financial bounds, using 180-second quotes and an eight-second expiry lead. The
+observer incorrectly treats native route compaction as erased usage; independently,
+one direction loses 40 of 42,000 packets while the other delivers every packet.
+The loss cause remains unattributed. All four channels subsequently settle, all
+384 test sats return, the mint stops and independent postflight verifies restored
+routers and three complete account archives. The original failed result and its
+exact harness are preserved. Seventeen focused renewal checks now cover retained
+byte costs and controller retirement; reconstructed successor lineage is marked
+explicitly. This fixes the observer and does not establish physical expiry
+delivery acceptance.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.

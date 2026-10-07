@@ -33,14 +33,15 @@ class AccountsFixture:
 
     def channel(self, source, suffix, paid):
         terms = add_channel(self.raw, source, suffix, paid)
-        terms.update(expires_unix=1000, refund_after_unix=1900)
+        created = 101 if suffix.endswith("new") else 100
+        terms.update(expires_unix=created + 900, refund_after_unix=created + 1800)
         intent = self.raw[source]["controller"]["funding"]["fund-" + suffix]
-        intent.update(expires_unix=1000, refund_after_unix=1900)
+        intent.update(created_unix=created, expires_unix=created + 900, refund_after_unix=created + 1800)
         intent["funded"]["terms"] = copy.deepcopy(terms)
         self.raw[source]["buyer"]["channels"][terms["id"]]["terms"] = copy.deepcopy(terms)
         self.raw["n02"]["seller"]["ledger"]["channels"][-1]["terms"] = copy.deepcopy(terms)
         purchase = add_route(self.raw, source, terms, "quote-" + suffix, quota=QUOTE_UNITS, used=paid * 1024 * 1000)
-        purchase["contract"]["price"] = {"msat": 1, "per_bytes": 1024}
+        purchase["contract"].update(price={"msat": 1, "per_bytes": 1024}, expires_unix=terms["expires_unix"])
         outgoing = self.raw[source]["controller"]["outgoing"][purchase["contract"]["id"]]
         outgoing["purchase"] = copy.deepcopy(purchase)
         self.raw[source]["buyer"]["quotes"][purchase["contract"]["id"]]["contract"] = copy.deepcopy(purchase["contract"])
@@ -63,6 +64,26 @@ class AccountsFixture:
             new = self.channel(name, name + "-new", 10)
             self.raw[name]["controller"]["renewals"][old] = {
                 "previous": [before], "replacements": [copy.deepcopy(new["offer"])], "completed": True}
+        return self
+
+    def compact(self, controller=False):
+        for name, outgoing in self.original.items():
+            contract = outgoing["purchase"]["contract"]
+            buyer = self.raw[name]["buyer"]
+            quote = buyer["quotes"].pop(contract["id"])
+            observed, submitted = quote["observed_units"], quote["submitted_units"]
+            buyer["channels"][contract["channel_id"]]["retired"] = {
+                "contracts": 1, "through_unix": contract["expires_unix"],
+                "units": {"reserved_units": observed, "submitted_units": submitted,
+                          "unconfirmed_units": observed - submitted},
+                "reserved_msat": (observed + 1023) // 1024,
+                "submitted_msat": (submitted + 1023) // 1024}
+            if controller:
+                journal = self.raw[name]["controller"]
+                journal["outgoing"].pop(contract["id"])
+                journal["renewals"].pop(contract["channel_id"])
+                journal["history"] = {"buyers": [contract["channel_id"]],
+                                      "through_unix": contract["expires_unix"], "pending": None}
         return self
 
 
@@ -117,6 +138,36 @@ class RenewalTests(unittest.TestCase):
             with self.subTest(timeout=value), self.assertRaises(ValueError):
                 node.control("status", operation_timeout=value)
 
+    def test_expiry_mode_preserves_authority_and_changes_only_renewal_timing(self):
+        run = object.__new__(RenewalLoadRun)
+        run.args, run.mint_url = SimpleNamespace(), MINT
+        node = Mock(interface="mesh0", state="/private/state")
+        original = run.profile_config(node)
+        run.args.expiry_renewal = True
+        expected = copy.deepcopy(original)
+        expected["terms"]["quote_lifetime_secs"] = 180
+        expected["terms"]["controller"]["renewal"] = {
+            "at_capacity_percent": 100, "before_expiry_secs": 8}
+        self.assertEqual(run.profile_config(node), expected)
+
+    def test_expiry_acceptance_requires_successor_before_expiry_without_exhaustion(self):
+        evidence = accepted_evidence()
+        evidence.update(expiry_renewal=True, quote_lifetime_secs=180,
+                        renewal={"at_capacity_percent": 100, "before_expiry_secs": 8})
+        for sample in evidence["samples"]:
+            for rows in sample["accounts"]["renewals"].values():
+                rows[0].update(previous_expires_unix=1200, replacement_created_unix=1195,
+                               previous_observed_units=25_000_000, previous_paid_sat=25)
+        validate(evidence, dict(zip(NAMES, NAMES)))
+        for field, value in (("replacement_created_unix", 1191),
+                             ("replacement_created_unix", 1200),
+                             ("previous_paid_sat", 32),
+                             ("previous_observed_units", QUOTE_UNITS)):
+            candidate = copy.deepcopy(evidence)
+            candidate["samples"][0]["accounts"]["renewals"]["n01"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(RuntimeError, "expiry"):
+                validate(candidate, dict(zip(NAMES, NAMES)))
+
     def test_real_replacement_retains_refunds_lineage_and_secret_free_evidence(self):
         f = AccountsFixture().funded().renewed()
         observed, fixture = f.accounts.observe()
@@ -125,8 +176,53 @@ class RenewalTests(unittest.TestCase):
         self.assertEqual(observed["financial"]["n01"]["budget"]["wallet_refunded_sat"], 6)
         self.assertEqual(observed["financial"]["n01"]["remaining"], 28)
         self.assertEqual(observed["renewals"]["n01"], [{"previous": "channel-n01-old",
-            "replacement": "channel-n01-new", "previous_paid_sat": 26, "replacement_signed_sat": 10}])
+            "replacement": "channel-n01-new", "previous_paid_sat": 26, "replacement_signed_sat": 10,
+            "previous_expires_unix": 1000, "previous_observed_units": 26 * 1024 * 1000,
+            "replacement_created_unix": 101}])
         self.assertNotIn("SECRET-PROOF", json.dumps(observed))
+
+    def test_expired_route_compaction_preserves_usage_and_lineage(self):
+        f = AccountsFixture().funded().renewed()
+        before, _ = f.accounts.observe()
+        f.compact()
+        after, fixture = f.accounts.observe()
+        self.assertEqual(after["renewals"], before["renewals"])
+        self.assertEqual(len(fixture.channel_owners), 4)
+        f.raw["n01"]["buyer"]["channels"]["channel-n01-old"]["retired"]["reserved_msat"] += 1
+        with self.assertRaises(ValueError):
+            f.accounts.observe()
+
+    def test_missing_or_inconsistent_retirement_evidence_cannot_erase_usage(self):
+        changes = (
+            lambda r: r.clear(),
+            lambda r: r.update(contracts=0),
+            lambda r: r.update(contracts=2),
+            lambda r: r.update(contracts=True),
+            lambda r: r.update(through_unix=999),
+            lambda r: r.update(reserved_msat=25999),
+            lambda r: r["units"].update(submitted_units=1),
+            lambda r: r.update(units={"reserved_units": 1024, "submitted_units": 1024,
+                                     "unconfirmed_units": 0}, reserved_msat=1, submitted_msat=1),
+        )
+        for change in changes:
+            f = AccountsFixture().funded().renewed().compact()
+            change(f.raw["n01"]["buyer"]["channels"]["channel-n01-old"]["retired"])
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                f.accounts.observe()
+
+    def test_controller_retirement_retains_verified_successor_lineage(self):
+        for previously_seen in (False, True):
+            f = AccountsFixture().funded().renewed()
+            if previously_seen:
+                f.accounts.observe()
+            f.compact(controller=True)
+            observed, _ = f.accounts.observe()
+            self.assertEqual(observed["renewals"]["n01"][0]["replacement"], "channel-n01-new")
+            self.assertTrue(observed["renewals"]["n01"][0]["retirement_reconstructed"])
+            self.assertEqual(observed["renewals"]["n01"][0]["previous_observed_units"], 26 * 1024 * 1000)
+            f.raw["n01"]["controller"]["history"]["buyers"] = []
+            with self.subTest(previously_seen=previously_seen), self.assertRaises(ValueError):
+                f.accounts.observe()
 
     def test_changed_funding_authority_refund_or_successor_cannot_pass(self):
         changes = (
@@ -224,6 +320,7 @@ class RenewalTests(unittest.TestCase):
 
     def test_delivery_failure_still_collects_without_replaying_or_pausing_the_stream(self):
         run = object.__new__(RenewalLoadRun)
+        run.args = SimpleNamespace()
         run.nodes = {name: SimpleNamespace(npub=name) for name in NAMES}
         run.evidence = {"renewal_load": {}}
         run.form_line, run.save, run.phase, run.ctl, run.warmup = Mock(), Mock(), Mock(), Mock(), Mock()

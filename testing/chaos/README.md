@@ -711,7 +711,7 @@ packets/s. Use the same three-router inventory and owned remote test mint as
 `max_duration_secs` and `lifetime_secs` diagnostic options:
 
 ```sh
-PYTHONPATH=testing/chaos python3 -m sim.wifi_renewal_load \
+PYTHONPATH=testing/chaos python3 -B -m sim.wifi_renewal_load \
   --inventory /private/routers.json --binary /private/verified/fips-relay \
   --mint-binary /private/verified/fips-relay-test-mint \
   --mint-host /private/mint-host.json --mint-address PRIVATE_MINT_IPV4 \
@@ -725,6 +725,20 @@ The tariff is 1 msat/KiB and each quote allows 32 MiB. Automatic renewal uses
 remain unchanged. Each router receives 128 test sats; all 384 must be collected.
 Quote lifetime remains 1,200 seconds; channel service ends after 900 seconds,
 with the immutable mint refund deadline at 1,800 seconds.
+
+Add `--expiry-renewal` to use 180-second quotes, an eight-second expiry lead and
+100% capacity/allowance thresholds. Traffic, prices, spending and channel deadlines
+stay as above. Acceptance requires replacement funding to start inside the expiry
+lead window, before the old grant expires, with its signed balance below 32 sats
+and observed bytes below the original quote allowance. This distinguishes expiry
+renewal from the default capacity case without adding another workload.
+
+Expired, closed routes may be compacted by the ordinary runtime. The finite
+observer keeps earlier purchases in memory and verifies the native retirement
+fence, exact retained byte costs and terminal refund before accepting removal.
+It marks successor lineage reconstructed from that history with
+`retirement_reconstructed`; the delivery and live-payment requirements still
+apply. This observer retention changes no router journal or financial limit.
 
 Both receivers are armed before either sender starts. Each sender runs once,
 without pauses around renewal or payload retries. Acceptance requires every

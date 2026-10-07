@@ -22,7 +22,7 @@ from .wifi_diamond_checks import require_same_process
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import received, submitted
 from .wifi_remote import digest
-from .wifi_renewal_finances import ENDPOINTS, NAMES, QUOTE_UNITS, RENEWAL, RenewalAccounts
+from .wifi_renewal_finances import EXPIRY_RENEWAL, ENDPOINTS, NAMES, QUOTE_UNITS, RENEWAL, RenewalAccounts
 
 
 PACKETS, RATE, SEND_SECONDS, RECEIVE_SECONDS = 42_000, 140, 300, 360
@@ -61,6 +61,13 @@ def validate(evidence, identities):
         require(len(paid) >= 2, "no paid successor observations during the continuous stream")
         first = paid[0]
         lineage = first["accounts"]["renewals"][source][0]
+        if evidence.get("expiry_renewal", False):
+            expiry, created = lineage["previous_expires_unix"], lineage["replacement_created_unix"]
+            require(evidence["renewal"] == EXPIRY_RENEWAL and evidence["quote_lifetime_secs"] == 180
+                    and expiry - EXPIRY_RENEWAL["before_expiry_secs"] <= created < expiry
+                    and lineage["previous_paid_sat"] < 32
+                    and lineage["previous_observed_units"] < QUOTE_UNITS,
+                    "expiry renewal must precede expiry without exhausting capacity or byte allowance")
         replacement = lineage["replacement"]
         first_count = first["receivers"][source]["unique_packets"]
         first_credit = first["accounts"]["financial"]["n02"]["credited"].get(replacement, 0)
@@ -84,16 +91,25 @@ class RenewalLoadRun(PaidWifiRun):
         self.evidence["renewal_load"] = {"passed": False, "samples": [], "streams": {},
             "sample_errors": [], "packets_per_direction": PACKETS, "packets_per_second": RATE,
             "payload_bytes": 1000, "send_seconds": SEND_SECONDS, "receive_seconds": RECEIVE_SECONDS,
-            "quote_max_units": QUOTE_UNITS, "renewal": RENEWAL, "final_tail_seconds": FINAL_TAIL,
+            "quote_max_units": QUOTE_UNITS, "renewal": dict(self.renewal_policy),
+            "expiry_renewal": getattr(args, "expiry_renewal", False),
+            "quote_lifetime_secs": 180 if getattr(args, "expiry_renewal", False) else 1200,
+            "final_tail_seconds": FINAL_TAIL,
             "one_way_latency": False, "physical_power_loss": False, "cadence_comparison": False}
         for name in ("wifi_renewal_load.py", "wifi_renewal_finances.py", "wifi_probes.py",
                      "wifi_profiles.py", "paid_settlement.py", "paid_finances.py", "wifi_measurements.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
+    @property
+    def renewal_policy(self):
+        return EXPIRY_RENEWAL if getattr(self.args, "expiry_renewal", False) else RENEWAL
+
     def profile_config(self, node):
         config = super().profile_config(node)
         config["terms"].update(fee_msat_per_kib=1, max_rate_msat_per_kib=1, quote_max_units=QUOTE_UNITS)
-        config["terms"]["controller"]["renewal"] = dict(RENEWAL)
+        if getattr(self.args, "expiry_renewal", False):
+            config["terms"]["quote_lifetime_secs"] = 180
+        config["terms"]["controller"]["renewal"] = dict(self.renewal_policy)
         return config
 
     def samples(self):
@@ -194,7 +210,7 @@ class RenewalLoadRun(PaidWifiRun):
             native = initial[name]["native"]["status"]["data"]
             require(native["npub"] == node.npub, "renewal native identity differs from prepared profile")
             identities[name] = list(bytes.fromhex(native["node_addr"]))
-        accounts = RenewalAccounts(self, identities)
+        accounts = RenewalAccounts(self, identities, self.renewal_policy)
         try:
             for source in ENDPOINTS:
                 self.ctl(source, "buy", destination=self.nodes[destination(source)].npub)
@@ -222,6 +238,8 @@ def main():
     for name in ("inventory", "binary", "mint-binary", "mint-host", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--mint-address", required=True)
+    parser.add_argument("--expiry-renewal", action="store_true",
+                        help="renew 180-second quotes with eight seconds of lead, retaining spending limits")
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

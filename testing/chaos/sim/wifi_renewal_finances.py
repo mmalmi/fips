@@ -18,6 +18,7 @@ NAMES = ("n01", "n02", "n03")
 ENDPOINTS = ("n01", "n03")
 QUOTE_UNITS = 32 * 1024 * 1024
 RENEWAL = {"at_capacity_percent": 80, "before_expiry_secs": 30}
+EXPIRY_RENEWAL = {"at_capacity_percent": 100, "before_expiry_secs": 8}
 
 
 def check(condition, message):
@@ -26,9 +27,36 @@ def check(condition, message):
         raise ValueError(message)
 
 
+def retired_usage(buyer, contract):
+    """This fixture has one quote per channel; retain its exact compacted cost."""
+    channel = buyer["channels"][contract["channel_id"]]
+    retired = channel.get("retired") or {}
+    check(amount(retired.get("contracts")) == 1
+          and amount(retired.get("through_unix")) == contract["expires_unix"] <= channel["terms"]["expires_unix"],
+          "renewal erased prior route retirement evidence")
+    units = retired.get("units") or {}
+    observed = amount(units.get("reserved_units"))
+    submitted = amount(units.get("submitted_units"))
+    check(submitted + amount(units.get("unconfirmed_units")) == observed <= contract["max_units"]
+          and contract["price"] == {"msat": 1, "per_bytes": 1024}
+          and amount(retired.get("reserved_msat")) == (observed + 1023) // 1024
+          and amount(retired.get("submitted_msat")) == (submitted + 1023) // 1024,
+          "renewal changed compacted route usage or cost")
+    return observed, submitted
+
+
+def route_usage(buyer, contract):
+    quote = buyer["quotes"].get(contract["id"])
+    if quote is None:
+        return retired_usage(buyer, contract)
+    check(quote["contract"] == contract, "renewal changed its retained route contract")
+    return amount(quote["observed_units"]), amount(quote["submitted_units"])
+
+
 class RenewalAccounts:
-    def __init__(self, run, identities):
+    def __init__(self, run, identities, renewal=RENEWAL):
         self.run, self.identities = run, identities
+        self.renewal = dict(renewal)
         self.initial = account_journals(run)
         self.previous = copy.deepcopy(self.initial)
         self.latest_signed = {name: {} for name in NAMES}
@@ -40,6 +68,7 @@ class RenewalAccounts:
     def observe(self):
         try:
             raw, summary = account_journals(self.run), self.run.finances()
+            self.retain_closed_routes(raw)
             fixture, lineage = self.check(raw, summary)
         except FinancialObservationChanged:
             raise
@@ -53,6 +82,56 @@ class RenewalAccounts:
                 "funding_sha256": {name: digest(json.dumps(state["controller"]["funding"],
                     sort_keys=True).encode()) for name, state in raw.items()}}, fixture
 
+    def retain_closed_routes(self, raw):
+        # Keep the finite observer's earlier purchases in memory after native
+        # retirement removes controller rows. This changes no device journal.
+        for name, state in raw.items():
+            controller, buyer = state["controller"], state["buyer"]
+            previous = self.previous[name]["controller"]
+            history, prior = controller.get("history") or {}, previous.get("history") or {}
+            consistent_observation(history.get("pending") is None, "route retirement is still committing")
+            check(set(prior.get("buyers", [])) <= set(history.get("buyers", []))
+                  and amount(history.get("through_unix", 0)) >= amount(prior.get("through_unix", 0)),
+                  "renewal erased the controller retirement fence")
+            removed = {}
+            for key, old in previous["outgoing"].items():
+                current = controller["outgoing"].get(key)
+                if current is not None:
+                    check(current["purchase"] == old["purchase"]
+                          and (not old["accepted"] or current["accepted"] is True)
+                          and (not old["retired"] or current["retired"] is True),
+                          "renewal changed an observed purchase")
+                    continue
+                purchase = old["purchase"]
+                channel, contract = purchase["channel"], purchase["contract"]
+                check(old["accepted"] and channel["id"] in history.get("buyers", [])
+                      and amount(history.get("through_unix", 0)) >= contract["expires_unix"]
+                      and verified_refund(controller, channel["id"], channel) is not None,
+                      "renewal erased a purchase without durable retirement and refund")
+                retired_usage(buyer, contract)
+                restored = copy.deepcopy(old)
+                restored["retired"] = True
+                controller["outgoing"][key] = removed[channel["id"]] = restored
+            for channel, old in removed.items():
+                if channel in controller["renewals"]:
+                    continue
+                created = controller["funding"][old["funding_id"]]["created_unix"]
+                successors = [row for row in controller["outgoing"].values() if row["accepted"]
+                    and controller["funding"][row["funding_id"]]["created_unix"] > created]
+                if not successors:
+                    continue
+                earliest = min(controller["funding"][row["funding_id"]]["created_unix"] for row in successors)
+                successors = [row for row in successors
+                    if controller["funding"][row["funding_id"]]["created_unix"] == earliest]
+                check(len(successors) == 1, "retired renewal has ambiguous successor funding")
+                controller["renewals"][channel] = {"previous": [copy.deepcopy(old)],
+                    "replacements": [copy.deepcopy(successors[0]["offer"])], "completed": True,
+                    "retirement_reconstructed": True}
+                # The original marker may precede replacement retirement. Its
+                # purchase/offer and any already-observed successor must match.
+                if channel in previous["renewals"]:
+                    controller["renewals"][channel]["previous"] = copy.deepcopy(previous["renewals"][channel]["previous"])
+
     def check(self, raw, summary):
         check(set(raw) == set(summary) == set(NAMES), "renewal participant set changed")
         channels, operations, refunds = {}, set(), {}
@@ -65,7 +144,7 @@ class RenewalAccounts:
             check(_address(controller["local"]) == _address(buyer["local"])
                   == tuple(self.identities[name]) and controller["epoch"] == original["epoch"]
                   and policy == original["policy"], "renewal changed identity, epoch or policy")
-            check(policy["mint_url"] == self.run.mint_url and policy["renewal"] == RENEWAL
+            check(policy["mint_url"] == self.run.mint_url and policy["renewal"] == self.renewal
                   and policy["channel_capacity_sat"] == 32 and policy["max_locked_sat"] == 64
                   and policy["max_wallet_spend_sat"] == 128 and policy["max_funding_overhead_sat"] == 0
                   and policy["channel_lifetime_secs"] == 1800 and buyer["total_budget_sat"] == 64,
@@ -177,10 +256,22 @@ class RenewalAccounts:
         consistent_observation(summary["signed"] == signed, "authorization changed during renewal sampling")
         for key, old in previous["buyer"]["channels"].items():
             check(key in signed and signed[key] >= old["authorized_sat"], "renewal erased prior signed liability")
+            if (old.get("retired") or {}).get("contracts", 0):
+                check(buyer["channels"][key].get("retired") == old["retired"],
+                      "renewal changed retained route retirement evidence")
+        for key, channel in buyer["channels"].items():
+            retired = channel.get("retired")
+            if not retired or _zero(retired):
+                continue
+            routes = [row for row in state["controller"]["outgoing"].values()
+                      if row["purchase"]["contract"]["channel_id"] == key]
+            check(len(routes) == 1 and routes[0]["retired"] is True
+                  and routes[0]["purchase"]["contract"]["id"] not in buyer["quotes"],
+                  "renewal retired an unknown or still-active route")
+            retired_usage(buyer, routes[0]["purchase"]["contract"])
         for key, old in previous["buyer"]["quotes"].items():
-            row = buyer["quotes"].get(key)
-            check(row is not None and row["contract"] == old["contract"]
-                  and all(amount(row[field]) >= amount(old[field]) for field in ("observed_units", "submitted_units")),
+            observed, submitted = route_usage(buyer, old["contract"])
+            check(observed >= amount(old["observed_units"]) and submitted >= amount(old["submitted_units"]),
                   "renewal erased prior route usage")
         for row in buyer["quotes"].values():
             check(amount(row["submitted_units"]) <= amount(row["observed_units"]) <= QUOTE_UNITS,
@@ -235,7 +326,12 @@ class RenewalAccounts:
                     check(offers[0][key] == previous["offer"][key], "renewal changed its quoted service")
                 lineage[name].append({"previous": old_id, "replacement": successor,
                     "previous_paid_sat": refunds[old_id]["paid_sat"],
+                    "previous_expires_unix": previous["purchase"]["contract"]["expires_unix"],
+                    "previous_observed_units": route_usage(state["buyer"], previous["purchase"]["contract"])[0],
+                    "replacement_created_unix": controller["funding"][successors[0]["funding_id"]]["created_unix"],
                     "replacement_signed_sat": state["buyer"]["channels"][successor]["authorized_sat"]})
+                if renewal.get("retirement_reconstructed", False):
+                    lineage[name][-1]["retirement_reconstructed"] = True
         return lineage
 
     def check_seller(self, raw, summary, channels):
