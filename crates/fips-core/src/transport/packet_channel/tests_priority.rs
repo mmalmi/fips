@@ -1,8 +1,10 @@
 fn forged_priority(marker: u8) -> ReceivedPacket {
+    let max_priority_len = LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE
+        + ((usize::from(u16::MAX) - LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE) / 16) * 16;
     received_packet(
         TransportId::new(1),
         TransportAddr::from_string("untrusted"),
-        established_fmp_packet(65_534, marker),
+        established_fmp_packet(max_priority_len, marker),
     )
 }
 

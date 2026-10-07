@@ -287,6 +287,12 @@ impl DataplaneTurnDriver {
             return None;
         };
 
+        let class = match header {
+            DataplaneIngressHeader::Fmp(header) => {
+                header.visible_priority_class().unwrap_or(route.class)
+            }
+            DataplaneIngressHeader::Fsp(_) => route.class,
+        };
         let DataplaneRawIngress {
             path: source_path,
             previous_hop,
@@ -301,7 +307,7 @@ impl DataplaneTurnDriver {
             route.generation,
             counter,
             ciphertext_offset,
-            route.class,
+            class,
             route.output,
             payload,
         )

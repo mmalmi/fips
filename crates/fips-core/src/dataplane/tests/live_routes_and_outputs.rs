@@ -388,7 +388,7 @@
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fmp(transport_id, receiver_idx, route);
 
-        let plaintext_len = 46 + 16;
+        let plaintext_len = 4 + 46 + 16;
         let mut wire = vec![0u8; FMP_ESTABLISHED_HEADER_SIZE + plaintext_len + AEAD_TAG_SIZE];
         wire[0] = (FMP_VERSION << 4) | FMP_PHASE_ESTABLISHED;
         wire[2..4].copy_from_slice(&(plaintext_len as u16).to_le_bytes());

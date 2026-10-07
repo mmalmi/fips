@@ -18,6 +18,7 @@ include!("aead_completion_tail.rs");
 include!("live_routes_and_outputs.rs");
 include!("handshake_candidates.rs");
 include!("live_node_runtime.rs");
+mod discovery_priority;
 include!("stream_transport.rs");
 include!("live_node_runtime_continuation.rs");
 include!("live_node_runtime_tail.rs");

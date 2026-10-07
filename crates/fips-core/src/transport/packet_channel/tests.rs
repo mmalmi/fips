@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use tokio::sync::mpsc::error::TryRecvError;
 
 const BULK_PACKET_LEN: usize = FMP_MSG1_WIRE_SIZE + 1;
-const LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE: usize = 46 + 16;
-const LOOKUP_RESPONSE_ROOT_PLAINTEXT_SIZE: usize = 93 + 16;
+const LOOKUP_REQUEST_ROOT_PLAINTEXT_SIZE: usize = 4 + 46 + 16;
+const LOOKUP_RESPONSE_ROOT_PLAINTEXT_SIZE: usize = 4 + 93 + 16;
 
 fn priority_msg1(marker: u8) -> PacketBuffer {
     let mut packet = vec![0u8; FMP_MSG1_WIRE_SIZE];
