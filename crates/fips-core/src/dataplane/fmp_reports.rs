@@ -101,7 +101,7 @@ impl OwnerState {
             return None;
         }
         let mmp = self.fmp_mmp.as_ref()?;
-        let sender = (mmp.mode() == crate::mmp::MmpMode::Full && mmp.sender_report_pending)
+        let sender = (mmp.mode() == crate::mmp::MmpMode::Full && mmp.needs_sender_report())
             .then(|| mmp.sender.next_report_at(now))
             .flatten();
         let receiver = (mmp.mode() != crate::mmp::MmpMode::Minimal && mmp.receiver_report_pending)

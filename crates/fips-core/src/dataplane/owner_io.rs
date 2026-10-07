@@ -606,7 +606,7 @@ impl OwnerState {
         let node_addr = self.owner.node_addr();
 
         if mode == crate::mmp::MmpMode::Full
-            && mmp.sender_report_pending
+            && mmp.needs_sender_report()
             && mmp.sender.should_send_report(now)
             && let Some(sr) = mmp.sender.build_report(now)
         {

@@ -33,10 +33,49 @@ fn receive(live: &mut DataplaneLiveNode, owner: OwnerId, counter: u64, now: Inst
     .unwrap();
 }
 
+fn establish_rtt(live: &mut DataplaneLiveNode, owner: OwnerId, now: Instant) {
+    let mut remote = ReceiverState::new(100);
+    remote.record_recv(1, 100, 80, false, now);
+    let rr = remote.build_report(now).unwrap();
+    let measured = live
+        .process_fmp_mmp_receiver_report(&owner.node_addr(), &rr, 1_120, now)
+        .unwrap();
+    assert!(measured.srtt_ms.is_some());
+}
+
+#[tokio::test]
+async fn lost_initial_report_retries_until_first_valid_rtt_then_quiets() {
+    let (mut live, owner) = live_link(MmpMode::Full);
+    let now = Instant::now();
+    live.record_fmp_mmp_send_result(&owner.node_addr(), 1, 100, 80, true);
+    let reports = live.collect_fmp_mmp_reports(now).reports;
+    assert_eq!(reports.len(), 1);
+    // The report is successfully sent but lost before the peer receives it.
+    // Accounting it must preserve a new measurement attempt during startup.
+    live.record_fmp_mmp_send_result(&owner.node_addr(), 2, 101, 48, false);
+    let due = now + Duration::from_millis(200);
+    assert_eq!(live.fmp_report_deadline(), Some(due));
+    assert!(live
+        .collect_fmp_mmp_reports(due - Duration::from_nanos(1))
+        .reports
+        .is_empty());
+    let retry = live.collect_fmp_mmp_reports(due).reports;
+    assert_eq!(retry.len(), 1);
+    assert_eq!(retry[0].kind, DataplaneFmpMmpReportKind::Sender);
+    live.record_fmp_mmp_send_result(&owner.node_addr(), 3, 300, 48, false);
+    establish_rtt(&mut live, owner, due + Duration::from_millis(20));
+    assert!(live
+        .collect_fmp_mmp_reports(due + Duration::from_secs(1))
+        .reports
+        .is_empty());
+    assert_eq!(live.fmp_report_deadline(), None);
+}
+
 #[tokio::test]
 async fn fmp_report_traffic_is_counted_without_eliciting_more_reports() {
     let (mut live, owner) = live_link(MmpMode::Full);
     let now = Instant::now();
+    establish_rtt(&mut live, owner, now);
     live.record_fmp_mmp_send_result(&owner.node_addr(), 1, 100, 80, true);
     receive(&mut live, owner, 1, now);
     assert_eq!(live.collect_fmp_mmp_reports(now).reports.len(), 2);
@@ -206,6 +245,7 @@ async fn fmp_report_deadlines_require_pending_traffic_and_respect_modes() {
     for mode in [MmpMode::Full, MmpMode::Lightweight, MmpMode::Minimal] {
         let (mut live, owner) = live_link(mode);
         assert_eq!(live.fmp_report_deadline(), None, "registration is idle");
+        establish_rtt(&mut live, owner, Instant::now());
         live.record_fmp_mmp_send_result(&owner.node_addr(), 1, 100, 80, true);
         assert_eq!(live.fmp_report_deadline().is_some(), mode == MmpMode::Full);
         receive(&mut live, owner, 1, Instant::now());

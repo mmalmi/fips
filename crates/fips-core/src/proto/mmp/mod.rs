@@ -230,6 +230,12 @@ impl MmpPeerState {
         self.mode
     }
 
+    // A lost startup report must not strand an authenticated link without its
+    // first RTT measurement. After feedback, only new data schedules a report.
+    pub(crate) fn needs_sender_report(&self) -> bool {
+        self.sender_report_pending || !self.metrics.srtt.initialized()
+    }
+
     /// Check if it's time to emit a periodic metrics log.
     pub fn should_log(&self, now: Instant) -> bool {
         match self.last_log_time {
