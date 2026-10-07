@@ -124,6 +124,41 @@ opaque transit, direct mint TCP traffic and physical/radio costs remain outside
 payment attribution; unmatched captured UDP bytes remain visible. The 500-ms
 default stays unchanged.
 
+## Physical Ethernet capture pilot — 7 October 2026
+
+The ordinary ARM64 candidate from `fbc2c3ac1` passes the original four-workload
+500-ms pilot on three OpenWrt routers in `work/wire-device-capture-r210`. It uses
+the saved SAE radio profile, native Ethernet over two 802.11s hops and a capped
+LAN test mint. All 11,712 payloads arrive, both original channels settle and all
+384 test sats are collected. All 288 management checks pass. Independent
+postflight verifies restored original profiles/services, stopped candidates,
+capture supervisors and mint, removed candidate executables and byte-verified
+recovery archives for all three test accounts. The accounts remain preserved.
+
+All three outgoing captures have zero kernel drops. Of 25,789 captured packets,
+234 match payment submissions through the final guards; other captured traffic
+remains unattributed. Each host's counter ordinals reconcile across all four
+windows. Costs below sum locally originated payment frames from all three hosts;
+setup and guards are separate, with no baseline subtraction.
+
+| Workload | Delivered application bytes | Payment frames | FIPS bytes | Captured Ethernet bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Idle | 0 | 0 | 0 | 0 |
+| Bursty | 512,000 | 0 | 0 | 0 |
+| Steady | 3,200,000 | 78 | 7,074 | 8,400 |
+| High rate | 8,000,000 | 78 | 7,087 | 8,413 |
+
+The shared analyzer now supports explicit host and trial selection, including
+independent PID namespaces and PID reuse between separate captures. It validates
+the complete workload/financial report before selecting a capture. Ten focused
+checks pass, and its command reproduces the accepted native UDP capture.
+
+This is one finite policy's capture acceptance, not a hardware policy comparison
+or an untraced CPU/timing result. Captured Ethernet framing includes observed
+headers and padding; shared/opaque transit, physical framing and radio airtime
+remain outside payment attribution. Impaired and sustained device comparisons
+remain open. The 500-ms default stays unchanged.
+
 ## Current storage syscall comparison — 7 October 2026
 
 The current ordinary Linux ARM64 executable on `29a88d481`, with measurement

@@ -26,6 +26,18 @@ The new matched native matrix passes in `work/payment-cpu-cadence-r201`, deliver
 all 285,696 payloads and collecting all 40,960 test sats with closed processes and
 source evidence. See [the current cadence results](CADENCE-RESULTS.md#current-native-matrix--7-october-2026).
 
+Independent wire evidence now covers the complete matched native UDP matrix and
+one current physical-router pilot. The ordinary ARM64 candidate on `fbc2c3ac1`
+passes the original 500-ms workloads over two saved-SAE radio hops: all 11,712
+payloads arrive and all 384 test sats are collected. Three zero-drop captures
+match 234 payment submissions through the final guards; every measured interval
+reconciles. Independent postflight verifies restored original device state,
+stopped owned processes and three recovery archives. The host/trial-aware command
+reuses the strict workload and financial analyzer; see [the wire results](CADENCE-RESULTS.md#physical-ethernet-capture-pilot--7-october-2026).
+The hardware policy matrix, impaired/sustained workloads, complete shared/transit
+costs and physical/radio attribution remain open. Traced capture runs do not
+replace untraced CPU/timing results or establish deployment readiness.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.

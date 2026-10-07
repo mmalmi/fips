@@ -4,6 +4,7 @@ import unittest
 
 from service_carrier import TRANSPORTS
 from test_analyze import complete_report
+from test_hardware import hardware_report
 from test_wire_capture import capture, event, udp
 from wire_capture import read_pcap, read_traces
 from wire_intervals import analyze_wire
@@ -44,6 +45,62 @@ def fixture():
 
 
 class WireIntervalTests(unittest.TestCase):
+    def test_hardware_captures_keep_independent_pid_namespaces_separate(self):
+        rows = hardware_report()
+        rows[0]['payment_service_carrier'] = True
+        final = {}
+        for row in rows:
+            if 'data' not in row:
+                continue
+            for boundary in ('before_guard', 'before', 'after', 'after_guard'):
+                for node in row['data'][boundary]:
+                    pid = 100 + row['trial'] * 1000
+                    node['measurements']['process_id'] = pid
+                    node['host_process']['pid'] = pid
+                    service = next(s for s in node['control_traffic'] if s['service_port'] == 44743)
+                    count = service['counters']['stream_bytes_sent'] // 100
+                    service['service_carrier'] = {'service_port': 44743, 'ambiguous_port_datagrams': 0,
+                        'discarded_outputs': 0, 'transports': [dict(transport=t,
+                            submitted_packets=count if t == 'ethernet' else 0,
+                            fips_payload_bytes=count * 100 if t == 'ethernet' else 0,
+                            ethernet_framing_bytes=count * 3 if t == 'ethernet' else 0)
+                            for t in sorted(TRANSPORTS)]}
+                    final[(node['host_process']['host'], pid)] = count
+        for host in ('n01', 'n02', 'n03'):
+            frames, traces = [], []
+            for (owner, pid), count in final.items():
+                if owner != host:
+                    continue
+                for number in range(1, count + 1):
+                    payload = f'{host}-{pid}-{number}'.encode().ljust(100, b'x')
+                    frames.append(b'\0' * 12 + b'\x88\xb5\0' + len(payload).to_bytes(2, 'little') + payload)
+                    traces.append(event(payload, number, transport='ethernet')
+                                  .replace('process_id=123 ', f'process_id={pid} '))
+            result = analyze_wire(rows, read_pcap(capture(frames)), read_traces(traces), host=host)
+            self.assertEqual(result['originating_host'], host)
+            self.assertEqual(len(result['windows']), 32)
+            self.assertTrue(all(w['ip_bytes_per_delivered_byte'] is None for w in result['windows']))
+            self.assertEqual(result['capture']['unattributed']['packets'], 0)
+        # Separate trial captures also handle PID reuse after a router process exits.
+        reused = copy.deepcopy(rows)
+        for row in reused:
+            if 'data' not in row:
+                continue
+            for boundary in ('before_guard', 'before', 'after', 'after_guard'):
+                for node in row['data'][boundary]:
+                    node['measurements']['process_id'] = node['host_process']['pid'] = 100
+                    node['host_process']['start_ticks'] += row['trial'] * 1000
+        count = final[('n03', 2100)]
+        selected = [event(f'n03-2100-{number}'.encode().ljust(100, b'x'), number, transport='ethernet')
+                    .replace('process_id=123 ', 'process_id=100 ') for number in range(1, count + 1)]
+        start = sum(final[('n03', 100 + t * 1000)] for t in range(2))
+        result = analyze_wire(reused, read_pcap(capture(frames[start:start + count])),
+                              read_traces(selected), host='n03', trial=2)
+        self.assertEqual(result['originating_trial'], 2)
+        self.assertEqual(len(result['windows']), 4)
+        with self.assertRaisesRegex(ValueError, 'explicit originating host'):
+            analyze_wire(rows, [], [])
+
     def test_all_windows_keep_setup_and_shutdown_outside_measured_cost(self):
         rows, frames, traces = fixture()
         original = copy.deepcopy(rows)
@@ -71,3 +128,5 @@ class WireIntervalTests(unittest.TestCase):
         probe['missing_packets'] = 1
         with self.assertRaises(ValueError):
             analyze_wire(rows, read_pcap(capture(frames)), read_traces(traces))
+        with self.assertRaises(ValueError):
+            analyze_wire(rows, [], [], trial=7)

@@ -646,6 +646,44 @@ transport bytes with zero new payment records. Existing payment, storage,
 delivery and financial-conservation acceptance rules still apply; carrier
 diagnostics cannot turn a failed workload into an accepted comparison.
 
+### Independent payment packet captures
+
+Enable `fips_core::service_wire=trace` for the diagnostic run and retain complete
+daemon logs. Capture only outgoing packets on each experiment interface with
+full packet lengths (`tcpdump -Q out -s 0`), keeping the final capture statistics.
+Use classic Ethernet PCAP. Capture routers separately: process numbers belong
+to each host, and the same number on two routers does not identify one process.
+Keep accounts and financial recovery evidence through collection and closure.
+Linux loopback suppresses outgoing capture duplicates: use `-Q in` inside an
+isolated test namespace for that matrix. Disable GSO, GRO, TSO and UDP segmentation
+there so captures retain individual submitted packets; aggregated/offloaded
+records cannot establish packet attribution. Loopback Ethernet headers are
+synthetic, and changing offloads changes execution cost.
+
+The existing workload analyzer remains the acceptance gate. This command also
+requires zero kernel capture drops, matches encrypted submission fingerprints,
+and reconciles counter ordinals with workload, setup and guard boundaries:
+
+```sh
+python3 -B testing/relay-cadence/wire_intervals.py \
+  /private/measurements.jsonl /private/outgoing.pcap /private/daemon.log \
+  --capture-stats /private/tcpdump.log --host n01 --pilot
+```
+
+For the native UDP matrix, omit `--host` and provide all daemon logs. For a
+router capture, pass exactly that host's logs and repeat the analysis for every
+captured host. `--pilot` accepts one policy's existing finite workload sequence;
+omit it for the full policy comparison. Keep separate trial captures and pass
+`--trial N` when process numbers repeat between trials; the complete original
+report still passes workload and financial validation before selecting that
+trial's packets. Do not combine independent captures or host logs before
+attribution. Late settlement/shutdown packets, other service
+ports and opaque/shared packets remain outside measured payment windows and
+visible in unattributed capture totals. Captured Ethernet bytes include the
+observed link header and padding; physical framing and radio airtime remain
+unavailable. Trace hashing and capture activity alter execution cost, so these
+runs do not replace untraced CPU or timing measurements.
+
 ### Separate storage syscall diagnostics
 
 For an isolated capture through the production payment path, run from
