@@ -79,10 +79,50 @@ airtime, delivery guarantees beyond the regression, or a performance result.
 All 28 selected carrier/UDP tests and 19 analyzer checks pass, along with strict
 core and measured/unmeasured relay lint and the optimized ordinary Linux daemon
 build. The daemon uses core default features and the wallet SDK without simulation.
-This qualifies packet attribution for the recorded case. The matched payment
-cadence capture matrix, Ethernet device captures and complete shared/transit or
-physical-radio attribution remain open. Trace hashing and disabled offloads alter
-execution cost; these capture runs cannot replace the untraced CPU measurements.
+This qualifies packet attribution for the recorded case. The following matrix
+extends it to matched payment workloads. Ethernet device captures and complete
+shared/transit or physical-radio attribution remain open. Trace hashing and
+disabled offloads alter execution cost; these capture runs cannot replace the
+untraced CPU measurements.
+
+## Matched payment UDP capture — 7 October 2026
+
+`work/wire-cadence-r208` passes the original eight-policy, five-process loopback
+matrix with the ordinary daemon qualified in `work/wire-trace-r206`. The workload,
+financial terms, two-core quota and three-second tails match the native matrix
+above. Each trial retains its complete logs and wallet state, including on failure.
+The capped test mint and harness enable simulation; the daemon does not. Capture
+and trace hashing run during this experiment, with loopback offloads disabled,
+so its CPU and timing do not replace the untraced measurements.
+
+All 285,696 application payloads arrive and all 40,960 test sats are collected.
+The 1,174,518 captured UDP packets contain every payment submission through the
+final measurement guards, with zero kernel capture drops. Packet ordinals allocate
+costs to each node's workload and guard boundaries; setup, settlement/shutdown and
+application service traffic stay outside measured payment windows. Counter
+reconciliation passes for all 32 windows, including zero payment packets in all
+eight idle windows. No background baseline is subtracted.
+
+High-rate values average two trials, each delivering 32,000,000 application bytes.
+IPv4/UDP bytes include actual captured IP and UDP headers, summing the five nodes'
+locally originated payment packets, including TCP/FIPS ACKs and retries.
+
+| Maximum age | Payment updates | Payment UDP packets | FIPS KiB | IPv4/UDP KiB |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 59.5 | 1,547 | 137.41 | 179.71 |
+| 500 ms | 44 | 1,144 | 101.63 | 132.91 |
+| 1 s | 40 | 1,040 | 92.39 | 120.83 |
+| 2 s | 40 | 1,040 | 92.39 | 120.83 |
+
+The first matrix in `work/wire-cadence-r207` also returns all funds and matches
+every payment trace through those guards, but its capture drops 16 packets and
+remains rejected. A fresh matrix with a 32-MiB capture buffer passes the original
+zero-drop check. Both retained-state archives are independently verified. Nine
+wire analyzer checks, the retained-log regression and strict harness lint pass.
+Captured Ethernet headers are synthetic loopback framing. Shared handshakes,
+opaque transit, direct mint TCP traffic and physical/radio costs remain outside
+payment attribution; unmatched captured UDP bytes remain visible. The 500-ms
+default stays unchanged.
 
 ## Current storage syscall comparison — 7 October 2026
 

@@ -160,7 +160,7 @@ def read_traces(lines):
             raise ValueError('missing service packet ordinals')
 
 
-def match_packets(packets, traces, snapshots):
+def match_packets(packets, traces, snapshots, *, on_match=None):
     """Consume one captured outgoing packet per trace, including identical retries."""
     captures = defaultdict(Counter)
     total = Counter()
@@ -187,6 +187,8 @@ def match_packets(packets, traces, snapshots):
         cost.update(packets=1, fips_payload_bytes=trace['payload_bytes'], captured_link_bytes=framing[0])
         if framing[1] is not None:
             cost['ip_bytes'] += framing[1]
+        if on_match is not None:
+            on_match(trace, {'captured_link_bytes': framing[0], 'ip_bytes': framing[1]})
     measured = Counter()
     for cost in groups.values():
         measured.update(cost)

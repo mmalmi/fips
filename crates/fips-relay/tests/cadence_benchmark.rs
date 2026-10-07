@@ -173,7 +173,18 @@ async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u
 }
 
 async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: TrialMode) {
-    let root = tempfile::tempdir().unwrap();
+    let root = match std::env::var_os("FIPS_CADENCE_ARTIFACTS") {
+        Some(directory) => {
+            let mut root = tempfile::Builder::new()
+                .prefix(&format!("trial-{trial_id}-"))
+                .tempdir_in(directory)
+                .unwrap();
+            // Preserve traces and financial evidence even if a trial fails.
+            root.disable_cleanup(true);
+            root
+        }
+        None => tempfile::tempdir().unwrap(),
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

@@ -39,14 +39,17 @@ class WireCaptureTests(unittest.TestCase):
     def test_udp_retries_and_unattributed_traffic_are_retained(self):
         payload = b'opaque cipher bytes'
         frames = [udp(payload), udp(payload), udp(b'shared traffic')]
+        matched = []
         result = match_packets(read_pcap(capture(frames)), read_traces([event(payload, 1), event(payload, 2)]),
-                               counters([payload, payload]))
+                               counters([payload, payload]), on_match=lambda trace, cost: matched.append((trace, cost)))
         self.assertEqual(result['attributed']['packets'], 2)
         self.assertEqual(result['attributed']['fips_payload_bytes'], 2 * len(payload))
         self.assertEqual(result['attributed']['ip_bytes'], 2 * (28 + len(payload)))
         self.assertEqual(result['attributed']['captured_link_bytes'], 2 * len(frames[0]))
         self.assertEqual(result['unattributed'], {'packets': 1, 'captured_link_bytes': len(frames[2])})
         self.assertIsNone(result['physical_wire_bytes'])
+        self.assertEqual([trace['packet_number'] for trace, _ in matched], [1, 2])
+        self.assertEqual(sum(cost['captured_link_bytes'] for _, cost in matched), result['attributed']['captured_link_bytes'])
 
     def test_ethernet_prefix_and_padding_are_captured_without_hashing_padding(self):
         payload = b'cipher'
