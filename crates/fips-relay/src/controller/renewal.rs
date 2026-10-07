@@ -395,7 +395,10 @@ impl Controller {
             .get(id)
             .is_some_and(|s| s.kind == SettlementKind::Expiry && s.refunded)
         {
-            self.settle_channel(id).await?;
+            let _channel = self.channel_work(id)?.lock_owned().await;
+            self.refund_purchase(id, false).await?;
+            // Existing settlement recovery retries report release independently
+            // after the verified refund. It must not delay replacement credit.
         }
         progress("settled");
         if self

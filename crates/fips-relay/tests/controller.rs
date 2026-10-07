@@ -11,6 +11,8 @@ mod payment_mobility;
 mod purchase_closure;
 #[path = "controller_support/quote_traffic.rs"]
 mod quote_traffic;
+#[path = "controller_support/renewal_release.rs"]
+mod renewal_release;
 use controller_support::{errors, native_control, policy, recovery_stages, require_paid};
 
 use cashu_service::{
@@ -281,8 +283,8 @@ async fn controller_scenario(
                 ControlTransport::start_with_admission(nodes[i].clone(), 44_743, admission, i as u64 + 20)
                     .await
                     .unwrap();
-            let gate_buyer = if paid_quote_traffic { peers[0] } else { peers[2] };
-            let (incoming, gate) = payment_mobility::gate(incoming, gate_buyer, slow_neighbor || paid_quote_traffic);
+            let gate_buyer = if paid_quote_traffic || automatic_renewal { peers[0] } else { peers[2] };
+            let (incoming, gate) = payment_mobility::gate(incoming, gate_buyer, slow_neighbor || paid_quote_traffic || automatic_renewal);
             settlement_gates.push(gate);
             let (payment_incoming, gate) = payment_mobility::gate(payment_incoming, peers[2], slow_neighbor);
             payment_gates.push(gate);
@@ -461,13 +463,19 @@ async fn controller_scenario(
         }
         #[cfg(unix)]
         let mut rekey = traffic.rekey(root.path(), &peers, automatic_renewal, &forwarding[2]).await;
-        Traffic {
+        let release_gate = (matches!(renewal_billing, Some(ForwardingData))
+            && matches!(traffic, TrafficKind::Datagrams)).then(|| settlement_gates[1].as_ref().unwrap());
+        let mut workload = Traffic {
             root: root.path(), nodes: &nodes, peers: &peers, data: &mut data,
             controllers: &controllers, ledgers: &ledgers, buyers: &buyers,
             forwarding: &forwarding, links: &links, capacity, automatic_renewal,
             #[cfg(unix)]
             rekey: &mut rekey,
-        }.run(traffic).await;
+        };
+        let (_, release_progress) = tokio::join!(
+            workload.run(traffic),
+            renewal_release::observe(root.path(), release_gate, &a, &controllers[0], &buyers[0], &ledgers[1])
+        );
         #[cfg(unix)]
         if let Some(rekey) = rekey { rekey.assert_rotated("paid renewal"); }
         if billing.has_free_handshakes() {
@@ -961,6 +969,10 @@ async fn controller_scenario(
             seed_sat * 5
         );
         assert!(network.accounting().unwrap().is_conserved());
+        if release_gate.is_some() {
+            eprintln!("renewal release: {} test sats collected; progress={release_progress:?}", seed_sat * 5);
+        }
+        release_progress.expect("renewal must restore paid forwarding before report release");
     })
     .await
     .expect("autonomous controller test deadline");

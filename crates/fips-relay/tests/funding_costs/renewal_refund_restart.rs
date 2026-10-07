@@ -181,6 +181,13 @@ async fn scenario(root: &Path) {
             o["offer"] == *offer && o["accepted"] == true && o["purchase"]["channel"]["id"] != id
         }));
     }
+    // Cleanup can finish while the renewal completion marker is still held.
+    let released = wait_journal(&journals[0], 10, |j| {
+        j["buyer_settlements"][id]["released"] == true
+    })
+    .await;
+    assert_eq!(released["renewals"], accepted["renewals"]);
+    assert_eq!(released["funding"], accepted["funding"]);
     let buyer_path = configs[0].state_directory.join("buyer/buyer.json");
     let buyer_before = read(&buyer_path);
     let seller_before = read(&journals[1])["seller_settlements"][id].clone();

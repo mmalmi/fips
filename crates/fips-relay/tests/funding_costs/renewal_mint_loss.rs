@@ -248,7 +248,13 @@ async fn scenario(root: &Path, boundary: Boundary) {
         renewed["next_funding"].as_u64().unwrap(),
         before["next_funding"].as_u64().unwrap() + 1
     );
-    let refund = &renewed["buyer_settlements"][id];
+    assert_eq!(renewed["buyer_settlements"][id]["refunded"], true);
+    // Report cleanup is retried independently after replacement credit resumes.
+    let released = wait_journal(&journal, 10, |j| {
+        j["buyer_settlements"][id]["released"] == true
+    })
+    .await;
+    let refund = &released["buyer_settlements"][id];
     assert_eq!(refund["refunded"], true);
     assert_eq!(refund["released"], true);
     let closed = read(&seller_journal);
