@@ -1,7 +1,11 @@
 //! Renewal keeps its original intent across a delayed, lost committed mint reply.
 use super::restore::{read, wait_journal};
 use super::*;
-use fips_relay::{controller::RenewalPolicy, service::ServiceConfig};
+use fips_relay::{
+    controller::RenewalPolicy,
+    probe::{ReceiveProbe, SendProbe},
+    service::ServiceConfig,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::atomic::Ordering};
@@ -11,6 +15,7 @@ enum Boundary {
     Capacity,
     Quote,
     Channel,
+    AdmissionWait,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -26,6 +31,11 @@ async fn near_expiry_mint_close_rejects_stale_forwarding_and_renews_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lost_committed_mint_close_recovers_after_channel_refund_deadline() {
     exercise(Boundary::Channel).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_renewal_expires_unbilled_originals_and_delivers_fresh_waiters_once() {
+    exercise(Boundary::AdmissionWait).await;
 }
 
 async fn exercise(boundary: Boundary) {
@@ -46,7 +56,7 @@ async fn exercise(boundary: Boundary) {
 }
 
 async fn scenario(root: &Path, boundary: Boundary) {
-    let near_expiry = !matches!(boundary, Boundary::Capacity);
+    let near_expiry = matches!(boundary, Boundary::Quote | Boundary::Channel);
     let (mint, network) = setup::start_mint(root, 9631).await;
     let proxy = MintProxy::start(mint.url()).await;
     let setup::Bench {
@@ -70,6 +80,9 @@ async fn scenario(root: &Path, boundary: Boundary) {
             funding_limits: &[80, 40, 40],
         },
         |index, config| {
+            if matches!(boundary, Boundary::AdmissionWait) {
+                config.terms.billing = fips_relay::ledger::BillingBasis::ForwardingData;
+            }
             if index == 0 {
                 if matches!(boundary, Boundary::Channel) {
                     config.terms.controller.channel_lifetime_secs = 60;
@@ -161,7 +174,11 @@ async fn scenario(root: &Path, boundary: Boundary) {
     })
     .await
     .expect("held mint close cannot stall another buyer's payment");
-    tokio::time::sleep_until(held_at + Duration::from_secs(7)).await;
+    if matches!(boundary, Boundary::AdmissionWait) {
+        admission_cohorts(&configs, &npubs, id).await;
+    } else {
+        tokio::time::sleep_until(held_at + Duration::from_secs(7)).await;
+    }
     let expired_probe = if near_expiry {
         while restore::now() <= held_until {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -204,10 +221,22 @@ async fn scenario(root: &Path, boundary: Boundary) {
     assert!(read(&seller_journal)["seller_settlements"][id]["report"].is_null());
     assert_eq!(pending["funding"], before["funding"]);
     assert_eq!(pending["next_funding"], before["next_funding"]);
-    // Only the held original swap is outstanding; lose its reply after commit.
-    proxy.state.lose_swap_reply.store(true, Ordering::SeqCst);
+    // Keep the admission-wait case within one live renewal operation. A lost
+    // reply ends that operation's pause before retrying; closed grants reject
+    // waiting originals during that gap, even if their queue age is still valid.
+    proxy.state.lose_swap_reply.store(
+        !matches!(boundary, Boundary::AdmissionWait),
+        Ordering::SeqCst,
+    );
+    let released_at = tokio::time::Instant::now();
     release.send(()).unwrap();
     let renewed = wait_journal(&journal, 60, |j| j["renewals"][id]["completed"] == true).await;
+    if matches!(boundary, Boundary::AdmissionWait) {
+        eprintln!(
+            "renewal admission release to completion: {} ms",
+            released_at.elapsed().as_millis()
+        );
+    }
     request(&configs[0], &AdminRequest::PauseRenewals)
         .await
         .unwrap();
@@ -241,6 +270,15 @@ async fn scenario(root: &Path, boundary: Boundary) {
         after["remaining_budget_sat"].as_u64().unwrap()
             <= status["remaining_budget_sat"].as_u64().unwrap()
     );
+    let admission_report = if matches!(boundary, Boundary::AdmissionWait) {
+        // Keep observing after renewal so expired originals cannot arrive late
+        // or disappear from the fresh receiver's ignored-packet accounting.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let probe = request(&configs[2], &AdminRequest::Status).await.unwrap()["probe"].clone();
+        Some(probe)
+    } else {
+        None
+    };
     let before_usage = usage(&configs[1], replacement);
     send(&configs, &npubs, 0, 101).await;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -280,9 +318,92 @@ async fn scenario(root: &Path, boundary: Boundary) {
         available + proxy.state.fees_collected.load(Ordering::SeqCst),
         384
     );
+    if let Some(probe) = admission_report {
+        assert_eq!(probe["unique_packets"], 16);
+        assert_eq!(probe["unique_bytes"], 16 * 80);
+        for field in [
+            "missing_packets",
+            "duplicate_packets",
+            "invalid_packets",
+            "ignored_packets",
+        ] {
+            assert_eq!(probe[field], 0, "fresh cohort: {field}");
+        }
+        eprintln!(
+            "renewal admission boundary: 16 expired originals unbilled; 16 fresh waiters delivered once"
+        );
+    }
     eprintln!(
         "Delayed/lost committed mint reply: one replacement, other buyer paid, all 384 test sats accounted for"
     );
+}
+
+async fn admission_cohorts(configs: &[ServiceConfig], npubs: &[String], channel: &str) {
+    let path = configs[0].state_directory.join("buyer/buyer.json");
+    let before = read(&path);
+    let sealed = usage(&configs[1], channel);
+    for cohort in 0..2 {
+        let stream_id = format!("{cohort:032x}");
+        request(
+            &configs[2],
+            &AdminRequest::ReceiveProbe {
+                probe: ReceiveProbe {
+                    source: npubs[0].clone(),
+                    stream_id: stream_id.clone(),
+                    packet_count: 16,
+                    payload_bytes: 80,
+                    lifetime_secs: None,
+                    measure_one_way_latency: false,
+                    reflect: false,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let sent = request(
+            &configs[0],
+            &AdminRequest::SendProbe {
+                probe: SendProbe {
+                    destination: npubs[2].clone(),
+                    stream_id,
+                    packet_count: 16,
+                    payload_bytes: 80,
+                    packets_per_second: 140,
+                    max_duration_secs: None,
+                    measure_round_trip: false,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent["probe"]["submitted_packets"], 16);
+        assert!(sent["probe"]["stopped_reason"].is_null());
+        if cohort == 0 {
+            // The ordinary source queue owns originals for at most two seconds.
+            // Keep the grant valid and release no mint response during this wait.
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+        }
+        let probe = request(&configs[2], &AdminRequest::Status).await.unwrap()["probe"].clone();
+        assert_eq!(
+            probe["unique_packets"], 0,
+            "no delivery before replacement acceptance"
+        );
+        assert_eq!(probe["missing_packets"], 16);
+        let after = read(&path);
+        assert_eq!(
+            after["channels"][channel]["authorized_sat"],
+            before["channels"][channel]["authorized_sat"]
+        );
+        for (id, quote) in before["quotes"].as_object().unwrap() {
+            for field in ["observed_units", "submitted_units"] {
+                assert_eq!(
+                    after["quotes"][id][field], quote[field],
+                    "held originals are unbilled"
+                );
+            }
+        }
+        assert_eq!(usage(&configs[1], channel), sealed);
+    }
 }
 
 fn usage(config: &ServiceConfig, channel: &str) -> (u64, u64) {

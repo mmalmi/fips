@@ -94,19 +94,32 @@ This finite saved-SAE case retains the original rate and limits; physical renewa
 near expiry, greater pressure, impaired long runs and physical power loss remain
 separate acceptance work.
 
-Three ordinary native UDP cases pass in `work/renewal-channel-expiry-r224`, sharing
-the existing delayed/lost settlement fixture. They cover capacity renewal, a
-committed mint reply held across 30-second quote expiry, and that reply held past
-the payment channel's 60-second refund deadline with its 300-second quote still
+Four ordinary native UDP cases pass in `work/renewal-wait-r229`, extending the
+existing delayed/lost settlement fixture from `work/renewal-channel-expiry-r224`.
+Three cover capacity renewal, a committed mint reply held across 30-second quote
+expiry, and that reply held past the payment channel's 60-second refund deadline
+with its 300-second quote still
 valid. An original datagram offered after forwarding expiry is refused and never
 arrives later; after losing the reply, settlement recovers once and one replacement
-resumes delivery and automatic payment. Another buyer delivers and pays while the
-reply is held. All three cases retain the original capacity, lifetime spending and
-capital limits and account for all 384 test sats, including mint fees. Strict
-lint, formatting, source-size, source/dependency custody and stopped-process checks
-pass. This covers already-committed mint settlement and bounded native UDP denial;
-physical expiry, sustained impairment and power loss remain separate acceptance
-work.
+resumes delivery and automatic payment. The fourth holds a successful reply while
+16 originals exceed the ordinary two-second source-wait age, then submits 16 fresh
+originals before release. Expired originals remain unbilled and never arrive late;
+the fresh batch arrives exactly once, with completion observed 153 ms after release.
+Another buyer delivers and pays while each reply is held. Every case retains the
+original capacity, lifetime spending and capital limits and accounts for all 384
+test sats, including mint fees. Strict lint, focused formatting, source-size,
+source/dependency custody and stopped-process checks pass. Workspace-wide
+formatting still reports an unchanged pre-existing core test file.
+
+The preceding loss-plus-delay expectation in `work/renewal-wait-r228` remains
+rejected: an operation error releases its admission pause before the next renewal
+attempt, allowing closed agreements to reject still-young originals. A diagnostic
+run reproduces the missing fresh batch; both runs stop their processes and retain
+complete account archives, with 373 available test sats plus 11 mint-fee sats each.
+The successful timing case does not lose the reply; the other three cases retain
+that fault. This adds no runtime behavior or unconditional datagram-delivery
+promise. Sustained impairment, physical power loss and the earlier physical loss
+remain separate work.
 
 The first physical expiry variant in `work/router-expiry-r225` fails acceptance
 on that same ordinary ARM64 runtime. It retains the five-minute streams and all
@@ -145,8 +158,9 @@ followed by quote preparation and replacement funding/acceptance. No source-wait
 drop is logged; native forwarding and interface drop/error deltas are zero.
 This diagnostic case is not an untraced performance comparison. The pauses are
 close to the existing two-second source-admission lifetime, making controlled
-slower-renewal and pressure checks necessary. That identifies a timing boundary
-to investigate; it does not attribute r225's earlier loss to that boundary.
+slower-renewal and pressure checks necessary. The native waiting-boundary case
+above covers a controlled delay; greater physical pressure and impaired renewal
+remain open. Neither result attributes r225's earlier loss to that boundary.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
