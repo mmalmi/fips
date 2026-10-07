@@ -710,6 +710,7 @@ impl DataplaneLiveNode {
         } = io;
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneLiveTurn);
+        self.crypto_worker.begin_live_turn();
         self.crypto_worker.record_perf_depths();
         let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
         let summary = self

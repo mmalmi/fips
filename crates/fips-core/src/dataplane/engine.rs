@@ -618,14 +618,14 @@ impl Dataplane {
         );
 
         self.stage_retire_slots(ready_slots);
-        {
+        let completed_inline = {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
             worker_pool.submit_prepared_chunk(prepared_work, |slot| {
                 self.stage_retire_slot(slot);
-            });
-        }
+            })
+        };
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneCompletionQueue,
@@ -636,6 +636,11 @@ impl Dataplane {
                 fsp_authenticated_ingress,
             );
             self.retire_ready_slots_into(limit, &mut retired, compact_endpoint_data);
+        }
+        // Avoid an empty follow-up turn when inline work retired immediately,
+        // but preserve progress when retirement's budget left ready work behind.
+        if completed_inline && worker_pool.counters.ready.load(Acquire) != 0 {
+            worker_pool.readiness_notify.notify_one();
         }
 
         drops.append(&mut self.drops);

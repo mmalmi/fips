@@ -493,15 +493,22 @@ pub(crate) struct DataplaneAeadWorkerPool {
     native_executor: Option<Arc<NativeExecutor>>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
+    inline_control_remaining: usize,
 }
 
 impl DataplaneAeadWorkerPool {
+    // Refilled once per live turn, not by each collect/retire pass within it.
+    fn begin_live_turn(&mut self) {
+        self.inline_control_remaining = usize::from(cfg!(target_os = "android"));
+    }
+
     pub(crate) fn new(max_in_flight: usize) -> Self {
         Self {
             readiness_notify: Arc::new(tokio::sync::Notify::new()),
             native_executor: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight: max_in_flight.max(1),
+            inline_control_remaining: 0,
         }
     }
 
@@ -588,13 +595,35 @@ impl DataplaneAeadWorkerPool {
         &mut self,
         prepared: &mut Vec<PreparedCryptoRun>,
         mut stage: impl FnMut(Arc<CryptoReadySlot>),
-    ) {
+    ) -> bool {
+        let mut completed_inline = false;
         for prepared in prepared.drain(..) {
-            let (run, cipher) = prepared.into_parts();
+            let (mut run, cipher) = prepared.into_parts();
+            // Ready but unretired work still occupies this pool. Do not jump
+            // ahead of it or confuse pool-local idleness with executor idleness.
+            let inline = self.inline_control_remaining != 0
+                && self.counters.in_flight.load(Relaxed) == 0
+                && run.is_small_priority_packet();
             let run = self.prepare_owner_run(run, cipher);
             stage(Arc::clone(&run.slot));
-            self.submit_owner_run(run);
+            if inline {
+                self.inline_control_remaining -= 1;
+                completed_inline = true;
+                // A partially executed ordered slot cannot safely be replayed
+                // after a panic. Preserve the native worker's failure policy.
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    complete_crypto_owner_run(run, false);
+                }))
+                .is_err()
+                {
+                    std::process::abort();
+                }
+                crate::perf_profile::record_dataplane_aead_prepared_job(1);
+            } else {
+                self.submit_owner_run(run);
+            }
         }
+        completed_inline
     }
 }
 
@@ -604,17 +633,20 @@ fn run_crypto_worker(queue: Arc<CryptoWorkerQueue>) {
             crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
             prepared.queued_at,
         );
-        // The queue gives one worker exclusive ownership until the run is ready.
-        let crypto_succeeded = unsafe {
-            prepared
-                .slot
-                .items
-                .execute(&prepared.cipher, prepared.is_open)
-        };
-        if !crypto_succeeded {
-            prepared.slot.open_fsp_session_payload.store(false, Relaxed);
-        }
-        prepared.slot.complete();
+        complete_crypto_owner_run(prepared, true);
+    }
+}
+
+fn complete_crypto_owner_run(prepared: PreparedCryptoOwnerRun, notify: bool) {
+    // Exactly one executor owns this run; inline runs never enter the queue.
+    let crypto_succeeded = unsafe {
+        prepared.slot.items.execute(&prepared.cipher, prepared.is_open)
+    };
+    if !crypto_succeeded {
+        prepared.slot.open_fsp_session_payload.store(false, Relaxed);
+    }
+    prepared.slot.complete();
+    if notify {
         prepared.readiness_notify.notify_one();
     }
 }
