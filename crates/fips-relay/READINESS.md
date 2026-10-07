@@ -135,6 +135,19 @@ This finite success exercises native history retirement during continued paid
 traffic. It does not explain r225's 40-packet loss; diagnosis, further pressure,
 impaired runs and physical power loss remain open.
 
+The targeted diagnostic case in `work/router-expiry-r227` also delivers all
+84,000 originals, with nine live successor observations per direction, all 384
+test sats collected and all 639 management checks passing. Exact-source closure
+verifies restored routers, stopped test processes/mint, removed candidate
+executables and three account archives. Its selected logs report renewal pauses
+of 1.772 and 1.798 seconds: settlement takes 0.822 and 0.901 seconds, respectively,
+followed by quote preparation and replacement funding/acceptance. No source-wait
+drop is logged; native forwarding and interface drop/error deltas are zero.
+This diagnostic case is not an untraced performance comparison. The pauses are
+close to the existing two-second source-admission lifetime, making controlled
+slower-renewal and pressure checks necessary. That identifies a timing boundary
+to investigate; it does not attribute r225's earlier loss to that boundary.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.
