@@ -121,6 +121,20 @@ byte costs and controller retirement; reconstructed successor lineage is marked
 explicitly. This fixes the observer and does not establish physical expiry
 delivery acceptance.
 
+The fresh unchanged expiry workload passes with that corrected observer in
+`work/router-expiry-r226`. All 84,000 originals arrive once, with no missing or
+invalid packets. Each direction has eight live observations of successor delivery
+and automatic credit, starts replacement funding six seconds before expiry below
+capacity/byte exhaustion, and retains its 64-sat lifetime limit. All four channels
+settle, all 384 test sats return and all 633 management checks pass. Independent
+closure verifies restored routers, stopped test processes/mint, removed candidate
+executables and three complete account archives. The same ordinary runtime uses
+5.21 seconds of attributed payment CPU for 80.11 MiB delivered; see
+[the expiry-window costs](CADENCE-RESULTS.md#current-continuous-router-renewal--7-october-2026).
+This finite success exercises native history retirement during continued paid
+traffic. It does not explain r225's 40-packet loss; diagnosis, further pressure,
+impaired runs and physical power loss remain open.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.

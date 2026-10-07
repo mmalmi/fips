@@ -300,6 +300,34 @@ maximum throughput, latency across independent clocks or long-soak capacity. Slo
 renewal near expiry, greater pressure, sustained impairment and physical power
 loss remain separate acceptance work. The 500-ms default is unchanged.
 
+The expiry variant passes the same 84,000-packet workload in
+`work/router-expiry-r226`, on the same ordinary runtime and corrected retirement
+observer (`d7bde066f`). Its 180-second quotes renew with an eight-second lead and
+100% capacity/allowance threshold, retaining all prices and financial limits.
+Both replacements start six seconds before expiry below capacity/byte exhaustion.
+Each direction has eight live successor observations and authorizes 44 test sats
+within its unchanged 64-sat limit. All four channels settle, all 384 test sats
+return and all 633 management checks pass. Independent closure verifies restored
+state, stopped processes/mint, removed candidate executables and three account
+archives. Packet reordering is 262 and 238 respectively; missing, duplicate and
+invalid counts are zero. Concurrent snapshot races remain recorded and bounded.
+
+| Measurement | Expiry-window result |
+| --- | ---: |
+| Attributed payment CPU | 5,212.19 ms; 65.06 ms / delivered MiB |
+| Whole-process CPU | 208.71 s; 2.605 s / delivered MiB |
+| Middle-router whole-process CPU | 78.88 s; 0.985 s / delivered MiB |
+| Logical payment journal writes / bytes | 258 / 715,547 |
+| All logical relay journal writes / bytes | 334 / 1,316,293 |
+| Local payment requests started / received | 172 / 172 |
+| Local payment stream bytes sent / received | 70,678 / 70,678 |
+
+The process, journal and wire scope remains as described above. This single
+expiry success does not demonstrate a performance improvement or explain the
+40-packet loss in the fully recovered first attempt (`work/router-expiry-r225`).
+That failure remains preserved; broader sustained, impaired and power-loss
+acceptance is still open.
+
 ## Sustained background phone transit — 7 October 2026
 
 `work/phone-sustained-r220` uses the ordinary `ab00e5fbe` runtime, the exact
