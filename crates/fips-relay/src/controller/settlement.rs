@@ -157,6 +157,7 @@ impl Controller {
     // Caller owns settlement_claim. Mint close and proof import are idempotent;
     // the upstream receiver and wallet retain recovery state before our report.
     pub(super) async fn finish_sale(&self, id: &str) -> Result<SettlementReport, String> {
+        let timing = TransitionTiming::new("settle", id);
         let sale = self
             .snapshot()
             .await?
@@ -175,10 +176,13 @@ impl Controller {
         let seller = self.services.seller.clone();
         let wallet_guard = self.wallet.clone().lock_owned().await;
         let runtime = tokio::runtime::Handle::current();
+        timing.mark("wallet_ready");
+        let wallet_timing = timing.clone();
         let report = blocking(move || {
             let _wallet = wallet_guard;
             runtime.block_on(async move {
                 let closed = control.close_at_mint(&sale.channel.id).await?;
+                wallet_timing.mark("mint_closed");
                 let report = SettlementReport::from_close(&closed)?;
                 if closed.mint_url != sale.channel.mint_url
                     || closed.unit != "sat"
@@ -192,6 +196,7 @@ impl Controller {
                     return Err("mint close does not match final agreement".into());
                 }
                 control.import_wallet_payout(&sale.channel.id).await?;
+                wallet_timing.mark("payout_imported");
                 // A retained receiver signature can have reached its journal
                 // before the corresponding ledger update was interrupted.
                 let paid_msat = closed.signed_amount * 1_000;
@@ -204,6 +209,7 @@ impl Controller {
             })
         })
         .await?;
+        timing.mark("balance_applied");
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "payout").await?;
         let saved = report.clone();
@@ -216,6 +222,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("report_saved");
         Ok(report)
     }
 
@@ -258,6 +265,7 @@ impl Controller {
         id: &str,
         recovery_only: bool,
     ) -> Result<SettlementReport, String> {
+        let timing = TransitionTiming::new("refund", id);
         let channel_id = id.to_string();
         let mut purchase = self
             .change(move |j| {
@@ -289,6 +297,7 @@ impl Controller {
                 Ok(settlement)
             })
             .await?;
+        timing.mark("intent_saved");
         if purchase.refunded {
             return purchase.report.ok_or("settlement report missing".into());
         }
@@ -316,6 +325,7 @@ impl Controller {
             })
             .await?;
         }
+        timing.mark("sealed");
         if purchase.payment.is_none() {
             let directory = self.services.wallet_directory.clone();
             let buyer = self.services.buyer.clone();
@@ -364,6 +374,7 @@ impl Controller {
             })
             .await?;
         }
+        timing.mark("signed");
         if purchase.report.is_none() {
             let peer = self.neighbor(purchase.provider).await?;
             let payment = purchase.payment.clone().ok_or("final payment missing")?;
@@ -390,8 +401,10 @@ impl Controller {
             })
             .await?;
         }
+        timing.mark("provider_settled");
         let report = purchase.report.clone().ok_or("settlement report missing")?;
         let wallet_guard = self.wallet.clone().lock_owned().await;
+        timing.mark("wallet_ready");
         let directory = self.services.wallet_directory.clone();
         let terms = purchase.channel.clone();
         let expected_refund = report.refunded_sat;
@@ -414,6 +427,7 @@ impl Controller {
             })
         })
         .await?;
+        timing.mark("refund_verified");
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "refund").await?;
         purchase.refunded = true;
@@ -426,6 +440,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("refund_saved");
         Ok(report)
     }
 

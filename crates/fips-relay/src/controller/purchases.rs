@@ -59,6 +59,7 @@ impl Controller {
     }
 
     async fn fund_inner(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
+        let timing = TransitionTiming::new("fund", &offer.id);
         let snapshot = self.snapshot().await?;
         if Self::offer_paused(&snapshot, &offer.id) {
             return Err("route change paused".into());
@@ -81,6 +82,7 @@ impl Controller {
         } else {
             Some(self.wallet.clone().lock_owned().await)
         };
+        timing.mark("wallet_ready");
         let may_fund = wallet_guard.is_some();
         let receiver = offer.receiver_pubkey_hex.clone();
         let capacity = self.policy.channel_capacity_sat.min(offer.capacity_sat);
@@ -158,6 +160,7 @@ impl Controller {
                 Ok(f)
             })
             .await?;
+        timing.mark("reserved");
         let funded = if let Some(funded) = f.funded.clone() {
             funded
         } else {
@@ -166,6 +169,7 @@ impl Controller {
             let directory = self.services.wallet_directory.clone();
             let runtime = tokio::runtime::Handle::current();
             let budget = self.funding_request_budget;
+            let wallet_timing = timing.clone();
             // The upstream wallet's file-store future is intentionally !Send.
             // Drive it entirely on one blocking worker, keeping the native node
             // loop free and retaining the idempotent intent if its reply is lost.
@@ -174,6 +178,7 @@ impl Controller {
                     let wallet = CashuWalletService::open_existing_file_backed(&directory)
                         .await
                         .map_err(|e| e.to_string())?;
+                    wallet_timing.mark("wallet_opened");
                     if let Some(budget) = budget {
                         wallet
                             .set_request_budget(
@@ -193,6 +198,7 @@ impl Controller {
             })
             .await?;
             let opened = opened?;
+            timing.mark("wallet_funded");
             let funded =
                 f.funded_channel(*self.services.endpoint.node_addr(), &self.policy, opened)?;
             let saved = funded.clone();
@@ -201,6 +207,7 @@ impl Controller {
                 .await?;
             funded
         };
+        timing.mark("funding_saved");
         let buyer = self.services.buyer.clone();
         let saved_offer = offer.clone();
         let funding_id = f.id.clone();
@@ -218,6 +225,7 @@ impl Controller {
             )
         })
         .await?;
+        timing.mark("buyer_installed");
         Ok((f.id, funded))
     }
 
@@ -471,12 +479,14 @@ impl Controller {
         peer: PeerIdentity,
         record: Outgoing,
     ) -> Result<Purchase, String> {
+        let timing = TransitionTiming::new("accept_outgoing", &record.purchase.channel.id);
         if Self::offer_paused(&self.snapshot().await?, &record.offer.id) {
             return Err("route change paused".into());
         }
         let payment = self
             .opening_payment(&record.purchase.channel, record.purchase.provider)
             .await?;
+        timing.mark("opening_signed");
         let body = serde_json::to_vec(&ControllerRequest::Accept {
             offer_id: record.offer.id.clone(),
             channel: record.purchase.channel.clone(),
@@ -499,6 +509,7 @@ impl Controller {
                 .map_err(|_| "invalid acceptance response")?
             {
                 ControllerResponse::Accepted { purchase } => {
+                    timing.mark("accepted");
                     if *purchase != record.purchase {
                         return Err("provider changed accepted terms".into());
                     }
@@ -509,7 +520,9 @@ impl Controller {
                     {
                         return Err("purchase closed before acceptance completed".into());
                     }
+                    timing.mark("acceptance_saved");
                     self.activate_source_route(&record.offer).await?;
+                    timing.mark("active");
                     return Ok(*purchase);
                 }
                 ControllerResponse::Pending => tokio::time::sleep(Duration::from_millis(250)).await,

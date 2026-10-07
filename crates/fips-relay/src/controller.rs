@@ -41,6 +41,8 @@ mod channel_history;
 mod control_obligations;
 pub(crate) use control_obligations::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
 mod channel_timing;
+mod transition_timing;
+use transition_timing::TransitionTiming;
 mod funding;
 mod funding_ownership;
 #[cfg(feature = "testbench")]

@@ -42,6 +42,7 @@ impl Controller {
                     payment,
                 } => return self.handle_settle(peer, &channel_id, *payment).await,
             };
+        let timing = TransitionTiming::new("accept_incoming", &channel.id);
         if channel.buyer != *peer.node_addr() || channel.mint_url != self.policy.mint_url {
             return Err("wrong upstream payer or mint".into());
         }
@@ -112,12 +113,15 @@ impl Controller {
             replacement_retired: false,
             replaces,
         };
+        timing.mark("route_ready");
         self.services
             .payment_control
             .prepare_funding(&payment)
             .await?;
+        timing.mark("mint_keys_ready");
         let payments = self.services.payment_control.clone();
         let wallet_guard = self.wallet.clone().lock_owned().await;
+        timing.mark("wallet_ready");
         // Keep the admission owner through receiver persistence and the journal
         // commit, so another acceptance cannot take the last route slot.
         let (incoming, wallet_guard) = self
@@ -131,7 +135,9 @@ impl Controller {
             })
             .await?;
         drop(wallet_guard);
+        timing.mark("funding_verified");
         self.activate(incoming).await?;
+        timing.mark("active");
         Ok(ControllerResponse::Accepted {
             purchase: Box::new(Purchase {
                 provider: *self.services.endpoint.node_addr(),
