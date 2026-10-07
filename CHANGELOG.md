@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Preserve bounded receiver feedback so older peers can calculate round-trip
   times and slow their reporting cadence. Keep all report packets in cumulative
   packet and loss accounting, and resume reports when ordinary traffic arrives.
+- Process at most one small priority control packet inline per Android live
+  turn when no cryptographic work is in flight, avoiding idle worker wakeups
+  while retaining authentication, packet ordering, and replay protection.
 - Release the reusable core and matching endpoint libraries as 0.4.95. Identity
   remains 0.3.3; protocol messages and wire layouts are unchanged.
 
