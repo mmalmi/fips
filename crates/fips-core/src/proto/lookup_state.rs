@@ -96,6 +96,9 @@ pub(crate) enum RecentResponseForward {
 #[derive(Debug, Default)]
 pub(crate) struct RecentDiscoveryRequests {
     entries: HashMap<u64, RecentRequest>,
+    // Conservative lower bound; removing the oldest entry may leave it stale,
+    // which permits an extra scan but can never delay expiry.
+    oldest_timestamp_ms: Option<u64>,
     last_admission_generation: u64,
     /// Arrival order partitioned by authenticated ingress peer. This lets a
     /// heavy peer pay for its own admission instead of evicting a light
@@ -165,6 +168,7 @@ impl RecentDiscoveryRequests {
         let mut request = RecentRequest::new(from_peer, target, now_ms);
         request.admission_generation = generation;
         self.entries.insert(request_id, request);
+        self.note_timestamp(now_ms);
         self.by_peer
             .entry(from_peer)
             .or_default()
@@ -243,13 +247,39 @@ impl RecentDiscoveryRequests {
     }
 
     pub(crate) fn purge_expired(&mut self, current_time_ms: u64, expiry_ms: u64) {
-        self.entries
-            .retain(|_, entry| !entry.is_expired(current_time_ms, expiry_ms));
+        if self
+            .oldest_timestamp_ms
+            .is_none_or(|oldest| current_time_ms.saturating_sub(oldest) <= expiry_ms)
+        {
+            return;
+        }
+        let previous_len = self.entries.len();
+        let mut oldest = None;
+        self.entries.retain(|_, entry| {
+            if entry.is_expired(current_time_ms, expiry_ms) {
+                return false;
+            }
+            oldest = Some(
+                oldest.map_or(entry.timestamp_ms, |value: u64| value.min(entry.timestamp_ms)),
+            );
+            true
+        });
+        self.oldest_timestamp_ms = oldest;
+        if self.entries.len() == previous_len {
+            return;
+        }
         let entries = &self.entries;
         self.by_peer.retain(|_, ids| {
             ids.retain(|request_id| entries.contains_key(request_id));
             !ids.is_empty()
         });
+    }
+
+    fn note_timestamp(&mut self, timestamp_ms: u64) {
+        self.oldest_timestamp_ms = Some(
+            self.oldest_timestamp_ms
+                .map_or(timestamp_ms, |oldest| oldest.min(timestamp_ms)),
+        );
     }
 
     #[cfg(test)]
@@ -264,6 +294,7 @@ impl RecentDiscoveryRequests {
             .expect("test request admission generation exhausted");
         request.admission_generation = self.last_admission_generation;
         let from_peer = request.from_peer;
+        self.note_timestamp(request.timestamp_ms);
         let previous = self.entries.insert(request_id, request);
         if previous.is_none() {
             self.by_peer
@@ -306,6 +337,43 @@ impl RecentDiscoveryRequests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expiry_hint_preserves_boundaries_clock_rollback_and_removed_oldest() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let peer = NodeAddr::from_bytes([1; 16]);
+        let target = NodeAddr::from_bytes([2; 16]);
+        let limits = RecentDiscoveryRequestLimits::new(10, 1, 1);
+        assert!(recent.record_request(1, peer, target, 100, limits).accepted());
+        assert!(recent.record_request(2, peer, target, 200, limits).accepted());
+        recent.protect(2);
+        recent.remove(1);
+        recent.purge_expired(151, 50);
+        assert!(recent.contains_key(&2));
+        assert_eq!(recent.oldest_timestamp_ms, Some(200));
+        assert!(recent.record_request(3, peer, target, 50, limits).accepted());
+        recent.purge_expired(40, 0);
+        assert_eq!(recent.len(), 2);
+        recent.purge_expired(100, 50);
+        assert!(recent.contains_key(&3), "exact expiry boundary is retained");
+        recent.purge_expired(101, 50);
+        assert!(!recent.contains_key(&3));
+        recent.purge_expired(250, 50);
+        assert!(recent.contains_key(&2));
+        recent.purge_expired(251, 50);
+        assert!(recent.is_empty(), "protected paths still expire on time");
+        assert_eq!(recent.indexed_len(), 0);
+        assert_eq!(recent.oldest_timestamp_ms, None);
+        recent.insert(4, RecentRequest::new(peer, target, u64::MAX));
+        recent.purge_expired(u64::MAX, 0);
+        assert!(recent.contains_key(&4));
+        recent.insert(4, RecentRequest::new(peer, target, 0));
+        recent.purge_expired(u64::MAX, u64::MAX);
+        assert!(recent.contains_key(&4));
+        recent.purge_expired(u64::MAX, u64::MAX - 1);
+        assert!(recent.is_empty());
+        assert_eq!(recent.indexed_len(), 0);
+    }
 
     #[test]
     fn protected_paths_keep_their_ingress_share_without_displacing_other_peers() {
