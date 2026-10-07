@@ -324,8 +324,25 @@ recovering. All six successors have live payment/delivery observations; all 128
 healthy recovery originals arrive, all eight channels settle, all 384 test sats
 return and all 648 management checks pass. Independent closure verifies restored
 routers, stopped test processes/mint and three retained account archives. This
-candidate stays isolated: shorter completed pauses do not establish continuity
-through the failed attempts or explain the greater total loss.
+run does not establish continuity through the failed attempts or explain the
+greater total loss. Its saved status reports an unavailable native neighbor,
+and that buyer's middle-link identifier changes between the before/after snapshots.
+
+The exact same runtime passes the diagnostic repeat in
+`work/renewal-link-observation-r248`: 79,799 of 84,000 originals arrive within the
+unchanged injected-loss bound, and all six renewals have live payment/delivery
+observations. Completed pauses are 1.268–1.802 seconds, with no incomplete
+attempts or source-queue expiry. All 128 healthy recovery originals arrive, all
+eight channels settle, all 384 test sats return and all 639 management checks
+pass. Independent closure verifies restoration, stopped processes and three
+retained account archives. The existing status requests supply 252 additional
+neighbor observations: the middle links keep their identifiers and stay connected
+at every poll after initial connection. Both logged link-dead events concern the
+direct triangle edge deliberately removed by the fixture. Polls can miss short
+gaps; wall-clock logs have no saved exact conversion to the process-relative
+monotonic workload clock. This finite success qualifies local integration of the
+funding change and does not explain the preceding one-sided connection gap.
+That failure remains open acceptance work.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
@@ -2185,7 +2202,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). The isolated renewal preopening candidate passes native money/recovery checks and the ordinary ARM64 build. Its repeated physical test still fails: completed pauses shrink below two seconds and queue expiry stops, but one buyer repeatedly fails renewal attempts and total delivery worsens. Exact evidence is retained above. | Diagnose the failed attempts and qualify unchanged repeated-loss acceptance. Then cover higher sustained pressure, rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
+| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Renewal preopening passes native money/recovery checks, the ordinary ARM64 build and one unchanged repeated-loss physical case, with completed pauses below two seconds and no source-queue expiry. An earlier run still fails with a one-sided neighbor gap; its failure and the qualified repeat remain above. | Reproduce and resolve the intermittent connection gap. Then cover higher sustained pressure, rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r219 passes all native, lifecycle and package gates. Physical r220 phone transit delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
