@@ -57,7 +57,6 @@ impl Controller {
         Self::validate_channel_history(j)?;
         Self::validate_seller_history(j)?;
         Self::validate_renewals(j)?;
-        let mut providers = HashSet::new();
         let mut sequences = HashSet::new();
         Self::validate_capital(j)?;
         for (id, f) in &j.funding {
@@ -73,7 +72,6 @@ impl Controller {
                 || (j.history_version() < 4 && channel_history::sequence(j, id).is_some())
                 || id.len() > 128
                 || f.provider == local
-                || (!Self::funding_released(j, f) && !providers.insert(f.provider))
                 || f.capacity_sat == 0
                 || f.capacity_sat > policy.channel_capacity_sat
                 || !f.valid_deadlines(policy)

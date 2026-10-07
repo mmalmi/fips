@@ -39,7 +39,15 @@ impl Controller {
     }
 
     pub(super) async fn fund(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
-        let funding = self.fund_inner(offer);
+        self.fund_for(offer, None).await
+    }
+
+    pub(super) async fn fund_for(
+        &self,
+        offer: &RouteOffer,
+        renewal: Option<&str>,
+    ) -> Result<(String, Funded), String> {
+        let funding = self.fund_inner(offer, renewal);
         tokio::pin!(funding);
         loop {
             tokio::select! {
@@ -58,7 +66,11 @@ impl Controller {
         }
     }
 
-    async fn fund_inner(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
+    async fn fund_inner(
+        &self,
+        offer: &RouteOffer,
+        renewal: Option<&str>,
+    ) -> Result<(String, Funded), String> {
         let timing = TransitionTiming::new("fund", &offer.id);
         let snapshot = self.snapshot().await?;
         if Self::offer_paused(&snapshot, &offer.id) {
@@ -70,12 +82,10 @@ impl Controller {
         {
             return Err("unapproved funding destination or mint".into());
         }
-        let provider = offer.provider;
         // Existing funded accounts need only local accounting. New funding
         // still obtains wallet ownership before reserving capital or an ID.
-        let reusable = snapshot.funding.values().any(|f| {
-            f.provider == provider && f.funded.is_some() && !Self::funding_released(&snapshot, f)
-        });
+        let reusable =
+            Self::selected_funding(&snapshot, offer, renewal)?.is_some_and(|f| f.funded.is_some());
         drop(snapshot);
         let wallet_guard = if reusable {
             None
@@ -84,80 +94,12 @@ impl Controller {
         };
         timing.mark("wallet_ready");
         let may_fund = wallet_guard.is_some();
-        let receiver = offer.receiver_pubkey_hex.clone();
-        let capacity = self.policy.channel_capacity_sat.min(offer.capacity_sat);
-        let grace = offer
-            .grace_msat
-            .min(capacity.checked_mul(1_000).ok_or("capacity overflow")?);
         let created = now()?;
         let saved_offer = offer.clone();
+        let owner = renewal.map(str::to_string);
         let f = self
             .change(move |j| {
-                Self::check_purchase(j, &saved_offer, None)?;
-                if let Some(f) = j
-                    .funding
-                    .values()
-                    .find(|f| f.provider == provider && !Self::funding_released(j, f))
-                {
-                    if f.funded.is_none() && !may_fund {
-                        return Err("funding changed before wallet ownership".into());
-                    }
-                    if f.receiver_pubkey_hex != receiver
-                        || f.capacity_sat > capacity
-                        || f.grace_msat > grace
-                        || f.expires_unix <= created
-                    {
-                        return Err(
-                            "existing channel needs explicit renewal or reconciliation".into()
-                        );
-                    }
-                    return Ok(f.clone());
-                }
-                if !may_fund {
-                    return Err("funding changed before wallet ownership".into());
-                }
-                if j.funding.len() >= MAX_CHANNELS {
-                    return Err("funding history capacity".into());
-                }
-                let id = cashu_service::CashuRequestSequence::new(
-                    channel_history::scope(j),
-                    j.next_funding,
-                )
-                .map_err(|e| e.to_string())?
-                .request_id();
-                j.advance_history_version(4);
-                j.version |= journal::FUNDING_DEADLINES_VERSION;
-                j.history
-                    .get_or_insert_with(History::default)
-                    .channels
-                    .get_or_insert_with(channel_history::ChannelHistory::default);
-                j.next_funding = j
-                    .next_funding
-                    .checked_add(1)
-                    .ok_or("funding sequence exhausted")?;
-                let f = FundingIntent {
-                    id: id.clone(),
-                    provider,
-                    receiver_pubkey_hex: receiver,
-                    capacity_sat: capacity,
-                    max_wallet_debit_sat: capacity
-                        .checked_add(j.policy.max_funding_overhead_sat)
-                        .ok_or("funding cost overflow")?,
-                    grace_msat: grace,
-                    created_unix: created,
-                    expires_unix: created
-                        .checked_add(j.policy.service_lifetime_secs())
-                        .ok_or("expiry overflow")?,
-                    refund_after_unix: Some(
-                        created
-                            .checked_add(j.policy.channel_lifetime_secs)
-                            .ok_or("expiry overflow")?,
-                    ),
-                    funded: None,
-                    reclaim: None,
-                };
-                j.funding.insert(id, f.clone());
-                Ok(f)
+                Self::reserve_route_funding(j, &saved_offer, owner.as_deref(), may_fund, created)
             })
             .await?;
         timing.mark("reserved");
@@ -208,6 +150,9 @@ impl Controller {
             funded
         };
         timing.mark("funding_saved");
+        if renewal.is_some() {
+            return Ok((f.id, funded));
+        }
         let buyer = self.services.buyer.clone();
         let saved_offer = offer.clone();
         let funding_id = f.id.clone();
