@@ -30,7 +30,8 @@ class PhoneTransitRun(PaidPhoneRun):
         self.addresses = self.scenario['router_addresses']
         self.evidence.update(radio_mode='existing_lan_udp', customer_isolation_tested=False,
                              physical_phone_transit=True,
-                             screen_off_requested=bool(getattr(args, 'screen_off', False)), windows=[])
+                             screen_off_requested=bool(getattr(args, 'screen_off', False)),
+                             sustained_transit_requested=bool(getattr(args, 'sustained_transit', False)), windows=[])
         for name in ('paid_phone_transit.py', 'stream_probe.py'):
             self.evidence['harness_sha256'][name] = hashlib.sha256(
                 Path(__file__).with_name(name).read_bytes()).hexdigest()
@@ -128,22 +129,32 @@ class PhoneTransitRun(PaidPhoneRun):
 
     def stream(self, mode, *, unpaid=False):
         count, duration = (1024, 4) if unpaid else (512 * 1024, 30)
-        row = {'mode': mode, 'unpaid': unpaid,
+        minimum = 300 if (not unpaid and mode == 'background'
+                          and getattr(self.args, 'sustained_transit', False)) else 0
+        if minimum:
+            count, duration = 9 * 1024**2, 300
+        row = {'mode': mode, 'unpaid': unpaid, 'minimum_duration_secs': minimum,
                'before': resources(self.phone), 'battery_before':
                    self.phone.shell('dumpsys', 'battery').decode()}
         self.evidence['windows'].append(row)
         self.save()
+        if minimum:
+            row['payment_before'] = control(self.phone, 'status')
         def observe():
             require(self.topology() is not None, 'transit topology changed during transfer')
             return {'line_verified': True, **self.screen(mode)}
         duplex(self, row, label=('unpaid-' if unpaid else '') + mode,
                count=count, duration=duration, rate=32 * 1024, observe=observe, expect_denial=unpaid)
         row['after'] = resources(self.phone)
+        if minimum:
+            row['payment_after'] = control(self.phone, 'status')
         require(row['before']['process'] == row['after']['process'], 'phone process changed')
         row['cpu_seconds'] = (row['after']['cpu_ticks'] - row['before']['cpu_ticks']) / row['before']['ticks_per_second']
         self.save()
         if not unpaid:
             for name, result in row['results'].items():
+                require(result['elapsed_us'] >= minimum * 1_000_000,
+                        'sustained transit ended before its five-minute paced window')
                 validate_stream(result, row['shapes'][name])
             row['cpu_seconds_per_delivered_mib'] = row['cpu_seconds'] / (2 * count / 1024 ** 2)
         row['passed'] = True

@@ -545,6 +545,8 @@ def main():
                       help='paid router → phone → router → router on the existing LAN')
     parser.add_argument('--screen-off', action='store_true',
                         help='also test transit with the screen off; operator unlock is needed afterward')
+    parser.add_argument('--sustained-transit', action='store_true',
+                        help='transfer nine MiB per direction through the background phone for at least five minutes')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
@@ -552,6 +554,8 @@ def main():
     args = parser.parse_args()
     if args.screen_off and not args.transit:
         parser.error('--screen-off requires --transit')
+    if args.sustained_transit and not args.transit:
+        parser.error('--sustained-transit requires --transit')
     os.umask(0o077)
     seconds = 1500 if args.load else 1200
 

@@ -4,14 +4,48 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.stream_probe import duplex
+from sim.paid_phone_transit import PhoneTransitRun
 
 
 class StreamProbeTests(unittest.TestCase):
+    def test_sustained_transit_requires_five_minutes_only_in_the_paid_background_window(self):
+        cases = [(True, 'background', False, 300, 9 * 1024**2, 300),
+                 (True, 'background', False, 299, 9 * 1024**2, 300),
+                 (True, 'foreground', False, 16, 512 * 1024, 30),
+                 (False, 'background', False, 16, 512 * 1024, 30),
+                 (True, 'background', True, 4, 1024, 4)]
+        for sustained, mode, unpaid, elapsed, count, duration in cases:
+            with self.subTest(sustained=sustained, mode=mode, unpaid=unpaid, elapsed=elapsed):
+                run = PhoneTransitRun.__new__(PhoneTransitRun)
+                run.args = SimpleNamespace(sustained_transit=sustained)
+                run.phone = Mock()
+                run.phone.shell.return_value = b'USB-powered test'
+                run.evidence = {'windows': []}
+                run.save, run.phase = Mock(), Mock()
+                def dispatch(_run, row, **_kwargs):
+                    row.update(results={'n01': {'elapsed_us': elapsed * 1_000_000}},
+                               shapes={'n01': {}})
+                before = dict(process={'pid': 1, 'start_ticks': 1}, cpu_ticks=0, ticks_per_second=100)
+                after = dict(before, cpu_ticks=10)
+                with patch('sim.paid_phone_transit.duplex', side_effect=dispatch) as send, \
+                        patch('sim.paid_phone_transit.resources', side_effect=[before, after]), \
+                        patch('sim.paid_phone_transit.control', return_value={}), \
+                        patch('sim.paid_phone_transit.validate_stream'):
+                    if sustained and mode == 'background' and not unpaid and elapsed < 300:
+                        with self.assertRaisesRegex(RuntimeError, 'five-minute'):
+                            run.stream(mode, unpaid=unpaid)
+                    else:
+                        run.stream(mode, unpaid=unpaid)
+                        self.assertTrue(run.evidence['windows'][0]['passed'])
+                    self.assertEqual(send.call_args.kwargs['count'], count)
+                    self.assertEqual(send.call_args.kwargs['duration'], duration)
+
     def test_unpaid_deadline_requires_fresh_finished_zero_delivery_evidence(self):
         for received in (0, 1):
             with self.subTest(received=received), tempfile.TemporaryDirectory() as root:
