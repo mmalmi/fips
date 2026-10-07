@@ -373,7 +373,7 @@ impl NostrDiscovery {
         self: &Arc<Self>,
         offer: TraversalOffer,
         sender_npub: String,
-    ) {
+    ) -> Option<MeshTraversalSignal> {
         #[cfg(test)]
         self.received_mesh_offer_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -383,19 +383,21 @@ impl NostrDiscovery {
                 session = %short_id(&offer.session_id),
                 "traversal: ignoring mesh offer with mismatched type or recipient"
             );
-            return;
+            return None;
         }
 
-        if self
-            .replay_cached_mesh_traversal_answer(&offer, &sender_npub)
+        if let Some(answer) = self
+            .cached_mesh_traversal_answer(&offer, &sender_npub)
             .await
         {
             debug!(
                 peer = %short_npub(&sender_npub),
                 session = %short_id(&offer.session_id),
-                "traversal: replayed cached answer for duplicate mesh offer"
+                "traversal: reusing cached answer for duplicate mesh offer"
             );
-            return;
+            // The caller is also the mesh-signal queue reader. Return an
+            // inline reply instead of awaiting space in that same queue.
+            return Some(answer);
         }
 
         // Validate the authenticated sender and freshness before consuming an
@@ -419,7 +421,7 @@ impl NostrDiscovery {
                     error = %err,
                     "traversal: ignoring invalid mesh offer"
                 );
-                return;
+                return None;
             }
         };
         if outcome == FreshnessOutcome::FreshWithinSkewTolerance {
@@ -440,7 +442,7 @@ impl NostrDiscovery {
                     limit = self.config.max_concurrent_offers_per_npub,
                     "rate-limited inbound mesh traversal offer from one sender"
                 );
-                return;
+                return None;
             }
             Err(super::super::offer_admission::OfferAdmissionReject::GlobalFull) => {
                 debug!(
@@ -448,7 +450,7 @@ impl NostrDiscovery {
                     limit = self.config.max_concurrent_incoming_offers,
                     "rate-limited inbound mesh traversal offer at global limit"
                 );
-                return;
+                return None;
             }
         };
         match self
@@ -462,7 +464,7 @@ impl NostrDiscovery {
                     session = %short_id(&offer.session_id),
                     "duplicate inbound mesh traversal offer"
                 );
-                return;
+                return None;
             }
             IncomingMeshOfferAdmission::SuppressedByActiveInitiator => {
                 debug!(
@@ -470,7 +472,7 @@ impl NostrDiscovery {
                     session = %short_id(&offer.session_id),
                     "traversal: responder deferred because our fresh initiator wins"
                 );
-                return;
+                return None;
             }
         }
 
@@ -485,6 +487,7 @@ impl NostrDiscovery {
             }
         })
         .await;
+        None
     }
 
     async fn handle_incoming_mesh_offer(
@@ -642,11 +645,11 @@ impl NostrDiscovery {
         );
     }
 
-    async fn replay_cached_mesh_traversal_answer(
+    async fn cached_mesh_traversal_answer(
         &self,
         offer: &TraversalOffer,
         sender_npub: &str,
-    ) -> bool {
+    ) -> Option<MeshTraversalSignal> {
         let now = now_ms();
         let answer = {
             let mut cache = self.answered_offers.lock().await;
@@ -656,13 +659,9 @@ impl NostrDiscovery {
                     .then(|| cached.answer.clone())
             })
         };
-        let Some(answer) = answer else {
-            return false;
-        };
-        self.emit_mesh_signal(MeshTraversalSignal::Answer {
+        answer.map(|answer| MeshTraversalSignal::Answer {
             peer_npub: sender_npub.to_string(),
             answer,
         })
-        .await
     }
 }

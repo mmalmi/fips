@@ -677,9 +677,12 @@ impl Node {
             );
             return;
         }
-        bootstrap
+        if let Some(answer) = bootstrap
             .receive_mesh_traversal_offer(offer, sender_npub)
-            .await;
+            .await
+        {
+            self.send_nostr_mesh_signal(answer).await;
+        }
     }
 
     async fn handle_mesh_traversal_answer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
