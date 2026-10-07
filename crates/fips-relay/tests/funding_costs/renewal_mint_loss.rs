@@ -8,10 +8,19 @@ use std::{path::Path, sync::atomic::Ordering};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delayed_lost_mint_close_reply_renews_once_and_keeps_other_buyers_paid() {
+    exercise(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn near_expiry_mint_close_rejects_stale_forwarding_and_renews_once() {
+    exercise(true).await;
+}
+
+async fn exercise(near_expiry: bool) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().to_owned();
     let result = tokio::spawn(async move {
-        tokio::time::timeout(Duration::from_secs(240), scenario(&path))
+        tokio::time::timeout(Duration::from_secs(240), scenario(&path, near_expiry))
             .await
             .expect("bounded delayed-mint renewal recovery");
     })
@@ -24,7 +33,7 @@ async fn delayed_lost_mint_close_reply_renews_once_and_keeps_other_buyers_paid()
     }
 }
 
-async fn scenario(root: &Path) {
+async fn scenario(root: &Path, near_expiry: bool) {
     let (mint, network) = setup::start_mint(root, 9631).await;
     let proxy = MintProxy::start(mint.url()).await;
     let setup::Bench {
@@ -40,7 +49,7 @@ async fn scenario(root: &Path) {
         &proxy.url,
         setup::LineConfig {
             lifetime: 600,
-            quote_lifetime: 300,
+            quote_lifetime: if near_expiry { 30 } else { 300 },
             funding_limits: &[80, 40, 40],
         },
         |index, config| {
@@ -48,8 +57,8 @@ async fn scenario(root: &Path) {
                 config.terms.controller.max_locked_sat = 40;
                 config.terms.controller.max_funding_overhead_sat = 8;
                 config.terms.controller.renewal = Some(RenewalPolicy {
-                    at_capacity_percent: 25,
-                    before_expiry_secs: 30,
+                    at_capacity_percent: if near_expiry { 100 } else { 25 },
+                    before_expiry_secs: if near_expiry { 8 } else { 30 },
                 });
             }
         },
@@ -83,6 +92,9 @@ async fn scenario(root: &Path) {
     let (funding_id, original) = funding.iter().next().unwrap();
     let id = original["funded"]["terms"]["id"].as_str().unwrap();
     let status = request(&configs[0], &AdminRequest::Status).await.unwrap();
+    let expiry = status["purchases"][0]["contract"]["expires_unix"]
+        .as_u64()
+        .unwrap();
     let reverse = request(&configs[2], &AdminRequest::Status).await.unwrap();
     let reverse_id = reverse["purchases"][0]["channel"]["id"].as_str().unwrap();
     let reverse_before = usage(&configs[1], reverse_id);
@@ -97,6 +109,16 @@ async fn scenario(root: &Path) {
         .expect("original mint close must commit")
         .unwrap();
     let held_at = tokio::time::Instant::now();
+    if near_expiry {
+        assert!(restore::now() < expiry && restore::now() + 8 >= expiry);
+        assert!(
+            status["payment_progress"][id]["authorized_sat"]
+                .as_u64()
+                .unwrap()
+                < 32
+        );
+        assert!(usage(&configs[1], id).0 < configs[1].terms.quote_max_units);
+    }
     // A different buyer needs no new mint funds to keep forwarding and paying.
     send(&configs, &npubs, 2, 100).await;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -107,6 +129,34 @@ async fn scenario(root: &Path) {
     .await
     .expect("held mint close cannot stall another buyer's payment");
     tokio::time::sleep_until(held_at + Duration::from_secs(7)).await;
+    let expired_probe = if near_expiry {
+        while restore::now() <= expiry {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let received =
+            request(&configs[2], &AdminRequest::Status).await.unwrap()["received"]["packets"]
+                .as_u64()
+                .unwrap();
+        // Native datagrams do not promise delivery through a long policy hold.
+        // An expired grant must reject this original, including after renewal.
+        request(
+            &configs[0],
+            &AdminRequest::Send {
+                destination: npubs[2].clone(),
+                payload: "expired-renewal-original".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(
+            request(&configs[2], &AdminRequest::Status).await.unwrap()["received"]["packets"],
+            received
+        );
+        Some(received)
+    } else {
+        None
+    };
     assert!(
         !release.is_closed(),
         "the committed response must remain held"
@@ -167,6 +217,13 @@ async fn scenario(root: &Path) {
     })
     .await
     .expect("replacement must resume automatic payment");
+    if let Some(received) = expired_probe {
+        assert_eq!(
+            request(&configs[2], &AdminRequest::Status).await.unwrap()["received"]["packets"],
+            received + 1,
+            "only the fresh replacement payload arrives"
+        );
+    }
     for config in &configs {
         request(config, &AdminRequest::Settle).await.unwrap();
         let status = request(config, &AdminRequest::Status).await.unwrap();
