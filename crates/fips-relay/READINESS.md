@@ -42,9 +42,19 @@ verifies restored original device state, stopped owned processes and 24 account
 recovery archives. The preceding strict-contract matrix in
 `work/wire-device-matrix-r212` remains rejected, with unchanged metadata and
 financial evidence. See [the wire comparison](CADENCE-RESULTS.md#full-physical-capture-matrix--7-october-2026).
-Impaired/sustained workloads, current untraced device CPU/timing, complete
-shared/transit costs and physical/radio attribution remain open. Traced capture
-runs do not establish deployment readiness.
+Traced capture runs do not establish deployment readiness.
+
+The matched untraced physical CPU matrix passes in `work/device-cpu-r215`, using
+the same ordinary ARM64 candidate and workload with tools on `0c9d1e833`. All
+93,696 payloads arrive, all 3,072 test sats return and all 2,118 management checks
+pass. Independent analysis verifies complete interval accounting, disabled
+tracing, restored routers, stopped processes and 24 account recovery archives.
+In the high-rate repetitions, one-second payments use 34% less attributed CPU
+than 500 ms; total process CPU is nearly unchanged. The 500-ms default stays
+unchanged. See [the physical CPU comparison](CADENCE-RESULTS.md#full-physical-cpu-comparison--7-october-2026).
+Impaired/sustained and mobile workloads, independent-router latency, phone
+performance, complete shared/transit costs and physical/radio attribution remain
+open.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test

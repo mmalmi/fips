@@ -51,8 +51,8 @@ bytes include submitted TCP/FIPS segments, ACKs and retries, excluding opaque
 transit and UDP/kernel/radio framing. Earlier CPU results use a narrower scope and
 must not be used to claim a before/after optimization. The separate storage
 comparison below covers wallet/receiver syscall writes. Physical media,
-memory-mapped storage, complete wire attribution, current device regression
-and impaired/sustained workloads remain outstanding.
+memory-mapped storage, complete wire attribution and impaired/sustained device
+workloads remain outstanding.
 
 ## Independent packet attribution check — 7 October 2026
 
@@ -214,6 +214,49 @@ increasing from 4 to 5 msat within unchanged 1,000-msat credit. Its 24 captures
 verify submission prefixes and its 24 recovery archives pass. The current
 analyzer still rejects that unchanged report; no old metadata or result is
 rewritten to accept it.
+
+## Full physical CPU comparison — 7 October 2026
+
+`work/device-cpu-r215` passes the unchanged eight-policy hardware schedule with
+the measurement-enabled ordinary ARM64 candidate on `c8aaeda65` and tools on
+`0c9d1e833`. The three-router saved-SAE topology, financial terms and three-second
+tails match the physical wire matrix above. Packet capture and diagnostic tracing
+are disabled; independent postflight verifies all 24 candidate launch scripts,
+complete logs and absence of tracing processes.
+
+All 93,696 payloads arrive, with 132 out of order and no duplicates, invalid
+payloads or controller errors. All 2,118 management checks pass. Each trial settles
+its two channels and returns all 384 test sats before the next starts; all 3,072
+return. Independent checks reproduce the complete analysis, verify 99 frozen tool
+files, restored original router state, stopped candidates and mints, and 24
+byte-verified account recovery archives. Financial profiles remain preserved.
+All 120 observed intervals sum exactly to the complete trial counters, including
+1 msat of guard usage within unchanged paid credit.
+
+High-rate values average two trials per policy, each delivering 8,000,000
+application bytes. Costs sum the three candidate processes; setup and settlement
+remain outside the measurement windows, with no baseline subtraction.
+
+| Maximum age | Payment updates | Controller payment CPU ms / delivered MiB | Payment journal KiB | Process CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 3.5 | 27.22 | 33.32 | 0.793 |
+| 500 ms | 3 | 23.05 | 28.19 | 0.792 |
+| 1 s | 2 | 15.17 | 15.13 | 0.792 |
+| 2 s | 2 | 15.06 | 16.05 | 0.796 |
+
+All idle and bursty windows record zero payment updates, attributed CPU and
+payment journal bytes. Steady windows average three updates at every policy and
+53.78–55.45 payment CPU ms per MiB. High-rate payment CPU at one second averages
+34% below 500 ms, while total process CPU is nearly unchanged. The two 250-ms
+samples range from 23.22 to 31.22 payment CPU ms per MiB; two repetitions do not
+establish an optimal interval. The 500-ms default stays unchanged.
+
+Payment CPU covers exclusive controller future polls and inherited blocking work,
+excluding scheduler scans and TCP/FIPS/core transport attribution. Process CPU
+excludes the mint, normal router services and kernel workers. Journal bytes are
+logical relay writes, excluding wallet SQLite and physical storage. Independent
+router clocks provide no valid one-way latency measurement. Impaired, sustained,
+mobile and phone performance acceptance remain open.
 
 ## Current storage syscall comparison — 7 October 2026
 
