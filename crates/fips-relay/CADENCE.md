@@ -138,8 +138,16 @@ restart/loss case also pass in `work/payment-loss-arm-r217` and
 crash exposure each, automatic payments advance in healthy and impaired cohorts,
 and all 384 test sats return. Original router services/settings and three account
 archives are independently verified. Traffic pauses during the process crash;
-physical power loss, sustained traffic and Android acceptance remain separate.
-This is not an exact shared-credit or latency forecast.
+physical power loss and longer impaired traffic remain separate. The matching
+Android build and five-minute background phone transit pass in
+`work/android-current-r219` and `work/phone-sustained-r220`: all 19 MiB arrive and
+are acknowledged, all four original channels settle, all 512 test sats return
+and all 810 management checks pass. Exact APK/account archives are verified
+before removing the completed test app and its Android data. See
+[the scoped phone costs](CADENCE-RESULTS.md#sustained-background-phone-transit--7-october-2026).
+This finite existing-LAN, USB-powered case does not qualify deep idle, movement,
+renewal or battery cost, and the scheduling hint is not an exact shared-credit
+or latency forecast.
 
 Focused tests cover idle suppression, value-triggered payments, deadlines,
 whole-sat quantization, independent schedules, failed-exchange retries, retained
