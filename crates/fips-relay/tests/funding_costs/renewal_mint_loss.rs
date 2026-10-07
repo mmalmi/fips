@@ -363,6 +363,212 @@ async fn scenario(root: &Path, boundary: Boundary) {
     assert!(payment.is_ok(), "replacement must resume automatic payment");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delayed_successor_funding_keeps_original_forwarding_and_paying() {
+    exercise_prefunding(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_successor_funding_recovers_one_original_operation() {
+    exercise_prefunding(true).await;
+}
+
+async fn exercise_prefunding(restart: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().to_owned();
+    let result = tokio::spawn(async move {
+        tokio::time::timeout(
+            Duration::from_secs(180),
+            prefunding_scenario(&path, restart),
+        )
+        .await
+        .expect("bounded successor preopening");
+    })
+    .await;
+    if let Err(error) = result {
+        panic!(
+            "{error}; retained failed fixture at {}",
+            root.keep().display()
+        );
+    }
+}
+
+async fn prefunding_scenario(root: &Path, restart: bool) {
+    use super::preopening_support::{PreparationHistory, cleanup_wallet_sends};
+    use std::sync::{Mutex, atomic::AtomicUsize};
+    let (mint, network) = setup::start_mint(root, 9632).await;
+    let proxy = MintProxy::start(mint.url()).await;
+    let setup::Bench {
+        mint,
+        configs,
+        paths,
+        npubs,
+        mut children,
+        ..
+    } = setup::start_configured_line(
+        root,
+        mint,
+        network,
+        &proxy.url,
+        setup::LineConfig {
+            lifetime: 600,
+            quote_lifetime: 300,
+            funding_limits: &[96, 40, 40],
+        },
+        |index, config| {
+            if index == 0 {
+                // Match the existing forced-exchange fixture: two channels with
+                // at most 48 sats each, including their explicitly allowed fees.
+                config.terms.controller.max_locked_sat = 96;
+                config.terms.controller.max_funding_overhead_sat = 16;
+                config.terms.controller.renewal = Some(RenewalPolicy {
+                    at_capacity_percent: 25,
+                    before_expiry_secs: 30,
+                });
+            }
+        },
+    )
+    .await;
+    request(&configs[0], &AdminRequest::PauseRenewals)
+        .await
+        .unwrap();
+    for (source, destination) in [(0, 2), (2, 0)] {
+        request(
+            &configs[source],
+            &AdminRequest::Buy {
+                destination: npubs[destination].clone(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    for round in 0..10 {
+        send(&configs, &npubs, 0, round).await;
+    }
+    let journal = configs[0]
+        .state_directory
+        .join("controller/controller.json");
+    let before = read(&journal);
+    let (funding_id, original) = before["funding"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    let channel = original["funded"]["terms"]["id"].as_str().unwrap();
+    let history = PreparationHistory::capture(&configs[0]).await;
+    // Guarantee a preparation swap even if the wallet's denominations would
+    // otherwise fit. Only the test mint changes keyset; its fee policy remains.
+    mint.mint()
+        .rotate_keyset(
+            "sat".parse().unwrap(),
+            (0..=10).map(|b| 1u64 << b).collect(),
+            500,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let matched = Arc::new(Mutex::new(None));
+    let seen = Arc::new(AtomicUsize::new(0));
+    let cfg = configs[0].clone();
+    let (capture, inspected) = (matched.clone(), seen.clone());
+    let (reached, release) = proxy.state.pause_matching_swap_reply(move |request| {
+        history.preparation_match(&cfg, &capture, &inspected, request)
+    });
+    request(&configs[0], &AdminRequest::ResumeRenewals)
+        .await
+        .unwrap();
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(30), reached).await,
+        Ok(Ok(()))
+    ) {
+        let _ = release.send(());
+        cleanup_wallet_sends(&configs, &mut children, &proxy).await;
+        panic!("successor must reach its own committed preparation before old settlement");
+    }
+    let pending = read(&journal);
+    let intact = pending["funding"][funding_id] == *original
+        && pending["buyer_settlements"].as_object().unwrap().is_empty()
+        && pending["outgoing"] == before["outgoing"]
+        && pending["requested"] == before["requested"]
+        && pending["funding"].as_object().unwrap().len() == 2
+        && pending["renewals"][channel]["preopening"]["funding_id"].is_string();
+    let held_usage = usage(&configs[1], channel);
+    let bytes = send(&configs, &npubs, 0, 100).await + send(&configs, &npubs, 0, 101).await;
+    let old_paid = tokio::time::timeout(Duration::from_secs(5), async {
+        while !new_usage_paid(&configs[1], channel, held_usage, bytes) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    send(&configs, &npubs, 2, 100).await;
+    let still_unsettled = read(&journal)["buyer_settlements"]
+        .as_object()
+        .unwrap()
+        .is_empty();
+    if restart {
+        children[0].kill().await.unwrap();
+        assert!(!children[0].wait().await.unwrap().success());
+    }
+    let _ = release.send(());
+    if restart {
+        children[0] = start(&paths[0]).await;
+        ready(&configs, &paths, &npubs, &mut children).await;
+    }
+    let renewed = wait_journal(&journal, 30, |j| {
+        j["renewals"][channel]["completed"] == true
+    })
+    .await;
+    request(&configs[0], &AdminRequest::PauseRenewals)
+        .await
+        .unwrap();
+    let status = request(&configs[0], &AdminRequest::Status).await.unwrap();
+    let successor = status["purchases"][0]["channel"]["id"].as_str().unwrap();
+    let successor_usage = usage(&configs[1], successor);
+    let fresh = send(&configs, &npubs, 0, 102).await + send(&configs, &npubs, 0, 103).await;
+    let new_paid = tokio::time::timeout(Duration::from_secs(5), async {
+        while !new_usage_paid(&configs[1], successor, successor_usage, fresh) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    for cfg in &configs {
+        request(cfg, &AdminRequest::Settle).await.unwrap();
+    }
+    for child in &mut children {
+        stop(child).await;
+    }
+    let mut available = 0;
+    for cfg in &configs {
+        available += load_mint_balance(&cfg.state_directory.join("wallet"), &proxy.url)
+            .await
+            .unwrap()
+            .balance_sat;
+    }
+    assert_eq!(
+        available + proxy.state.fees_collected.load(Ordering::SeqCst),
+        384
+    );
+    eprintln!(
+        "Successor preopening: restart={restart}; old traffic delivered and paid while mint reply held; all 384 test sats accounted for"
+    );
+    assert!(
+        intact && still_unsettled,
+        "funding preparation preserves old authorization"
+    );
+    assert!(
+        old_paid.is_ok() && new_paid.is_ok(),
+        "both original and successor pay automatically"
+    );
+    assert_eq!(renewed["funding"].as_object().unwrap().len(), 2);
+    assert_eq!(
+        renewed["next_funding"].as_u64().unwrap(),
+        before["next_funding"].as_u64().unwrap() + 1
+    );
+    assert_eq!(renewed["funding"][funding_id], *original);
+}
+
 async fn admission_cohorts(configs: &[ServiceConfig], npubs: &[String], channel: &str) {
     let path = configs[0].state_directory.join("buyer/buyer.json");
     let before = read(&path);

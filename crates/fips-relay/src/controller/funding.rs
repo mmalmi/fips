@@ -64,6 +64,89 @@ impl FundingIntent {
 }
 
 impl Controller {
+    pub(super) fn reserve_route_funding(
+        j: &mut Journal,
+        offer: &RouteOffer,
+        renewal: Option<&str>,
+        may_fund: bool,
+        created: u64,
+    ) -> Result<FundingIntent, String> {
+        if let Some(id) = renewal {
+            Self::check_preopening(j, offer, id)?;
+        } else {
+            Self::check_purchase(j, offer, None)?;
+        }
+        let capacity = j.policy.channel_capacity_sat.min(offer.capacity_sat);
+        let grace = offer
+            .grace_msat
+            .min(capacity.checked_mul(1_000).ok_or("capacity overflow")?);
+        if let Some(f) = Self::selected_funding(j, offer, renewal)? {
+            if f.funded.is_none() && !may_fund {
+                return Err("funding changed before wallet ownership".into());
+            }
+            if f.receiver_pubkey_hex != offer.receiver_pubkey_hex
+                || f.capacity_sat > capacity
+                || f.grace_msat > grace
+                || f.expires_unix <= created
+            {
+                return Err("existing channel needs explicit renewal or reconciliation".into());
+            }
+            return Ok(f.clone());
+        }
+        if !may_fund {
+            return Err("funding changed before wallet ownership".into());
+        }
+        if j.funding.len() >= MAX_CHANNELS {
+            return Err("funding history capacity".into());
+        }
+        let id =
+            cashu_service::CashuRequestSequence::new(channel_history::scope(j), j.next_funding)
+                .map_err(|e| e.to_string())?
+                .request_id();
+        j.advance_history_version(4);
+        j.version |= journal::FUNDING_DEADLINES_VERSION;
+        j.history
+            .get_or_insert_with(History::default)
+            .channels
+            .get_or_insert_with(channel_history::ChannelHistory::default);
+        j.next_funding = j
+            .next_funding
+            .checked_add(1)
+            .ok_or("funding sequence exhausted")?;
+        let f = FundingIntent {
+            id: id.clone(),
+            provider: offer.provider,
+            receiver_pubkey_hex: offer.receiver_pubkey_hex.clone(),
+            capacity_sat: capacity,
+            max_wallet_debit_sat: capacity
+                .checked_add(j.policy.max_funding_overhead_sat)
+                .ok_or("funding cost overflow")?,
+            grace_msat: grace,
+            created_unix: created,
+            expires_unix: created
+                .checked_add(j.policy.service_lifetime_secs())
+                .ok_or("expiry overflow")?,
+            refund_after_unix: Some(
+                created
+                    .checked_add(j.policy.channel_lifetime_secs)
+                    .ok_or("expiry overflow")?,
+            ),
+            funded: None,
+            reclaim: None,
+        };
+        j.funding.insert(id.clone(), f.clone());
+        if let Some(owner) = renewal {
+            j.renewals
+                .get_mut(owner)
+                .unwrap()
+                .preopening
+                .as_mut()
+                .unwrap()
+                .funding_id = Some(id);
+        }
+        Ok(f)
+    }
+
     /// Restore the original opening, or reclaim its original send after all
     /// routing owners withdraw. Neither path can start replacement funding.
     /// Uncertain records keep their reservation and gain no route permission.

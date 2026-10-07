@@ -4,6 +4,9 @@ use super::*;
 use crate::ledger::ChannelUsage;
 use fips_core::node::ForwardingPolicy;
 
+mod preopening;
+use preopening::Preopening;
+
 #[cfg(test)]
 #[path = "renewal_admission_tests.rs"]
 mod admission_tests;
@@ -94,6 +97,8 @@ impl Store {
 pub(super) struct Renewal {
     pub(super) previous: Vec<Outgoing>,
     replacements: Option<Vec<RouteOffer>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) preopening: Option<Preopening>,
     completed: bool,
 }
 
@@ -145,7 +150,9 @@ impl Controller {
         if journal.renewals.len() > MAX_CHANNELS {
             return Err("renewal history capacity".into());
         }
+        Self::validate_funding_neighbors(journal)?;
         for (id, renewal) in &journal.renewals {
+            Self::validate_preopening(journal, id, renewal)?;
             if !renewal.completed && Self::route_change_pending_on(journal, id) {
                 return Err("conflicting route and renewal intents".into());
             }
@@ -287,6 +294,7 @@ impl Controller {
             Renewal {
                 previous,
                 replacements: None,
+                preopening: None,
                 completed: false,
             },
         );
@@ -373,6 +381,7 @@ impl Controller {
     // The caller owns this renewal's claim and a shared pause guard. Settlement
     // separately serializes payment and closure of this particular channel.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
+        renewal = self.prepare_renewal_funding(id, renewal).await?;
         let admission_pause = self
             .services
             .buyer
@@ -410,8 +419,16 @@ impl Controller {
             return Err("lifetime spending budget exhausted; no replacement funded".into());
         }
         if renewal.replacements.is_none() {
-            let mut offers = Vec::new();
-            for old in &renewal.previous {
+            let mut offers = renewal
+                .preopening
+                .as_ref()
+                .map(|p| p.offers.clone())
+                .unwrap_or_default();
+            for old in renewal
+                .previous
+                .iter()
+                .filter(|_| renewal.preopening.is_none())
+            {
                 let offer = self.services.quotes.renewal_offer(&old.offer).await?;
                 if !same_service(&old.offer, &offer) {
                     return Err(
