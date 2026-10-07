@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Stop link measurement reports from triggering further reports on idle links.
-  Keep all report packets in cumulative packet and loss accounting, and resume
-  reporting when application or other control traffic arrives.
+- Stop sending link measurement reports from scheduling more sender reports.
+  Preserve bounded receiver feedback so older peers can calculate round-trip
+  times and slow their reporting cadence. Keep all report packets in cumulative
+  packet and loss accounting, and resume reports when ordinary traffic arrives.
 - Release the reusable core and matching endpoint libraries as 0.4.95. Identity
   remains 0.3.3; protocol messages and wire layouts are unchanged.
 
