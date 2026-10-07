@@ -6,21 +6,33 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::atomic::Ordering};
 
+#[derive(Clone, Copy)]
+enum Boundary {
+    Capacity,
+    Quote,
+    Channel,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delayed_lost_mint_close_reply_renews_once_and_keeps_other_buyers_paid() {
-    exercise(false).await;
+    exercise(Boundary::Capacity).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn near_expiry_mint_close_rejects_stale_forwarding_and_renews_once() {
-    exercise(true).await;
+    exercise(Boundary::Quote).await;
 }
 
-async fn exercise(near_expiry: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lost_committed_mint_close_recovers_after_channel_refund_deadline() {
+    exercise(Boundary::Channel).await;
+}
+
+async fn exercise(boundary: Boundary) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().to_owned();
     let result = tokio::spawn(async move {
-        tokio::time::timeout(Duration::from_secs(240), scenario(&path, near_expiry))
+        tokio::time::timeout(Duration::from_secs(240), scenario(&path, boundary))
             .await
             .expect("bounded delayed-mint renewal recovery");
     })
@@ -33,7 +45,8 @@ async fn exercise(near_expiry: bool) {
     }
 }
 
-async fn scenario(root: &Path, near_expiry: bool) {
+async fn scenario(root: &Path, boundary: Boundary) {
+    let near_expiry = !matches!(boundary, Boundary::Capacity);
     let (mint, network) = setup::start_mint(root, 9631).await;
     let proxy = MintProxy::start(mint.url()).await;
     let setup::Bench {
@@ -49,11 +62,18 @@ async fn scenario(root: &Path, near_expiry: bool) {
         &proxy.url,
         setup::LineConfig {
             lifetime: 600,
-            quote_lifetime: if near_expiry { 30 } else { 300 },
+            quote_lifetime: if matches!(boundary, Boundary::Quote) {
+                30
+            } else {
+                300
+            },
             funding_limits: &[80, 40, 40],
         },
         |index, config| {
             if index == 0 {
+                if matches!(boundary, Boundary::Channel) {
+                    config.terms.controller.channel_lifetime_secs = 60;
+                }
                 config.terms.controller.max_locked_sat = 40;
                 config.terms.controller.max_funding_overhead_sat = 8;
                 config.terms.controller.renewal = Some(RenewalPolicy {
@@ -95,6 +115,19 @@ async fn scenario(root: &Path, near_expiry: bool) {
     let expiry = status["purchases"][0]["contract"]["expires_unix"]
         .as_u64()
         .unwrap();
+    let held_until = if matches!(boundary, Boundary::Channel) {
+        assert_eq!(expiry, original["expires_unix"].as_u64().unwrap());
+        let refund = original["refund_after_unix"].as_u64().unwrap();
+        let outgoing = before["outgoing"].as_object().unwrap();
+        assert!(
+            outgoing
+                .values()
+                .all(|old| { old["offer"]["expires_unix"].as_u64().unwrap() > refund })
+        );
+        refund
+    } else {
+        expiry
+    };
     let reverse = request(&configs[2], &AdminRequest::Status).await.unwrap();
     let reverse_id = reverse["purchases"][0]["channel"]["id"].as_str().unwrap();
     let reverse_before = usage(&configs[1], reverse_id);
@@ -130,7 +163,7 @@ async fn scenario(root: &Path, near_expiry: bool) {
     .expect("held mint close cannot stall another buyer's payment");
     tokio::time::sleep_until(held_at + Duration::from_secs(7)).await;
     let expired_probe = if near_expiry {
-        while restore::now() <= expiry {
+        while restore::now() <= held_until {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let received =
