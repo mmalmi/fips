@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from .cadence_workloads import stream
 from .guest_system import Guest, digest
+from .guest_renewal import RENEWAL, RenewalCut
 from .paid_finances import financial_snapshot, payments_credited
 from .paid_relay import eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect, validate_report
@@ -115,6 +116,8 @@ class PowerLossRun:
                                              'advertise_on_nostr': False}}
             config['terms'].update(fee_msat_per_kib=1, max_rate_msat_per_kib=1,
                                    quote_max_units=QUOTE_UNITS)
+            if self.cut_at == 'renewal_funding' and node == 'n01':
+                config['terms']['controller']['renewal'] = RENEWAL
             self.configs[node] = config
             self.write_config(node)
             self.nodes[node].npub = self.execute(node, 'fips-relay', 'init')
@@ -134,6 +137,8 @@ class PowerLossRun:
         for node in self.nodes:
             self.launch(node)
         eventually('initial guest line', self.ready, 60)
+        if self.cut_at == 'renewal_funding':
+            self.ctl('n01', 'pause_renewals')
 
     def warmup(self):
         for source, destination in [('n01', 'n03'), ('n03', 'n01')]:
@@ -293,8 +298,12 @@ class PowerLossRun:
             original_channels(self.nodes, anchor)
             self.evidence.update(status='funded', initial_finances=anchor, first_boot=first_boot)
             self.save()
+            fixture = None
             if self.cut_at == 'traffic':
                 self.interrupt_traffic()
+            elif self.cut_at == 'renewal_funding':
+                renewal = RenewalCut(self)
+                renewal.interrupt(anchor)
             else:
                 channel, pending = self.interrupt_settlement(anchor)
             second_boot = self.guest.boot(urlsplit(mint).port)
@@ -313,10 +322,13 @@ class PowerLossRun:
                 anchor = eventually('original guest financial limits after power loss',
                     lambda: retained_finances(anchor, self.finances(), lost), 45)
                 self.evidence['recovered_finances'] = anchor
+            elif self.cut_at == 'renewal_funding':
+                anchor, fixture = renewal.recover()
             else:
                 self.recover_settlement(channel, pending)
             settle_and_collect(self, anchor, stop=self.stop,
-                               export_path=lambda node, relative: f'/data/{node}/state/{relative}')
+                               export_path=lambda node, relative: f'/data/{node}/state/{relative}',
+                               fixture=fixture)
             self.evidence['mint_closure'] = self.mint.finish()
             require(not self.evidence['mint_closure'].get('retained_for_recovery'),
                     'test mint still owns uncollected funds')
@@ -338,7 +350,7 @@ def main():
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source-revision', required=True)
-    parser.add_argument('--cut-at', choices=('traffic', 'settlement'), default='traffic')
+    parser.add_argument('--cut-at', choices=('traffic', 'settlement', 'renewal_funding'), default='traffic')
     args = parser.parse_args()
     os.umask(0o077)
     PowerLossRun(args).run()

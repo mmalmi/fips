@@ -696,6 +696,18 @@ without a new settlement request. Final idempotent settlement and collection
 must reconcile all 384 sats. This case does not offer traffic after closing the
 interrupted channel.
 
+Use `--cut-at renewal_funding` to interrupt the next committed mint swap while
+preparing one replacement channel. Only one buyer has automatic renewal enabled;
+its original channel must keep delivering and paying in both directions while
+the funding reply is held. The test records whether that swap belongs to wallet
+preparation or channel opening, rather than claiming both boundaries were hit.
+After reboot, the saved funding intent and pending SDK operation must match
+before services start. Recovery must finish exactly one successor, preserve the
+original spending limits and channel funding, and refund the predecessor. For a
+saved channel opening, the successor must also retain its exact channel and
+wallet-operation identifiers. Fresh traffic must pay on the successor; the
+shared settlement checks reconcile all three channels and collect all 384 sats.
+
 This covers guest kernel/page-cache loss with QEMU's direct host I/O and ext4
 journal recovery. It does not simulate a physical flash-controller failure,
 host/mint power loss or radio interruption. The existing restart/settlement
