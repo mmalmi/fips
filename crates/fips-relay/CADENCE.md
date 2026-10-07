@@ -29,12 +29,20 @@ one initial reconciliation on startup or first use. Subsequently it requests
 usage and, when needed, sends a signed cumulative payment when either:
 
 - Evidence or an unacknowledged signed liability exceeds acknowledged payment
-  by `unpaid_percent` of the channel's agreed grace; or
+  by `unpaid_percent` of the channel's grace after subtracting its reported crash
+  loss; or
 - New outstanding liability reaches `max_delay_ms` in age.
 
 The first trigger uses monetary value, not a universal byte count. All flows
 sharing the same neighbor channel share the trigger. Whole-sat payment rounding
 can cover later fractional usage, which should not cause another payment.
+
+The scheduler retains the largest loss from validated usage replies for that
+channel while running. With 8,000-msat grace, 4,000-msat reported loss and the
+default 50% policy, the early-payment trigger becomes 2,000 msat. The trigger has
+a one-msat floor. Loss only narrows this scheduling hint; it is never added to
+payment evidence or signed liability.
+
 Confirmed idle channels send no payment-control polls. Lost or delayed forwarding
 can leave local send evidence above the provider's supported claim, including
 after a provider crash. Successful exchanges with unchanged evidence and payment
@@ -61,8 +69,9 @@ channel; queued work rechecks that the channel is still active before signing.
 The wallet and journal writers remain serialized for financial consistency.
 Existing hard credit, window and budget gates can stop forwarding regardless of
 the selected timing.
-The nominal grace threshold also does not model the exact residual allowance
-lost to earlier crash exposure; safe low-credit latency prediction remains work.
+Unreported loss, carried exposure from older channels and actual control/disk
+latency remain outside this scheduling hint. The provider's shared credit gate
+remains authoritative; exact low-credit latency prediction remains work.
 
 Graceful runtime shutdown drains the in-flight exchanges. Forced cancellation
 aborts owned network tasks even if a drain was already waiting; it cannot detach
@@ -115,6 +124,16 @@ shows queue overflow during long disk stalls with unchanged limits. A RAM-backed
 benchmark cannot establish persistent-storage capacity or crash recovery.
 
 ## Verification and measurement scope
+
+The reported-loss regression in `work/payment-loss-r216` fails on the prior
+worker and passes after its validated response narrows the scheduling hint.
+Seven cadence and three payment-worker checks pass, including consumed grace,
+idle suppression, retained loss and sends racing a reply. Strict lint with and
+without measurements and an ordinary Linux build pass. The existing mixed
+UDP/TCP daemon case passes restart, renewal and retained unbilled exposure,
+conserving all 384 simulated test sats. Source, dependency, artifact and stopped
+process checks pass. Hardware and Android qualification of this change remains
+separate; this is not an exact shared-credit or latency forecast.
 
 Focused tests cover idle suppression, value-triggered payments, deadlines,
 whole-sat quantization, independent schedules, failed-exchange retries, retained

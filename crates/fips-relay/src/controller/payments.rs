@@ -291,6 +291,7 @@ impl ChannelPayment {
                     tokio::time::Instant::now(),
                     self.started_evidence_msat,
                     usage.paid_msat,
+                    usage.lost_msat,
                 );
                 Ok(())
             }

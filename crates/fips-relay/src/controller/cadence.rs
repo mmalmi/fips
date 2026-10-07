@@ -11,7 +11,7 @@ const MAX_RECHECK_DELAY: Duration = Duration::from_secs(30);
 pub struct PaymentCadence {
     /// Target maximum age of new locally evidenced debt on a responsive link.
     pub max_delay_ms: u64,
-    /// Pay earlier when debt reaches this fraction of the channel's grace.
+    /// Pay earlier at this fraction of grace left after reported crash loss.
     pub unpaid_percent: u8,
 }
 
@@ -40,6 +40,7 @@ impl PaymentCadence {
 #[derive(Default)]
 pub(super) struct ChannelSchedule {
     acknowledged_msat: Option<u64>,
+    reported_loss_msat: u64,
     dirty_since: Option<Instant>,
     retry_at: Option<Instant>,
     unclaimed: Option<UnclaimedUsage>,
@@ -83,12 +84,19 @@ impl ChannelSchedule {
         }
         self.unclaimed = None;
         let since = *self.dirty_since.get_or_insert(now);
+        let grace = grace_msat.saturating_sub(self.reported_loss_msat);
         let threshold =
-            ((u128::from(grace_msat) * u128::from(policy.unpaid_percent)) / 100).max(1) as u64;
+            ((u128::from(grace) * u128::from(policy.unpaid_percent)) / 100).max(1) as u64;
         debt >= threshold || now.duration_since(since) >= Duration::from_millis(policy.max_delay_ms)
     }
 
-    pub(super) fn acknowledge(&mut self, now: Instant, evidence_msat: u64, paid_msat: u64) {
+    pub(super) fn acknowledge(
+        &mut self,
+        now: Instant,
+        evidence_msat: u64,
+        paid_msat: u64,
+        lost_msat: u64,
+    ) {
         // Lost or delayed forwarding can leave local sends above the provider's
         // claim. Recheck unchanged evidence less often without forgiving it;
         // a late claim must remain payable even if no new traffic arrives.
@@ -107,6 +115,8 @@ impl ChannelSchedule {
             }
         });
         self.acknowledged_msat = Some(paid_msat);
+        // A validated loss report only narrows this volatile scheduling hint.
+        self.reported_loss_msat = self.reported_loss_msat.max(lost_msat);
         self.dirty_since = None;
         self.retry_at = None;
     }

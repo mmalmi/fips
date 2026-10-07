@@ -56,6 +56,17 @@ Impaired/sustained and mobile workloads, independent-router latency, phone
 performance, complete shared/transit costs and physical/radio attribution remain
 open.
 
+Early payment scheduling computes its value trigger from grace left after
+validated per-channel crash loss. Loss stays unbilled and financial limits remain
+unchanged. The existing worker regression fails on the prior runtime; seven cadence
+and three worker checks pass on the candidate. Strict lint with and without
+measurements, the ordinary Linux build and the mixed UDP/TCP restart and renewal
+case pass, with all 384 simulated test sats conserved. Independent source,
+dependency, artifact and stopped-process checks close `work/payment-loss-r216`.
+See [the scheduling rules](CADENCE.md).
+Hardware and Android acceptance of this change remains open. Exact shared-credit
+and low-credit latency prediction remain outside this scheduling hint.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.

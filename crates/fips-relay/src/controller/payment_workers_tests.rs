@@ -27,12 +27,14 @@ async fn successful_reply_does_not_cover_sends_after_the_exchange_started() {
     };
     let now = tokio::time::Instant::now();
     for _ in 0..8 {
-        payment.schedule.acknowledge(now, 9_584, 8_000);
+        payment.schedule.acknowledge(now, 9_584, 8_000, 0);
     }
     payment.finish().await.unwrap();
     let now = tokio::time::Instant::now();
     let policy = PaymentCadence::default();
     assert!(!payment.schedule.due(now, 9_584, 8, 8_000, &policy));
+    // Reported crash loss leaves only 4,000 msat of grace for new usage.
+    assert!(payment.schedule.due(now, 10_000, 8, 8_000, &policy));
     assert!(payment.schedule.due(now, 14_000, 8, 8_000, &policy));
 }
 
