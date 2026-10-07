@@ -465,17 +465,17 @@ impl Node {
         // Old-key packets remain valid during drain, but their counters and
         // timestamps belong to the previous receiver measurement epoch.
         if liveness_bookkeeping_allowed && self.authenticated_fmp_uses_current_epoch(fmp) {
-            let _ = self.dataplane.record_authenticated_fmp_mmp_receive(
-                crate::dataplane::DataplaneAuthenticatedFmpMmpReceive::new(
-                    *source_addr,
-                    fmp.fmp_counter,
-                    fmp.inner_timestamp_ms,
-                    fmp.packet_len,
-                    fmp.fmp_flags & FLAG_CE != 0,
-                    fmp.fmp_flags & FLAG_SP != 0,
-                    now,
-                ),
+            let mut receive = crate::dataplane::DataplaneAuthenticatedFmpMmpReceive::new(
+                *source_addr,
+                fmp.fmp_counter,
+                fmp.inner_timestamp_ms,
+                fmp.packet_len,
+                fmp.fmp_flags & FLAG_CE != 0,
+                fmp.fmp_flags & FLAG_SP != 0,
+                now,
             );
+            receive.elicits_report = fmp.elicits_report;
+            let _ = self.dataplane.record_authenticated_fmp_mmp_receive(receive);
         }
         let bookkeeping = self.peers.record_authenticated_fmp_receive(
             fmp,

@@ -190,6 +190,8 @@ pub struct MmpPeerState {
     pub receiver: ReceiverState,
     pub metrics: MmpMetrics,
     pub spin_bit: SpinBitState,
+    pub(crate) sender_report_pending: bool,
+    pub(crate) receiver_report_pending: bool,
     mode: MmpMode,
     log_interval: Duration,
     last_log_time: Option<Instant>,
@@ -206,6 +208,8 @@ impl MmpPeerState {
             receiver: ReceiverState::new(config.owd_window_size),
             metrics: MmpMetrics::new(),
             spin_bit: SpinBitState::new(is_initiator),
+            sender_report_pending: false,
+            receiver_report_pending: false,
             mode: config.mode,
             log_interval: Duration::from_secs(config.log_interval_secs),
             last_log_time: None,
@@ -217,6 +221,8 @@ impl MmpPeerState {
         self.sender.reset_for_rekey();
         self.receiver.reset_for_rekey(now);
         self.metrics.reset_for_rekey();
+        self.sender_report_pending = false;
+        self.receiver_report_pending = false;
     }
 
     /// Current operating mode.
@@ -236,6 +242,18 @@ impl MmpPeerState {
     pub fn mark_logged(&mut self, now: Instant) {
         self.last_log_time = Some(now);
     }
+}
+
+// Reports participate in packet/loss accounting, but must not elicit another
+// report. Otherwise a quiet link keeps sending reports about its own reports.
+pub(crate) fn link_message_elicits_report(msg_type: Option<u8>) -> bool {
+    use crate::proto::protocol::LinkMessageType;
+    msg_type.is_some_and(|kind| {
+        !matches!(
+            LinkMessageType::from_byte(kind),
+            Some(LinkMessageType::SenderReport | LinkMessageType::ReceiverReport)
+        )
+    })
 }
 
 // ============================================================================

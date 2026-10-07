@@ -446,6 +446,7 @@ async fn authenticated_packet_migrates_healthy_udp_peer_to_observed_source() {
     active.mark_heartbeat_sent(std::time::Instant::now());
     node.peers.insert(peer_node_addr, active);
     let public_fmp_receive = |packet_timestamp_ms, fmp_counter| AuthenticatedFmpReceiveFacts {
+        elicits_report: true,
         source_peer: peer_identity,
         transport_id,
         remote_addr: &public_addr,

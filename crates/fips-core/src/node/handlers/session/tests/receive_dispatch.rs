@@ -261,6 +261,7 @@
 
         node.record_authenticated_fmp_receive_facts(
             crate::node::AuthenticatedFmpReceiveFacts {
+                elicits_report: true,
                 source_peer: peer_identity,
                 transport_id,
                 remote_addr: &transport_addr,
@@ -285,6 +286,7 @@
 
         node.record_authenticated_fmp_receive_facts(
             crate::node::AuthenticatedFmpReceiveFacts {
+                elicits_report: true,
                 source_peer: peer_identity,
                 transport_id,
                 remote_addr: &transport_addr,
@@ -368,6 +370,7 @@
 
         node.record_authenticated_fmp_receive_facts(
             crate::node::AuthenticatedFmpReceiveFacts {
+                elicits_report: true,
                 source_peer: peer_identity,
                 transport_id,
                 remote_addr: &transport_addr,
@@ -698,6 +701,7 @@
         );
         node.record_authenticated_fmp_receive_facts(
             crate::node::AuthenticatedFmpReceiveFacts {
+                elicits_report: true,
                 source_peer: crate::PeerIdentity::from_pubkey_full(source.pubkey_full()),
                 transport_id: direct_transport_id,
                 remote_addr: &direct_transport_addr,

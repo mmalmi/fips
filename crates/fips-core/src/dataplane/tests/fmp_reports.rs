@@ -34,11 +34,61 @@ fn receive(live: &mut DataplaneLiveNode, owner: OwnerId, counter: u64, now: Inst
 }
 
 #[tokio::test]
+async fn fmp_report_traffic_is_counted_without_eliciting_more_reports() {
+    let (mut live, owner) = live_link(MmpMode::Full);
+    let now = Instant::now();
+    live.record_fmp_mmp_send_result(&owner.node_addr(), 1, 100, 80, true);
+    receive(&mut live, owner, 1, now);
+    assert_eq!(live.collect_fmp_mmp_reports(now).reports.len(), 2);
+
+    for (counter, bytes) in [(2, 48), (3, 68)] {
+        live.record_fmp_mmp_send_result(&owner.node_addr(), counter, 100, bytes, false);
+        let mut packet = DataplaneAuthenticatedFmpMmpReceive::new(
+            owner.node_addr(),
+            counter,
+            100,
+            bytes,
+            false,
+            false,
+            now,
+        );
+        packet.elicits_report = false;
+        live.record_authenticated_fmp_mmp_receive(packet).unwrap();
+    }
+    let later = now + Duration::from_secs(10);
+    assert_eq!(live.fmp_report_deadline(), None);
+    assert!(live.collect_fmp_mmp_reports(later).reports.is_empty());
+
+    // New data must resume reporting, including every intervening report in
+    // cumulative accounting so its counter is not mistaken for packet loss.
+    live.record_fmp_mmp_send_result(&owner.node_addr(), 4, 100, 80, true);
+    receive(&mut live, owner, 4, later);
+    let reports = live.collect_fmp_mmp_reports(later).reports;
+    assert_eq!(reports.len(), 2);
+    for report in reports {
+        match report.kind {
+            DataplaneFmpMmpReportKind::Sender => {
+                let report =
+                    crate::mmp::report::SenderReport::decode(&report.encoded[1..]).unwrap();
+                assert_eq!(report.cumulative_packets_sent, 4);
+                assert_eq!(report.cumulative_bytes_sent, 276);
+            }
+            DataplaneFmpMmpReportKind::Receiver => {
+                let report =
+                    crate::mmp::report::ReceiverReport::decode(&report.encoded[1..]).unwrap();
+                assert_eq!(report.cumulative_packets_recv, 4);
+                assert_eq!(report.cumulative_bytes_recv, 276);
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn fmp_report_deadlines_require_pending_traffic_and_respect_modes() {
     for mode in [MmpMode::Full, MmpMode::Lightweight, MmpMode::Minimal] {
         let (mut live, owner) = live_link(mode);
         assert_eq!(live.fmp_report_deadline(), None, "registration is idle");
-        live.record_fmp_mmp_send_result(&owner.node_addr(), 1, 100, 80);
+        live.record_fmp_mmp_send_result(&owner.node_addr(), 1, 100, 80, true);
         assert_eq!(live.fmp_report_deadline().is_some(), mode == MmpMode::Full);
         receive(&mut live, owner, 1, Instant::now());
         assert_eq!(
@@ -83,7 +133,7 @@ async fn fmp_report_deadline_clears_after_owner_removal_or_rekey() {
     for remove in [false, true] {
         let (mut live, owner) = live_link(MmpMode::Full);
         let now = Instant::now();
-        live.record_fmp_mmp_send_result(&owner.node_addr(), 100, 100, 80);
+        live.record_fmp_mmp_send_result(&owner.node_addr(), 100, 100, 80, true);
         receive(&mut live, owner, 100, now);
         assert!(live.fmp_report_deadline().is_some());
         if remove {
@@ -98,7 +148,7 @@ async fn fmp_report_deadline_clears_after_owner_removal_or_rekey() {
             "stale hint is consumed once"
         );
         if remove {
-            live.record_fmp_mmp_send_result(&owner.node_addr(), 101, 100, 80);
+            live.record_fmp_mmp_send_result(&owner.node_addr(), 101, 100, 80, true);
             assert_eq!(live.fmp_report_deadline(), None);
         } else {
             receive(&mut live, owner, 0, now);

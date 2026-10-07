@@ -225,6 +225,7 @@ async fn authenticated_fmp_heartbeat_on_observed_tuple_keeps_idle_direct_link_fr
 
     node.record_authenticated_fmp_receive_facts(
         crate::node::AuthenticatedFmpReceiveFacts {
+            elicits_report: true,
             source_peer: peer,
             transport_id: TransportId::new(1),
             remote_addr: &observed_addr,

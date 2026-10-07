@@ -149,7 +149,7 @@ async fn report_turn_drains_bounded_queued_work_without_a_timeout() {
         OwnerConfig::new(1, 8).with_fmp_mmp(Default::default(), false),
     );
     node.dataplane
-        .record_fmp_mmp_send_result(&owner.node_addr(), 1, 1, 80);
+        .record_fmp_mmp_send_result(&owner.node_addr(), 1, 1, 80, true);
     let earlier = Instant::now() - Duration::from_millis(400);
     assert_eq!(
         node.dataplane
@@ -159,7 +159,7 @@ async fn report_turn_drains_bounded_queued_work_without_a_timeout() {
         1
     );
     node.dataplane
-        .record_fmp_mmp_send_result(&owner.node_addr(), 2, 2, 80);
+        .record_fmp_mmp_send_result(&owner.node_addr(), 2, 2, 80, true);
     assert!(
         node.dataplane
             .fmp_report_deadline()

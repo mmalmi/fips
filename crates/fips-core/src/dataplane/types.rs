@@ -109,6 +109,7 @@ pub(crate) struct DataplaneAuthenticatedFmpMmpReceive {
     pub(crate) packet_len: usize,
     pub(crate) ce_flag: bool,
     pub(crate) spin_bit: bool,
+    pub(crate) elicits_report: bool,
     pub(crate) now: std::time::Instant,
 }
 
@@ -129,6 +130,7 @@ impl DataplaneAuthenticatedFmpMmpReceive {
             packet_len,
             ce_flag,
             spin_bit,
+            elicits_report: true,
             now,
         }
     }

@@ -190,6 +190,7 @@ async fn test_fmp_recovery_stages_prompt_direct_payload_validation_without_disca
 
     node.record_authenticated_fmp_receive_facts(
         crate::node::AuthenticatedFmpReceiveFacts {
+            elicits_report: true,
             source_peer: PeerIdentity::from_pubkey_full(remote.pubkey_full()),
             transport_id: direct_transport_id,
             remote_addr: &direct_transport_addr,

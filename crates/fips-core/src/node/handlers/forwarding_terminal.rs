@@ -28,6 +28,7 @@ impl Node {
                     receipt.counter,
                     timestamp_ms,
                     bytes_sent,
+                    true,
                 );
                 let _ = self
                     .peers

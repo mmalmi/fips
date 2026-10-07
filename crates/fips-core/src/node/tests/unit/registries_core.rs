@@ -812,6 +812,7 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
         packet_len: usize,
     ) -> AuthenticatedFmpReceiveFacts<'a> {
         AuthenticatedFmpReceiveFacts {
+            elicits_report: true,
             source_peer: peer_identity,
             transport_id,
             remote_addr,

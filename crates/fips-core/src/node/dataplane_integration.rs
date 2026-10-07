@@ -231,6 +231,7 @@ impl Node {
             receipt.counter,
             timestamp_ms,
             bytes_sent,
+            crate::mmp::link_message_elicits_report(plaintext.first().copied()),
         );
         let _ = self
             .peers

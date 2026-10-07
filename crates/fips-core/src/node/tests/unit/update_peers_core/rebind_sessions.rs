@@ -197,6 +197,7 @@ async fn network_transport_rebind_ignores_queued_receive_without_discarding_live
     let last_seen_after_rebind = node.get_peer(&remote_addr).unwrap().last_seen();
     node.record_authenticated_fmp_receive_facts(
         AuthenticatedFmpReceiveFacts {
+            elicits_report: true,
             source_peer: PeerIdentity::from_pubkey_full(remote.pubkey_full()),
             transport_id,
             remote_addr: &transport_addr,

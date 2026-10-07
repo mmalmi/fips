@@ -340,6 +340,7 @@ impl OwnerState {
             receive.ce_flag,
             receive.now,
         );
+        mmp.receiver_report_pending |= receive.elicits_report;
         Ok(mmp
             .spin_bit
             .rx_observe(receive.spin_bit, receive.counter, receive.now))
@@ -350,6 +351,7 @@ impl OwnerState {
         counter: u64,
         timestamp_ms: u32,
         bytes_sent: usize,
+        elicits_report: bool,
     ) {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return;
@@ -358,6 +360,7 @@ impl OwnerState {
             return;
         };
         mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
+        mmp.sender_report_pending |= elicits_report;
     }
 
     pub(crate) fn process_fmp_mmp_receiver_report(
@@ -603,9 +606,11 @@ impl OwnerState {
         let node_addr = self.owner.node_addr();
 
         if mode == crate::mmp::MmpMode::Full
+            && mmp.sender_report_pending
             && mmp.sender.should_send_report(now)
             && let Some(sr) = mmp.sender.build_report(now)
         {
+            mmp.sender_report_pending = false;
             batch.reports.push(DataplaneFmpMmpReport {
                 node_addr,
                 encoded: sr.encode(),
@@ -614,9 +619,11 @@ impl OwnerState {
         }
 
         if mode != crate::mmp::MmpMode::Minimal
+            && mmp.receiver_report_pending
             && mmp.receiver.should_send_report(now)
             && let Some(rr) = mmp.receiver.build_report(now)
         {
+            mmp.receiver_report_pending = false;
             batch.reports.push(DataplaneFmpMmpReport {
                 node_addr,
                 encoded: rr.encode(),

@@ -92,6 +92,7 @@ pub(in crate::node) struct AuthenticatedFmpReceiveFacts<'a> {
     pub(in crate::node) fmp_counter: u64,
     pub(in crate::node) inner_timestamp_ms: u32,
     pub(in crate::node) fmp_flags: u8,
+    pub(in crate::node) elicits_report: bool,
 }
 
 pub(in crate::node) struct AuthenticatedLinkMessage<'a> {
@@ -126,6 +127,7 @@ impl<'a> AuthenticatedFmpReceiveFacts<'a> {
             fmp_counter: receipt.fmp_counter(),
             inner_timestamp_ms: receipt.inner_timestamp_ms(),
             fmp_flags: receipt.fmp_flags(),
+            elicits_report: receipt.elicits_report(),
         }
     }
 

@@ -157,6 +157,7 @@ pub(crate) struct DataplaneFmpIngressReceipt {
     fmp_counter: u64,
     fmp_flags: u8,
     inner_timestamp_ms: u32,
+    elicits_report: bool,
 }
 
 impl DataplaneFmpIngressReceipt {
@@ -191,6 +192,7 @@ impl DataplaneFmpIngressReceipt {
             fmp_counter: header.counter(),
             fmp_flags: header.flags(),
             inner_timestamp_ms,
+            elicits_report: crate::mmp::link_message_elicits_report(plaintext.get(4).copied()),
         })
     }
 
@@ -228,6 +230,10 @@ impl DataplaneFmpIngressReceipt {
 
     pub(crate) fn fmp_flags(&self) -> u8 {
         self.fmp_flags
+    }
+
+    pub(crate) fn elicits_report(&self) -> bool {
+        self.elicits_report
     }
 }
 

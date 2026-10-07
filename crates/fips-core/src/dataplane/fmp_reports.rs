@@ -32,12 +32,13 @@ impl DataplaneLiveNode {
         counter: u64,
         timestamp_ms: u32,
         bytes_sent: usize,
+        elicits_report: bool,
     ) {
         let owner = OwnerId::fmp_node(*node_addr);
         let Some(owner_state) = self.driver.owner_mut(owner) else {
             return;
         };
-        owner_state.record_fmp_send_result(counter, timestamp_ms, bytes_sent);
+        owner_state.record_fmp_send_result(counter, timestamp_ms, bytes_sent, elicits_report);
         let due = owner_state.next_fmp_mmp_report_at(std::time::Instant::now());
         self.note_fmp_report_deadline(due);
     }
@@ -59,7 +60,9 @@ impl DataplaneLiveNode {
         let Some(mmp) = owner.fmp_mmp.as_mut() else {
             return Err(sender);
         };
+        let pending_data = sender.cumulative_packets_sent() != 0;
         mmp.sender.absorb_pending_sender(sender)?;
+        mmp.sender_report_pending |= pending_data;
         let due = owner.next_fmp_mmp_report_at(std::time::Instant::now());
         self.note_fmp_report_deadline(due);
         Ok(())
@@ -98,10 +101,10 @@ impl OwnerState {
             return None;
         }
         let mmp = self.fmp_mmp.as_ref()?;
-        let sender = (mmp.mode() == crate::mmp::MmpMode::Full)
+        let sender = (mmp.mode() == crate::mmp::MmpMode::Full && mmp.sender_report_pending)
             .then(|| mmp.sender.next_report_at(now))
             .flatten();
-        let receiver = (mmp.mode() != crate::mmp::MmpMode::Minimal)
+        let receiver = (mmp.mode() != crate::mmp::MmpMode::Minimal && mmp.receiver_report_pending)
             .then(|| mmp.receiver.next_report_at(now))
             .flatten();
         sender.into_iter().chain(receiver).min()
@@ -160,7 +163,7 @@ mod pending_sender_tests {
         assert_eq!(installed.cumulative_packets_sent(), 1);
         assert_eq!(installed.cumulative_bytes_sent(), 37);
         // Subsequent ordinary sends append to, rather than replace, pending history.
-        live.record_fmp_mmp_send_result(&node, 1, 20, 45);
+        live.record_fmp_mmp_send_result(&node, 1, 20, 45, true);
         let installed = &live
             .driver
             .owner_mut(owner)

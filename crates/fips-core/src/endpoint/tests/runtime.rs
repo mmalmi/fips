@@ -94,6 +94,7 @@ async fn endpoint_reports_bound_udp_listener_without_nostr_discovery() {
 }
 
 mod control_progress;
+mod idle_reports;
 mod shutdown;
 #[tokio::test(start_paused = true)]
 async fn endpoint_control_times_out_for_wedged_node() {
