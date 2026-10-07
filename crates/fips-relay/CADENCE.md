@@ -138,7 +138,16 @@ restart/loss case also pass in `work/payment-loss-arm-r217` and
 crash exposure each, automatic payments advance in healthy and impaired cohorts,
 and all 384 test sats return. Original router services/settings and three account
 archives are independently verified. Traffic pauses during the process crash;
-physical power loss and longer impaired traffic remain separate. The matching
+physical power loss and longer impaired traffic remain separate. The same
+candidate also passes the unchanged five-minute physical renewal workload in
+`work/router-sustained-r221`: all 84,000 original packets arrive once, successor
+delivery and automatic credit advance during both live streams, all 384 test
+sats return and all 648 management checks pass. Shared version-three counters
+validate CPU, logical relay journals and local payment streams across renewal,
+with source/artifact custody and three verified recovery archives. See
+[the continuous-run costs](CADENCE-RESULTS.md#current-continuous-router-renewal--7-october-2026).
+This retains the original workload and financial limits, leaving slower renewal
+near expiry, greater pressure and long-run impairment unqualified. The matching
 Android build and five-minute background phone transit pass in
 `work/android-current-r219` and `work/phone-sustained-r220`: all 19 MiB arrive and
 are acknowledged, all four original channels settle, all 512 test sats return

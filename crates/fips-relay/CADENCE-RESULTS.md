@@ -258,6 +258,48 @@ logical relay writes, excluding wallet SQLite and physical storage. Independent
 router clocks provide no valid one-way latency measurement. Impaired, sustained,
 mobile and phone performance acceptance remain open.
 
+## Current continuous router renewal — 7 October 2026
+
+`work/router-sustained-r221` reuses the ordinary `ab00e5fbe` ARM64 candidate
+qualified in `work/payment-loss-arm-r217`, with the unchanged public renewal
+workload on harness `f9f6bf166`. Three routers use the saved SAE mesh and isolated
+test EtherType alongside their original services. Each endpoint sends 42,000
+original 1,000-byte packets once at 140 packets/s over a continuous five-minute
+window; no traffic pause or replay hides renewal loss.
+
+All 84,000 packets arrive with zero missing, duplicate or invalid packets.
+Each direction has six live successor observations with advancing delivery and
+automatic credit, and authorizes 44 test sats within its unchanged 64-sat limit.
+All four channels settle, all 384 simulated sats return and all 648 management
+checks pass. Independent closure verifies restored normal state, stopped owned
+processes, removed candidate executables and three account recovery archives.
+Nineteen valid financial samples remain; twelve concurrent sampling races are
+recorded and rejected by the existing bounded observation checks.
+
+Shared version-three counter checks bind CPU, journal and payment-control deltas
+to unchanged processes and peer-link epochs. Channel membership changes during
+the window as required by renewal. Costs sum all three routers and divide by
+84,000,000 delivered bytes (80.11 MiB); setup and final collection are outside
+the window, while automatic renewal and diagnostic observations are inside it.
+
+| Measurement | Continuous-window result |
+| --- | ---: |
+| Attributed payment CPU | 5,188.51 ms; 64.77 ms / delivered MiB |
+| Whole-process CPU | 211.90 s; 2.645 s / delivered MiB |
+| Middle-router whole-process CPU | 81.50 s; 1.017 s / delivered MiB |
+| Logical payment journal writes / bytes | 258 / 804,545 |
+| All logical relay journal writes / bytes | 322 / 1,298,493 |
+| Local payment requests started / received | 172 / 172 |
+| Local payment stream bytes sent / received | 70,678 / 70,678 |
+
+Payment spans exclude scheduler, TCP/FIPS/core and other funding/settlement work.
+Logical relay journals exclude wallet SQLite and physical flash; local payment
+stream counters exclude complete transport and radio framing. This single
+unchanged-rate, untraced run does not establish a speedup, optimal cadence,
+maximum throughput, latency across independent clocks or long-soak capacity. Slower
+renewal near expiry, greater pressure, sustained impairment and physical power
+loss remain separate acceptance work. The 500-ms default is unchanged.
+
 ## Sustained background phone transit — 7 October 2026
 
 `work/phone-sustained-r220` uses the ordinary `ab00e5fbe` runtime, the exact
