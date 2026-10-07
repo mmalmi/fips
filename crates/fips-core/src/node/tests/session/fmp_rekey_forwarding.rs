@@ -11,6 +11,7 @@ use std::panic::AssertUnwindSafe;
 use tokio::time::Instant;
 
 mod preparation;
+mod sustained_loss;
 
 const FLOWS: [(usize, usize); 6] = [(0, 2), (0, 1), (1, 0), (1, 2), (2, 1), (2, 0)];
 

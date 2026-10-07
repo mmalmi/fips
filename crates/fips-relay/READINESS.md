@@ -344,6 +344,20 @@ monotonic workload clock. This finite success qualifies local integration of the
 funding change and does not explain the preceding one-sided connection gap.
 That failure remains open acceptance work.
 
+The existing three-node UDP fixture now includes an explicitly selected sustained
+loss/rekey case (`cargo test -p nvpn-fips-core --lib
+repeated_rekeys_keep_lossy_routed_neighbors_live -- --ignored --nocapture
+--test-threads=1`). It sends 1,000-byte originals at 140 packets/s in each direction
+for 72 seconds, loses every twentieth middle-to-endpoint carrier frame, and keeps
+the production drain/dampening windows while accelerating the rekey thresholds.
+`work/link-rekey-loss-r249` passes on the qualified core/dependency graph:
+19,158 of 20,160 originals arrive within 1,038 injected frame drops, every directed
+neighbor retains its link through three FMP cutovers, and both routed sessions
+complete two FSP cutovers. Fresh loss-free direct/routed probes and all seven
+existing rekey cases pass. This narrows the investigation without reproducing
+the physical failure: the fixture uses UDP, explicitly driven maintenance, and
+no concurrent paid renewal or router CPU pressure.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.
