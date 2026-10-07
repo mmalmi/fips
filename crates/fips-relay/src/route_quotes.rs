@@ -2,10 +2,11 @@
 //!
 //! Quotes do not fund channels or authorize traffic. A controller must recheck
 //! the route, verify funding, arrange its onward purchase and persist accepted
-//! bindings before enabling forwarding. Pending offers may expire on restart;
-//! accepted accounting belongs in the durable seller/buyer journals.
+//! bindings before enabling forwarding. Services retain issued offers across
+//! restart; accepted accounting belongs in the durable seller/buyer journals.
 
 mod cache;
+mod journal;
 mod messages;
 mod selection;
 pub use messages::{QuoteRequest, QuoteResponse, RouteOffer};
@@ -52,7 +53,7 @@ pub struct QuotePolicy {
     pub grace_msat: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredOffer {
     offer: RouteOffer,
     downstream: Option<RouteOffer>,
@@ -62,13 +63,15 @@ struct Offers {
     epoch: String,
     next_id: u64,
     pending: BTreeMap<String, StoredOffer>,
+    journal: Option<journal::OfferJournal>,
+    ready: bool,
 }
 
 pub struct RouteQuotes {
     endpoint: Arc<FipsEndpoint>,
     client: Arc<cache::QuoteClient>,
     policy: Arc<QuotePolicy>,
-    offers: Mutex<Offers>,
+    offers: Arc<Mutex<Offers>>,
     pub(crate) free: Arc<crate::free_routes::FreeRoutes>,
     selection: Option<selection::PriceSelection>,
 }
@@ -151,11 +154,13 @@ impl RouteQuotes {
             policy,
             free,
             selection: None,
-            offers: Mutex::new(Offers {
+            offers: Arc::new(Mutex::new(Offers {
                 epoch: Identity::generate().node_addr().to_string(),
                 next_id: 1,
                 pending: BTreeMap::new(),
-            }),
+                journal: None,
+                ready: true,
+            })),
         })
     }
 
@@ -201,9 +206,7 @@ impl RouteQuotes {
         self.offers
             .lock()
             .map_err(|_| "quote state poisoned")?
-            .pending
-            .remove(id);
-        Ok(())
+            .retire(id)
     }
 
     async fn request_route_inner(
@@ -342,6 +345,7 @@ impl RouteQuotes {
         }
         {
             let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
+            offers.ensure_ready()?;
             offers
                 .pending
                 .retain(|_, stored| stored.offer.expires_unix > now);
@@ -407,77 +411,37 @@ impl RouteQuotes {
             .max_units
             .min(downstream.as_ref().map_or(u64::MAX, |d| d.max_units))
             .min(request.requested_max_units.unwrap_or(u64::MAX));
-        let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
-        if request.reuse_unchanged {
-            let reuse_until = now.saturating_add((self.policy.lifetime_secs / 4).max(1));
-            if let Some(stored) = offers
-                .pending
-                .values()
-                .filter(|s| self.free.can_reuse_offer(&s.offer))
-                .find(|s| {
-                    let o = &s.offer;
-                    o.buyer == *peer.node_addr()
-                        && o.destination == request.destination
-                        && o.path == path
-                        && o.price == price
-                        && o.max_units == max_units
-                        && o.trial == request.requested_max_units.is_some()
-                        && o.expires_unix > reuse_until
-                        && o.expires_unix <= expires_unix
-                })
-            {
-                self.free.offer(&stored.offer)?;
-                return Ok(stored.offer.clone());
-            }
-        }
-        if offers.pending.len() >= MAX_OFFERS
-            || offers
-                .pending
-                .values()
-                .filter(|v| v.offer.buyer == *peer.node_addr())
-                .count()
-                >= MAX_OFFERS_PER_BUYER
-        {
-            return Err("offer capacity".into());
-        }
-        let id = format!("{}-{}", offers.epoch, offers.next_id);
-        offers.next_id = offers
-            .next_id
-            .checked_add(1)
-            .ok_or("quote sequence exhausted")?;
-        let offer = RouteOffer {
-            trial: request.requested_max_units.is_some(),
-            billing: self.policy.billing,
-            id: id.clone(),
-            buyer: *peer.node_addr(),
-            provider: local,
-            destination: request.destination,
-            next_hop: *next.node_addr(),
-            path,
-            price,
-            expires_unix,
-            max_units,
-            mint_url: self.policy.mint_url.clone(),
-            receiver_pubkey_hex: self.policy.receiver_pubkey_hex.clone(),
-            capacity_sat: self.policy.capacity_sat,
-            grace_msat: self.policy.grace_msat,
-        };
-        self.free.offer(&offer)?;
-        offers.pending.insert(
-            id,
+        self.publish(
             StoredOffer {
-                offer: offer.clone(),
+                offer: RouteOffer {
+                    trial: request.requested_max_units.is_some(),
+                    billing: self.policy.billing,
+                    id: String::new(),
+                    buyer: *peer.node_addr(),
+                    provider: local,
+                    destination: request.destination,
+                    next_hop: *next.node_addr(),
+                    path,
+                    price,
+                    expires_unix,
+                    max_units,
+                    mint_url: self.policy.mint_url.clone(),
+                    receiver_pubkey_hex: self.policy.receiver_pubkey_hex.clone(),
+                    capacity_sat: self.policy.capacity_sat,
+                    grace_msat: self.policy.grace_msat,
+                },
                 downstream,
             },
-        );
-        Ok(offer)
+            request.reuse_unchanged,
+        )
+        .await
     }
 
     pub fn retained_offer(&self, buyer: PeerIdentity, id: &str) -> Result<RouteOffer, String> {
         let now = unix_now()?;
-        self.offers
-            .lock()
-            .map_err(|_| "quote state poisoned")?
+        let offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
+        offers.ensure_ready()?;
+        offers
             .pending
             .get(id)
             .filter(|s| s.offer.buyer == *buyer.node_addr() && s.offer.expires_unix > now)

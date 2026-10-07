@@ -81,9 +81,20 @@ impl Controller {
         })
         .await?;
         let state = self.snapshot().await?;
-        for incoming in state.incoming.values().filter(|i| i.channel.id == id) {
-            self.services.quotes.retire_offer(&incoming.offer.id)?;
-        }
+        let quotes = self.services.quotes.clone();
+        let ids: Vec<_> = state
+            .incoming
+            .values()
+            .filter(|i| i.channel.id == id)
+            .map(|i| i.offer.id.clone())
+            .collect();
+        blocking(move || {
+            for id in ids {
+                quotes.retire_offer(&id)?;
+            }
+            Ok(())
+        })
+        .await?;
         if let Some(usage) = state.seller_settlements[&id].usage {
             return Ok(usage);
         }

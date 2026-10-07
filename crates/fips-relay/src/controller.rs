@@ -565,11 +565,13 @@ impl Controller {
                 Ok(ids)
             })
             .await?;
-        for incoming in self.snapshot().await?.incoming.values() {
-            self.services.quotes.retire_offer(&incoming.offer.id)?;
-        }
+        let incoming = self.snapshot().await?.incoming;
+        let quotes = self.services.quotes.clone();
         let seller = self.services.seller.clone();
         blocking(move || {
+            for incoming in incoming.values() {
+                quotes.retire_offer(&incoming.offer.id)?;
+            }
             for id in channels {
                 if seller.channel_terms(&id).is_some() {
                     seller.close_channel(&id).map_err(|e| e.to_string())?;

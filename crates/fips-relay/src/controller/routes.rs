@@ -313,10 +313,11 @@ impl Controller {
                 Ok((old.offer.id.clone(), old.channel.clone()))
             })
             .await?;
-        self.services.quotes.retire_offer(&offer_id)?;
+        let quotes = self.services.quotes.clone();
         let seller = self.services.seller.clone();
         let saved = id.clone();
         blocking(move || {
+            quotes.retire_offer(&offer_id)?;
             // A stopped prepared request may not have installed accounting yet.
             // Do not acknowledge it as a cooperatively recoverable channel.
             if seller.channel_terms(&channel.id).as_ref() != Some(&channel) {

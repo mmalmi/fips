@@ -4,7 +4,7 @@ fn peer(n: u8) -> PeerIdentity {
     PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
 }
 
-fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
+pub(super) fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
     let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
     let policy = QuotePolicy {
         destination_fees: Default::default(),

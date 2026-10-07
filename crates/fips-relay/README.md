@@ -322,6 +322,13 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   Their accepted bindings and financial records remain in durable journals; the
   retired quote cannot fund a fresh binding. Pending watched offers
   recover their exact funding intent. Settlement durably pauses source watches.
+  The service saves issued quotes, including their downstream agreement, before
+  replying, so a provider restart retains the exact offer used for channel
+  funding. This uses no additional wire messages. Retention keeps the same
+  128-offer total and 16-offer per-buyer limits, with a 1 MiB journal limit.
+  Expired offers are discarded; unchanged cached replies and repeated retirement
+  perform no journal write. Publication and durable retirement run off the node
+  loop. A failed write suspends quoting until the journal is recovered.
   A full native-route offer withdrawn during disconnection can still be cached
   by its provider. An eligible unpaused watch requests a fresh offer at its next
   ordinary refresh deadline, retaining the old fence and funding operation.
@@ -483,6 +490,12 @@ capped by its funded capacity. If repeated failures consume the available allowa
 automatic forwarding stops; a restart is not permission to write off that loss.
 This implementation assumes the accounting files survive the process restart.
 Never automatically replace missing/corrupt state with a newly initialized ledger.
+
+New service profiles use manifest version 3 and require `quotes/offers.json`,
+bound to the provider identity and quote policy. It contains offers, not payment
+proofs or forwarding credit. Loading refuses missing, corrupt or mismatched
+state. Older profiles remain on their original software; this greenfield change
+does not migrate or reinitialize saved accounts.
 
 Buyer journals retain the same bounded evidence history. Pending observations
 become unconfirmed on restart; they cannot support a signature. Evidence lost

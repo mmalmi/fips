@@ -387,12 +387,45 @@ the renewal cannot resume forwarding within 90 seconds. The provider lost its
 unused in-memory quote on restart; the buyer retains that quote and receives
 purchase rejections. The SDK's retained opening and funded wallet operation
 agree, but financial recovery alone does not establish routing recovery. This
-case remains rejected. Renewals are paused in the retained test accounts, and a
-bounded observer awaits the original unused-channel expiry for collection;
-final conservation is not yet accepted. The earlier `r257` attempt rejected a
+case remains rejected. Its unused successor refunded all 32 test sats at its
+original deadline. Recovery independently checks the predecessor's 29-sat refund,
+the other buyer's retired 2-sat payment and 30-sat refund, and the provider's
+retained 5-sat revenue. All 384 test sats are collected with unchanged lifetime
+spending limits, and all owned processes are stopped. A cleanup observer initially
+mistook normal channel-history retirement for changed funding; the verified
+retirement totals close that observation without recreating accounts or funding.
+This cleanup does not turn the failed forwarding run into accepted recovery.
+The earlier `r257` attempt rejected a
 retained completed SDK opening before arming the barrier; its original two
 channels were settled, all 384 test sats collected, and all owned processes
 stopped. The corrected test preserves those completed records.
+
+The fix in `work/durable-quotes-native-r259` retains issued quotes before
+replying, using the existing atomic journal writer and blocking workers. Restart
+checks the saved identity, policy, complete path and downstream terms; quotes
+grant no payment credit. The existing 128-offer/16-per-buyer limits remain, with
+a 1-MiB journal cap. Cached unchanged replies and repeated retirement do not
+write; a failed write suspends quote use until recovery. No wire messages are
+added. Fresh profiles require manifest version three and the quote journal;
+existing profiles are not migrated or reinitialized.
+
+The rebuilt ordinary Linux runtime, focused quote and service-state checks,
+three delayed/interrupted successor-funding regressions, strict lint and source
+size gate pass. The regressions account for all 1,152 test sats and owned processes
+are absent.
+
+The unchanged guest acceptance case passes on that rebuilt runtime in
+`work/guest-durable-quotes-r260`. The same channel-opening reply is held while
+both original directions continue forwarding and paying; a forced guest kernel
+and cache loss then interrupts funding. After ext4 recovery, the exact pending
+operation creates one successor, the predecessor refunds, and forwarding and
+automatic payments resume. All 7,680 originals arrive, all three channels settle,
+and all 384 test sats are collected within the original spending limits.
+Independent closure verifies source/artifacts, exact crash exposure and absent
+guest, tunnel, mint and runner processes. This closes the reproduced r258 failure
+for the isolated x86-64 UDP/ext4 case with a surviving host mint. Updated
+ARM64/router acceptance, physical flash power loss and other interruption points
+remain separate.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
@@ -2255,7 +2288,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 | Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Renewal preopening passes native money/recovery checks, the ordinary ARM64 build and one unchanged repeated-loss physical case, with completed pauses below two seconds and no source-queue expiry. An earlier run still fails with a one-sided neighbor gap; its failure and the qualified repeat remain above. | Reproduce and resolve the intermittent connection gap. Then cover higher sustained pressure, rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r219 passes all native, lifecycle and package gates. Physical r220 phone transit delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Recover a successor when the provider loses its unused quote during the funding power cut (r258); financial restoration currently succeeds but forwarding does not resume. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Updated ARM64/router acceptance for durable quotes. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Published dependency pins still lack required APIs; each deployment needs the matching source graph, native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional [TollGate adapter](TOLLGATE.md) remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |

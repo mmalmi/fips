@@ -43,12 +43,23 @@ pub(super) fn validate_offer(
     request: &QuoteRequest,
     now: u64,
 ) -> Result<(), String> {
+    validate_offer_address(policy, local, offer, *peer.node_addr(), request, now)
+}
+
+pub(super) fn validate_offer_address(
+    policy: &QuotePolicy,
+    local: NodeAddr,
+    offer: &RouteOffer,
+    provider: NodeAddr,
+    request: &QuoteRequest,
+    now: u64,
+) -> Result<(), String> {
     if offer.id.is_empty()
         || offer.trial != request.requested_max_units.is_some()
         || offer.billing != policy.billing
         || offer.id.len() > 128
         || offer.buyer != local
-        || offer.provider != *peer.node_addr()
+        || offer.provider != provider
         || offer.destination.node_addr() != request.destination.node_addr()
         || offer.path.len() < 2
         || offer.path.len() + request.ancestors.len() > MAX_PAID_HOPS + 2

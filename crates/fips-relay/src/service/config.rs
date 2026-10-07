@@ -11,6 +11,7 @@ pub(super) const REQUIRED: &[&str] = &[
     "seller/ledger.json",
     "buyer/buyer.json",
     "controller/controller.json",
+    "quotes/offers.json",
     "receiver/spilman-receiver-key.json",
     "receiver/spilman-receiver.sqlite",
     "wallet/cashu/seed.json",

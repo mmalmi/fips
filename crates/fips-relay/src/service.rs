@@ -149,7 +149,7 @@ impl RelayService {
         .map_err(|e| e.to_string())?;
         let service = Self::assemble(config.clone(), identity, None).await?;
         let manifest = Manifest {
-            version: 2,
+            version: 3,
             npub: service.endpoint.npub().to_string(),
             receiver_pubkey: service.receiver_pubkey.clone(),
             sender_pubkey: service.sender_pubkey.clone(),
@@ -202,7 +202,7 @@ impl RelayService {
     fn stored_state(config: &ServiceConfig) -> Result<(Identity, Manifest), String> {
         config.validate()?;
         let manifest: Manifest = read_json(&config.state_directory.join("service.json"))?;
-        if manifest.version != 2 || manifest.terms != config.terms {
+        if manifest.version != 3 || manifest.terms != config.terms {
             return Err(
                 "configuration differs from saved terms; explicit reconciliation required".into(),
             );
@@ -376,6 +376,12 @@ impl RelayService {
             config.quote_policy(receiver.receiver_pubkey_hex().to_string())?,
             free.clone(),
         )?;
+        let quote_directory = root.join("quotes");
+        let quotes = tokio::task::spawn_blocking(move || {
+            quotes.with_offer_journal(&quote_directory, create)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let quotes = Arc::new(if let Some(policy) = &config.price_selection {
             quotes.with_price_selection(policy.clone(), buyer.clone())?
         } else {
