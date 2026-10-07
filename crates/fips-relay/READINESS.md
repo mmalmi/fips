@@ -52,9 +52,9 @@ tracing, restored routers, stopped processes and 24 account recovery archives.
 In the high-rate repetitions, one-second payments use 34% less attributed CPU
 than 500 ms; total process CPU is nearly unchanged. The 500-ms default stays
 unchanged. See [the physical CPU comparison](CADENCE-RESULTS.md#full-physical-cpu-comparison--7-october-2026).
-Impaired/sustained and mobile workloads, independent-router latency, phone
-performance, complete shared/transit costs and physical/radio attribution remain
-open.
+Matched impaired/sustained performance and mobile workloads, independent-router
+latency, phone performance, complete shared/transit costs and physical/radio
+attribution remain open.
 
 Early payment scheduling computes its value trigger from grace left after
 validated per-channel crash loss. Loss stays unbilled and financial limits remain
@@ -64,8 +64,19 @@ measurements, the ordinary Linux build and the mixed UDP/TCP restart and renewal
 case pass, with all 384 simulated test sats conserved. Independent source,
 dependency, artifact and stopped-process checks close `work/payment-loss-r216`.
 See [the scheduling rules](CADENCE.md).
-Hardware and Android acceptance of this change remains open. Exact shared-credit
-and low-credit latency prediction remain outside this scheduling hint.
+The ordinary ARM64 build closes `work/payment-loss-arm-r217`. On that candidate
+(`ab00e5fbe`), the existing twelve-stream physical restart/loss case passes in
+`work/payment-loss-hardware-r218`: all 32,000 healthy payloads arrive and 15,201
+of 16,000 impaired payloads arrive, within the observed 818 injected frame drops.
+Frame counters include control traffic and cannot identify each missing payload.
+Both original channels and financial limits survive the middle-relay restart;
+4,000 msat of crash exposure per channel stays unbilled, and automatic payments
+advance after every cohort. All 384 test sats are collected and all 612 management
+checks pass. Independent postflight verifies restored original services/settings,
+stopped test processes/mint and three retained, byte-verified account archives.
+This finite case pauses traffic during the crash and does not qualify physical
+power loss, sustained traffic or Android. Exact shared-credit and low-credit
+latency prediction remain outside this scheduling hint.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test

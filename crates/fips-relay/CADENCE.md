@@ -132,8 +132,14 @@ idle suppression, retained loss and sends racing a reply. Strict lint with and
 without measurements and an ordinary Linux build pass. The existing mixed
 UDP/TCP daemon case passes restart, renewal and retained unbilled exposure,
 conserving all 384 simulated test sats. Source, dependency, artifact and stopped
-process checks pass. Hardware and Android qualification of this change remains
-separate; this is not an exact shared-credit or latency forecast.
+process checks pass. The ordinary ARM64 build and existing twelve-stream physical
+restart/loss case also pass in `work/payment-loss-arm-r217` and
+`work/payment-loss-hardware-r218`. Original channels retain 4,000 msat of unbilled
+crash exposure each, automatic payments advance in healthy and impaired cohorts,
+and all 384 test sats return. Original router services/settings and three account
+archives are independently verified. Traffic pauses during the process crash;
+physical power loss, sustained traffic and Android acceptance remain separate.
+This is not an exact shared-credit or latency forecast.
 
 Focused tests cover idle suppression, value-triggered payments, deadlines,
 whole-sat quantization, independent schedules, failed-exchange retries, retained
