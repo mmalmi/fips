@@ -576,7 +576,7 @@ async fn incoming_mesh_offer_breaks_mutual_traversal_cooldown() {
         "fixture must put the peer in traversal cooldown"
     );
 
-    discovery
+    let inline_answer = discovery
         .receive_mesh_traversal_offer(
             TraversalOffer {
                 message_type: "offer".to_string(),
@@ -597,6 +597,11 @@ async fn incoming_mesh_offer_breaks_mutual_traversal_cooldown() {
             expected_peer_npub.clone(),
         )
         .await;
+
+    assert!(
+        inline_answer.is_none(),
+        "fresh offer remains background work"
+    );
 
     let answer = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
