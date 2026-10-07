@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process at most one small priority control packet inline per Android live
   turn when no cryptographic work is in flight, avoiding idle worker wakeups
   while retaining authentication, packet ordering, and replay protection.
+- Retain useful tree declarations during brief contacts and retry initial link
+  measurements until the first timing response arrives, including lost reports.
+- Skip discovery expiry scans while every stored record is still unexpired,
+  retaining existing expiry and admission behavior at the deadline.
 - Release the reusable core and matching endpoint libraries as 0.4.95. Identity
   remains 0.3.3; protocol messages and wire layouts are unchanged.
 
