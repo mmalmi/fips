@@ -161,16 +161,18 @@ remain open. The 500-ms default stays unchanged.
 
 ## Full physical capture matrix — 7 October 2026
 
-`work/wire-device-matrix-r212` runs the ordinary ARM64 candidate from `c8aaeda65`
+`work/wire-device-prepaid-r214` runs the ordinary ARM64 candidate from `c8aaeda65`
 through 250/500/1000/2000/2000/1000/500/250-ms policies on the same three-router,
 saved-SAE two-hop topology. The workloads, financial terms and three-second tails
-match the pilot above. The shared workload command now exposes
-`--service-wire-trace`; its 16 existing checks pass. The candidate's two real
-terminal-carrier recovery tests, strict core/relay lint and ordinary ARM64 build
-pass in `work/wire-device-build-r211`, using the frozen runtime dependencies.
+match the pilot above. Tools on `467844a15` declare `--prepaid-boundaries` and
+`--service-wire-trace` before any trial; 99 tool files remain frozen. The shared
+native accounting check now supports hardware host/process identities. Its 59
+focused analyzer checks and 16 workload checks pass. The unchanged candidate's
+two real terminal-carrier recovery tests, strict core/relay lint and ordinary
+ARM64 build pass in `work/wire-device-build-r211`, with frozen runtime dependencies.
 
-All 93,696 application payloads arrive, with 269 out of order and no duplicates
-or invalid payloads. All 2,292 management checks pass. Every trial settles its
+All 93,696 application payloads arrive, with 227 out of order and no duplicates
+or invalid payloads. All 2,298 management checks pass. Every trial settles its
 two channels and collects all 384 test sats before the next starts: all 3,072
 test sats return. Independent postflight verifies restored original device
 state, stopped candidates/capture supervisors and eight cleanly exited mints,
@@ -178,23 +180,40 @@ plus 24 byte-verified recovery archives. Persistent financial accounts remain
 preserved. Closed capture/log copies are verified on both the controller and
 archive host before their exact temporary router copies are removed.
 
-The original comparison **remains rejected**. In trial six, the 1-second
-high-rate window's final guard observes prepaid usage increasing from 4 to
-5 msat on the third router, below its unchanged 1,000-msat acknowledgment.
-No payment operation, payment traffic or durable write changes in that gap.
-The existing credit-bounded gap check verifies all 88 outside-window intervals,
-but the declared hardware contract requires unchanged usage evidence. The
-existing explicit prepaid boundary contract supports native schema 2 only;
-hardware support and a fresh declared-contract run remain outstanding. Neither
-the report metadata nor its failed result is rewritten.
+Complete-run validation and capture attribution pass for all 32 workload windows.
+Every trial's 15 observed intervals sum exactly to its complete integer counters,
+including all 88 guard/inter-workload gaps. In the fourth trial, a final guard
+records 1 msat of already-paid usage with unchanged acknowledgment and no payment
+operation, payment traffic or durable write. The declared contract retains that
+usage and all gap costs while requiring unchanged paid credit and process epochs.
 
-All 24 independent captures have zero kernel drops. Their 205,960 packets match
-all 1,742 locally originated payment submissions through the final guards,
-totaling 155,680 FIPS bytes and 185,294 captured Ethernet bytes. This verifies
-submission prefixes, not an accepted workload-cost comparison. Shared/opaque
-transit, physical framing and radio airtime remain outside attribution. Traced
-CPU/timing is diagnostic; the 500-ms default and earlier accepted pilot remain
-unchanged.
+All 24 captures have zero kernel drops. Their 206,021 packets match all 1,716
+locally originated payment submissions through the final guards: 153,320 FIPS
+bytes and 182,492 captured Ethernet bytes, including setup and guard intervals.
+High-rate costs below average two trials, each delivering 8,000,000 application
+bytes. They sum the three hosts' locally originated payment frames; setup and
+guards remain separate, with no baseline subtraction.
+
+| Maximum age | Payment updates | Payment frames | FIPS bytes | Captured Ethernet bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 3 | 78 | 7,086 | 8,412 |
+| 500 ms | 2 | 52 | 4,722 | 5,606 |
+| 1 s | 2 | 52 | 4,722 | 5,606 |
+| 2 s | 2 | 52 | 4,722 | 5,606 |
+
+All idle and bursty windows have zero payment updates and payment frames. Shared
+or opaque transit, direct mint traffic, physical framing and radio airtime remain
+outside attribution. Trace hashing changes execution cost, so traced CPU/timing
+is diagnostic. These finite clean-link repetitions do not establish an optimal
+policy or maximum throughput; the 500-ms default stays unchanged.
+
+The preceding run in `work/wire-device-matrix-r212` remains rejected under its
+original strict usage-equality contract. It delivers all 93,696 payloads and
+returns all 3,072 test sats, but its sixth trial's final guard observes usage
+increasing from 4 to 5 msat within unchanged 1,000-msat credit. Its 24 captures
+verify submission prefixes and its 24 recovery archives pass. The current
+analyzer still rejects that unchanged report; no old metadata or result is
+rewritten to accept it.
 
 ## Current storage syscall comparison — 7 October 2026
 

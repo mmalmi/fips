@@ -26,27 +26,25 @@ The new matched native matrix passes in `work/payment-cpu-cadence-r201`, deliver
 all 285,696 payloads and collecting all 40,960 test sats with closed processes and
 source evidence. See [the current cadence results](CADENCE-RESULTS.md#current-native-matrix--7-october-2026).
 
-Independent wire evidence now covers the complete matched native UDP matrix and
-one current physical-router pilot. The ordinary ARM64 candidate on `fbc2c3ac1`
-passes the original 500-ms workloads over two saved-SAE radio hops: all 11,712
-payloads arrive and all 384 test sats are collected. Three zero-drop captures
-match 234 payment submissions through the final guards; every measured interval
-reconciles. Independent postflight verifies restored original device state,
-stopped owned processes and three recovery archives. The host/trial-aware command
-reuses the strict workload and financial analyzer; see [the wire results](CADENCE-RESULTS.md#physical-ethernet-capture-pilot--7-october-2026).
-The hardware policy matrix, impaired/sustained workloads, complete shared/transit
-costs and physical/radio attribution remain open. Traced capture runs do not
-replace untraced CPU/timing results or establish deployment readiness.
+Independent wire evidence now covers the complete native UDP matrix and the full
+physical router matrix in `work/wire-device-prepaid-r214`. The ordinary ARM64
+candidate on `c8aaeda65`, with tools on `467844a15`, runs all eight policies over
+two saved-SAE radio hops. All 93,696 payloads arrive, all 3,072 test sats return,
+and all 2,298 management checks pass. Twenty-four zero-drop captures reconcile
+all 32 workload windows. Every trial's 15 observed intervals sum exactly to its
+complete counters; one real guard records 1 msat of usage within unchanged paid
+credit, with no payment operation, payment traffic or durable write.
 
-The subsequent full physical capture matrix on `c8aaeda65` delivers all 93,696
-payloads, collects all 3,072 test sats and verifies 24 zero-drop capture prefixes
-in `work/wire-device-matrix-r212`. Independent postflight closes all eight
-trials and verifies 24 retained account archives. Its original comparison stays
-rejected: one final guard observes 1 msat of already prepaid usage, with unchanged
-acknowledgment, payment operations/traffic and durable writes. The shared native
-prepaid boundary contract currently supports schema 2 only. Extend that explicit
-contract to hardware host/process identities and run a fresh declared-contract
-comparison; preserve this failed result. See [the full physical capture record](CADENCE-RESULTS.md#full-physical-capture-matrix--7-october-2026).
+The explicit hardware prepaid contract shares the native accounting checks and
+keeps host/process epochs, credit, payment and durability guards. Fifty-nine
+focused analyzer checks and 16 workload checks pass. Independent postflight
+verifies restored original device state, stopped owned processes and 24 account
+recovery archives. The preceding strict-contract matrix in
+`work/wire-device-matrix-r212` remains rejected, with unchanged metadata and
+financial evidence. See [the wire comparison](CADENCE-RESULTS.md#full-physical-capture-matrix--7-october-2026).
+Impaired/sustained workloads, current untraced device CPU/timing, complete
+shared/transit costs and physical/radio attribution remain open. Traced capture
+runs do not establish deployment readiness.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
