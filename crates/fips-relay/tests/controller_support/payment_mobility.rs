@@ -8,7 +8,7 @@ use tokio::sync::{Notify, mpsc, watch};
 mod payment_replies;
 
 pub(super) struct Gate {
-    pause: watch::Sender<bool>,
+    pause: watch::Sender<Pause>,
     discard: mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
     held: Arc<Notify>,
     task: tokio::task::JoinHandle<()>,
@@ -16,13 +16,24 @@ pub(super) struct Gate {
     replies: payment_replies::ReplyGate,
 }
 
+#[derive(Clone, Copy)]
+enum Pause {
+    Off,
+    All,
+    Release,
+}
+
 impl Gate {
     pub(super) fn pause(&self) {
-        self.pause.send(true).unwrap();
+        self.pause.send(Pause::All).unwrap();
+    }
+
+    pub(super) fn pause_releases(&self) {
+        self.pause.send(Pause::Release).unwrap();
     }
 
     pub(super) fn release(&self) {
-        self.pause.send(false).unwrap();
+        self.pause.send(Pause::Off).unwrap();
     }
 
     pub(super) async fn held(&self) -> bool {
@@ -58,7 +69,7 @@ pub(super) fn gate(
     let (incoming, replies) = payment_replies::proxy(incoming, buyer);
     let mut incoming = incoming;
     let (send, receive) = mpsc::channel(16);
-    let (pause, mut paused) = watch::channel(false);
+    let (pause, mut paused) = watch::channel(Pause::Off);
     let (discard, mut discards) = mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
     let held = Arc::new(Notify::new());
     let notify = held.clone();
@@ -75,7 +86,7 @@ pub(super) fn gate(
                 }
                 changed = paused.changed() => {
                     if changed.is_err() { return; }
-                    if !*paused.borrow() {
+                    if matches!(*paused.borrow(), Pause::Off) {
                         for request in pending.drain(..) {
                             if send.send(request).await.is_err() { return; }
                         }
@@ -83,7 +94,15 @@ pub(super) fn gate(
                 }
                 request = incoming.recv() => {
                     let Some(request) = request else { return; };
-                    if request.peer.node_addr() == buyer.node_addr() && *paused.borrow() {
+                    let held = match *paused.borrow() {
+                        Pause::Off => false,
+                        Pause::All => true,
+                        Pause::Release => matches!(
+                            serde_json::from_slice::<ControllerRequest>(&request.body),
+                            Ok(ControllerRequest::ReleaseSettlement { .. })
+                        ),
+                    };
+                    if request.peer.node_addr() == buyer.node_addr() && held {
                         notify.notify_one();
                         // Delay only this link's control traffic. Other buyers
                         // of the provider must still be serviced normally.

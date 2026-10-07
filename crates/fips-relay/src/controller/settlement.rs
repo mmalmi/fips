@@ -244,11 +244,16 @@ impl Controller {
     /// Freeze an accepted purchase, deliver its final authorized balance,
     /// redeem the seller's payout and recover the buyer's unused funding.
     pub async fn settle_channel(&self, id: &str) -> Result<SettlementReport, String> {
-        let _channel = self.channel_work(id)?.lock_owned().await;
-        self.settle_purchase(id, false).await
+        let channel = self.channel_work(id)?.lock_owned().await;
+        let report = self.refund_purchase(id, false).await?;
+        drop(channel);
+        self.release_settlement(id).await?;
+        Ok(report)
     }
 
-    pub(super) async fn settle_purchase(
+    // The caller serializes this channel. Once its refund is durable, report
+    // retention cleanup needs neither the channel guard nor a forwarding pause.
+    pub(super) async fn refund_purchase(
         &self,
         id: &str,
         recovery_only: bool,
@@ -285,7 +290,6 @@ impl Controller {
             })
             .await?;
         if purchase.refunded {
-            self.release_settlement(id).await?;
             return purchase.report.ok_or("settlement report missing".into());
         }
         if purchase.usage.is_none() {
@@ -422,7 +426,6 @@ impl Controller {
             Ok(())
         })
         .await?;
-        self.release_settlement(id).await?;
         Ok(report)
     }
 

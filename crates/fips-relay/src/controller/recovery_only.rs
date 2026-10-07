@@ -326,7 +326,13 @@ impl Controller {
             if Self::check_recovery_settlement(&self.snapshot().await?, &id).is_err() {
                 continue;
             }
-            if let Err(error) = self.settle_purchase(&id, true).await {
+            let refund = self.refund_purchase(&id, true).await;
+            drop(_channel);
+            let result = match refund {
+                Ok(_) => self.release_settlement(&id).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
                 first_error.get_or_insert(error);
             }
         }
