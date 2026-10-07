@@ -38,6 +38,16 @@ The hardware policy matrix, impaired/sustained workloads, complete shared/transi
 costs and physical/radio attribution remain open. Traced capture runs do not
 replace untraced CPU/timing results or establish deployment readiness.
 
+The subsequent full physical capture matrix on `c8aaeda65` delivers all 93,696
+payloads, collects all 3,072 test sats and verifies 24 zero-drop capture prefixes
+in `work/wire-device-matrix-r212`. Independent postflight closes all eight
+trials and verifies 24 retained account archives. Its original comparison stays
+rejected: one final guard observes 1 msat of already prepaid usage, with unchanged
+acknowledgment, payment operations/traffic and durable writes. The shared native
+prepaid boundary contract currently supports schema 2 only. Extend that explicit
+contract to hardware host/process identities and run a fresh declared-contract
+comparison; preserve this failed result. See [the full physical capture record](CADENCE-RESULTS.md#full-physical-capture-matrix--7-october-2026).
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.

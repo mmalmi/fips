@@ -63,6 +63,7 @@ def metadata(args):
         "link_loss_counters": getattr(args, "link_loss_counters", False),
         "aqm_counters": getattr(args, "aqm_counters", False),
         "payment_service_carrier": True,
+        "service_wire_trace": getattr(args, "service_wire_trace", False),
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
         "mint_connection": "controller_ssh" if args.mint_ssh_forward else "remote_lan",
@@ -79,6 +80,9 @@ class CadenceRun(PaidWifiRun):
         if getattr(args, "dataplane_drop_logs", False):
             for node in self.nodes.values():
                 node.diagnostic_log_filter = DATAPLANE_DROP_LOG_FILTER
+        if getattr(args, "service_wire_trace", False):
+            for node in self.nodes.values():
+                node.diagnostic_log_filter = (node.diagnostic_log_filter or "error") + ",fips_core::service_wire=trace"
         self.evidence.update(trial=trial, max_delay_ms=delay,
                              measurement_acceptance="not_analyzed")
         for name in ("wifi_cadence.py", "cadence_workloads.py", "wifi_measurements.py",
@@ -231,6 +235,8 @@ def main():
                         help="pilot payment age limit; defaults to 250 ms")
     parser.add_argument("--native-counters", action="store_true",
                         help="capture existing native forwarding/drop counters at each boundary")
+    parser.add_argument("--service-wire-trace", action="store_true",
+                        help="retain encrypted service submission fingerprints for independent packet captures")
     parser.add_argument("--dataplane-drop-logs", action="store_true",
                         help="pin existing dataplane drop logging and capture per-window byte offsets")
     parser.add_argument("--post-gap-probes", action="store_true",

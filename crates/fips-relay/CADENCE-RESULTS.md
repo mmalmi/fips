@@ -159,6 +159,43 @@ headers and padding; shared/opaque transit, physical framing and radio airtime
 remain outside payment attribution. Impaired and sustained device comparisons
 remain open. The 500-ms default stays unchanged.
 
+## Full physical capture matrix — 7 October 2026
+
+`work/wire-device-matrix-r212` runs the ordinary ARM64 candidate from `c8aaeda65`
+through 250/500/1000/2000/2000/1000/500/250-ms policies on the same three-router,
+saved-SAE two-hop topology. The workloads, financial terms and three-second tails
+match the pilot above. The shared workload command now exposes
+`--service-wire-trace`; its 16 existing checks pass. The candidate's two real
+terminal-carrier recovery tests, strict core/relay lint and ordinary ARM64 build
+pass in `work/wire-device-build-r211`, using the frozen runtime dependencies.
+
+All 93,696 application payloads arrive, with 269 out of order and no duplicates
+or invalid payloads. All 2,292 management checks pass. Every trial settles its
+two channels and collects all 384 test sats before the next starts: all 3,072
+test sats return. Independent postflight verifies restored original device
+state, stopped candidates/capture supervisors and eight cleanly exited mints,
+plus 24 byte-verified recovery archives. Persistent financial accounts remain
+preserved. Closed capture/log copies are verified on both the controller and
+archive host before their exact temporary router copies are removed.
+
+The original comparison **remains rejected**. In trial six, the 1-second
+high-rate window's final guard observes prepaid usage increasing from 4 to
+5 msat on the third router, below its unchanged 1,000-msat acknowledgment.
+No payment operation, payment traffic or durable write changes in that gap.
+The existing credit-bounded gap check verifies all 88 outside-window intervals,
+but the declared hardware contract requires unchanged usage evidence. The
+existing explicit prepaid boundary contract supports native schema 2 only;
+hardware support and a fresh declared-contract run remain outstanding. Neither
+the report metadata nor its failed result is rewritten.
+
+All 24 independent captures have zero kernel drops. Their 205,960 packets match
+all 1,742 locally originated payment submissions through the final guards,
+totaling 155,680 FIPS bytes and 185,294 captured Ethernet bytes. This verifies
+submission prefixes, not an accepted workload-cost comparison. Shared/opaque
+transit, physical framing and radio airtime remain outside attribution. Traced
+CPU/timing is diagnostic; the 500-ms default and earlier accepted pilot remain
+unchanged.
+
 ## Current storage syscall comparison — 7 October 2026
 
 The current ordinary Linux ARM64 executable on `29a88d481`, with measurement

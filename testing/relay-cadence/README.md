@@ -649,7 +649,9 @@ diagnostics cannot turn a failed workload into an accepted comparison.
 ### Independent payment packet captures
 
 Enable `fips_core::service_wire=trace` for the diagnostic run and retain complete
-daemon logs. Capture only outgoing packets on each experiment interface with
+daemon logs. The physical workload command `sim.wifi_cadence` accepts
+`--service-wire-trace`; it combines this target with any selected drop logging.
+Capture only outgoing packets on each experiment interface with
 full packet lengths (`tcpdump -Q out -s 0`), keeping the final capture statistics.
 Use classic Ethernet PCAP. Capture routers separately: process numbers belong
 to each host, and the same number on two routers does not identify one process.
