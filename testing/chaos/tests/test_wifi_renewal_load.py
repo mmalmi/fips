@@ -18,7 +18,7 @@ from tests.test_wifi_priority import reports
 
 
 class AccountsFixture:
-    def __init__(self):
+    def __init__(self, expected_renewals=1):
         self.raw = empty()
         for state in self.raw.values():
             state["controller"]["policy"]["renewal"] = dict(RENEWAL)
@@ -29,11 +29,11 @@ class AccountsFixture:
         self.run.evidence = {"phases": []}
         self.run.finances.side_effect = lambda: summary(self.raw)
         self.run.state_json.side_effect = lambda name, path: copy.deepcopy(self.raw[name][path.split('/')[0]])
-        self.accounts = RenewalAccounts(self.run, IDS)
+        self.accounts = RenewalAccounts(self.run, IDS, expected_renewals=expected_renewals)
 
-    def channel(self, source, suffix, paid):
+    def channel(self, source, suffix, paid, created=None):
         terms = add_channel(self.raw, source, suffix, paid)
-        created = 101 if suffix.endswith("new") else 100
+        created = created if created is not None else (101 if suffix.endswith("new") else 100)
         terms.update(expires_unix=created + 900, refund_after_unix=created + 1800)
         intent = self.raw[source]["controller"]["funding"]["fund-" + suffix]
         intent.update(created_unix=created, expires_unix=created + 900, refund_after_unix=created + 1800)
@@ -82,8 +82,9 @@ class AccountsFixture:
                 journal = self.raw[name]["controller"]
                 journal["outgoing"].pop(contract["id"])
                 journal["renewals"].pop(contract["channel_id"])
-                journal["history"] = {"buyers": [contract["channel_id"]],
-                                      "through_unix": contract["expires_unix"], "pending": None}
+                history = journal.setdefault("history", {"buyers": [], "through_unix": 0, "pending": None})
+                history["buyers"].append(contract["channel_id"])
+                history["through_unix"] = max(history["through_unix"], contract["expires_unix"])
         return self
 
 
@@ -104,8 +105,9 @@ def accepted_evidence():
             "receivers": {name: {**row["receiver"], "unique_packets": count,
                 "unique_bytes": count * 1000, "missing_packets": PACKETS - count} for name, row in streams.items()}}
     process = {"npub": "identity", "host_process": {"host": "host", "pid": 10, "start_ticks": 20}}
-    return {"streams": streams, "samples": [observation(100, 1000), observation(110, 2000)],
-        "accounts_after": {"renewals": {name: [{}] for name in ("n01", "n03")},
+    samples = [observation(100, 1000), observation(110, 2000)]
+    return {"streams": streams, "samples": samples,
+        "accounts_after": {"renewals": copy.deepcopy(samples[-1]["accounts"]["renewals"]),
             "financial": {name: {"funding": {"old": [], "new": []}, "signed": {"new-" + name: 2},
                                  "authorized": 28} for name in ("n01", "n03")}},
         "before": dict.fromkeys(NAMES, process), "after": dict.fromkeys(NAMES, process)}
@@ -134,7 +136,59 @@ def impaired_evidence():
     return evidence
 
 
+def repeated_evidence():
+    evidence = impaired_evidence()
+    evidence.update(expected_renewals=3, expiry_renewal=True, quote_lifetime_secs=90,
+                    renewal={"at_capacity_percent": 100, "before_expiry_secs": 8})
+    samples = evidence["samples"]
+    evidence["samples"] = []
+    for index in range(3):
+        for offset, original in enumerate(samples):
+            sample = copy.deepcopy(original)
+            sample["ended_at"] += index * 60
+            for source in ("n01", "n03"):
+                lineage = [{"previous": f"channel-{source}-{n}",
+                    "replacement": f"channel-{source}-{n + 1}",
+                    "previous_expires_unix": 1200 + n * 82,
+                    "replacement_created_unix": 1195 + n * 82,
+                    "previous_observed_units": 10_000_000, "previous_paid_sat": 10}
+                    for n in range(index + 1)]
+                sample["accounts"]["renewals"][source] = lineage
+                sample["accounts"]["financial"]["n02"]["credited"].update(
+                    {row["replacement"]: 2000 for row in lineage})
+                sample["accounts"]["financial"]["n02"]["credited"][lineage[-1]["replacement"]] = 1000 * (offset + 1)
+                count = sample["receivers"][source]["unique_packets"] + index * 60
+                sample["receivers"][source].update(unique_packets=count,
+                    unique_bytes=count * 1000, missing_packets=PACKETS - count)
+                counter = sample["frame_loss"][source]
+                counter["dropped_packets"] += index * 200
+                counter["dropped_bytes"] = counter["dropped_packets"] * 1200
+            evidence["samples"].append(sample)
+    evidence["accounts_after"]["renewals"] = copy.deepcopy(evidence["samples"][-1]["accounts"]["renewals"])
+    for source in ("n01", "n03"):
+        evidence["accounts_after"]["financial"][source] = {
+            "funding": {f"fund-{n}": [] for n in range(4)},
+            "signed": {f"channel-{source}-{n}": 10 for n in range(4)}, "authorized": 40}
+    return evidence
+
+
 class RenewalTests(unittest.TestCase):
+    def test_repeated_expiry_requires_a_paid_chain_for_every_replacement(self):
+        evidence = repeated_evidence()
+        validate(evidence, dict(zip(NAMES, NAMES)))
+        changes = (
+            lambda e: e.update(expected_renewals=True),
+            lambda e: e.update(quote_lifetime_secs=180),
+            lambda e: e["accounts_after"]["renewals"]["n01"][1].update(previous="unrelated"),
+            lambda e: e["samples"][3]["accounts"]["financial"]["n02"]["credited"].update({"channel-n01-2": 1000}),
+            lambda e: e["accounts_after"]["renewals"]["n03"][1].update(replacement_created_unix=1282),
+        )
+        for change in changes:
+            candidate = copy.deepcopy(evidence)
+            change(candidate)
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                validate(candidate, dict(zip(NAMES, NAMES)))
+
     def test_impaired_renewal_needs_counted_loss_live_payment_and_full_recovery(self):
         evidence = impaired_evidence()
         validate(evidence, dict(zip(NAMES, NAMES)))
@@ -194,6 +248,10 @@ class RenewalTests(unittest.TestCase):
         expected["terms"]["controller"]["renewal"] = {
             "at_capacity_percent": 100, "before_expiry_secs": 8}
         self.assertEqual(run.profile_config(node), expected)
+        run.args.expiry_renewal = 3
+        expected["terms"]["quote_lifetime_secs"] = 90
+        self.assertEqual(run.profile_config(node), expected)
+        self.assertEqual(run.expected_renewals, 3)
 
     def test_expiry_acceptance_requires_successor_before_expiry_without_exhaustion(self):
         evidence = accepted_evidence()
@@ -203,6 +261,7 @@ class RenewalTests(unittest.TestCase):
             for rows in sample["accounts"]["renewals"].values():
                 rows[0].update(previous_expires_unix=1200, replacement_created_unix=1195,
                                previous_observed_units=25_000_000, previous_paid_sat=25)
+        evidence["accounts_after"]["renewals"] = copy.deepcopy(evidence["samples"][-1]["accounts"]["renewals"])
         validate(evidence, dict(zip(NAMES, NAMES)))
         for field, value in (("replacement_created_unix", 1191),
                              ("replacement_created_unix", 1200),
@@ -268,6 +327,31 @@ class RenewalTests(unittest.TestCase):
             f.raw["n01"]["controller"]["history"]["buyers"] = []
             with self.subTest(previously_seen=previously_seen), self.assertRaises(ValueError):
                 f.accounts.observe()
+
+    def test_repeated_retirement_preserves_all_channel_liability_and_refunds(self):
+        f = AccountsFixture(expected_renewals=3)
+        f.original = {name: f.channel(name, f"{name}-0", 10, created=100) for name in ("n01", "n03")}
+        f.accounts.observe()
+        for index in range(1, 4):
+            replacements = {}
+            for name, outgoing in f.original.items():
+                before = copy.deepcopy(outgoing)
+                old = outgoing["purchase"]["channel"]["id"]
+                settle(f.raw, name, old)
+                outgoing["retired"] = True
+                new = f.channel(name, f"{name}-{index}", 10, created=100 + index * 90)
+                f.raw[name]["controller"]["renewals"][old] = {
+                    "previous": [before], "replacements": [copy.deepcopy(new["offer"])], "completed": True}
+                replacements[name] = new
+            f.compact(controller=True)
+            observed, fixture = f.accounts.observe()
+            self.assertEqual(len(fixture.channel_owners), 2 * (index + 1))
+            self.assertEqual(len(fixture.prior_settlements), 2 * index)
+            for name in ("n01", "n03"):
+                self.assertEqual(len(observed["renewals"][name]), index)
+                self.assertEqual(observed["financial"][name]["authorized"], 10 * (index + 1))
+                self.assertEqual(observed["financial"][name]["remaining"], 64 - 10 * (index + 1))
+            f.original = replacements
 
     def test_changed_funding_authority_refund_or_successor_cannot_pass(self):
         changes = (

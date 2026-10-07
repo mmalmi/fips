@@ -54,8 +54,10 @@ def route_usage(buyer, contract):
 
 
 class RenewalAccounts:
-    def __init__(self, run, identities, renewal=RENEWAL):
+    def __init__(self, run, identities, renewal=RENEWAL, expected_renewals=1):
+        check(type(expected_renewals) is int and expected_renewals in (1, 3), "unexpected renewal count")
         self.run, self.identities = run, identities
+        self.expected_renewals = expected_renewals
         self.renewal = dict(renewal)
         self.initial = account_journals(run)
         self.previous = copy.deepcopy(self.initial)
@@ -156,9 +158,9 @@ class RenewalAccounts:
                   and _zero(history.get("channels")) and _zero(history.get("seller"))
                   and history.get("pending") is None, "renewal retired financial evidence")
             funding = controller["funding"]
-            # Acceptance requires one replacement. A third known channel still
-            # needs financial closure if the workload fails that requirement.
-            check(len(funding) <= (3 if name in ENDPOINTS else 0)
+            # One unexpected extra channel still needs financial closure if
+            # the workload fails its declared replacement count.
+            check(len(funding) <= (self.expected_renewals + 2 if name in ENDPOINTS else 0)
                   and controller["next_funding"] == original["next_funding"] + len(funding),
                   "renewal escaped the bounded funding roster")
             check(len({row["receiver_pubkey_hex"] for row in funding.values()}) <= 1,

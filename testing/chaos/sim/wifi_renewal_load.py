@@ -29,6 +29,7 @@ from .wifi_renewal_finances import EXPIRY_RENEWAL, ENDPOINTS, NAMES, QUOTE_UNITS
 PACKETS, RATE, SEND_SECONDS, RECEIVE_SECONDS = 42_000, 140, 300, 360
 SEND_TIMEOUT, SAMPLE_INTERVAL, FINAL_TAIL = 330, 10, 3
 RECOVERY_PACKETS = 64
+EXPIRY_QUOTES = {1: 180, 3: 90}
 
 
 def destination(source):
@@ -46,6 +47,21 @@ def distinct_shape(shape, count, identifiers):
     identifiers.add(identifier)
 
 
+def successor_chain(rows, count):
+    remaining = {row["previous"]: row for row in rows}
+    roots = set(remaining) - {row["replacement"] for row in rows}
+    require(len(rows) == len(remaining) == count and len(roots) == 1,
+            "renewal requires one complete successor chain")
+    current, ordered = roots.pop(), []
+    while current in remaining:
+        row = remaining.pop(current)
+        ordered.append(row)
+        current = row["replacement"]
+    require(not remaining and current not in {row["previous"] for row in ordered},
+            "renewal successor chain contains a branch or cycle")
+    return ordered
+
+
 def validate(evidence, identities):
     """Require paid successor delivery while both one-shot streams are active."""
     streams, samples = evidence["streams"], evidence["samples"]
@@ -53,6 +69,10 @@ def validate(evidence, identities):
     every = evidence.get("frame_loss_every")
     require(every is None or type(every) is int and every == EVERY, "unexpected frame-loss policy")
     impaired = every is not None
+    expected = evidence.get("expected_renewals", 1)
+    require(type(expected) is int and expected in EXPIRY_QUOTES
+            and (expected == 1 or evidence.get("expiry_renewal", False)),
+            "unexpected renewal count or mode")
     if impaired:
         require(set(evidence.get("loss_removed", {})) == set(ENDPOINTS)
                 and set(evidence.get("recovery_streams", {})) == set(ENDPOINTS),
@@ -88,30 +108,42 @@ def validate(evidence, identities):
                 "renewal send finished before the continuous paced window")
         live = [sample for sample in samples if sample["ended_at"]
                 < row["dispatch_started"] + (PACKETS - 1) / RATE]
-        paid = [sample for sample in live if len(sample["accounts"]["renewals"][source]) == 1]
-        require(len(paid) >= 2, "no paid successor observations during the continuous stream")
-        first = paid[0]
-        lineage = first["accounts"]["renewals"][source][0]
-        if evidence.get("expiry_renewal", False):
-            expiry, created = lineage["previous_expires_unix"], lineage["replacement_created_unix"]
-            require(evidence["renewal"] == EXPIRY_RENEWAL and evidence["quote_lifetime_secs"] == 180
-                    and expiry - EXPIRY_RENEWAL["before_expiry_secs"] <= created < expiry
-                    and lineage["previous_paid_sat"] < 32
-                    and lineage["previous_observed_units"] < QUOTE_UNITS,
-                    "expiry renewal must precede expiry without exhausting capacity or byte allowance")
-        replacement = lineage["replacement"]
-        first_count = first["receivers"][source]["unique_packets"]
-        first_credit = first["accounts"]["financial"]["n02"]["credited"].get(replacement, 0)
-        require(any(sample["receivers"][source]["unique_packets"] > first_count
-                    and sample["accounts"]["financial"]["n02"]["credited"].get(replacement, 0) > first_credit
-                    and sample["accounts"]["renewals"][source][0]["replacement"] == replacement
-                    and (not impaired or loss_delta(first["frame_loss"][destination(source)],
-                                                   sample["frame_loss"][destination(source)]) > 0)
-                    for sample in paid[1:]), "fresh delivery and automatic successor credit did not advance")
+        chain = successor_chain(evidence["accounts_after"]["renewals"][source], expected)
+        for lineage in chain:
+            replacement = lineage["replacement"]
+            paid, observed = [], []
+            for sample in live:
+                rows = sample["accounts"]["renewals"][source]
+                matching = [r for r in rows if r["previous"] == lineage["previous"]
+                            and r["replacement"] == replacement]
+                if len(matching) == 1 and not any(r["previous"] == replacement for r in rows):
+                    paid.append(sample)
+                    observed.extend(matching)
+            require(len(paid) >= 2, "no paid successor observations during the continuous stream")
+            if evidence.get("expiry_renewal", False):
+                fields = ("previous_expires_unix", "replacement_created_unix",
+                          "previous_paid_sat", "previous_observed_units")
+                expiry, created = lineage[fields[0]], lineage[fields[1]]
+                require(evidence["renewal"] == EXPIRY_RENEWAL
+                        and evidence["quote_lifetime_secs"] == EXPIRY_QUOTES[expected]
+                        and expiry - EXPIRY_RENEWAL["before_expiry_secs"] <= created < expiry
+                        and lineage["previous_paid_sat"] < 32
+                        and lineage["previous_observed_units"] < QUOTE_UNITS
+                        and all(row[field] == lineage[field] for row in observed for field in fields),
+                        "expiry renewal must precede expiry without exhausting capacity or byte allowance")
+            first = paid[0]
+            first_count = first["receivers"][source]["unique_packets"]
+            first_credit = first["accounts"]["financial"]["n02"]["credited"].get(replacement, 0)
+            require(any(sample["receivers"][source]["unique_packets"] > first_count
+                        and sample["accounts"]["financial"]["n02"]["credited"].get(replacement, 0) > first_credit
+                        and (not impaired or loss_delta(first["frame_loss"][destination(source)],
+                                                       sample["frame_loss"][destination(source)]) > 0)
+                        for sample in paid[1:]), "fresh delivery and automatic successor credit did not advance")
         final = evidence["accounts_after"]["financial"][source]
-        require(len(final["funding"]) == 2 and len(evidence["accounts_after"]["renewals"][source]) == 1
-                and 0 < final["signed"][replacement] <= 32 and final["authorized"] <= 64,
-                "expected one real replacement within unchanged lifetime authority")
+        require(len(final["funding"]) == expected + 1
+                and all(0 < final["signed"][row["replacement"]] <= 32 for row in chain)
+                and final["authorized"] <= 64,
+                "expected real replacements within unchanged lifetime authority")
     for name in NAMES:
         require_same_process(evidence["before"][name], evidence["after"][name])
 
@@ -126,8 +158,8 @@ class RenewalLoadRun(PaidWifiRun):
             "sample_errors": [], "packets_per_direction": PACKETS, "packets_per_second": RATE,
             "payload_bytes": 1000, "send_seconds": SEND_SECONDS, "receive_seconds": RECEIVE_SECONDS,
             "quote_max_units": QUOTE_UNITS, "renewal": dict(self.renewal_policy),
-            "expiry_renewal": getattr(args, "expiry_renewal", False),
-            "quote_lifetime_secs": 180 if getattr(args, "expiry_renewal", False) else 1200,
+            "expiry_renewal": bool(getattr(args, "expiry_renewal", False)),
+            "expected_renewals": self.expected_renewals, "quote_lifetime_secs": self.quote_lifetime,
             "frame_loss_every": EVERY if getattr(args, "frame_loss", False) else None,
             "final_tail_seconds": FINAL_TAIL,
             "one_way_latency": False, "physical_power_loss": False, "cadence_comparison": False}
@@ -139,11 +171,21 @@ class RenewalLoadRun(PaidWifiRun):
     def renewal_policy(self):
         return EXPIRY_RENEWAL if getattr(self.args, "expiry_renewal", False) else RENEWAL
 
+    @property
+    def expected_renewals(self):
+        value = getattr(self.args, "expiry_renewal", False)
+        require(type(value) in (bool, int) and value in (0, 1, 3), "unexpected expiry renewal mode")
+        return int(value) or 1
+
+    @property
+    def quote_lifetime(self):
+        return EXPIRY_QUOTES[self.expected_renewals] if getattr(self.args, "expiry_renewal", False) else 1200
+
     def profile_config(self, node):
         config = super().profile_config(node)
         config["terms"].update(fee_msat_per_kib=1, max_rate_msat_per_kib=1, quote_max_units=QUOTE_UNITS)
         if getattr(self.args, "expiry_renewal", False):
-            config["terms"]["quote_lifetime_secs"] = 180
+            config["terms"]["quote_lifetime_secs"] = self.quote_lifetime
         config["terms"]["controller"]["renewal"] = dict(self.renewal_policy)
         return config
 
@@ -269,7 +311,7 @@ class RenewalLoadRun(PaidWifiRun):
             native = initial[name]["native"]["status"]["data"]
             require(native["npub"] == node.npub, "renewal native identity differs from prepared profile")
             identities[name] = list(bytes.fromhex(native["node_addr"]))
-        accounts = RenewalAccounts(self, identities, self.renewal_policy)
+        accounts = RenewalAccounts(self, identities, self.renewal_policy, self.expected_renewals)
         try:
             for source in ENDPOINTS:
                 self.ctl(source, "buy", destination=self.nodes[destination(source)].npub)
@@ -309,8 +351,8 @@ def main():
     for name in ("inventory", "binary", "mint-binary", "mint-host", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--mint-address", required=True)
-    parser.add_argument("--expiry-renewal", action="store_true",
-                        help="renew 180-second quotes with eight seconds of lead, retaining spending limits")
+    parser.add_argument("--expiry-renewal", nargs="?", type=int, choices=(1, 3), const=1, default=0,
+                        help="require one expiry replacement (180-second quotes) or three (90-second quotes)")
     parser.add_argument("--frame-loss", action="store_true",
                         help="drop every twentieth test frame during both streams, then verify full recovery")
     args = parser.parse_args()

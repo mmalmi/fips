@@ -733,6 +733,13 @@ lead window, before the old grant expires, with its signed balance below 32 sats
 and observed bytes below the original quote allowance. This distinguishes expiry
 renewal from the default capacity case without adding another workload.
 
+Use `--expiry-renewal 3` for three consecutive replacements per direction with
+90-second quotes during the same five-minute streams. Acceptance checks one
+connected chain of four distinct channels and requires live delivery and growing
+credit on every successor before its next replacement. The observer retains all
+earlier usage, refunds and funding operations; lifetime spending and capital
+limits are the same. This mode also accepts `--frame-loss`.
+
 Expired, closed routes may be compacted by the ordinary runtime. The finite
 observer keeps earlier purchases in memory and verifies the native retirement
 fence, exact retained byte costs and terminal refund before accepting removal.
