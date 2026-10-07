@@ -1,5 +1,5 @@
 //! Opt-in turnover acceptance using real UDP/TLS processes and the existing gates.
-use super::bench::controller_phases;
+use super::bench::{controller_phases, read_journal};
 use super::*;
 use cashu_service::{simulation::MintProxy, spilman_client_store_path};
 use fips_relay::controller::FundingRequestBudget;
@@ -195,9 +195,19 @@ async fn held_close_with_other_payment(
     bench.send_probe(0, 2, 40, 256, 8).await;
     bench.wait_exhausted(0, remaining).await;
     bench.wait_paid(&channels[0]).await;
-    // Funding is complete and both renewals are paused. The next mint swap is
-    // the first provider close, which retains the shared provider's wallet lock.
-    let (committed, release) = proxy.state.pause_matching_swap_reply(|_| true);
+    let journal = bench.configs[1]
+        .state_directory
+        .join("controller/controller.json");
+    let close_journal = journal.clone();
+    let closing_channel = channels[0].clone();
+    // Successor funding can swap before the provider closes the original.
+    // Only that provider close holds the shared wallet lock under test; the
+    // other buyer remains paused until this exact settlement has started.
+    let (committed, release) = proxy.state.pause_matching_swap_reply(move |_| {
+        let state = read_journal(&close_journal).unwrap();
+        let sale = &state["seller_settlements"][&closing_channel];
+        sale["payment"].is_object() && sale["report"].is_null()
+    });
     request(&bench.configs[0], &AdminRequest::ResumeRenewals)
         .await
         .unwrap();
@@ -219,9 +229,6 @@ async fn held_close_with_other_payment(
     request(&bench.configs[2], &AdminRequest::ResumeRenewals)
         .await
         .unwrap();
-    let journal = bench.configs[1]
-        .state_directory
-        .join("controller/controller.json");
     let overlapping = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let state: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();

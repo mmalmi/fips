@@ -888,7 +888,7 @@ fn daemon_tail(node: usize, path: &std::path::Path) {
     }
 }
 
-fn read_journal(path: &Path) -> Option<Value> {
+pub(super) fn read_journal(path: &Path) -> Option<Value> {
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     file.take(1_048_577).read_to_end(&mut bytes).ok()?;

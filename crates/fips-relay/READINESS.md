@@ -358,6 +358,16 @@ existing rekey cases pass. This narrows the investigation without reproducing
 the physical failure: the fixture uses UDP, explicitly driven maintenance, and
 no concurrent paid renewal or router CPU pressure.
 
+The existing concurrent UDP/TLS renewal test also passes on the unchanged
+ordinary native program in `work/renewal-close-fixture-r254`: another buyer keeps
+paying while the provider's close reply is held, eight replacements complete,
+ten channels settle, and all 384 test sats are conserved. Its reply selector now
+waits for the selected provider settlement; the next mint reply can instead be
+successor funding. The original selector's failed overlap check is retained in
+`work/renewal-mixed-native-r251`; it did not reach final conservation and is not
+accepted financial evidence. The correction reuses the bounded journal reader
+and leaves the overlap, payment-progress and conservation assertions unchanged.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.
