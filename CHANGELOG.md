@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.95] - 2026-10-07
+
+### Fixed
+
+- Stop link measurement reports from triggering further reports on idle links.
+  Keep all report packets in cumulative packet and loss accounting, and resume
+  reporting when application or other control traffic arrives.
+- Release the reusable core and matching endpoint libraries as 0.4.95. Identity
+  remains 0.3.3; protocol messages and wire layouts are unchanged.
+
 ## [0.4.93] - 2026-10-03
 
 ### Fixed
