@@ -244,15 +244,26 @@ impl MmpPeerState {
     }
 }
 
-// Reports participate in packet/loss accounting, but must not elicit another
-// report. Otherwise a quiet link keeps sending reports about its own reports.
-pub(crate) fn link_message_elicits_report(msg_type: Option<u8>) -> bool {
+// Reports participate in packet/loss accounting, but sending one must not
+// schedule another sender report about it.
+pub(crate) fn link_message_elicits_sender_report(msg_type: Option<u8>) -> bool {
     use crate::proto::protocol::LinkMessageType;
     msg_type.is_some_and(|kind| {
         !matches!(
             LinkMessageType::from_byte(kind),
             Some(LinkMessageType::SenderReport | LinkMessageType::ReceiverReport)
         )
+    })
+}
+
+// A sender report still needs one receiver response, including for older peers
+// that keep emitting sender reports while idle. Without timestamp feedback they
+// cannot finish cold start and slow their reporting cadence. Receiver reports
+// never need a response, so updated peers stop after the bounded SR -> RR pair.
+pub(crate) fn link_message_elicits_receiver_report(msg_type: Option<u8>) -> bool {
+    use crate::proto::protocol::LinkMessageType;
+    msg_type.is_some_and(|kind| {
+        LinkMessageType::from_byte(kind) != Some(LinkMessageType::ReceiverReport)
     })
 }
 

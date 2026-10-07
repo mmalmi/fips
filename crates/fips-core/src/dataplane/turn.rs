@@ -192,7 +192,7 @@ impl DataplaneFmpIngressReceipt {
             fmp_counter: header.counter(),
             fmp_flags: header.flags(),
             inner_timestamp_ms,
-            elicits_report: crate::mmp::link_message_elicits_report(plaintext.get(4).copied()),
+            elicits_report: crate::mmp::link_message_elicits_receiver_report(plaintext.get(4).copied()),
         })
     }
 

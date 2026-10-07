@@ -41,8 +41,19 @@ async fn fmp_report_traffic_is_counted_without_eliciting_more_reports() {
     receive(&mut live, owner, 1, now);
     assert_eq!(live.collect_fmp_mmp_reports(now).reports.len(), 2);
 
-    for (counter, bytes) in [(2, 48), (3, 68)] {
-        live.record_fmp_mmp_send_result(&owner.node_addr(), counter, 100, bytes, false);
+    use crate::mmp::{link_message_elicits_receiver_report, link_message_elicits_sender_report};
+    use crate::proto::protocol::LinkMessageType;
+    for (counter, bytes, kind) in [
+        (2, 48, LinkMessageType::SenderReport),
+        (3, 68, LinkMessageType::ReceiverReport),
+    ] {
+        live.record_fmp_mmp_send_result(
+            &owner.node_addr(),
+            counter,
+            100,
+            bytes,
+            link_message_elicits_sender_report(Some(kind.to_byte())),
+        );
         let mut packet = DataplaneAuthenticatedFmpMmpReceive::new(
             owner.node_addr(),
             counter,
@@ -52,18 +63,34 @@ async fn fmp_report_traffic_is_counted_without_eliciting_more_reports() {
             false,
             now,
         );
-        packet.elicits_report = false;
+        packet.elicits_report = link_message_elicits_receiver_report(Some(kind.to_byte()));
         live.record_authenticated_fmp_mmp_receive(packet).unwrap();
     }
     let later = now + Duration::from_secs(10);
+    let replies = live.collect_fmp_mmp_reports(later).reports;
+    assert_eq!(
+        replies.len(),
+        1,
+        "sender report receives one bounded response"
+    );
+    assert_eq!(replies[0].kind, DataplaneFmpMmpReportKind::Receiver);
+    // Actually sending that response must not create a sender-report deadline.
+    assert!(!link_message_elicits_sender_report(
+        replies[0].encoded.first().copied()
+    ));
     assert_eq!(live.fmp_report_deadline(), None);
-    assert!(live.collect_fmp_mmp_reports(later).reports.is_empty());
+    assert!(
+        live.collect_fmp_mmp_reports(later + Duration::from_secs(10))
+            .reports
+            .is_empty()
+    );
 
     // New data must resume reporting, including every intervening report in
     // cumulative accounting so its counter is not mistaken for packet loss.
+    let resumed = later + Duration::from_secs(11);
     live.record_fmp_mmp_send_result(&owner.node_addr(), 4, 100, 80, true);
-    receive(&mut live, owner, 4, later);
-    let reports = live.collect_fmp_mmp_reports(later).reports;
+    receive(&mut live, owner, 4, resumed);
+    let reports = live.collect_fmp_mmp_reports(resumed).reports;
     assert_eq!(reports.len(), 2);
     for report in reports {
         match report.kind {
@@ -81,6 +108,97 @@ async fn fmp_report_traffic_is_counted_without_eliciting_more_reports() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn legacy_sender_reports_receive_feedback_and_leave_cold_start() {
+    use crate::mmp::{MmpPeerState, link_message_elicits_receiver_report};
+    use crate::proto::protocol::LinkMessageType;
+
+    let (mut live, owner) = live_link(MmpMode::Full);
+    let mut legacy = MmpPeerState::new(&MmpConfig::default(), true);
+    let start = Instant::now();
+    // The published sender counts its own reports as traffic. Keep that
+    // behavior here so the mixed-version feedback path cannot go untested.
+    legacy.sender.record_sent(0, 100, 80);
+    let mut now = start;
+    for counter in 1..=8 {
+        if counter > 1 {
+            now += legacy.sender.report_interval();
+        }
+        assert!(legacy.sender.should_send_report(now));
+        let sr = legacy.sender.build_report(now).unwrap();
+        let timestamp = 100 + now.duration_since(start).as_millis() as u32;
+        let bytes = sr.encode().len() + 1;
+        legacy.sender.record_sent(counter, timestamp, bytes);
+        let mut packet = DataplaneAuthenticatedFmpMmpReceive::new(
+            owner.node_addr(),
+            counter,
+            timestamp,
+            bytes,
+            false,
+            false,
+            now + Duration::from_millis(10),
+        );
+        packet.elicits_report =
+            link_message_elicits_receiver_report(Some(LinkMessageType::SenderReport.to_byte()));
+        live.record_authenticated_fmp_mmp_receive(packet).unwrap();
+        let due = live
+            .fmp_report_deadline()
+            .expect("sender report needs feedback");
+        let reply_time = due.max(now + Duration::from_millis(10));
+        let reports = live.collect_fmp_mmp_reports(reply_time).reports;
+        assert_eq!(reports.len(), 1, "one bounded receiver response");
+        assert_eq!(reports[0].kind, DataplaneFmpMmpReportKind::Receiver);
+        let rr = crate::mmp::report::ReceiverReport::decode(&reports[0].encoded[1..]).unwrap();
+        assert_eq!(rr.cumulative_packets_recv, counter);
+        legacy.metrics.process_receiver_report(
+            &rr,
+            100 + reply_time.duration_since(start).as_millis() as u32 + 10,
+            reply_time + Duration::from_millis(10),
+        );
+        let srtt = legacy.metrics.srtt_ms().expect("legacy RTT feedback");
+        assert!((srtt - 20.0).abs() < 0.1);
+        assert_eq!(
+            legacy.metrics.loss_rate(),
+            0.0,
+            "reports are not false loss"
+        );
+        legacy
+            .sender
+            .update_report_interval_from_srtt((srtt * 1000.0) as i64);
+        assert_eq!(
+            live.fmp_report_deadline(),
+            None,
+            "response does not sustain traffic"
+        );
+    }
+    assert_eq!(legacy.sender.report_interval(), Duration::from_secs(1));
+
+    // A lost report must still count as a real gap in the counter sequence.
+    now += Duration::from_secs(1);
+    let timestamp = 100 + now.duration_since(start).as_millis() as u32;
+    let mut packet = DataplaneAuthenticatedFmpMmpReceive::new(
+        owner.node_addr(),
+        10,
+        timestamp,
+        48,
+        false,
+        false,
+        now,
+    );
+    packet.elicits_report =
+        link_message_elicits_receiver_report(Some(LinkMessageType::SenderReport.to_byte()));
+    live.record_authenticated_fmp_mmp_receive(packet).unwrap();
+    let reports = live.collect_fmp_mmp_reports(now).reports;
+    let rr = crate::mmp::report::ReceiverReport::decode(&reports[0].encoded[1..]).unwrap();
+    legacy
+        .metrics
+        .process_receiver_report(&rr, timestamp + 20, now + Duration::from_millis(20));
+    assert!(
+        legacy.metrics.loss_rate() > 0.0,
+        "a missing report remains measurable loss"
+    );
 }
 
 #[tokio::test]
