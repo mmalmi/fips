@@ -449,6 +449,28 @@ physical run still fails its storage preflight on one router; the reserve and
 saved accounts are preserved. The intermittent physical neighbor gap remains
 unresolved.
 
+The mint-over-FIPS regression in `work/mesh-mint-tcp024-r269` exposed a setup
+regression in quote retention: adding destination tariffs after initialization
+was rejected even before quotes or funds existed. That run closes with zero
+issuance and absent processes. Quote journal format two now retains each issued
+offer's local fee alongside its downstream quote. Destination tariff edits apply
+to future offers; existing offers retain their original terms. Identity, mint,
+billing, price limits and other immutable policy remain bound. Loading validates
+the retained fee and price composition and does not rewrite quotes just because
+tariffs changed. No wire messages or additional idle writes are introduced.
+
+The ordinary native build and focused quote/service-state checks pass in
+`work/quote-tariff-native-r271`, including tariff changes with a retained paid
+quote and rejection of mismatched local-fee evidence. The unchanged mint-only
+FIPS workflow passes empty-wallet funding, paid delivery, interrupted funding
+and settlement across two mint-process restarts, alternate-route restoration,
+refunds and collection. Three existing handover cases also pass: disconnected,
+forward-only loss and return-only loss. Each recovers the original settlement
+through its replacement route without another swap; all 64 test sats across
+the four cases are collected. Strict lint, source-size, artifact/source custody
+and stopped-process checks pass. Updated guest and ARM acceptance for this
+tariff correction remain separate.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.

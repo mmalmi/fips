@@ -26,13 +26,8 @@ pub(super) struct OfferJournal {
 }
 
 fn binding(local: NodeAddr, policy: &QuotePolicy) -> serde_json::Value {
-    let fees: BTreeMap<_, _> = policy
-        .destination_fees
-        .iter()
-        .map(|(address, fee)| (address.to_string(), *fee))
-        .collect();
     serde_json::json!({
-        "local": local.to_string(), "destination_fees": fees,
+        "local": local.to_string(),
         "billing": policy.billing, "mint_url": policy.mint_url,
         "receiver_pubkey_hex": policy.receiver_pubkey_hex,
         "fee_msat_per_kib": policy.fee_msat_per_kib,
@@ -78,7 +73,7 @@ impl OfferJournal {
         }
         let mut saved: Saved =
             serde_json::from_slice(&bytes).map_err(|_| "invalid quote journal")?;
-        if saved.version != 1
+        if saved.version != 2
             || saved.binding != journal.binding
             || saved.pending.len() > MAX_OFFERS
         {
@@ -102,7 +97,7 @@ impl OfferJournal {
 
     fn write(&self, pending: &BTreeMap<String, StoredOffer>) -> Result<(), String> {
         let bytes = serde_json::to_vec(&Saved {
-            version: 1,
+            version: 2,
             binding: self.binding.clone(),
             pending: pending.clone(),
         })
@@ -147,13 +142,12 @@ fn validate_saved(
     } else {
         path.push(*offer.destination.node_addr());
     }
-    let rate = policy
-        .destination_fees
-        .get(offer.destination.node_addr())
-        .copied()
-        .unwrap_or(policy.fee_msat_per_kib)
+    let rate = entry
+        .local_fee_msat_per_kib
         .checked_add(entry.downstream.as_ref().map_or(0, |d| d.price.msat));
-    if offer.path != path
+    if entry.local_fee_msat_per_kib > policy.max_rate_msat_per_kib
+        || (entry.local_fee_msat_per_kib == 0 && !policy.billing.has_free_handshakes())
+        || offer.path != path
         || Some(offer.price.msat) != rate
         || offer.mint_url != policy.mint_url
         || offer.receiver_pubkey_hex != policy.receiver_pubkey_hex

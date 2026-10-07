@@ -6,6 +6,7 @@ fn fixture() -> (QuotePolicy, StoredOffer) {
     (
         policy,
         StoredOffer {
+            local_fee_msat_per_kib: offer.price.msat,
             offer,
             downstream: None,
         },
@@ -53,6 +54,52 @@ fn issued_quotes_and_retirement_survive_restart_with_original_terms() {
 }
 
 #[test]
+fn destination_tariffs_can_change_without_repricing_retained_quotes() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut policy, mut entry) = fixture();
+    policy.billing = BillingBasis::ForwardingData;
+    entry.offer.billing = policy.billing;
+    drop(open(root.path(), &policy, &entry, true));
+    // Bootstrap destinations are configured after local identities are known.
+    let mint = NodeAddr::from_bytes([42; 16]);
+    policy.destination_fees.insert(mint, 0);
+    let mut offers = open(root.path(), &policy, &entry, false);
+    offers
+        .commit(BTreeMap::from([(entry.offer.id.clone(), entry.clone())]))
+        .unwrap();
+    drop(offers);
+
+    policy.destination_fees.insert(mint, 10);
+    let recovered = open(root.path(), &policy, &entry, false);
+    assert_eq!(recovered.pending[&entry.offer.id].offer, entry.offer);
+    drop(recovered);
+    let retained = std::fs::read(root.path().join(FILE)).unwrap();
+    policy
+        .destination_fees
+        .insert(*entry.offer.destination.node_addr(), 0);
+    let recovered = open(root.path(), &policy, &entry, false);
+    assert_eq!(recovered.pending[&entry.offer.id].offer, entry.offer);
+    assert_eq!(
+        recovered.pending[&entry.offer.id].local_fee_msat_per_kib,
+        entry.offer.price.msat
+    );
+    drop(recovered);
+    assert_eq!(std::fs::read(root.path().join(FILE)).unwrap(), retained);
+
+    let mut recovered = open(root.path(), &policy, &entry, false);
+    recovered.retire(&entry.offer.id).unwrap();
+    drop(recovered);
+    policy
+        .destination_fees
+        .insert(*entry.offer.destination.node_addr(), 0);
+    drop(open(root.path(), &policy, &entry, false));
+    let saved: Saved =
+        serde_json::from_slice(&std::fs::read(root.path().join(FILE)).unwrap()).unwrap();
+    assert_eq!(saved.binding, binding(entry.offer.provider, &policy));
+    assert!(saved.pending.is_empty());
+}
+
+#[test]
 fn changed_scope_malformed_quotes_and_missing_journals_fail_closed() {
     let root = tempfile::tempdir().unwrap();
     let (policy, entry) = fixture();
@@ -66,7 +113,7 @@ fn changed_scope_malformed_quotes_and_missing_journals_fail_closed() {
     changed.fee_msat_per_kib += 1;
     assert!(OfferJournal::open(root.path(), entry.offer.provider, &changed, false).is_err());
     assert!(OfferJournal::open(root.path(), entry.offer.buyer, &policy, false).is_err());
-    for case in 0..6 {
+    for case in 0..7 {
         let mut saved: Saved = serde_json::from_slice(&original).unwrap();
         match case {
             0 => saved
@@ -95,7 +142,15 @@ fn changed_scope_malformed_quotes_and_missing_journals_fail_closed() {
                     saved.pending.insert(extra.offer.id.clone(), extra);
                 }
             }
-            _ => saved.version += 1,
+            5 => saved.version += 1,
+            _ => {
+                saved
+                    .pending
+                    .values_mut()
+                    .next()
+                    .unwrap()
+                    .local_fee_msat_per_kib += 1
+            }
         }
         std::fs::write(root.path().join(FILE), serde_json::to_vec(&saved).unwrap()).unwrap();
         assert!(

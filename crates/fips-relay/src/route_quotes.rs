@@ -56,6 +56,7 @@ pub struct QuotePolicy {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredOffer {
     offer: RouteOffer,
+    local_fee_msat_per_kib: u64,
     downstream: Option<RouteOffer>,
 }
 
@@ -381,12 +382,13 @@ impl RouteQuotes {
             onward.ancestors.push(local);
             Some(self.request_from(next, onward).await?)
         };
-        let rate = self
+        let local_fee_msat_per_kib = self
             .policy
             .destination_fees
             .get(request.destination.node_addr())
             .copied()
-            .unwrap_or(self.policy.fee_msat_per_kib)
+            .unwrap_or(self.policy.fee_msat_per_kib);
+        let rate = local_fee_msat_per_kib
             .checked_add(downstream.as_ref().map_or(0, |d| d.price.msat))
             .ok_or("quote price overflow")?;
         if rate > self.policy.max_rate_msat_per_kib {
@@ -413,6 +415,7 @@ impl RouteQuotes {
             .min(request.requested_max_units.unwrap_or(u64::MAX));
         self.publish(
             StoredOffer {
+                local_fee_msat_per_kib,
                 offer: RouteOffer {
                     trial: request.requested_max_units.is_some(),
                     billing: self.policy.billing,

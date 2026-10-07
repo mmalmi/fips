@@ -491,11 +491,14 @@ automatic forwarding stops; a restart is not permission to write off that loss.
 This implementation assumes the accounting files survive the process restart.
 Never automatically replace missing/corrupt state with a newly initialized ledger.
 
-New service profiles use manifest version 3 and require `quotes/offers.json`,
-bound to the provider identity and quote policy. It contains offers, not payment
-proofs or forwarding credit. Loading refuses missing, corrupt or mismatched
-state. Older profiles remain on their original software; this greenfield change
-does not migrate or reinitialize saved accounts.
+New service profiles use manifest version 3 and require `quotes/offers.json`
+(format version 2), bound to the provider identity and immutable quote terms.
+Each offer retains its original local fee and onward quote. Destination tariff
+changes apply to future offers; loading preserves already-issued prices without
+rewriting them. The journal contains no payment proofs or forwarding credit.
+Loading refuses missing, corrupt or mismatched state. Older profiles remain on
+their original software; this greenfield change does not migrate or reinitialize
+saved accounts.
 
 Buyer journals retain the same bounded evidence history. Pending observations
 become unconfirmed on restart; they cannot support a signature. Evidence lost
