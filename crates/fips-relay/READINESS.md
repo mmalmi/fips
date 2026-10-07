@@ -468,8 +468,14 @@ refunds and collection. Three existing handover cases also pass: disconnected,
 forward-only loss and return-only loss. Each recovers the original settlement
 through its replacement route without another swap; all 64 test sats across
 the four cases are collected. Strict lint, source-size, artifact/source custody
-and stopped-process checks pass. Updated guest and ARM acceptance for this
-tariff correction remain separate.
+and stopped-process checks pass. The exact committed correction (`6bf9f214c`)
+also passes the unchanged renewal-funding power-cut case in
+`work/quote-tariff-guest-r272`: all 7,680 originals arrive, the original pending
+operation recovers one successor, all three channels settle and all 384 test
+sats are collected. Independent closure verifies ext4 recovery, retained
+spending limits and absent guest/mint/tunnel processes. The matching ordinary
+ARM64 build passes in `work/quote-tariff-arm-r273`. Physical paid-radio and
+flash-power-loss acceptance remain outstanding.
 
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
