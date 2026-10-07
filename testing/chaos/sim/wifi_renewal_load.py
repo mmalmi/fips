@@ -1,7 +1,7 @@
 """Five minutes of simultaneous paid traffic through automatic channel renewal.
 
 Fresh capped test accounts, one middle relay and the saved guarded radio mesh.
-Finite sends are never replayed; a lost packet remains an acceptance failure.
+Finite sends are never replayed; optional loss requires observed filter counters.
 This is neither a cadence comparison nor maximum-throughput qualification.
 """
 
@@ -19,6 +19,7 @@ from .paid_relay import eventually
 from .paid_settlement import require
 from .paid_wifi import PaidWifiRun
 from .wifi_diamond_checks import require_same_process
+from .wifi_frame_loss import EVERY, FrameLoss, clear_filters, loss_delta, validate_delivery
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import received, submitted
 from .wifi_remote import digest
@@ -27,32 +28,62 @@ from .wifi_renewal_finances import EXPIRY_RENEWAL, ENDPOINTS, NAMES, QUOTE_UNITS
 
 PACKETS, RATE, SEND_SECONDS, RECEIVE_SECONDS = 42_000, 140, 300, 360
 SEND_TIMEOUT, SAMPLE_INTERVAL, FINAL_TAIL = 330, 10, 3
+RECOVERY_PACKETS = 64
 
 
 def destination(source):
     return "n03" if source == "n01" else "n01"
 
 
+def distinct_shape(shape, count, identifiers):
+    identifier = shape["stream_id"]
+    require(set(shape) == {"stream_id", "packet_count", "payload_bytes"}
+            and type(shape["packet_count"]) is int and shape["packet_count"] == count
+            and type(shape["payload_bytes"]) is int and shape["payload_bytes"] == 1000
+            and isinstance(identifier, str) and len(identifier) == 32
+            and all(char in "0123456789abcdef" for char in identifier) and identifier not in identifiers,
+            f"renewal requires distinct exact {count}-packet, 1000-byte streams")
+    identifiers.add(identifier)
+
+
 def validate(evidence, identities):
     """Require paid successor delivery while both one-shot streams are active."""
     streams, samples = evidence["streams"], evidence["samples"]
     require(set(streams) == set(ENDPOINTS) and samples, "renewal run lacks both streams and observations")
+    every = evidence.get("frame_loss_every")
+    require(every is None or type(every) is int and every == EVERY, "unexpected frame-loss policy")
+    impaired = every is not None
+    if impaired:
+        require(set(evidence.get("loss_removed", {})) == set(ENDPOINTS)
+                and set(evidence.get("recovery_streams", {})) == set(ENDPOINTS),
+                "impaired renewal lacks filter removal or recovery streams")
     ids = set()
     for source in ENDPOINTS:
         row = streams[source]
         shape = row["shape"]
-        identifier = shape["stream_id"]
-        require(set(shape) == {"stream_id", "packet_count", "payload_bytes"}
-                and type(shape["packet_count"]) is int and shape["packet_count"] == PACKETS
-                and type(shape["payload_bytes"]) is int and shape["payload_bytes"] == 1000
-                and isinstance(identifier, str) and len(identifier) == 32
-                and all(char in "0123456789abcdef" for char in identifier) and identifier not in ids,
-                "renewal requires distinct exact 42000-packet, 1000-byte streams")
-        ids.add(identifier)
+        distinct_shape(shape, PACKETS, ids)
         submitted(row["sender"], shape)
-        received(row["receiver"], shape, identities[source], complete=True)
+        delivered = received(row["receiver"], shape, identities[source], complete=not impaired)
+        require((row.get("frame_loss") is not None) == impaired, "stream frame-loss policy differs")
+        if impaired:
+            fault = row["frame_loss"]
+            validate_delivery(fault, delivered, PACKETS)
+            previous = fault["before"]
         for sample in samples:
             received(sample["receivers"][source], shape, identities[source])
+            if impaired:
+                current = sample["frame_loss"][destination(source)]
+                loss_delta(previous, current)
+                previous = current
+        if impaired:
+            loss_delta(previous, fault["after"])
+            removal = evidence["loss_removed"][destination(source)]
+            loss_delta(fault["after"], removal["before"])
+            require(removal["after"]["enabled"] is False, "frame loss remained during recovery")
+            recovery = evidence["recovery_streams"][source]
+            distinct_shape(recovery["shape"], RECOVERY_PACKETS, ids)
+            submitted(recovery["sender"], recovery["shape"])
+            received(recovery["receiver"], recovery["shape"], identities[source], complete=True)
         require(row["sender"]["elapsed_us"] >= (PACKETS - 1) * 1_000_000 // RATE,
                 "renewal send finished before the continuous paced window")
         live = [sample for sample in samples if sample["ended_at"]
@@ -74,6 +105,8 @@ def validate(evidence, identities):
         require(any(sample["receivers"][source]["unique_packets"] > first_count
                     and sample["accounts"]["financial"]["n02"]["credited"].get(replacement, 0) > first_credit
                     and sample["accounts"]["renewals"][source][0]["replacement"] == replacement
+                    and (not impaired or loss_delta(first["frame_loss"][destination(source)],
+                                                   sample["frame_loss"][destination(source)]) > 0)
                     for sample in paid[1:]), "fresh delivery and automatic successor credit did not advance")
         final = evidence["accounts_after"]["financial"][source]
         require(len(final["funding"]) == 2 and len(evidence["accounts_after"]["renewals"][source]) == 1
@@ -88,15 +121,17 @@ class RenewalLoadRun(PaidWifiRun):
 
     def __init__(self, args):
         super().__init__(args)
+        self.loss_filters = {}
         self.evidence["renewal_load"] = {"passed": False, "samples": [], "streams": {},
             "sample_errors": [], "packets_per_direction": PACKETS, "packets_per_second": RATE,
             "payload_bytes": 1000, "send_seconds": SEND_SECONDS, "receive_seconds": RECEIVE_SECONDS,
             "quote_max_units": QUOTE_UNITS, "renewal": dict(self.renewal_policy),
             "expiry_renewal": getattr(args, "expiry_renewal", False),
             "quote_lifetime_secs": 180 if getattr(args, "expiry_renewal", False) else 1200,
+            "frame_loss_every": EVERY if getattr(args, "frame_loss", False) else None,
             "final_tail_seconds": FINAL_TAIL,
             "one_way_latency": False, "physical_power_loss": False, "cadence_comparison": False}
-        for name in ("wifi_renewal_load.py", "wifi_renewal_finances.py", "wifi_probes.py",
+        for name in ("wifi_renewal_load.py", "wifi_renewal_finances.py", "wifi_frame_loss.py", "wifi_probes.py",
                      "wifi_profiles.py", "paid_settlement.py", "paid_finances.py", "wifi_measurements.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
@@ -131,6 +166,24 @@ class RenewalLoadRun(PaidWifiRun):
         self.evidence["renewal_load"]["warmup"] = results
         time.sleep(FINAL_TAIL)
 
+    def clear_loss(self):
+        if self.loss_filters:
+            outcomes, errors = clear_filters(self.loss_filters)
+            self.evidence["renewal_load"]["loss_removed"] = outcomes
+            self.phase("test frame-loss removal checked", filters=outcomes)
+            require(not errors, "frame-loss removal incomplete: " + ", ".join(errors))
+            self.loss_filters.clear()
+
+    def recover_delivery(self):
+        evidence = self.evidence["renewal_load"]
+        evidence["recovery_streams"] = {}
+        for source in ENDPOINTS:
+            row = self.stream(RECOVERY_PACKETS, RATE, source=source, destination=destination(source))
+            row["shape"] = {"stream_id": row["sender"]["stream_id"],
+                            "packet_count": RECOVERY_PACKETS, "payload_bytes": 1000}
+            evidence["recovery_streams"][source] = row
+            self.save()
+
     def continuous_streams(self, accounts):
         evidence = self.evidence["renewal_load"]
         evidence["before"] = self.samples()
@@ -140,6 +193,9 @@ class RenewalLoadRun(PaidWifiRun):
             shape = probes.arm(self, source, destination(source), PACKETS, 1000,
                                lifetime_secs=RECEIVE_SECONDS)
             evidence["streams"][source] = {"shape": shape}
+            if self.loss_filters:
+                evidence["streams"][source]["frame_loss"] = {
+                    "before": evidence["loss_armed"][destination(source)]}
         self.save()
 
         def send(source):
@@ -158,9 +214,11 @@ class RenewalLoadRun(PaidWifiRun):
                         observed, _ = accounts.observe()
                         receivers = {source: probes.receive(self, source, destination(source),
                             evidence["streams"][source]["shape"]) for source in ENDPOINTS}
+                        loss = {name: fault.observe() for name, fault in self.loss_filters.items()}
                         last_observed = time.monotonic()
                         evidence["samples"].append({"started_at": started, "ended_at": last_observed,
-                                                    "accounts": observed, "receivers": receivers})
+                                                    "accounts": observed, "receivers": receivers,
+                                                    "frame_loss": loss})
                     except FinancialObservationChanged as error:
                         evidence["sample_errors"].append({"at": started, "error": type(error).__name__,
                                                           "reason": str(error)[:240]})
@@ -187,6 +245,8 @@ class RenewalLoadRun(PaidWifiRun):
                         # Save the raw result before any delivery validator can
                         # reject it. No later arrivals replace this fixed read.
                         row["receiver"] = self.ctl(destination(source), "status")["probe"]
+                        if self.loss_filters:
+                            row["frame_loss"]["after"] = self.loss_filters[destination(source)].observe()
                     except Exception as error:
                         row["receiver_error"] = type(error).__name__
                         failure = failure or error
@@ -199,7 +259,6 @@ class RenewalLoadRun(PaidWifiRun):
             return (observed, fixture) if payments_credited(observed["financial"]) else None
         evidence["accounts_after"], _ = eventually("post-stream automatic renewal credit", credited, 30)
         self.save()
-        validate(evidence, {name: node.npub for name, node in self.nodes.items()})
 
     def exercise(self):
         evidence = self.evidence["renewal_load"]
@@ -218,8 +277,17 @@ class RenewalLoadRun(PaidWifiRun):
             require(all(len(evidence["funded"]["financial"][source]["funding"]) == 1 for source in ENDPOINTS),
                     "renewal run did not start with one channel per direction")
             self.warmup()
+            if getattr(self.args, "frame_loss", False):
+                self.loss_filters = {name: FrameLoss(self.nodes[name], self.nodes["n02"].mac)
+                                     for name in ENDPOINTS}
+                evidence["loss_armed"] = {name: fault.enable() for name, fault in self.loss_filters.items()}
+                self.save()
             self.continuous_streams(accounts)
+            if self.loss_filters:
+                self.clear_loss()
+                self.recover_delivery()
             self.verify_shortcuts()
+            validate(evidence, {name: node.npub for name, node in self.nodes.items()})
             evidence["traffic_accepted"] = True
             self.phase("continuous bidirectional traffic crossed automatic paid replacements")
         except Exception as error:
@@ -229,7 +297,10 @@ class RenewalLoadRun(PaidWifiRun):
             raise
         finally:
             signal.alarm(0)
-            accounts.collect()
+            try:
+                self.clear_loss()
+            finally:
+                accounts.collect()
         evidence["passed"] = True
 
 
@@ -240,6 +311,8 @@ def main():
     parser.add_argument("--mint-address", required=True)
     parser.add_argument("--expiry-renewal", action="store_true",
                         help="renew 180-second quotes with eight seconds of lead, retaining spending limits")
+    parser.add_argument("--frame-loss", action="store_true",
+                        help="drop every twentieth test frame during both streams, then verify full recovery")
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

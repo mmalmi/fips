@@ -111,7 +111,52 @@ def accepted_evidence():
         "before": dict.fromkeys(NAMES, process), "after": dict.fromkeys(NAMES, process)}
 
 
+def impaired_evidence():
+    evidence = accepted_evidence()
+    evidence.update(frame_loss_every=20, loss_removed={}, recovery_streams={})
+    def counter(count):
+        return {"enabled": True, "jump_handle": 7,
+                "dropped_packets": count, "dropped_bytes": count * 1200}
+    for index, source in enumerate(("n01", "n03"), 3):
+        target = "n03" if source == "n01" else "n01"
+        row = evidence["streams"][source]
+        row["frame_loss"] = {"before": counter(0), "after": counter(2200)}
+        row["receiver"].update(unique_packets=40000, unique_bytes=40000000, missing_packets=2000)
+        for sample, count in zip(evidence["samples"], (1000, 1100)):
+            sample.setdefault("frame_loss", {})[target] = counter(count)
+        evidence["loss_removed"][target] = {"before": counter(2200), "after": {"enabled": False}}
+        shape, sent, received = reports(64, 1000)
+        identifier = f"{index:032x}"
+        evidence["recovery_streams"][source] = {
+            "shape": {**shape, "stream_id": identifier},
+            "sender": {**sent, "stream_id": identifier},
+            "receiver": {**received, "stream_id": identifier, "source": source}}
+    return evidence
+
+
 class RenewalTests(unittest.TestCase):
+    def test_impaired_renewal_needs_counted_loss_live_payment_and_full_recovery(self):
+        evidence = impaired_evidence()
+        validate(evidence, dict(zip(NAMES, NAMES)))
+        changes = (
+            lambda e: e.update(frame_loss_every=None),
+            lambda e: e["streams"]["n01"]["frame_loss"]["after"].update(dropped_packets=1999),
+            lambda e: e["streams"]["n01"]["frame_loss"]["after"].update(jump_handle=8),
+            lambda e: e["streams"]["n01"]["receiver"].update(
+                unique_packets=37000, unique_bytes=37000000, missing_packets=5000),
+            lambda e: e["samples"][-1]["frame_loss"]["n03"].update(dropped_packets=1000),
+            lambda e: e["samples"][0]["frame_loss"]["n03"].update(enabled=False),
+            lambda e: e["loss_removed"]["n03"]["after"].update(enabled=True),
+            lambda e: e["recovery_streams"]["n01"]["receiver"].update(
+                unique_packets=63, unique_bytes=63000, missing_packets=1),
+            lambda e: e["recovery_streams"].pop("n03"),
+        )
+        for change in changes:
+            candidate = copy.deepcopy(evidence)
+            change(candidate)
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                validate(candidate, dict(zip(NAMES, NAMES)))
+
     def test_config_preserves_both_spend_limits_and_enables_only_explicit_renewal(self):
         run = object.__new__(RenewalLoadRun)
         run.args, run.mint_url = SimpleNamespace(), MINT
@@ -318,10 +363,11 @@ class RenewalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "later buyer snapshot lost signed liability"):
             f.accounts.observe()
 
-    def test_delivery_failure_still_collects_without_replaying_or_pausing_the_stream(self):
+    def test_delivery_failure_clears_all_filters_and_collects_even_after_clear_error(self):
         run = object.__new__(RenewalLoadRun)
-        run.args = SimpleNamespace()
-        run.nodes = {name: SimpleNamespace(npub=name) for name in NAMES}
+        run.loss_filters = {}
+        run.args = SimpleNamespace(frame_loss=True)
+        run.nodes = {name: SimpleNamespace(npub=name, mac="02:00:00:00:00:01") for name in NAMES}
         run.evidence = {"renewal_load": {}}
         run.form_line, run.save, run.phase, run.ctl, run.warmup = Mock(), Mock(), Mock(), Mock(), Mock()
         run.samples = Mock(return_value={name: {"native": {"status": {"data": {
@@ -329,15 +375,27 @@ class RenewalTests(unittest.TestCase):
         run.continuous_streams = Mock(side_effect=RuntimeError("delivery lost"))
         accounts = Mock()
         accounts.observe.return_value = ({"financial": {name: {"funding": {"first": []}} for name in NAMES}}, None)
+        events = []
+        faults = [Mock(), Mock()]
+        def failed_clear():
+            events.append("first filter")
+            raise RuntimeError("clear reply lost")
+        faults[0].clear.side_effect = failed_clear
+        faults[1].clear.side_effect = lambda: events.append("second filter")
+        accounts.collect.side_effect = lambda: events.append("collect")
         with patch("sim.wifi_renewal_load.RenewalAccounts", return_value=accounts), \
-             patch("sim.wifi_renewal_load.signal.alarm"), self.assertRaisesRegex(RuntimeError, "delivery lost"):
+             patch("sim.wifi_renewal_load.FrameLoss", side_effect=faults), \
+             patch("sim.wifi_renewal_load.signal.alarm"), self.assertRaisesRegex(RuntimeError, "removal incomplete"):
             run.exercise()
         run.continuous_streams.assert_called_once_with(accounts)
         accounts.collect.assert_called_once_with()
+        self.assertEqual(events, ["first filter", "second filter", "collect"])
+        self.assertEqual(run.evidence["renewal_load"]["acceptance_failure_reason"], "delivery lost")
         self.assertEqual([call.args[1] for call in run.ctl.call_args_list], ["buy", "buy"])
 
     def test_both_receivers_arm_first_and_failed_observation_drains_both_exact_senders(self):
         run = object.__new__(RenewalLoadRun)
+        run.loss_filters = {}
         run.nodes = dict.fromkeys(NAMES)
         run.evidence = {"renewal_load": {"streams": {}, "samples": [], "sample_errors": []}}
         run.samples, run.save = Mock(return_value={}), Mock()

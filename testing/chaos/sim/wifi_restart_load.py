@@ -15,9 +15,9 @@ from .paid_relay import eventually
 from .paid_settlement import original_channels, require
 from .restart_finances import QUOTE_UNITS, recovered_exposure, retained_finances
 from .paid_wifi import PaidWifiRun
-from .wifi_frame_loss import EVERY, FrameLoss
+from .wifi_frame_loss import EVERY, FrameLoss, clear_filters, validate_delivery
 from .wifi_measurements import snapshot
-from .wifi_priority_checks import natural, received, submitted
+from .wifi_priority_checks import received, submitted
 from .wifi_remote import digest
 from .wifi_restart import crash_profile
 from .wifi_restart_traffic import active_restart_stream, validate_overlap
@@ -38,15 +38,7 @@ def validate_stream(row, source):
         require(fault is None, 'restart traffic must not also inject frame loss')
         validate_overlap(interrupted, shape, source, RATE)
     if fault is not None:
-        require(isinstance(fault, dict) and set(fault) == {'before', 'after'},
-                'missing frame-loss observations')
-        before, after = fault['before'], fault['after']
-        dropped = natural(after['dropped_packets']) - natural(before['dropped_packets'])
-        require(before['enabled'] and after['enabled']
-                and before['jump_handle'] == after['jump_handle']
-                and natural(after['dropped_bytes']) >= natural(before['dropped_bytes'])
-                and 0 < PACKETS - delivered <= dropped and delivered * 10 >= PACKETS * 9,
-                'impaired delivery lacks observed loss or exceeds its declared bounds')
+        validate_delivery(fault, delivered, PACKETS)
 
 
 class RestartLoadRun(PaidWifiRun):
@@ -139,13 +131,7 @@ class RestartLoadRun(PaidWifiRun):
 
     def clear_loss(self):
         if self.loss_filters:
-            outcomes, errors = {}, []
-            for name, fault in self.loss_filters.items():
-                try:
-                    outcomes[name] = fault.clear()
-                except Exception as error:
-                    outcomes[name] = {'error': type(error).__name__}
-                    errors.append(name)
+            outcomes, errors = clear_filters(self.loss_filters)
             self.phase('test frame-loss removal checked', filters=outcomes)
             require(not errors, 'frame-loss removal incomplete: ' + ', '.join(errors))
 

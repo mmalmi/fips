@@ -162,6 +162,31 @@ slower-renewal and pressure checks necessary. The native waiting-boundary case
 above covers a controlled delay; greater physical pressure and impaired renewal
 remain open. Neither result attributes r225's earlier loss to that boundary.
 
+The controlled impaired expiry run in `work/router-renewal-loss-r230` rejects
+delivery acceptance on the unchanged ordinary runtime. Each receiver drops every
+twentieth test frame from the middle relay throughout its 42,000-packet stream.
+The directions deliver 39,672 and 39,780 originals: 2,328 and 2,220 are missing,
+exceeding the respective 2,199 and 2,202 counted frame drops. There are no duplicate
+or invalid packets. Both channels renew before expiry, with successor delivery,
+credit and filter counts advancing together. After filter removal, both fresh
+64-packet recovery streams arrive completely. All four channels settle, all 384
+test sats return and all 639 management checks pass. Independent closure verifies
+restored routers, stopped processes/mint, removed candidate executables and three
+byte-verified account archives. The original failed result remains unchanged.
+
+Targeted logs measure renewal pauses of 3.565 and 2.874 seconds, with 224 and 128
+source-wait expirations. They begin just after the two-second queue age and end
+within 40 ms of resumption; no source capacity/invalidation or native forwarding
+drop/error counter increases. Settlement consumes 1.904 and 1.492 seconds, then
+replacement funding/acceptance adds 1.600 and 1.313 seconds after quote preparation.
+This identifies renewal suspension as a source of additional loss in this run.
+Counters include control traffic and do not identify every missing payload or
+explain r225. The loss bound stays unchanged. Sixty-seven focused harness checks
+pass, including filter-removal failure with financial collection; shared filter
+checks and cleanup also serve the existing restart workload. Reducing renewal
+suspension under impairment remains production work; this is no performance win
+or impaired-delivery acceptance.
+
 The separate current ARM64 virtual-Ethernet storage matrix passes all eight
 trials in `work/storage-current-r202`: all 93,696 payloads arrive, all 3,072 test
 sats are collected, all 96 raw traces reproduce and all 40 resources are removed.
@@ -2020,7 +2045,7 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices; the latest native matrix passes with exclusive controller/poll CPU counters, all 285,696 originals delivered and 40,960 test sats collected. Current r221 delivers all 84,000 router originals across two automatic channel replacements, with scoped version-three CPU/journal/control costs, full financial closure and device restoration. Native checks cover 320 held originals and eight mixed-link replacements. Current r224 adds denied expired traffic and exactly one replacement after a committed mint reply crosses quote expiry or the channel refund deadline and is lost; all three cases account for 384 test sats each. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Qualify expiry under sustained impairment and physical near-expiry renewal, higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; complete payment CPU/storage/wire attribution remains distinct from controller spans, logical relay writes and local carrier counters. |
+| Payment cadence and overhead | Usage/age triggers, independent durable checkpoints, idle suppression, accepted default-limit SSD and three-router cadence matrices; the latest native matrix passes with exclusive controller/poll CPU counters, all 285,696 originals delivered and 40,960 test sats collected. Current r221 delivers all 84,000 router originals across two automatic channel replacements, with scoped version-three CPU/journal/control costs, full financial closure and device restoration. Native checks cover 320 held originals and eight mixed-link replacements. Current r229 adds native source-wait expiry and fresh delivery to the lost-reply/expiry cases; all four reconcile 384 test sats each. Physical r226/r227 pass finite expiry renewal; r230 renews and fully recovers after filter removal but rejects impaired delivery, with source queue expirations during 3.565/2.874-second pauses. All funds and devices close safely. Earlier failed runs remain recorded; only the two-packet loss is attributed to the former source packet cap. See [cadence results](CADENCE-RESULTS.md). | Reduce renewal suspension and qualify delivery under sustained impairment; higher sustained pressure, rapid successive restarts, slow-storage limits, longer impaired runs and long-run overhead; complete payment CPU/storage/wire attribution remains distinct from controller spans, logical relay writes and local carrier counters. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r219 passes all native, lifecycle and package gates. Physical r220 phone transit delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic and after a committed settlement swap, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |

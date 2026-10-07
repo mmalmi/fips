@@ -13,6 +13,35 @@ EVERY = 20
 CHAIN = 'frame_loss'
 
 
+def loss_delta(before, after):
+    dropped = natural(after['dropped_packets']) - natural(before['dropped_packets'])
+    require(before['enabled'] is True and after['enabled'] is True
+            and natural(before['jump_handle']) > 0 and before['jump_handle'] == after['jump_handle']
+            and dropped >= 0 and natural(after['dropped_bytes']) >= natural(before['dropped_bytes']),
+            'frame-loss filter changed or its counters decreased')
+    return dropped
+
+
+def validate_delivery(fault, delivered, requested):
+    require(isinstance(fault, dict) and set(fault) == {'before', 'after'},
+            'missing frame-loss observations')
+    dropped = loss_delta(fault['before'], fault['after'])
+    require(0 < requested - delivered <= dropped and delivered * 10 >= requested * 9,
+            'impaired delivery lacks observed loss or exceeds its declared bounds')
+
+
+def clear_filters(filters):
+    """Attempt every owned removal, even after an uncertain response."""
+    outcomes, errors = {}, []
+    for name, fault in filters.items():
+        try:
+            outcomes[name] = fault.clear()
+        except Exception as error:
+            outcomes[name] = {'error': type(error).__name__}
+            errors.append(name)
+    return outcomes, errors
+
+
 class FrameLoss:
     def __init__(self, node, source_mac):
         if not isinstance(source_mac, str) or not re.fullmatch(MAC, source_mac):

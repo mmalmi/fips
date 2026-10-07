@@ -741,19 +741,31 @@ It marks successor lineage reconstructed from that history with
 apply. This observer retention changes no router journal or financial limit.
 
 Both receivers are armed before either sender starts. Each sender runs once,
-without pauses around renewal or payload retries. Acceptance requires every
+without pauses around renewal or payload retries. Default acceptance requires every
 packet, unchanged service processes, one actual refunded predecessor and one
 accepted successor in each direction, and fresh delivery plus increased
 successor credit while the continuous sends remain active. Raw failed or partial
-streams remain evidence. After the exact sends finish, cleanup pauses renewals,
+streams remain evidence. After the exact sends finish, cleanup removes any test
+loss filters, pauses renewals,
 verifies all retained channel settlements and uses the shared wallet collector.
 Unresolved funding retains the original accounts and mint for recovery.
+
+Add `--frame-loss`, independently or with `--expiry-renewal`, to drop every
+twentieth test-EtherType frame from the middle relay at both receivers throughout
+the continuous streams. The existing leased filter leaves ordinary LAN and
+Internet traffic outside its match. Each direction must deliver at least 90% of
+its originals, with no duplicates or invalid data and missing packets no greater
+than observed dropped frames. The same filters must remain active while successor
+delivery, automatic credit and drop counts all advance. After removal, each
+direction must deliver all 64 fresh recovery packets. Spending limits remain
+unchanged. Counters include control frames and cannot identify the cause of every
+missing payload; this is bounded impaired-link acceptance, not loss attribution.
 
 The diagnostic sender is bounded at 300 seconds, receiver at 360 seconds and
 individual remote send call at 330 seconds. These explicit bounds do not change
 the existing 30-second/60-second probe defaults or the short cadence matrix.
-This finite renewal regression is not a cadence comparison, impaired-radio
-acceptance, physical power-loss test or maximum-throughput qualification.
+This finite renewal regression is not a cadence comparison, physical power-loss
+test or maximum-throughput qualification.
 
 ### Paid/free Wi-Fi priority
 
