@@ -368,6 +368,7 @@ UDP qualification and short UDP/TCP exhaustion/restart case pass in
 | `work/ethernet-renewal-r280` | Ethernet, separate middle interfaces | 79,782 | 4,424 | 301 / 301 |
 | `work/ethernet-renewal-r280/udp-regression` | Existing UDP workload | 79,815 | 4,426 | 303 / 303 |
 | `work/ethernet-shared-r281` | Ethernet, one shared interface per node | 79,788 | 4,426 | 301 / 301 |
+| `work/ethernet-arm-r282` | Same shared Ethernet, emulated ordinary ARM64 daemon | 79,805 | 4,426 | 299 / 299 |
 
 Each direction completes three expiry renewals, every directed link observes at
 least two key rotations, and payloads have no invalid or duplicate packets.
@@ -375,6 +376,15 @@ Fresh loss-free probes pass, channels settle, and all 384 test sats per case are
 conserved. Strict lint, formatting and source-size checks pass; source/dependency
 hashes and stopped processes are independently verified. Carrier counts include
 control frames and do not attribute each missing payload.
+
+The ARM case reuses the qualified `quote-tariff-arm-r273` binary and r281 test
+executable without rebuilding either. All 906 runtime source files and dependency
+inventories match; the ordinary core and wallet SDK exclude simulation. Unfunded
+ARM discovery first forms the expected line. The paid run then observes three
+expiry renewals per direction and two key rotations per directed link. Its 17
+evidence files and 57 archived unfunded-profile files have verified local copies.
+User-mode emulation tests the ARM binary on the Linux host's Ethernet stack; it
+does not reproduce router CPU timing or physical radio behavior.
 
 The current Ethernet case uses real Linux packet sockets, automatic authenticated
 discovery without configured peers, and one shared interface per node. An isolated
@@ -393,7 +403,7 @@ The earlier r277/r278 runs remain rejected for an extra fixed-handle assertion,
 with financial records retained; r278 had already met the delivery bound. Handles
 remain diagnostics while peer identity, delivery, renewal and financial bounds
 determine acceptance. Neither Ethernet arrangement reproduces r247's physical
-connection gap. These native checks do not qualify radio conditions, router CPU
+connection gap. These checks do not qualify radio conditions, router CPU
 pressure, physical power loss or current phone behavior. Changes add test coverage
 only; fault-removal errors retain the original accounts for recovery.
 
