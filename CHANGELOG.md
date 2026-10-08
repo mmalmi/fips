@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating unused input channels for control sends, clone retry settings
   only for eligible peers, and format session names only when a log is due. Keep
   encrypted output, receipt accounting, retry eligibility, and log timing unchanged.
+- Stop scalar UDP batches at the first send failure so packet, byte, and completion
+  accounting describe the same successful prefix.
+- Send already-collected Android UDP bursts with borrowed vectors and `sendmmsg`.
+  Preserve the ordinary single-packet path and the existing bounded send timeout;
+  do not add queues, delays, or change receive behavior.
 - Keep an outbound WebRTC attempt visible while physical connection and data-channel
   setup are still running, so immediate node polling preserves its preparation.
   Continue reporting failed, closing, and stopped attempts correctly.
