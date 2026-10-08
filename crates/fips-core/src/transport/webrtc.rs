@@ -511,6 +511,7 @@ impl WebRtcTransport {
         let Ok(addr) = canonical_webrtc_addr(addr) else {
             return;
         };
+        self.physical.cancel_current_setup(&addr);
         self.recovering
             .lock()
             .expect("WebRTC recoveries")
@@ -533,7 +534,7 @@ impl WebRtcTransport {
             .lock()
             .expect("WebRTC recoveries")
             .remove(&addr);
-        let generation = self.physical.generation(&addr)?;
+        let generation = self.physical.cancel_current_setup(&addr)?;
         Some(spawn_webrtc_session_cleanup(
             Arc::clone(&self.pool),
             Arc::clone(&self.pending),

@@ -14,6 +14,7 @@ pub(super) enum PhysicalPhase {
 struct PhysicalSlot {
     generation: u64,
     phase: PhysicalPhase,
+    setup_cancelled: bool,
     replacement_waiter: bool,
 }
 
@@ -257,16 +258,6 @@ impl PhysicalResources {
         self.0.accepting.load(Ordering::Acquire)
     }
 
-    pub(super) fn generation(&self, addr: &TransportAddr) -> Option<u64> {
-        self.0
-            .state
-            .lock()
-            .expect("WebRTC physical state")
-            .peers
-            .get(addr)
-            .map(|slot| slot.generation)
-    }
-
     pub(super) fn reserve(
         &self,
         addr: &TransportAddr,
@@ -290,6 +281,7 @@ impl PhysicalResources {
             PhysicalSlot {
                 generation,
                 phase: PhysicalPhase::Creating,
+                setup_cancelled: false,
                 replacement_waiter: false,
             },
         );
@@ -789,6 +781,8 @@ impl Drop for ManagedPeerConnection {
         super::spawn_managed_peer_cleanup(self);
     }
 }
+
+include!("lifecycle_setup.rs");
 
 #[cfg(test)]
 mod lifecycle_tests {

@@ -155,15 +155,7 @@ impl WebRtcTransport {
             // Outbound setup owns capacity before its task publishes a pending
             // dial. Node must retain that preparation through peer creation
             // and data-channel setup instead of retiring it as a missing dial.
-            Ok(_)
-                if self.physical.is_accepting()
-                    && matches!(
-                        self.physical.phase(&addr),
-                        Some(PhysicalPhase::Creating | PhysicalPhase::Active)
-                    ) =>
-            {
-                ConnectionState::Connecting
-            }
+            Ok(_) if self.physical.has_connecting_owner(&addr) => ConnectionState::Connecting,
             Ok(_) => ConnectionState::None,
             Err(_) => ConnectionState::Connecting,
         }

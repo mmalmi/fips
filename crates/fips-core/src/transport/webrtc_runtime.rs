@@ -57,6 +57,9 @@ impl WebRtcRuntime {
         phase_owner_id: Option<String>,
         recovery: Option<WebRtcRecoveryGuard>,
     ) -> Result<(), TransportError> {
+        if !reservation.setup_is_current() {
+            return Ok(());
+        }
         let remote_pubkey_hex = remote_addr.as_str().unwrap_or_default().to_string();
         let remote_xonly = xonly_from_compressed_hex(&remote_pubkey_hex)?;
         let session_id = random_session_id();
@@ -66,6 +69,10 @@ impl WebRtcRuntime {
             .await
             .map_err(|_| TransportError::Timeout)??;
         let pc = reservation.activate(raw_pc);
+        if !pc.setup_is_current() {
+            close_peer_connection_bounded(pc).await;
+            return Ok(());
+        }
         let data_channel = match tokio::time::timeout_at(
             deadline,
             pc.create_data_channel(
@@ -702,6 +709,7 @@ impl WebRtcRuntime {
         let mut pending = self.pending.lock().await;
         if pool.contains_key(addr)
             || pending.contains_key(addr)
+            || !dial.pc.setup_is_current()
             || recovery.is_some_and(|guard| !guard.is_current())
         {
             return false;

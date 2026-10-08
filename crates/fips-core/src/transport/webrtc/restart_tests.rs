@@ -196,6 +196,172 @@ async fn close_and_stop_cancel_recovery_after_new_peer_creation() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_close_before_outbound_setup_does_not_leave_an_offer_or_peer() {
+    let mut transport = transport().await;
+    let addr = test_webrtc_addr(&crate::Identity::generate());
+    transport.connect_async(&addr).await.unwrap();
+    // No executor turn has run the outbound task yet. Closing must retire
+    // its existing physical reservation, even though pending is still empty.
+    transport.close_connection_async(&addr).await;
+    let quiescent = transport
+        .physical
+        .wait_for_quiescence(Duration::from_secs(2))
+        .await;
+    let pending = transport.pending.lock().await.len();
+    let offers = transport.drain_link_negotiations(8).len();
+    let resources = transport.resource_snapshot();
+    transport.stop_async().await.unwrap();
+
+    assert!(
+        quiescent,
+        "Closed setup left a live physical owner: {resources:?}"
+    );
+    assert_eq!(pending, 0, "Closed setup published a pending dial");
+    assert_eq!(offers, 0, "Closed setup sent an offer after explicit close");
+    assert_eq!(resources.created_total, 0, "Cancelled setup created a PC");
+}
+
+#[tokio::test]
+async fn explicit_close_rejects_outbound_publication_after_peer_activation() {
+    assert_close_rejects_outbound_publication(false).await;
+}
+
+#[tokio::test]
+async fn explicit_close_detached_rejects_publication_after_peer_activation() {
+    assert_close_rejects_outbound_publication(true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_close_cancellation_allows_a_fresh_dial_to_the_same_peer() {
+    let mut transport = transport().await;
+    let addr = test_webrtc_addr(&crate::Identity::generate());
+    transport.connect_async(&addr).await.unwrap();
+    transport.close_connection_async(&addr).await;
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::None
+    );
+    assert!(
+        transport
+            .physical
+            .wait_for_quiescence(Duration::from_secs(2))
+            .await
+    );
+
+    transport.connect_async(&addr).await.unwrap();
+    let offer = next_offer(&mut transport).await;
+    assert_eq!(offer.kind, LinkNegotiationKind::Offer);
+    assert_eq!(transport.pending.lock().await.len(), 1);
+    transport.close_connection_async(&addr).await;
+    assert!(
+        transport
+            .physical
+            .wait_for_quiescence(Duration::from_secs(2))
+            .await
+    );
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::None
+    );
+    let resources = transport.resource_snapshot();
+    transport.stop_async().await.unwrap();
+    assert_eq!(resources.created_total, 1);
+    assert_eq!(resources.closed_total, 1);
+    assert_eq!(resources.peak_physical, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_close_cancellation_is_rechecked_after_publication_lock_wait() {
+    let mut transport = transport().await;
+    let addr = test_webrtc_addr(&crate::Identity::generate());
+    let runtime = transport.runtime();
+    let pc = transport
+        .physical
+        .reserve(&addr)
+        .unwrap()
+        .activate(runtime.new_peer_connection().await.unwrap());
+    let pool = Arc::clone(&transport.pool);
+    let held = pool.lock().await;
+    let publish_pc = Arc::clone(&pc);
+    let publish_addr = addr.clone();
+    let publishing = tokio::spawn(async move {
+        runtime
+            .try_reserve_pending(
+                &publish_addr,
+                PendingDial {
+                    session_id: "waiting-setup".into(),
+                    phase_owner_id: "waiting-setup".into(),
+                    pc: publish_pc,
+                    created_at_ms: now_ms(),
+                    origin: PendingDialOrigin::Local,
+                    awaiting_answer: false,
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+                },
+                None,
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    // Close claims cancellation before waiting behind the same pool lock.
+    tokio::join!(transport.close_connection_async(&addr), async {
+        drop(held)
+    });
+    let admitted = publishing.await.unwrap();
+    close_peer_connection_bounded(pc).await;
+    transport.stop_async().await.unwrap();
+    assert!(
+        !admitted,
+        "Publication used a pre-lock cancellation snapshot"
+    );
+}
+
+async fn assert_close_rejects_outbound_publication(detached: bool) {
+    let mut transport = transport().await;
+    let addr = test_webrtc_addr(&crate::Identity::generate());
+    let runtime = transport.runtime();
+    let reservation = transport.physical.reserve(&addr).unwrap();
+    let pc = reservation.activate(runtime.new_peer_connection().await.unwrap());
+    assert_eq!(transport.resource_snapshot().active, 1);
+    assert!(transport.pending.lock().await.is_empty());
+    if detached {
+        transport
+            .close_connection_detached_task(&addr)
+            .unwrap()
+            .await
+            .unwrap();
+    } else {
+        transport.close_connection_async(&addr).await;
+    }
+    // Exercise the real publication boundary with a real activated PC,
+    // resuming setup after close has already observed no logical owner.
+    let admitted = runtime
+        .try_reserve_pending(
+            &addr,
+            PendingDial {
+                session_id: "closed-setup".into(),
+                phase_owner_id: "closed-setup".into(),
+                pc: Arc::clone(&pc),
+                created_at_ms: now_ms(),
+                origin: PendingDialOrigin::Local,
+                awaiting_answer: false,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+            },
+            None,
+        )
+        .await;
+    transport.close_connection_async(&addr).await;
+    close_peer_connection_bounded(pc).await;
+    transport.stop_async().await.unwrap();
+    let resources = transport.resource_snapshot();
+    assert!(
+        !admitted,
+        "Retired setup was republished (detached={detached})"
+    );
+    assert_eq!(resources.created_total, resources.closed_total);
+    assert_eq!(resources.creating + resources.active + resources.closing, 0);
+}
+
 #[tokio::test]
 async fn stale_answer_cannot_claim_the_replacement_offer() {
     let mut transport = transport().await;
