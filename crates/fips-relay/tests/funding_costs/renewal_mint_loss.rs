@@ -62,9 +62,9 @@ async fn scenario(root: &Path, boundary: Boundary) {
     let setup::Bench {
         mint: _mint,
         configs,
+        paths,
         npubs,
         mut children,
-        ..
     } = setup::start_configured_line(
         root,
         mint,
@@ -174,15 +174,17 @@ async fn scenario(root: &Path, boundary: Boundary) {
     })
     .await
     .expect("held mint close cannot stall another buyer's payment");
-    // Close the independent channel explicitly before its quote can expire.
-    // Its mint swap may proceed while the original close response is held.
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        request(&configs[2], &AdminRequest::Settle),
-    )
-    .await
-    .expect("held mint close cannot stall another buyer's settlement")
-    .unwrap();
+    // Restart needs paid session replies; keep that reverse channel until final
+    // settlement. Other cases also check independent settlement while held.
+    if !matches!(boundary, Boundary::Channel) {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            request(&configs[2], &AdminRequest::Settle),
+        )
+        .await
+        .expect("held mint close cannot stall another buyer's settlement")
+        .unwrap();
+    }
     if matches!(boundary, Boundary::AdmissionWait) {
         admission_cohorts(&configs, &npubs, id).await;
     } else {
@@ -222,8 +224,8 @@ async fn scenario(root: &Path, boundary: Boundary) {
     );
     assert_eq!(
         proxy.state.swaps.load(Ordering::SeqCst),
-        swaps_before + 2,
-        "only the original and independent closes reach the mint while held"
+        swaps_before + 1 + usize::from(!matches!(boundary, Boundary::Channel)),
+        "only the requested closes reach the mint while held"
     );
     let pending = read(&journal);
     assert_eq!(pending["renewals"][id]["completed"], false);
@@ -234,12 +236,46 @@ async fn scenario(root: &Path, boundary: Boundary) {
     // reply ends that operation's pause before retrying; closed grants reject
     // waiting originals during that gap, even if their queue age is still valid.
     proxy.state.lose_swap_reply.store(
-        !matches!(boundary, Boundary::AdmissionWait),
+        !matches!(boundary, Boundary::AdmissionWait | Boundary::Channel),
         Ordering::SeqCst,
     );
+    // Lose both peers after the mint committed, before either saved a report.
+    // The original live mint retains its spend records and payment-network state.
+    if matches!(boundary, Boundary::Channel) {
+        for index in [0, 1] {
+            children[index].kill().await.unwrap();
+            assert!(!children[index].wait().await.unwrap().success());
+            std::fs::rename(
+                paths[index].with_extension("log"),
+                paths[index].with_extension("before-restart.log"),
+            )
+            .unwrap();
+        }
+        assert!(read(&journal)["buyer_settlements"][id]["report"].is_null());
+        assert!(read(&seller_journal)["seller_settlements"][id]["report"].is_null());
+    }
     let released_at = tokio::time::Instant::now();
-    release.send(()).unwrap();
-    let renewed = wait_journal(&journal, 60, |j| j["renewals"][id]["completed"] == true).await;
+    if matches!(boundary, Boundary::Channel) {
+        // The disconnected HTTP request may already have dropped its barrier.
+        let _ = release.send(());
+        for index in [0, 1] {
+            children[index] = start(&paths[index]).await;
+        }
+        ready(&configs, &paths, &npubs, &mut children).await;
+    } else {
+        release.send(()).unwrap();
+    }
+    // Quote retirement may remove the completed intent before this reader sees
+    // it. Retained buyer history survives that same validated transition.
+    let renewed = wait_journal(&journal, 60, |j| {
+        j["buyer_settlements"][id]["refunded"] == true
+            && (j["renewals"][id]["completed"] == true
+                || (j["renewals"][id].is_null()
+                    && j["history"]["buyers"]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|saved| saved == id))))
+    })
+    .await;
     if matches!(boundary, Boundary::AdmissionWait) {
         eprintln!(
             "renewal admission release to completion: {} ms",
@@ -258,17 +294,31 @@ async fn scenario(root: &Path, boundary: Boundary) {
         before["next_funding"].as_u64().unwrap() + 1
     );
     assert_eq!(renewed["buyer_settlements"][id]["refunded"], true);
-    // Report cleanup is retried independently after replacement credit resumes.
-    let released = wait_journal(&journal, 10, |j| {
-        j["buyer_settlements"][id]["released"] == true
-    })
-    .await;
-    let refund = &released["buyer_settlements"][id];
-    assert_eq!(refund["refunded"], true);
-    assert_eq!(refund["released"], true);
-    let closed = read(&seller_journal);
-    assert_eq!(closed["seller_settlements"][id]["report"], refund["report"]);
-    assert_eq!(closed["seller_settlements"][id]["released"], true);
+    if matches!(boundary, Boundary::Channel) {
+        // Expiry refunds are terminal without a cooperative report or receipt.
+        // Independently recovered seller proceeds must match the wallet refund.
+        let refund = &renewed["buyer_settlements"][id];
+        assert_eq!(refund["kind"], "expiry");
+        let closed = wait_journal(&seller_journal, 10, |j| {
+            j["seller_settlements"][id]["report"].is_object()
+        })
+        .await;
+        let report = &closed["seller_settlements"][id]["report"];
+        assert_eq!(report["refunded_sat"], refund["wallet_refund_sat"]);
+        assert_eq!(report["signed_sat"], refund["payment"]["balance"]);
+    } else {
+        // Report cleanup is retried independently after replacement credit resumes.
+        let released = wait_journal(&journal, 10, |j| {
+            j["buyer_settlements"][id]["released"] == true
+        })
+        .await;
+        let refund = &released["buyer_settlements"][id];
+        assert_eq!(refund["refunded"], true);
+        assert_eq!(refund["released"], true);
+        let closed = read(&seller_journal);
+        assert_eq!(closed["seller_settlements"][id]["report"], refund["report"]);
+        assert_eq!(closed["seller_settlements"][id]["released"], true);
+    }
     let after = request(&configs[0], &AdminRequest::Status).await.unwrap();
     assert_eq!(after["purchases"].as_array().unwrap().len(), 1);
     let replacement = after["purchases"][0]["channel"]["id"].as_str().unwrap();

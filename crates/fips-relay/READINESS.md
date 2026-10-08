@@ -7049,10 +7049,32 @@ unchanged. No message, dependency or stored-state format changes.
 
 The existing four-node, full-capacity wallet fixture reproduces the blocked refund
 on the previous daemon, then passes on the candidate. Six delayed-mint, expiry and
-successor-funding cases also pass. Their swap counts include the explicitly
-completed independent settlement while still rejecting extra closes. The earlier
+successor-funding cases also pass. Their swap counts include independent
+settlements where requested while still rejecting extra closes. The earlier
 aggregate-count failure retains its original unfinished accounts in
 `work/wallet-close-qualified-r315`; it is not a successful financial closure.
+A read-only audit in `work/wallet-close-audit-r353` checks all 63 original files
+unchanged and reconciles its 384 issued sats as 345 recorded unspent wallet sats,
+33 committed settlement outputs awaiting import, and 6 mint-fee sats. This is
+ledger evidence only: the simulated payment-network state was memory-only, so
+reopening the mint SQLite file cannot establish a complete issuer restart. The
+original mint and accounts remain preserved; no replacement funding is created.
+
+The refund-deadline case now kills both buyer and provider after the mint commits
+the close but before either saves its report. The same accounts recover against
+the original live mint, produce exactly one replacement, deliver and pay for fresh
+traffic, and settle completely. This exposed `settle_all` requesting a cooperative
+report for an already completed expiry refund (`work/committed-close-restart-r360`).
+Settlement selection now skips those terminal expiry refunds; unfinished refunds
+remain visible. The fixture keeps the paid reverse channel needed for session
+replies after restart and accepts retained history when normal quote retirement
+has removed a completed renewal intent. Delivery, spending and accounting gates
+are unchanged. All six cases pass in `work/expiry-settlement-recovery-r364`, with
+2,304 test sats accounted for and all owned processes stopped. Ordinary native and
+ARM builds, strict lint and source-size checks pass in r361/r363. Earlier failed
+fixtures remain preserved. This qualifies process recovery with a live mint;
+physical power loss and current device acceptance remain open. Android r351
+predates this settlement fix and needs rebuilding before that acceptance.
 
 The updated opt-in UDP/TLS fixture checks four renewal cycles in both directions
 and a mint key change. While one committed close response is held, the other

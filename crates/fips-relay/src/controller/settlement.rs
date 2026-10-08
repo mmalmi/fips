@@ -505,6 +505,13 @@ impl Controller {
         if let Some(history) = &j.history {
             ids.extend(history.buyers.iter().cloned());
         }
+        // Retained routing history can outlive a completed unilateral refund.
+        // It has no cooperative report to request from the provider.
+        ids.retain(|id| {
+            !j.buyer_settlements
+                .get(id)
+                .is_some_and(|s| s.kind == SettlementKind::Expiry && s.terminal())
+        });
         ids
     }
 
