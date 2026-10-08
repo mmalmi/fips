@@ -434,14 +434,14 @@ class AcceptanceTests(unittest.TestCase):
                         result = subprocess.run(["sh", "-c", command], env=env, capture_output=True)
                         if result.returncode:
                             raise RuntimeError("guard readiness failed")
-                    elif command == ["mkdir", "-m", "700", node.parent]:
+                    elif command == ["chmod", "700", node.binary]:
                         raise Prepared()
                     return b""
 
                 node.remote = remote
                 with patch("sim.wifi_remote.mesh_helpers", return_value=""):
                     with self.assertRaises(Prepared if acknowledge else RuntimeError):
-                        node.prepare(b"binary", {})
+                        node.stage_runtime(b"binary")
                 self.assertEqual(node.guard_ready, acknowledge)
                 self.assertEqual(node.guarded.call_count, int(acknowledge))
 

@@ -5,8 +5,8 @@ import shlex
 from .wifi_remote import checked_path
 
 
-def crash_profile(node, before_sample):
-    """Signal once under the existing lease lock; an ambiguous reply stays failed."""
+def sampled_process(node, before_sample):
+    """Validate a sampled epoch and build its guarded ownership check."""
     if not isinstance(before_sample, dict) or not isinstance(before_sample.get("host_process"), dict):
         raise ValueError("crash requires a sampled candidate epoch")
     identity = before_sample.get("host_process", {})
@@ -19,8 +19,6 @@ def crash_profile(node, before_sample):
     temporary = shlex.quote(checked_path(node.temporary))
     binary = shlex.quote(checked_path(node.binary))
     config = shlex.quote(checked_path(node.config))
-    # The primary and auxiliary profiles share their owner's lease/operation lock.
-    owner = getattr(node, "owner", node)
     command = f"""set -efu
 target_pid={pid}
 target_start={start}
@@ -45,6 +43,16 @@ owned() {{
   test "$process_state" != Z
 }}
 owned
+"""
+    return pid, start, command
+
+
+def crash_profile(node, before_sample):
+    """Signal once under the existing lease lock; an ambiguous reply stays failed."""
+    pid, start, command = sampled_process(node, before_sample)
+    # The primary and auxiliary profiles share their owner's lease/operation lock.
+    owner = getattr(node, "owner", node)
+    command += """
 # A four-second monotonic deadline leaves room below the five-second limit.
 deadline=$(( $(cut -d . -f 1 /proc/uptime) + 4 ))
 owned

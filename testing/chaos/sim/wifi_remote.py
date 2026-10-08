@@ -296,8 +296,8 @@ test "$age" -le 35
                    + logging + shlex.join(["exec", self.binary, "run", profile.config]) + "\n")
         return ("#!/bin/sh\n" + self.guarded_script(command)).encode()
 
-    def prepare(self, binary, config):
-        # Persistent accounts and RAM-backed executable have distinct fresh owned paths.
+    def stage_runtime(self, binary):
+        """Stage a fresh RAM guard and executable without touching any account."""
         self.remote(["mkdir", "-m", "700", self.temporary])
         self.created = True
         mesh_script = mesh_helpers(self.interface, self.mesh)
@@ -315,17 +315,21 @@ test "$age" -le 35
                     f"test -f {self.temporary}/guard-ready")
         self.guarded(":")
         self.guard_ready = True
+        self.write(self.binary, binary)
+        self.remote(["chmod", "700", self.binary])
+        if self.remote(["sha256sum", self.binary]).decode().split()[0] != digest(binary):
+            raise RuntimeError("staged binary checksum differs")
+        self.write(self.temporary + "/start.sh", self.start_script())
+
+    def prepare(self, binary, config):
+        # Persistent accounts and RAM-backed executable have distinct fresh owned paths.
+        self.stage_runtime(binary)
         self.remote(["mkdir", "-m", "700", self.parent])
         filesystem = self.remote(["df", "-PT", self.parent]).decode().splitlines()[-1].split()[1]
         if filesystem in ("tmpfs", "ramfs", "squashfs"):
             raise RuntimeError("test accounts require writable persistent storage")
         self.write(self.config, json.dumps(config).encode())
-        self.write(self.binary, binary)
-        self.remote(["chmod", "700", self.binary])
-        if self.remote(["sha256sum", self.binary]).decode().split()[0] != digest(binary):
-            raise RuntimeError("staged binary checksum differs")
         self.npub = self.remote([self.binary, "init", self.config], timeout=45).decode().strip()
-        self.write(self.temporary + "/start.sh", self.start_script())
 
     def stop(self):
         # Preserve the guard, executable and profiles for offline wallet collection.

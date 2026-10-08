@@ -661,6 +661,19 @@ and settlement, including after an uncertain crash response.
 Focused checks: `python3 -m unittest tests.test_wifi_restart_load
 tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
 
+Use `sim.wifi_kernel_restart` with the same required arguments and without the
+optional fault flags to reset the middle router's kernel between the third and
+fourth rounds. Linux SysRq `b` reboots without syncing or unmounting storage.
+This interrupts that router's Wi-Fi and management connection; both other
+routers remain monitored. The fixture requires a changed boot ID, restored
+original LAN/Wi-Fi/service, unchanged candidate identity and configuration, and
+the original paid accounts before staging a new RAM executable. It never
+reinitializes the accounts or repeats an uncertain reset. Full stream delivery,
+bounded unbilled exposure and collection of all 384 test sats remain required.
+This checks physical-router kernel/cache loss with electrical power present;
+it does not qualify flash power interruption or unattended service recovery.
+Include `tests.test_wifi_kernel_restart` in the focused Linux checks.
+
 ### Router funding and settlement interruption
 
 `sim.wifi_settlement` uses the same three-router inventory, ordinary

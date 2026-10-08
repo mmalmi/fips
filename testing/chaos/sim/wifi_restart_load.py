@@ -194,7 +194,7 @@ class RestartLoadRun(PaidWifiRun):
                 self.collect()
 
 
-def main():
+def main(run_class=RestartLoadRun):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('inventory', 'binary', 'mint-binary', 'mint-host', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
@@ -212,7 +212,7 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    RestartLoadRun(args).execute()
+    run_class(args).execute()
 
 
 if __name__ == '__main__':
