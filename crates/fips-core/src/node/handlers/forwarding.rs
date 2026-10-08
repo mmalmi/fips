@@ -217,6 +217,11 @@ impl Node {
                     fmp.fmp_flags & FLAG_CE != 0,
                 ))
                 .await;
+                // A receive batch can contain many control messages whose
+                // replies each wait for a bounded carrier completion. Preserve
+                // the endpoint's status deadline between those completed
+                // messages, without interrupting owned sends or bulk forwards.
+                self.drain_endpoint_snapshots().await;
             }
             processed = processed.saturating_add(1);
         }
