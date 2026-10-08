@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep an outbound WebRTC attempt visible while physical connection and data-channel
   setup are still running, so immediate node polling preserves its preparation.
   Continue reporting failed, closing, and stopped attempts correctly.
+- Cancel unfinished WebRTC setup when its connection is explicitly closed. Reject
+  late publication by the retired physical generation and retain capacity until
+  cleanup completes, without blocking a fresh connection afterward.
 - Release the reusable core and matching endpoint libraries as 0.4.95. Identity
   remains 0.3.3; protocol messages and wire layouts are unchanged.
 
