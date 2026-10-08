@@ -650,6 +650,33 @@ and settlement, including after an uncertain crash response.
 Focused checks: `python3 -m unittest tests.test_wifi_restart_load
 tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
 
+### Router settlement interruption
+
+`sim.wifi_settlement` uses the same three-router inventory, ordinary
+measurement-enabled relay, remote test mint and guarded persistent profiles.
+After bidirectional paid delivery, it holds a committed settlement reply at the
+mint and kills the three owned relay processes. The provider starts first and
+must restore the original mint result while its buyer remains stopped. The buyer
+then restarts and must finish its original refund and release automatically,
+without another settlement request or new funding. The shared settlement checks
+finally collect all 384 test sats and restore the original router state.
+
+```sh
+python3 -B -m sim.wifi_settlement \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address 192.0.2.10 \
+  --output /private/results/new-router-settlement
+```
+
+This shares the committed-reply and automatic-recovery assertions with the guest
+power-loss scenario below. It preserves the router kernels and management
+network, so it does not establish physical power-loss or flash-cache recovery.
+Focused checks from `testing/chaos`: `PYTHONPATH=.:tests python3 -B -m unittest
+tests.test_committed_settlement tests.test_paid_settlement tests.test_settlement_fixture`.
+
 ### Guest kernel and filesystem power loss
 
 `sim.guest_powerloss` runs three relay accounts inside a disposable x86-64 KVM
