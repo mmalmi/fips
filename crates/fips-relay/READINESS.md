@@ -7066,6 +7066,29 @@ The workload and every acceptance assertion remain intact. The updated driver,
 strict lint and source-size gates pass in `work/route-failure-driver-r323`;
 no runtime code changes in this diagnostic update.
 
+The next diagnostic replay, `work/route-failure-pressure-r324`, recovers the route
+but fails delivery with 168 missing packets beyond the injected-loss allowance.
+All 384 test sats reconcile; 298 samples observe no disconnected neighbors and
+both directions complete three renewals. The longest pause is 3.86 seconds:
+2.06 seconds elapse before the buyer receives sealed usage, then settlement,
+refund verification and successor acceptance complete. Wallet acquisition itself
+does not wait in that transition. The trace does not distinguish seal transport
+delay from provider processing. Original accounts and diagnostics are preserved
+and independently verified; this is neither hardware nor performance acceptance.
+
+Opt-in transition timing now records provider seal receipt, authorization,
+durable intent, offer retirement, ledger sealing and saved final usage. It uses
+the existing diagnostic target and changes no requests, limits or accounting.
+Strict lint, source-size and ordinary ARM build gates pass in
+`work/seal-timing-build-r326`. Its diagnostic replay,
+`work/seal-timing-pressure-r327`, passes the unchanged delivery bound with 79,798
+of 84,000 payloads received and all 384 test sats reconciled. All six observed
+renewal pauses are 1.45–1.73 seconds; the retained logs contain no source-queue
+expiry. Provider seal processing takes 2.1–7.2 milliseconds in these exchanges.
+Source, dependency, artifact and stopped-process verification pass. The earlier
+long seal wait does not recur, so this measurement-only change neither explains
+nor fixes it. Controlled loss reproduction and physical acceptance remain open.
+
 Run the opt-in TLS case with the [matching dependency overrides](FUNDING-COSTS.md):
 
 ```sh

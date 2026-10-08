@@ -27,6 +27,8 @@ impl Controller {
         peer: PeerIdentity,
         id: &str,
     ) -> Result<ControllerResponse, String> {
+        let timing = TransitionTiming::new("seal_request", id);
+        timing.mark("received");
         let state = self.snapshot().await?;
         let channel = state
             .incoming
@@ -44,6 +46,7 @@ impl Controller {
         if peer.node_addr() != &channel.buyer {
             return Err("wrong settlement buyer".into());
         }
+        timing.mark("authorized");
         let Some(_claim) = self.settlement_claim(id) else {
             return Ok(ControllerResponse::Pending);
         };
@@ -57,6 +60,8 @@ impl Controller {
     // the original channel expiry. Neither path invents a new usage claim.
     pub(super) async fn seal_sale(&self, channel: ChannelTerms) -> Result<ChannelUsage, String> {
         let id = channel.id.clone();
+        let timing = TransitionTiming::new("seal", &id);
+        timing.mark("started");
         let saved = channel.clone();
         self.change(move |j| {
             for incoming in j.incoming.values_mut().filter(|i| i.channel.id == saved.id) {
@@ -80,6 +85,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("intent_saved");
         let state = self.snapshot().await?;
         let quotes = self.services.quotes.clone();
         let ids: Vec<_> = state
@@ -95,6 +101,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("offers_retired");
         if let Some(usage) = state.seller_settlements[&id].usage {
             return Ok(usage);
         }
@@ -102,6 +109,7 @@ impl Controller {
         let channel_id = id.to_string();
         let usage =
             blocking(move || seller.seal_channel(&channel_id).map_err(|e| e.to_string())).await?;
+        timing.mark("usage_sealed");
         let channel_id = id.to_string();
         self.change(move |j| {
             j.seller_settlements
@@ -111,6 +119,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("usage_saved");
         Ok(usage)
     }
 
