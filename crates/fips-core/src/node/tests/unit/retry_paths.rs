@@ -771,7 +771,7 @@ async fn direct_refresh_dampens_rekey_but_probes_same_path_after_fmp_drain() {
 }
 
 #[test]
-fn authenticated_direct_payload_recovery_abandons_obsolete_fmp_rekey() {
+fn authenticated_direct_payload_recovery_preserves_pending_fmp_rekey() {
     let mut node = make_node();
     let peer_full = Identity::generate();
     let transport_id = TransportId::new(1);
@@ -802,20 +802,17 @@ fn authenticated_direct_payload_recovery_abandons_obsolete_fmp_rekey() {
         "the recovery rekey must be pending before direct payload returns"
     );
 
-    assert!(node.clear_session_direct_path_degraded(&node_addr));
+    assert!(!node.clear_session_direct_path_degraded(&node_addr));
+    assert!(node.retry_pending.contains_key(&node_addr));
+    let peer = node.get_peer_mut(&node_addr).unwrap();
+    assert!(!peer.rekey_in_progress(), "the Noise handshake is complete");
+    assert!(peer.cutover_to_new_session().is_some());
+    assert_eq!(peer.our_index(), Some(SessionIndex::new(0x5050)));
 
-    let peer = node.get_peer(&node_addr).unwrap();
-    assert!(
-        peer.pending_new_session().is_none(),
-        "authenticated direct payload recovery must retire an obsolete recovery rekey"
-    );
-    assert!(
-        !peer.rekey_in_progress(),
-        "no recovery rekey may outlive direct payload validation"
-    );
+    assert!(node.clear_session_direct_path_degraded(&node_addr));
     assert!(
         !node.retry_pending.contains_key(&node_addr),
-        "authenticated direct payload recovery must clear the obsolete direct-probe retry"
+        "confirmed keys allow direct-payload recovery to clear its retry"
     );
 }
 

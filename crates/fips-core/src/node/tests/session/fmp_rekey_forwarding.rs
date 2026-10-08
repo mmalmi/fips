@@ -45,6 +45,11 @@ fn cutover_defers_refresh_until_reciprocal_new_epoch_authentication() {
     run(Scenario::Cutover);
 }
 
+#[test]
+fn direct_payload_validation_preserves_unconfirmed_rekey_receiver() {
+    run(Scenario::DirectValidation);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
     Control,
@@ -53,6 +58,7 @@ enum Scenario {
     Overlap,
     Dns,
     Cutover,
+    DirectValidation,
 }
 
 fn run(scenario: Scenario) {
@@ -446,6 +452,16 @@ async fn exercise(nodes: &mut [TestNode], scenario: Scenario) {
             .unwrap()
             .pending_our_index()
             .unwrap();
+        if scenario == Scenario::DirectValidation {
+            // Old-epoch payload can validate the route after Msg2 but before
+            // the responder receives the initiator's first new-epoch frame.
+            nodes[1]
+                .node
+                .mark_session_direct_path_degraded(addresses[0], Node::now_ms());
+            nodes[1]
+                .node
+                .clear_session_direct_path_degraded(&addresses[0]);
+        }
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             // Wait for the production 250 ms initiator cutover, using real time.

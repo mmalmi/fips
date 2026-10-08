@@ -203,7 +203,7 @@ impl DataplaneLiveNode {
         self.crypto_worker.release_submissions();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "sim-transport"))]
     pub(crate) async fn release_crypto_submissions_and_wait(&mut self) -> usize {
         let slots = self.crypto_worker.held_submissions.as_ref().expect("submissions held")
             .iter().map(|run| Arc::clone(&run.slot)).collect::<Vec<_>>();

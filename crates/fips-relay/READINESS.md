@@ -419,6 +419,42 @@ connection gap. These checks do not qualify radio conditions, router CPU
 pressure, physical power loss or current phone behavior. Changes add test coverage
 only; fault-removal errors retain the original accounts for recovery.
 
+Two subsequent ARM trials cap each relay independently at a quarter of one host
+CPU, leaving the driver and mint unthrottled. Both reject: `work/ethernet-arm-pressure-r293`
+loses 231 originals beyond the injected-frame allowance; r294 loses 6,973 and
+observes 29 disconnected samples. In r294, route validation discards a pending
+neighbor key change just as the initiator cuts over. All six completed payment
+pauses remain between 1.20 and 1.81 seconds, with no recorded source-queue expiry.
+Both trials settle all 384 test sats and retain verified original account archives;
+owned processes and CPU limits are removed. Artificial CPU scheduling does not
+establish equivalence to router hardware.
+
+Route recovery now preserves both an unfinished handshake and a completed key
+change awaiting cutover. It removes the obsolete cancellation branch that could
+free the responder's new receive index before the first new-key packet arrived.
+A real-UDP direct/routed regression fails on that missing index in the old code
+and passes on the correction through the old-key drain. The updated retry test
+also requires the prepared keys to survive until cutover. Fifty focused tests,
+strict core/test lint, source-size checks, and ordinary Linux and ARM64 builds
+pass in `work/pending-rekey-qualified-r297`; source, dependency, artifact and
+process checks close independently. Two pre-existing test-only lint errors are
+corrected by matching a helper's simulation feature guard and removing a
+redundant copy.
+
+The corrected ordinary ARM binary completes the five-minute workload twice in
+`work/pending-rekey-pressure-r298` and r299, with separate namespaces, identities,
+mints and per-daemon CPU limits. These concurrent functional trials are not a
+performance comparison. Each records 298 connected samples, unchanged link
+handles, three key changes per directed neighbor, and three payment renewals per
+direction. Both still reject delivery: one direction exceeds its injected-frame
+allowance by 23 and 131 packets, respectively. Preserved live logs show renewal
+pauses up to 2.82 seconds and 194/354 source-queue expirations under the unchanged
+two-second lifetime. These counters do not identify each missing application
+packet. All 768 test sats settle; original accounts and verified archives remain,
+and all owned processes and CPU limits are removed. The key-recovery regression
+is fixed, while renewal latency under CPU pressure and current hardware acceptance
+remain open. This does not establish the cause of the earlier r247 router failure.
+
 The opt-in Linux provider-suspension case passes on the ordinary native daemon
 in `work/provider-suspension-r289`. After initial bidirectional paid delivery,
 the middle process stops for 91.001 seconds. Both endpoints observe unavailable
@@ -2438,8 +2474,8 @@ instrumentation timeline is `android-current-r7/foreground-event-diagnosis.json`
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Renewal preopening passes native money/recovery checks, the ordinary ARM64 build and one unchanged repeated-loss physical case, with completed pauses below two seconds and no source-queue expiry. An earlier run still fails with a one-sided neighbor gap; its failure and the qualified repeat remain above. | Reproduce and resolve the intermittent connection gap. Then cover higher sustained pressure, rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
-| Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r274 passes all native, lifecycle and package gates with durable quotes and TCP 0.2.4; physical acceptance of that candidate is pending. Physical r220 phone transit on the earlier r219 APK delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | General low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
+| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Renewal preopening passes native money/recovery checks, the ordinary ARM64 build and one unchanged repeated-loss physical case, with completed pauses below two seconds and no source-queue expiry. An earlier run still fails with a one-sided neighbor gap; its failure and the qualified repeat remain above. | Qualify the pending-key recovery correction on routers and eliminate renewal queue expiry under CPU pressure. Then cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
+| Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r274 passes all native, lifecycle and package gates with durable quotes and TCP 0.2.4; physical acceptance of that candidate is pending. Physical r220 phone transit on the earlier r219 APK delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Rebuild and accept Android with the pending-key recovery correction; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Full physical paid-recovery acceptance for durable quotes and the updated TCP graph. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |

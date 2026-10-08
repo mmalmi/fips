@@ -132,28 +132,18 @@ impl Node {
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
-        // Payload can still arrive through an old UDP tuple while the new
-        // outbound path is unusable. Keep its recovery handshake and Msg2
-        // receiver index until the peer has answered that fresh probe.
+        // Current-key payload cannot confirm an unfinished handshake or a
+        // prepared key change. Keep its receive epoch until authenticated
+        // cutover, even when the old path has started delivering again.
         if self
             .peers
             .get(dest)
-            .is_some_and(|peer| peer.rekey_in_progress())
+            .is_some_and(|peer| peer.rekey_in_progress() || peer.pending_new_session().is_some())
         {
             return false;
         }
         let changed = self.session_direct_degradation.clear(dest);
         if changed {
-            // The direct FMP/FSP carrier has now authenticated payload again.
-            // A rekey started only to recover this degraded carrier is no
-            // longer useful; letting it complete later can flip epochs during
-            // a subsequent roam and turn otherwise valid recovery traffic into
-            // replay. Retire it at the same point that retires the direct-path
-            // validation marker.
-            let _ = self.abandon_fmp_rekey_for_peer(
-                dest,
-                "authenticated direct payload made recovery rekey obsolete",
-            );
             if !self.active_peer_uses_websocket(dest)
                 && !self.active_peer_uses_bootstrap_transport(dest)
             {

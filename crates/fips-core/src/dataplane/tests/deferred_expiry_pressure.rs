@@ -162,7 +162,7 @@ async fn later_route_delivers_deferred_ciphertexts_once_in_order_with_fresh_pres
     for turn_id in 0..64 {
         if turn_id == 4 {
             register_keyed_owner(&mut live_node.driver, owner,
-                OwnerConfig::new(1, 8).with_source_peer(source_peer.clone()), key);
+                OwnerConfig::new(1, 8).with_source_peer(source_peer), key);
             register_fsp_session_payload_route(&mut live_node.routes, source_addr, owner, local_addr);
         }
         let mut fresh: VecDeque<_> = (0..4)
