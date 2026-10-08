@@ -786,6 +786,17 @@ the existing 30-second/60-second probe defaults or the short cadence matrix.
 This finite renewal regression is not a cadence comparison, physical power-loss
 test or maximum-throughput qualification.
 
+The existing status reads also retain up to 800 neighbor observations, bracketed
+by the same host monotonic clock used for traffic dispatch and receiver samples.
+Each observation records the process ID when available, fixture peer labels,
+connection/link identifiers, packet counters and RTT. Backend errors are reduced
+to `provider_unavailable`, `other`, or no error; wallet fields and unknown peer
+identities are omitted. A full capture sets `neighbor_observations_truncated`
+without interrupting status reads or financial cleanup. Polls can miss short gaps
+and do not identify the exact time of a link transition. Focused renewal, rekey,
+retry and link logs are enabled without packet tracing; their router wall-clock
+timestamps are not interchangeable with the host monotonic observation bounds.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded

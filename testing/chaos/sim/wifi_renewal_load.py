@@ -30,6 +30,12 @@ PACKETS, RATE, SEND_SECONDS, RECEIVE_SECONDS = 42_000, 140, 300, 360
 SEND_TIMEOUT, SAMPLE_INTERVAL, FINAL_TAIL = 330, 10, 3
 RECOVERY_PACKETS = 64
 EXPIRY_QUOTES = {1: 180, 3: 90}
+MAX_NEIGHBOR_OBSERVATIONS = 800
+LINK_LOG_FILTER = ("warn,fips_relay::controller::renewal=debug,"
+                   "fips_core::dataplane::source_wait=debug,"
+                   "fips_core::node::handlers::mmp=debug,"
+                   "fips_core::node::handlers::rekey=debug,"
+                   "fips_core::node::retry=debug,fips_core::node::lifecycle=info")
 
 
 def destination(source):
@@ -162,10 +168,44 @@ class RenewalLoadRun(PaidWifiRun):
             "expected_renewals": self.expected_renewals, "quote_lifetime_secs": self.quote_lifetime,
             "frame_loss_every": EVERY if getattr(args, "frame_loss", False) else None,
             "final_tail_seconds": FINAL_TAIL,
+            "diagnostic_log_filter": LINK_LOG_FILTER,
+            "neighbor_observation_clock": "host_monotonic_seconds",
+            "neighbor_observations": [], "neighbor_observations_truncated": False,
             "one_way_latency": False, "physical_power_loss": False, "cadence_comparison": False}
+        for node in self.nodes.values():
+            node.diagnostic_log_filter = LINK_LOG_FILTER
         for name in ("wifi_renewal_load.py", "wifi_renewal_finances.py", "wifi_frame_loss.py", "wifi_probes.py",
                      "wifi_profiles.py", "paid_settlement.py", "paid_finances.py", "wifi_measurements.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
+
+    def ctl(self, node, kind, **fields):
+        if kind != "status":
+            return super().ctl(node, kind, **fields)
+        started = time.monotonic()
+        result = super().ctl(node, kind, **fields)
+        finished = time.monotonic()
+        evidence = self.evidence["renewal_load"]
+        rows = evidence.setdefault("neighbor_observations", [])
+        if len(rows) >= MAX_NEIGHBOR_OBSERVATIONS:
+            # Diagnostic capacity must never prevent financial cleanup.
+            evidence["neighbor_observations_truncated"] = True
+            return result
+        known = {peer.npub: name for name, peer in self.nodes.items() if peer.npub}
+        peers = result.get("peers", [])
+        reason = result.get("last_error")
+        error = ("provider_unavailable" if isinstance(reason, str)
+                 and "provider is not a connected native neighbor" in reason
+                 else "other" if reason else None)
+        # Keep only fixture identities and scalar link diagnostics. Backend error
+        # text and the rest of status may contain private wallet material.
+        rows.append({"node": node, "started_at": started, "ended_at": finished,
+            "process_id": (result.get("measurements") or {}).get("process_id"),
+            "error": error,
+            "peers": [{"node": known[peer["npub"]], **{key: peer.get(key) for key in (
+                "connected", "link_id", "transport", "sent_packets", "received_packets", "srtt_ms")}}
+                for peer in peers if peer.get("npub") in known],
+            "unrecognized_peers": sum(peer.get("npub") not in known for peer in peers)})
+        return result
 
     @property
     def renewal_policy(self):

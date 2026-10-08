@@ -529,6 +529,56 @@ class RenewalTests(unittest.TestCase):
             self.assertEqual(row["receiver"]["unique_packets"], 1)
 
 
+class NeighborObservationTests(unittest.TestCase):
+    def run_fixture(self):
+        run = object.__new__(RenewalLoadRun)
+        run.forwards, run.monitor = None, Mock()
+        run.nodes = {name: SimpleNamespace(npub=name, control=Mock()) for name in NAMES}
+        run.evidence = {"renewal_load": {}}
+        return run
+
+    def test_existing_status_reads_retain_outage_and_replacement_on_traffic_clock(self):
+        run = self.run_fixture()
+        states = [{"last_error": error, "wallet": "secret material", "peers": [
+            {"npub": "n02", "connected": connected, "link_id": link,
+             "transport": "ethernet", "sent_packets": 10, "received_packets": 9,
+             "srtt_ms": 2, "private": "secret material"},
+            {"npub": "foreign identity", "connected": True}]} for connected, link, error in (
+                (True, 4, None),
+                (False, None, "provider is not a connected native neighbor: secret material"),
+                (True, 7, "untrusted backend: secret material"))]
+        run.nodes["n01"].control.side_effect = states
+        with patch("sim.wifi_renewal_load.time.monotonic", side_effect=[10, 11, 20, 22, 30, 31]):
+            for state in states:
+                self.assertIs(run.ctl("n01", "status"), state)
+        observations = run.evidence["renewal_load"]["neighbor_observations"]
+        self.assertEqual([(r["started_at"], r["ended_at"]) for r in observations],
+                         [(10, 11), (20, 22), (30, 31)])
+        self.assertEqual([r["peers"][0]["connected"] for r in observations], [True, False, True])
+        self.assertEqual([r["peers"][0]["link_id"] for r in observations], [4, None, 7])
+        self.assertEqual([r["error"] for r in observations], [None, "provider_unavailable", "other"])
+        self.assertTrue(all(r["unrecognized_peers"] == 1 and r["peers"][0]["node"] == "n02"
+                            for r in observations))
+        self.assertNotIn("secret material", json.dumps(run.evidence))
+        self.assertNotIn("foreign identity", json.dumps(run.evidence))
+        self.assertEqual(run.nodes["n01"].control.call_count, 3)
+        self.assertEqual(run.monitor.check.call_count, 3)
+
+    def test_full_capture_does_not_block_status_or_settlement(self):
+        run = self.run_fixture()
+        state = {"peers": [], "last_error": None}
+        run.nodes["n01"].control.return_value = state
+        with patch("sim.wifi_renewal_load.MAX_NEIGHBOR_OBSERVATIONS", 2):
+            for _ in range(4):
+                self.assertIs(run.ctl("n01", "status"), state)
+            self.assertIs(run.ctl("n01", "settle"), state)
+        evidence = run.evidence["renewal_load"]
+        self.assertEqual(len(evidence["neighbor_observations"]), 2)
+        self.assertTrue(evidence["neighbor_observations_truncated"])
+        self.assertEqual(run.nodes["n01"].control.call_count, 5)
+        run.nodes["n01"].control.assert_called_with("settle")
+
+
 class PriorSettlementTests(unittest.TestCase):
     def fixture(self):
         run = FakeRun()
