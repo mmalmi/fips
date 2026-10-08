@@ -688,6 +688,16 @@ lease survives the reset. This mode uses test funds and pauses offered traffic.
 Include `tests.test_wifi_boot_restart` and `tests.test_wifi_measurements` in the
 focused checks; physical power cuts remain separate.
 
+Use `sim.wifi_boot_mint_outage` to repeat that paid boot with an unresponsive mint.
+After the first three paid cohorts, the owned Linux mint is suspended before
+reboot and stays suspended through the remaining traffic. Each router must fail
+its mint HTTP probe before reset and after boot; process observations also verify
+the outage throughout paid traffic. An independent host worker resumes the exact
+mint on release, error or a 420-second deadline. Cleanup resumes it before
+settlement; a run that relies on deadline recovery cannot pass. Include
+`tests.test_remote_mint` in the focused checks. This covers saved funded channels,
+not new funding or settlement while the mint is unavailable.
+
 ### Router funding and settlement interruption
 
 `sim.wifi_settlement` uses the same three-router inventory, ordinary

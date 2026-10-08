@@ -196,6 +196,49 @@ class MintHostTests(unittest.TestCase):
         self.assertTrue(recovered["stopped"])
         self.assertEqual(self.host.control.call_count, 1)
 
+    def test_stalled_mint_resumes_on_release_or_deadline_without_restarting(self):
+        self.start()
+        for release in (True, False):
+            with self.subTest(release=release):
+                outcome = []
+                worker = threading.Thread(target=lambda: outcome.append(self.host.stall(seconds=1)))
+                worker.start()
+                try:
+                    deadline = time.monotonic() + 3
+                    while not (self.root / 'stall-active.json').exists():
+                        self.assertTrue(worker.is_alive())
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(0.01)
+                    self.assertEqual(self.host.stall_status()['phase'], 'stalled')
+                    if release:
+                        self.host.release_stall()
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(outcome[0]['reason'], 'released' if release else 'deadline')
+                    self.assertEqual(self.host.stall_status()['phase'], 'resumed')
+                    self.assertEqual(mint_host.process_start(self.info['pid']), self.info['start_ticks'])
+                finally:
+                    self.host.release_stall()
+                    worker.join(3)
+                for path in self.root.glob('stall-*.json'):
+                    path.unlink()
+
+    def test_failed_stall_observation_resumes_the_original_process(self):
+        self.start()
+        from unittest.mock import patch
+        save = mint_host.save
+
+        def fail_active(path, value):
+            if path.name == 'stall-active.json':
+                raise RuntimeError('observation failed')
+            return save(path, value)
+
+        with patch.object(mint_host, 'save', side_effect=fail_active):
+            with self.assertRaisesRegex(RuntimeError, 'observation failed'):
+                self.host.stall(seconds=1)
+        self.assertEqual(self.host.stall_status()['phase'], 'resumed')
+        self.assertTrue(self.host.finish()['stopped'])
+
 
 class RemoteMintTests(unittest.TestCase):
     def test_refuses_wrong_architecture_and_excessive_test_funding(self):

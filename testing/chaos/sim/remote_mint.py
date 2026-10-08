@@ -45,6 +45,7 @@ class RemoteMint(SshCommands):
         self.output.mkdir(mode=0o700)
         self.attempted = False
         self.url = None
+        self.stall_attempted = False
 
     def write(self, path, content):
         self.remote("umask 077; set -C; cat > " + shlex.quote(path), content, timeout=90)
@@ -89,6 +90,26 @@ class RemoteMint(SshCommands):
     def grant(self, name):
         payment = self.request({"type": "issue", "id": name, "amount_sat": 128})
         return payment["token"]
+
+    def stall(self):
+        if self.stall_attempted:
+            raise RuntimeError('mint stall was already attempted; never repeat it')
+        self.stall_attempted = True
+        self.remote(f'nohup python3 {self.helper} stall {self.owner} '
+                    f'>{self.root}/stall.log 2>&1 </dev/null &')
+        return eventually('owned mint suspended with a local recovery deadline', self.stall_status, 10)
+
+    def stall_status(self):
+        return json.loads(self.remote(['python3', self.helper, 'stall-status', self.owner]))
+
+    def release_stall(self):
+        self.remote(['python3', self.helper, 'stall-release', self.owner])
+
+        def resumed():
+            result = self.stall_status()
+            return result if result['phase'] == 'resumed' else None
+
+        return eventually('original mint resumed', resumed, 15)
 
     def finish(self):
         result = json.loads(self.remote(["python3", self.helper, "finish", self.owner], timeout=120))

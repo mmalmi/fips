@@ -104,6 +104,73 @@ class MintHost:
     def report(self):
         return self.validate_report(self.control({"type": "report"}))
 
+    def stall(self, seconds=420):
+        """Hold one owned mint; release on request, failure or a local deadline."""
+        if type(seconds) is not int or not 1 <= seconds <= 420:
+            raise ValueError('mint stall must last at most 420 seconds')
+        with self.locked():
+            if (self.root / 'closing.json').exists():
+                raise RuntimeError('mint is closing; stall refused')
+            descriptor = self.owned_process()
+            try:
+                info = read(self.root / 'process.json')
+                save(self.root / 'stall-started.json', {**info, 'seconds': seconds})
+                reason = 'interrupted'
+                try:
+                    signal.pidfd_send_signal(descriptor, signal.SIGSTOP)
+                    deadline = time.monotonic() + 2
+                    while self.process_state(info['pid']) != 'T':
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('mint did not stop for the outage')
+                        time.sleep(0.01)
+                    save(self.root / 'stall-active.json', {**info, 'at': time.monotonic()})
+                    deadline = time.monotonic() + seconds
+                    while not (self.root / 'stall-release.json').exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    reason = 'released' if (self.root / 'stall-release.json').exists() else 'deadline'
+                finally:
+                    signal.pidfd_send_signal(descriptor, signal.SIGCONT)
+                    deadline = time.monotonic() + 2
+                    while self.process_state(info['pid']) == 'T':
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('mint did not resume after the outage')
+                        time.sleep(0.01)
+                    result = {**info, 'phase': 'resumed', 'reason': reason, 'at': time.monotonic()}
+                    save(self.root / 'stall-finished.json', result)
+                return result
+            finally:
+                os.close(descriptor)
+
+    @staticmethod
+    def process_state(pid):
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[0]
+
+    def stall_status(self):
+        # The outage worker holds the operation lock; observation never waits for it.
+        descriptor = self.owned_process()
+        try:
+            if (self.root / 'stall-finished.json').exists():
+                result = read(self.root / 'stall-finished.json')
+                if self.process_state(result['pid']) == 'T':
+                    raise RuntimeError('mint remained stopped after recovery')
+                return result
+            result = read(self.root / 'stall-active.json')
+            if ({key: result[key] for key in ('pid', 'start_ticks')} != read(self.root / 'process.json')
+                    or self.process_state(result['pid']) != 'T'):
+                raise RuntimeError('mint is not the original suspended process')
+            return {**result, 'phase': 'stalled'}
+        finally:
+            os.close(descriptor)
+
+    def release_stall(self):
+        # Idempotent even if the launch reply was lost or the worker has not started.
+        path = self.root / 'stall-release.json'
+        try:
+            save(path, {})
+        except FileExistsError:
+            if read(path) != {}:
+                raise RuntimeError('mint stall release record changed')
+
     def validate_report(self, report):
         ready = read(self.state / "ready.json")
         url = urlsplit(report["url"])
@@ -222,6 +289,16 @@ def main():
         result = host.request(json.loads(raw))
     elif mode == "finish":
         result = host.finish()
+    elif mode == 'stall':
+        def interrupted(_signal, _frame):
+            raise InterruptedError('mint stall worker interrupted')
+        signal.signal(signal.SIGTERM, interrupted)
+        result = host.stall()
+    elif mode == 'stall-status':
+        result = host.stall_status()
+    elif mode == 'stall-release':
+        host.release_stall()
+        result = {'release_requested': True}
     else:
         raise ValueError("unsupported host operation")
     print(json.dumps(result))

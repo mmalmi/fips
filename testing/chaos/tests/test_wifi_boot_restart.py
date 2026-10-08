@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from sim.wifi_boot_restart import BootRestartRun
 from sim.wifi_boot_service import restore_script
+from sim.wifi_boot_mint_outage import BootMintOutageRun
 from sim.wifi_remote import digest
 from tests.test_wifi_restart_load import journal
 
@@ -173,6 +174,35 @@ class AutomaticBootTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'paid identity'):
             self.run.resume_middle()
         self.node.stage_runtime.assert_not_called()
+
+
+class MintOutageTests(unittest.TestCase):
+    def test_resumed_mint_cannot_certify_an_offline_paid_sample(self):
+        run = object.__new__(BootMintOutageRun)
+        run.mint = Mock(stall_attempted=True)
+        run.mint.stall_status.return_value = {'phase': 'resumed'}
+        run.evidence = {'mint_outage': {'samples': []}}
+        with patch.object(BootRestartRun, 'middle_sample') as sample:
+            with self.assertRaisesRegex(RuntimeError, 'mint recovered'):
+                run.middle_sample()
+            sample.assert_not_called()
+        run.mint.stall_status.return_value = {'phase': 'stalled', 'at': 10}
+        with patch('sim.wifi_boot_mint_outage.time.monotonic', return_value=100):
+            run.stalled()
+        self.assertEqual(run.evidence['mint_outage']['samples'],
+                         [{'phase': 'stalled', 'at': 10, 'observed_at': 100}])
+
+    def test_uncertain_stall_launch_restores_before_relay_recovery(self):
+        run = object.__new__(BootMintOutageRun)
+        events = []
+        run.mint = Mock(stall_attempted=True)
+        run.mint.release_stall.side_effect = lambda: events.append('mint resumed') or {'phase': 'resumed'}
+        run.evidence = {'mint_outage': {'samples': []}}
+        run.save = Mock()
+        with patch.object(BootRestartRun, 'restore_middle', side_effect=lambda: events.append('relay recovery')):
+            run.restore_middle()
+        self.assertEqual(events, ['mint resumed', 'relay recovery'])
+        self.assertEqual(run.evidence['mint_outage']['resumed']['phase'], 'resumed')
 
 
 if __name__ == '__main__':
