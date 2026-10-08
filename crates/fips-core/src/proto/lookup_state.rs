@@ -259,9 +259,9 @@ impl RecentDiscoveryRequests {
             if entry.is_expired(current_time_ms, expiry_ms) {
                 return false;
             }
-            oldest = Some(
-                oldest.map_or(entry.timestamp_ms, |value: u64| value.min(entry.timestamp_ms)),
-            );
+            oldest = Some(oldest.map_or(entry.timestamp_ms, |value: u64| {
+                value.min(entry.timestamp_ms)
+            }));
             true
         });
         self.oldest_timestamp_ms = oldest;
@@ -344,14 +344,26 @@ mod tests {
         let peer = NodeAddr::from_bytes([1; 16]);
         let target = NodeAddr::from_bytes([2; 16]);
         let limits = RecentDiscoveryRequestLimits::new(10, 1, 1);
-        assert!(recent.record_request(1, peer, target, 100, limits).accepted());
-        assert!(recent.record_request(2, peer, target, 200, limits).accepted());
+        assert!(
+            recent
+                .record_request(1, peer, target, 100, limits)
+                .accepted()
+        );
+        assert!(
+            recent
+                .record_request(2, peer, target, 200, limits)
+                .accepted()
+        );
         recent.protect(2);
         recent.remove(1);
         recent.purge_expired(151, 50);
         assert!(recent.contains_key(&2));
         assert_eq!(recent.oldest_timestamp_ms, Some(200));
-        assert!(recent.record_request(3, peer, target, 50, limits).accepted());
+        assert!(
+            recent
+                .record_request(3, peer, target, 50, limits)
+                .accepted()
+        );
         recent.purge_expired(40, 0);
         assert_eq!(recent.len(), 2);
         recent.purge_expired(100, 50);

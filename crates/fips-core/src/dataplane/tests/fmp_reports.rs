@@ -55,19 +55,21 @@ async fn lost_initial_report_retries_until_first_valid_rtt_then_quiets() {
     live.record_fmp_mmp_send_result(&owner.node_addr(), 2, 101, 48, false);
     let due = now + Duration::from_millis(200);
     assert_eq!(live.fmp_report_deadline(), Some(due));
-    assert!(live
-        .collect_fmp_mmp_reports(due - Duration::from_nanos(1))
-        .reports
-        .is_empty());
+    assert!(
+        live.collect_fmp_mmp_reports(due - Duration::from_nanos(1))
+            .reports
+            .is_empty()
+    );
     let retry = live.collect_fmp_mmp_reports(due).reports;
     assert_eq!(retry.len(), 1);
     assert_eq!(retry[0].kind, DataplaneFmpMmpReportKind::Sender);
     live.record_fmp_mmp_send_result(&owner.node_addr(), 3, 300, 48, false);
     establish_rtt(&mut live, owner, due + Duration::from_millis(20));
-    assert!(live
-        .collect_fmp_mmp_reports(due + Duration::from_secs(1))
-        .reports
-        .is_empty());
+    assert!(
+        live.collect_fmp_mmp_reports(due + Duration::from_secs(1))
+            .reports
+            .is_empty()
+    );
     assert_eq!(live.fmp_report_deadline(), None);
 }
 
