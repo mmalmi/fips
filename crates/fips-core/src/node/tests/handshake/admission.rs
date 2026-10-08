@@ -279,12 +279,17 @@ fn genuine_msg1(
 }
 
 async fn assert_no_packet(rx: &mut crate::transport::PacketRx, reason: &str) {
-    assert!(
-        tokio::time::timeout(Duration::from_millis(250), rx.recv())
-            .await
-            .is_err(),
-        "{reason}"
-    );
+    match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+        Err(_) => {}
+        Ok(None) => panic!("{reason}: receive channel closed"),
+        Ok(Some(packet)) => panic!(
+            "{reason}: received {} bytes from {} on {}, prefix={:02x?}",
+            packet.data.len(),
+            packet.remote_addr,
+            packet.transport_id,
+            &packet.data.as_slice()[..packet.data.len().min(16)],
+        ),
+    }
 }
 
 #[tokio::test]
