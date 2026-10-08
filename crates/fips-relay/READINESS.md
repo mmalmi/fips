@@ -13,7 +13,7 @@ requirement to the current milestone. Existing accounts remain untouched.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Earlier prepared-control CPU/loss trials still observe source-queue expiry. | Qualify the latest handover, wallet-recovery and root-loss changes on routers; extend route-recovery coverage and eliminate remaining renewal queue expiry under CPU pressure. Then cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
+| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Earlier prepared-control CPU/loss trials observed source-queue expiry; the latest five-minute quarter-CPU ARM run retains complete logs with zero source-queue drops. | Qualify the latest handover, wallet-recovery and root-loss changes on routers; extend route recovery and resource-pressure acceptance beyond the finite ARM trials. Cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r366 includes root-loss recovery, funded renewal handover and completed-expiry settlement cleanup, and passes all eight build gates, including six lifecycle tests. Earlier r338/r339 verify empty-account Pixel startup and three-router binary compatibility; their temporary artifacts are removed. Current paid device acceptance is pending. Physical r220 phone transit on the earlier r219 APK delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Run paid physical acceptance of the current Android and router candidates; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Full physical paid-recovery acceptance for durable quotes and the updated TCP graph. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
@@ -7095,7 +7095,8 @@ route lookup after cutting the triangle into a line, before opening any paid
 channel. All 384 test sats remain unspent in the original wallets, checked against
 the mint's records and preserved with the failed fixture. This run provides no
 renewal-performance result. Route recovery, current physical-router/phone
-acceptance and renewal queue expiry under CPU pressure remain open.
+acceptance remained open after that failed run; the later pressure qualification
+is recorded below.
 
 The existing lifecycle fixture now exposes a focused Ethernet route-cut case,
 sharing paid setup, bidirectional delivery, settlement and failure preservation
@@ -7139,6 +7140,21 @@ Independent source/artifact, quota, accounting and stopped-process checks pass;
 all 27 evidence files are archived with verified hashes. This finite emulator
 result does not qualify physical performance or general resource-pressure
 liveness. Current physical paid acceptance remains open.
+
+The current settlement-recovery runtime (`382b557cf`) passes the same unchanged
+workload in `work/queue-expiry-pressure-r367`. The observer holds each original
+log descriptor from byte zero through daemon shutdown and verifies every final
+byte, including after successful fixture cleanup unlinks the logs. With the
+source-wait trace enabled, all three complete logs contain zero source-queue
+drops of any reason. The six renewal pauses range from 0.354 to 0.512 seconds;
+the two-second queue-age bound is unchanged. Delivery is 79,779 of 84,000 payloads
+within the counted injected-loss allowance, all 384 test sats reconcile, both
+directions complete three renewals, and none of 298 neighbor samples disconnects.
+Independent source/artifact, full-log, quota, accounting and stopped-process
+checks pass. All 30 evidence files are archived with verified hashes, and the
+owned cgroups and empty fixture directory are removed. This closes the earlier
+snapshot-only observation gap for this finite workload. It does not establish
+physical CPU equivalence or absence of queue expiry under other resource limits.
 
 Two earlier diagnostic runs also recover the route after the cut. In
 `work/route-cut-diagnostic-r319`, delivery exceeds the injected-loss allowance by
