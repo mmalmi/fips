@@ -178,6 +178,46 @@
             Some(live_path)
         );
 
+        // A real send warms the transport-group buffer. Subsequent empty
+        // completion turns should retain that allocation without sending work.
+        let group_capacity = live_node.driver.transport_output.groups.capacity();
+        let group_allocation = live_node.driver.transport_output.groups.as_ptr();
+        assert!(group_capacity > 0);
+        for _ in 0..16 {
+            let mut empty = live_node
+                .pump_completion_output_turn_with_transport_batch(
+                    true,
+                    DataplaneLiveTurnIo {
+                        endpoint_data_rx: None,
+                        endpoint_limit: 0,
+                        tun_outbound_rx: None,
+                        tun_limit: 0,
+                        endpoint_tx: &endpoint_io.event_tx,
+                        transports: &transports,
+                        crypto_limit: 8,
+                        transport_send_batch_packets,
+                    },
+                )
+                .await;
+            assert!(!empty.has_activity());
+            assert_eq!(empty.transport_sent(), 0);
+            assert_eq!(empty.transport_dropped(), 0);
+            assert!(empty.output_drops().is_empty());
+            assert!(empty.drops().is_empty());
+            assert!(empty.take_transport_sent_receipts().is_empty());
+            assert!(live_node.driver.transport_output.groups.is_empty());
+            assert_eq!(
+                live_node.driver.transport_output.groups.capacity(),
+                group_capacity
+            );
+            assert_eq!(
+                live_node.driver.transport_output.groups.as_ptr(),
+                group_allocation,
+                "an empty completion turn must not replace the warmed group allocation"
+            );
+        }
+        assert!(recv_packet_rx.try_recv().is_err());
+
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");

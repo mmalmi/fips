@@ -244,6 +244,10 @@ impl DataplaneTransportSendGroups {
     }
 
     fn take_groups_preserving_capacity(&mut self) -> Vec<DataplaneTransportPlanGroup> {
+        // Empty completion turns can keep the warmed allocation in place.
+        if self.groups.is_empty() {
+            return Vec::new();
+        }
         let capacity = self.groups.capacity();
         std::mem::replace(&mut self.groups, Vec::with_capacity(capacity))
     }
