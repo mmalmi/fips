@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurements until the first timing response arrives, including lost reports.
 - Skip discovery expiry scans while every stored record is still unexpired,
   retaining existing expiry and admission behavior at the deadline.
+- Avoid allocating unused input channels for control sends, clone retry settings
+  only for eligible peers, and format session names only when a log is due. Keep
+  encrypted output, receipt accounting, retry eligibility, and log timing unchanged.
 - Keep an outbound WebRTC attempt visible while physical connection and data-channel
   setup are still running, so immediate node polling preserves its preparation.
   Continue reporting failed, closing, and stopped attempts correctly.
