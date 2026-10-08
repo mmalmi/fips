@@ -98,7 +98,7 @@ impl WirePeer {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn consecutive_requests_reuse_one_tcp_connection() {
+async fn prepared_stream_carries_consecutive_records_without_an_extra_request() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let (a, b) = pair().await;
         let bob = PeerIdentity::from_npub(b.npub()).unwrap();
@@ -106,9 +106,17 @@ async fn consecutive_requests_reuse_one_tcp_connection() {
             .await
             .unwrap();
         let mut server = WirePeer::new(b.clone()).await;
-        let bodies = [b"first".to_vec(), vec![42; 24_000], b"last".to_vec()];
+        let bodies = [Vec::new(), vec![42; 24_000], b"last".to_vec()];
+        let (accepted, prepared) = tokio::sync::oneshot::channel();
         let requests = async {
+            client.prepare(bob).await.unwrap();
+            prepared.await.unwrap();
+            let counters = client.statistics().snapshot();
+            assert_eq!(counters.requests_started, 0);
+            assert_eq!(counters.stream_bytes_sent, 0);
+            assert_eq!(counters.stream_bytes_received, 0);
             for body in &bodies {
+                client.prepare(bob).await.unwrap();
                 assert_eq!(client.request(bob, body.clone()).await.unwrap(), *body);
             }
             tokio::time::sleep(Duration::from_secs(6)).await;
@@ -118,7 +126,23 @@ async fn consecutive_requests_reuse_one_tcp_connection() {
             );
         };
         let responses = async {
-            let mut connection = None;
+            let id = loop {
+                if let Some(id) = server.tcp.accept() {
+                    break id;
+                }
+                server.step().await;
+            };
+            assert_eq!(server.tcp.state(id), Some(State::Established));
+            assert!(
+                server
+                    .tcp
+                    .read(id, 4, server.now())
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            accepted.send(()).unwrap();
+            let mut connection = Some(id);
             for body in &bodies {
                 assert_eq!(server.read(&mut connection).await, *body);
                 server.write(connection.unwrap(), body).await;

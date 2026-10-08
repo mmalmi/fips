@@ -237,6 +237,7 @@ async fn control_service_rejects_an_identity_outside_its_configured_neighbors() 
             .unwrap();
         assert!(second.request(alice, b"uninvited".to_vec()).await.is_err());
         assert!(incoming.try_recv().is_err());
+        assert!(first.prepare(alice).await.is_err());
         assert!(
             first
                 .request(alice, b"not-neighbor".to_vec())

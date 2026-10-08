@@ -35,7 +35,10 @@ impl Exchange {
     pub(super) fn client(command: Command, admission: AdmissionCheck) -> Self {
         let mut exchange = Self::server(command.peer, admission, Vec::new());
         exchange.outbound = true;
-        exchange.outgoing = frame(command.body).expect("bounded at command entry");
+        exchange.outgoing = command
+            .body
+            .map(|body| frame(body).expect("bounded at command entry"))
+            .unwrap_or_default();
         exchange.client = Some(command.response);
         exchange
     }
@@ -89,6 +92,14 @@ pub(super) async fn drive(
     }
     if !matches!(state, State::Established | State::CloseWait) {
         return Ok(true);
+    }
+    if exchange.outbound && exchange.outgoing.is_empty() {
+        if state != State::Established || tcp.is_read_closed(id) {
+            return Err("prepared control stream closed".into());
+        }
+        let response = exchange.client.take().expect("outbound preparation");
+        let _ = response.send(Ok(Vec::new()));
+        return Ok(false);
     }
     if let Some(receiver) = exchange.server_reply.as_mut() {
         match receiver.try_recv() {

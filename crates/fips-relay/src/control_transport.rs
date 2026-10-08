@@ -53,7 +53,7 @@ pub struct IncomingRequest {
 
 struct Command {
     peer: PeerIdentity,
-    body: Vec<u8>,
+    body: Option<Vec<u8>>,
     response: oneshot::Sender<Result<Vec<u8>, String>>,
     retry_at: Instant,
 }
@@ -204,6 +204,16 @@ impl ControlTransport {
         if body.len() > MAX_RECORD_BYTES {
             return Err("control record exceeds size limit".into());
         }
+        self.command(peer, Some(body)).await
+    }
+
+    /// Establish an idle stream without sending an application record. The next
+    /// request still needs fresh admission and may reconnect after idle eviction.
+    pub async fn prepare(&self, peer: PeerIdentity) -> Result<(), String> {
+        self.command(peer, None).await.map(|_| ())
+    }
+
+    async fn command(&self, peer: PeerIdentity, body: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
         // Includes queued and active requests, not just the command mailbox.
         let _slot = self
             .outbound_slots
@@ -326,7 +336,9 @@ async fn run(
             };
             match connection {
                 Ok(id) => {
-                    statistics.requests_started.fetch_add(1, Ordering::Relaxed);
+                    if command.body.is_some() {
+                        statistics.requests_started.fetch_add(1, Ordering::Relaxed);
+                    }
                     exchanges.insert(id, Exchange::client(command, check));
                 }
                 Err(AdapterError::Tcp(StackError::ConnectionLimit)) => {

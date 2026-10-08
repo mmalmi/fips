@@ -468,6 +468,37 @@ before fixture cleanup. It reuses the existing terminal-refund verifier and
 retains failed fixture directories. This corrects the acceptance observation;
 it does not qualify renewal performance or change runtime financial rules.
 
+Renewal now prepares its TCP/FIPS acceptance connection while the previous
+allowance still carries traffic, after successor funding. It reuses the bounded
+idle pool and normal admission checks, without sending an application record or
+granting credit. The next request gets fresh admission. Existing control tests
+also cover preparation, empty records, reuse and rejection. Qualification in
+`work/renewal-control-qualified-r305` closes 47 distinct focused checks (46 reused
+on identical runtime and test source, plus the corrected transit case), strict
+relay/test lint, source-size checks, and ordinary Linux and ARM64 builds.
+
+Two paired quarter-CPU ARM emulation trials compare the candidate in
+`work/renewal-control-pressure-r301` and r306 with the previous binary in r302
+and r307. The traffic, loss pattern and quotas are unchanged; discovery and key
+rotation timing vary. These finite observations are not hardware or general
+performance qualification:
+
+| Measure across the two trials | Previous | Candidate |
+| --- | ---: | ---: |
+| Trials passing the per-direction delivery bound | 1 / 2 | 2 / 2 |
+| Median of twelve renewal pauses | 1.976 s | 1.886 s |
+| Longest observed renewal pause | 3.491 s | 2.405 s |
+| Source-queue expirations at the post-renewal snapshots | 493 | 153 |
+
+Neither version records a disconnected sample. The second baseline exceeds its injected-frame
+allowance by 396 originals; both candidate trials stay within each direction's
+bound. All 1,536 test sats are conserved, and every owned process and CPU limit
+is removed. The failed baseline's settled original accounts and verified archive
+remain available. Queue counts are diagnostic snapshots, not counts of lost
+application packets. This supports retaining connection preparation, while pauses
+above the two-second queue lifetime, current router/phone acceptance, and CPU
+cost attribution remain open.
+
 The opt-in Linux provider-suspension case passes on the ordinary native daemon
 in `work/provider-suspension-r289`. After initial bidirectional paid delivery,
 the middle process stops for 91.001 seconds. Both endpoints observe unavailable

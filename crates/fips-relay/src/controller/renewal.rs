@@ -382,6 +382,11 @@ impl Controller {
     // separately serializes payment and closure of this particular channel.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
         renewal = self.prepare_renewal_funding(id, renewal).await?;
+        // Handshake retries can finish while the previous allowance still carries
+        // traffic. This neither seals the channel nor grants replacement credit.
+        let previous = renewal.previous.first().ok_or("renewal purchase missing")?;
+        let peer = self.neighbor(previous.purchase.provider).await?;
+        self.services.acceptance.prepare(peer).await?;
         let admission_pause = self
             .services
             .buyer
