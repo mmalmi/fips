@@ -235,7 +235,9 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   locks its full intended capacity against a separate working-capital limit.
   Background recovery uses the existing wallet recovery API to find committed
   channels even after quote expiry or pause, without spending again or enabling
-  routing. Missing records retain their reservation; orphan refunds remain work.
+  routing. Missing records retain their reservation. After immutable wallet
+  expiry, verified refunds can recover unused withdrawn funding and used/shared
+  channels while preserving their original signed obligations; see [recovery](HISTORY.md#withdrawn-routing-and-retained-recovery).
 * New channels default to a **12-hour service limit and 24-hour mint refund
   deadline**. Providers automatically begin settlement when service ends;
   unilateral buyer refunds wait for the funding deadline. Cooperative settlement

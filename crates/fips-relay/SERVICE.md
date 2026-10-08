@@ -4,10 +4,11 @@
 Spilman receiver, quotes and autonomous controller in one Unix process. Isolated
 ARM64 Linux and macOS process tests cover UDP, native TCP and WebSocket, including
 ordinary TLS and explicit FIPS-authenticated self-signed TLS. Earlier builds
-earned test payments over native Wi-Fi links on three OpenWrt routers.
-See [TESTBENCH.md](TESTBENCH.md) for the
-historical hardware evidence and [PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for
-the completed bounded customer demonstration and current limits.
+earned test payments over native Wi-Fi links on three OpenWrt routers. The
+[readiness assessment](READINESS.md#scope-and-outstanding-acceptance) records the
+current router and Pixel checks and outstanding deployment requirements.
+See [TESTBENCH.md](TESTBENCH.md) for the bench setup and
+[PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for the earlier customer demonstration.
 
 The example selects `terms.billing: "forwarding_attempt"` for fresh accounts.
 It retains totals and unfinished sends instead of every completed packet.
@@ -295,14 +296,15 @@ back to a funding swap, accept a quote or activate a route. Missing or conflicti
 evidence keeps its capital reservation; preserve the entire state directory for
 reconciliation.
 
-A fully identified, never-used channel whose funding is exclusively withdrawn
-from routing can then recover its refund after the original wallet expiry. This
-also covers channels with no accepted route. The controller saves an expiry
-intent before refunding, fences delayed route installation and records the SDK's
-actual recovered amount without inventing provider usage or acceptance. Used or
-shared channels are ineligible for this automatic expiry path. Missing or
-conflicting funding evidence and used/shared-channel unilateral recovery still
-require separate reconciliation; see [recovery acceptance](READINESS.md#earlier-funding-recovery-after-quote-expiry).
+After the original wallet expiry, automatic refund recovery covers both unused
+funding exclusively withdrawn from routing and used channels, including channels
+shared across destinations. It requires the original funding and buyer evidence,
+closes local forwarding authority and preserves the highest signed payment.
+The controller saves an expiry intent before contacting the mint and releases
+capital only after the SDK verifies the original refund outputs. Missing or
+conflicting evidence stays unresolved; a disconnected provider alone does not
+authorize a refund. See [expiry recovery and retained obligations](HISTORY.md#withdrawn-routing-and-retained-recovery)
+for the buyer and seller rules.
 
 `settle` pauses route watches and renewals, seals outgoing channels, completes mint closure and
 recovers refunds. `pause_renewals` and `resume_renewals` control replacement work
