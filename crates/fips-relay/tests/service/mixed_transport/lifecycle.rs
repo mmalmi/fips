@@ -54,6 +54,9 @@ pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
         .await
     })
     .await;
+    if !matches!(exercise, Ok(Ok(()))) {
+        bench.lock().await.failure_snapshot().await;
+    }
     let settling = bench.clone();
     let mint_url = mint.url().to_owned();
     let accounting = network.clone();
@@ -69,7 +72,7 @@ pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
             for child in &mut bench.children {
                 process_support::stop(child).await;
             }
-            let mut total = 0;
+            let (mut total, mut provider_earned) = (0, false);
             for (node, cfg) in bench.configs.iter().enumerate() {
                 let balance = load_mint_balance(&cfg.state_directory.join("wallet"), &mint_url)
                     .await
@@ -80,7 +83,7 @@ pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
                 assert_eq!(budget.pending_reserved_sat, 0);
                 assert_eq!(budget.locked_sat, 0);
                 if node == 1 {
-                    assert!(balance > 128);
+                    provider_earned = balance > 128;
                 } else {
                     assert_eq!(balance + budget.exposure_sat, 128);
                 }
@@ -89,6 +92,7 @@ pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
             assert_eq!(total, 384);
             assert!(accounting.accounting().unwrap().is_conserved());
             eprintln!("carrier lifecycle: all 384 test sats conserved");
+            assert!(provider_earned, "the workload must earn forwarding revenue");
         })
         .await
     })

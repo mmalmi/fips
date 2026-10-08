@@ -7049,6 +7049,23 @@ the mint's records and preserved with the failed fixture. This run provides no
 renewal-performance result. Route recovery, current physical-router/phone
 acceptance and renewal queue expiry under CPU pressure remain open.
 
+Two subsequent diagnostic runs recover the route after the cut. In
+`work/route-cut-diagnostic-r319`, delivery exceeds the injected-loss allowance by
+135 packets; all 384 test sats reconcile. The controlled address-order replay in
+`work/route-order-pressure-r321` passes that bound with 79,704 of 84,000 payloads
+received and all 384 test sats reconciled. Both retain connected neighbors and
+complete three renewals per direction, but both observe source-queue expiry.
+Extra diagnostics affect timing; these are neither a performance comparison nor
+an explanation of the earlier lookup failure. Address ordering alone does not
+reproduce that failure.
+
+The lifecycle fixture now captures its existing bounded routing diagnostics
+before teardown on any exercise failure. Cleanup checks conservation before the
+provider-revenue assertion, so an early setup failure can still report all funds.
+The workload and every acceptance assertion remain intact. The updated driver,
+strict lint and source-size gates pass in `work/route-failure-driver-r323`;
+no runtime code changes in this diagnostic update.
+
 Run the opt-in TLS case with the [matching dependency overrides](FUNDING-COSTS.md):
 
 ```sh
