@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.95] - 2026-10-07
+## [0.4.95] - 2026-10-08
 
 ### Fixed
 
@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurements until the first timing response arrives, including lost reports.
 - Skip discovery expiry scans while every stored record is still unexpired,
   retaining existing expiry and admission behavior at the deadline.
+- Keep an outbound WebRTC attempt visible while physical connection and data-channel
+  setup are still running, so immediate node polling preserves its preparation.
+  Continue reporting failed, closing, and stopped attempts correctly.
 - Release the reusable core and matching endpoint libraries as 0.4.95. Identity
   remains 0.3.3; protocol messages and wire layouts are unchanged.
 
