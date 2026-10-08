@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 
 from .cadence_workloads import stream
+from . import initial_funding
 from .paid_finances import payments_credited
 from .paid_relay import PaidRelayRun, eventually
 from .paid_settlement import original_channels, require, settle_and_collect
@@ -23,21 +24,23 @@ class FundingRun(RouterAccountRecovery):
 
     def __init__(self, args):
         super().__init__(args)
-        self.evidence.update(streams=[], topology_samples=[], warmup=[])
-        for name in ('renewal_interruption.py', 'wifi_funding.py'):
+        self.initial = getattr(args, 'initial', False)
+        self.evidence.update(streams=[], topology_samples=[], warmup=[], initial_purchase=self.initial)
+        for name in ('funding_checks.py', 'initial_funding.py', 'renewal_interruption.py', 'wifi_funding.py'):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     def profile_config(self, node):
         config = super().profile_config(node)
         config['terms'].update(fee_msat_per_kib=1, max_rate_msat_per_kib=1, quote_max_units=QUOTE_UNITS)
         config['return_allowance'] = False
-        if node is self.nodes['n01']:
+        if node is self.nodes['n01'] and not self.initial:
             config['terms']['controller']['renewal'] = RENEWAL
         return config
 
     def launch_profiles(self):
         super().launch_profiles()
-        self.ctl('n01', 'pause_renewals')
+        if not self.initial:
+            self.ctl('n01', 'pause_renewals')
 
     def warmup(self):
         for source, destination in (('n01', 'n03'), ('n03', 'n01')):
@@ -66,6 +69,8 @@ class FundingRun(RouterAccountRecovery):
         self.form_line()
         PaidRelayRun.unpaid_probe(self, self.assert_finances())
         self.save()
+        if self.initial:
+            return initial_funding.exercise(self)
         for source, destination in (('n01', 'n03'), ('n03', 'n01')):
             self.ctl(source, 'buy', destination=self.nodes[destination].npub)
         anchor = eventually('original funded radio accounts', self.finances)
@@ -106,6 +111,7 @@ def main():
     for name in ('inventory', 'binary', 'mint-binary', 'mint-host', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--mint-address', required=True)
+    parser.add_argument('--initial', action='store_true', help='interrupt the first purchase before any paid route exists')
     args = parser.parse_args()
     args.mint_ssh_forward = args.open_mesh = False
     os.umask(0o077)

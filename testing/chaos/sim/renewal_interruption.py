@@ -8,6 +8,7 @@ import hashlib
 import json
 import time
 
+from .funding_checks import PendingFunding
 from .paid_finances import payment_progress, payments_credited
 from .paid_relay import eventually
 from .paid_settlement import SettlementFixture, original_channels, require, verified_refund
@@ -17,7 +18,6 @@ from .restart_finances import recovered_exposure
 RENEWAL = {'at_capacity_percent': 5, 'before_expiry_secs': 30}
 CONTROLLER_FIELDS = ('local', 'epoch', 'policy', 'funding', 'next_funding',
                      'renewals', 'outgoing', 'requested', 'buyer_settlements', 'seller_settlements')
-SDK_FIELDS = ('admissions', 'openings', 'open_requests', 'funding', 'pending_funding')
 
 
 def fingerprint(value):
@@ -68,25 +68,9 @@ class RenewalCut:
         self.pending = pending
         self.check_pending()
         self.sdk_pending = self.sdk()
-        admission = self.sdk_pending.get('admissions', {}).get(self.funding_id)
-        opening = self.sdk_pending.get('openings', {}).get('r:' + self.funding_id)
-        require((admission is None) != (opening is None), 'funding lacks one exact durable SDK stage')
-        require(self.sdk_pending['open_requests'] == self.sdk_original['open_requests']
-                and self.sdk_pending['funding'] == self.sdk_original['funding']
-                and self.sdk_pending.get('pending_funding', {}) == self.sdk_original.get('pending_funding', {})
-                and set(self.sdk_pending.get('admissions', {})) == ({self.funding_id} if admission else set())
-                and self.sdk_pending.get('openings', {}) == {
-                    **self.sdk_original.get('openings', {}),
-                    **({'r:' + self.funding_id: opening} if opening else {})},
-                'held reply changed acknowledged funding or introduced another SDK request')
-        self.stage = 'wallet_preparation' if admission else 'channel_opening'
-        if admission:
-            require(admission['funding_started'] and admission['request']['client_request_id'] == self.funding_id,
-                    'wallet preparation is not bound to the reserved request')
-        else:
-            require(opening['wallet_send']['operation_id']
-                    and opening['request']['client_request_id'] == self.funding_id,
-                    'channel opening is not bound to its saved wallet operation')
+        self.operation = PendingFunding(self.funding_id, self.pending['n01']['funding'][self.funding_id],
+                                        self.sdk_original, self.sdk_pending)
+        self.stage = self.operation.stage
         # The paused mint operation must leave the original paid route usable.
         run.payloads()
         self.before_cut = eventually('paid progress with funding reply held',
@@ -94,8 +78,7 @@ class RenewalCut:
         self.pending = self.controllers()
         self.check_pending()
         sdk = self.sdk()
-        require(all(sdk.get(key, {}) == self.sdk_pending.get(key, {}) for key in SDK_FIELDS),
-                'pending SDK funding changed while its reply was held')
+        self.operation.unchanged(sdk)
         current_barrier = run.mint.request({'type': 'fault', 'command': {'action': 'status'}})
         require(current_barrier['phase'] == 'held' and current_barrier['generation'] == held['generation']
                 and current_barrier['swaps'] == held['swaps'], 'mint reply escaped before interruption')
@@ -137,8 +120,7 @@ class RenewalCut:
             require(all(stopped[node][key] == self.pending[node][key] for key in CONTROLLER_FIELDS),
                     'interruption lost durable replacement funding or original authority')
         recovered_sdk = self.sdk()
-        require(all(recovered_sdk.get(key, {}) == self.sdk_pending.get(key, {}) for key in SDK_FIELDS),
-                'interruption lost the original pending SDK operation')
+        self.operation.unchanged(recovered_sdk)
         lost = recovered_exposure(run.state_json('n02', 'seller/ledger.json'))
         for node in run.nodes:
             run.launch(node)
@@ -156,35 +138,9 @@ class RenewalCut:
                     and set(state['funding']) == set(self.pending[node]['funding'])
                     and all(state['funding'][key] == value for key, value in self.original[node]['funding'].items()),
                     'recovery reset policy or duplicated original funding')
-        pending_intent = self.pending['n01']['funding'][self.funding_id]
-        successor = current['n01']['funding'][self.funding_id]
-        require(all(successor[key] == value for key, value in pending_intent.items() if key != 'funded'),
-                'recovery changed the reserved successor terms')
-        funded = successor['funded']
-        terms = funded['terms']
-        self.new_id = terms['id']
-        require(self.new_id not in self.owners and terms['buyer'] == self.old_terms['buyer']
-                and terms['mint_url'] == self.old_terms['mint_url']
-                and terms['capacity_sat'] == successor['capacity_sat'] == successor['max_wallet_debit_sat'] == 32
-                and terms['grace_msat'] == successor['grace_msat'] == 8000
-                and terms['expires_unix'] == successor['expires_unix']
-                and terms['refund_after_unix'] == successor['refund_after_unix']
-                and funded['wallet_cost'] == {'token_amount_sat': 32, 'wallet_debit_sat': 32, 'swap_fee_sat': 0},
-                'recovered funding changed its authorized terms or cost')
-        sdk = self.sdk()
-        require(sdk['open_requests'] == {**self.sdk_original['open_requests'], self.funding_id: self.new_id}
-                and not sdk.get('admissions') and not sdk.get('pending_funding')
-                and set(sdk['funding']) == set(self.sdk_original['funding']) | {self.new_id}
-                and all(sdk['funding'][key] == value for key, value in self.sdk_original['funding'].items())
-                and set(sdk.get('openings', {})) == set(self.sdk_original.get('openings', {})) | {'r:' + self.funding_id}
-                and all(sdk['openings'][key] == value for key, value in self.sdk_original.get('openings', {}).items())
-                and sdk['openings']['r:' + self.funding_id]['channel_id'] == self.new_id,
-                'recovery left unresolved or duplicated SDK funding')
-        if self.stage == 'channel_opening':
-            opening = self.sdk_pending['openings']['r:' + self.funding_id]
-            require(self.new_id == opening['channel_id']
-                    and funded['wallet_operation_id'] == opening['wallet_send']['operation_id'],
-                    'recovery replaced the saved wallet operation or channel')
+        self.new_id = self.operation.recovered(current['n01']['funding'][self.funding_id], self.sdk(),
+            buyer=self.old_terms['buyer'], mint=self.old_terms['mint_url'])
+        require(self.new_id not in self.owners, 'recovery reused an original channel')
         restored = run.mint.request({'type': 'fault', 'command': {'action': 'status'}})
         require(restored['restores'] > run.evidence[run.interruption_key]['mint_held']['restores'],
                 'recovery did not restore a committed mint response')

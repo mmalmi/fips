@@ -671,6 +671,15 @@ is held and after restart; the final collection closes three channels and
 returns all 384 test sats. This shares the guest scenario's financial checks through
 `sim.renewal_interruption` and the settlement scenario's guarded process controls.
 
+Add `--initial` to `sim.wifi_funding` to interrupt the first purchase before any
+paid route exists. Unpaid traffic must remain blocked while the committed mint
+reply is held. All three relays restart, with the provider and destination first;
+the original purchase must then recover and activate without another buy request
+or funding reservation. Only afterward is the reverse route purchased. Both
+1,280-packet streams must deliver and pay, and the two channels must settle and
+return all 384 test sats. First-purchase and renewal cases share the same durable
+funding checks in `sim.funding_checks`.
+
 ```sh
 python3 -B -m sim.wifi_settlement \
   --inventory /private/operator/wifi-inventory.json \
