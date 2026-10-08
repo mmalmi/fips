@@ -419,6 +419,34 @@ connection gap. These checks do not qualify radio conditions, router CPU
 pressure, physical power loss or current phone behavior. Changes add test coverage
 only; fault-removal errors retain the original accounts for recovery.
 
+The opt-in Linux provider-suspension case passes on the ordinary native daemon
+in `work/provider-suspension-r289`. After initial bidirectional paid delivery,
+the middle process stops for 91.001 seconds. Both endpoints observe unavailable
+links and both original route quotes expire. Resuming that same process restores
+the line, automatically replaces both purchases, and permits fresh bidirectional
+delivery and provider credit. Original funding intents and purchase history remain
+exact, lifetime spending authority does not increase, and all 384 test sats settle
+with no pending reservations or locked funds. Process start time as well as PID
+must match; restarting a daemon cannot satisfy this case.
+
+The existing five-minute UDP loss regression also passes after the shared-fixture
+extraction: 79,804 of 84,000 originals arrive within 4,427 injected frame drops,
+all 303 connection samples stay connected, and each direction completes three
+renewals. Its 384 sats settle as well. Strict lint and source-size gates pass;
+independent closure verifies both runs' 768 sats, source/dependency and executable
+hashes, stopped owned processes, and 13 locally archived evidence files.
+
+The test shares the existing carrier fixture's funding, settlement and failure
+preservation. Its first run, r288, is rejected for pausing renewals before calling
+a helper that requires them active; the correction removes that unnecessary pause.
+All 384 sats from the rejected run also settle, and its original accounts and
+hash-verified archive remain retained. Run
+`mixed_transport::suspension::suspended_provider_renews_expired_routes_without_resetting_authority`
+with `--exact --ignored --nocapture` and `FIPS_RELAY_TEST_PROGRAM` selecting the
+ordinary daemon. This covers recovery after a process pause, with no application
+traffic during the pause; Android sleep, radio impairment and physical power loss
+remain separate acceptance requirements.
+
 The existing concurrent UDP/TLS renewal test also passes on the unchanged
 ordinary native program in `work/renewal-close-fixture-r254`: another buyer keeps
 paying while the provider's close reply is held, eight replacements complete,

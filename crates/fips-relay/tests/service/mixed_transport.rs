@@ -26,6 +26,8 @@ use bench::{MixedBench, SecondHop};
 mod accept_barrier;
 #[path = "mixed_transport/admission_wait.rs"]
 mod admission_wait;
+#[path = "mixed_transport/lifecycle.rs"]
+mod lifecycle;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
@@ -47,6 +49,9 @@ mod signer_storage;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/stream_probe.rs"]
 mod stream_probe;
+#[cfg(target_os = "linux")]
+#[path = "mixed_transport/suspension.rs"]
+mod suspension;
 #[path = "mixed_transport/sustained_loss.rs"]
 mod sustained_loss;
 #[path = "mixed_transport/tls.rs"]
