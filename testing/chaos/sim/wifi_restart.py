@@ -76,7 +76,7 @@ while :; do
     echo 'candidate exit observation deadline expired' >&2
     exit 1
   fi
-  sleep .05
+  sleep 1
 done
 printf '%s\\000' "$target_pid" "$target_start" "$stopped"
 """

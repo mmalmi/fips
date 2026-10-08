@@ -10,10 +10,7 @@ from .paid_settlement import require, validate_report
 
 
 class CommittedSettlement:
-    settlement_evidence_key = 'settlement_interruption'
-
-    def settlement_ready(self):
-        return self.ready()
+    interruption_key = 'settlement_interruption'
 
     def interrupt_settlement(self, anchor):
         channel, _ = next(iter(anchor['n01']['funding'].values()))
@@ -48,16 +45,16 @@ class CommittedSettlement:
                 require(pending[node]['funding'] == before[node]['funding']
                         and pending[node]['next_funding'] == before[node]['next_funding'],
                         'settlement created or changed channel funding')
-            self.evidence[self.settlement_evidence_key] = {
+            self.evidence[self.interruption_key] = {
                 'channel_id': channel, 'paid_sat': sale['payment']['balance'],
                 'mint_armed': armed, 'mint_held': held, 'at': time.time(),
-                **self.settlement_cut_metadata(),
+                **self.interruption_metadata(),
                 'pending_controller_sha256': {node: hashlib.sha256(
                     json.dumps(state, sort_keys=True).encode()).hexdigest()
                     for node, state in pending.items()},
             }
             self.save()
-            self.cut_settlement_participants()
+            self.interrupt_participants()
             try:
                 settling.result(timeout=15)
             except RuntimeError:
@@ -88,11 +85,11 @@ class CommittedSettlement:
                 and report['paid_sat'] == pending['n01']['buyer_settlements'][channel]['payment']['balance'],
                 'provider recovery changed the original settlement')
         restored = self.mint.request({'type': 'fault', 'command': {'action': 'status'}})
-        require(restored['restores'] > self.evidence[self.settlement_evidence_key]['mint_held']['restores'],
+        require(restored['restores'] > self.evidence[self.interruption_key]['mint_held']['restores'],
                 'provider did not restore the committed mint response')
         for node in ('n01', 'n03'):
             self.launch(node)
-        eventually('recovered participant line', self.settlement_ready, 90)
+        eventually('recovered participant line', self.recovery_ready, 90)
 
         def buyer_recovered():
             purchase = self.state_json('n01', 'controller/controller.json')['buyer_settlements'][channel]

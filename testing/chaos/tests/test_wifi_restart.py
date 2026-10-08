@@ -167,7 +167,12 @@ class CrashShellTests(unittest.TestCase):
         fields = ["S", *(["0"] * 18),
                   str(observed["host_process"]["start_ticks"] + 1), "0", "0"]
         wrong_stat.write_text(f"{child.pid} (reused process) " + " ".join(fields))
-        prefix = f"""kill() {{
+        prefix = f"""sleep() {{
+  # The target OpenWrt BusyBox accepts whole seconds only.
+  case "$1" in ''|*[!0-9]*) return 1;; esac
+  command sleep "$@"
+}}
+kill() {{
   printf '%s\\n' "$*" >>{signalled}
   command kill "$@"
 }}

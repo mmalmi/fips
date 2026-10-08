@@ -650,7 +650,7 @@ and settlement, including after an uncertain crash response.
 Focused checks: `python3 -m unittest tests.test_wifi_restart_load
 tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
 
-### Router settlement interruption
+### Router funding and settlement interruption
 
 `sim.wifi_settlement` uses the same three-router inventory, ordinary
 measurement-enabled relay, remote test mint and guarded persistent profiles.
@@ -660,6 +660,16 @@ must restore the original mint result while its buyer remains stopped. The buyer
 then restarts and must finish its original refund and release automatically,
 without another settlement request or new funding. The shared settlement checks
 finally collect all 384 test sats and restore the original router state.
+
+Use `sim.wifi_funding` with the same arguments to interrupt renewal instead.
+It withholds one committed successor-funding reply while both original routes
+continue carrying paid traffic, then kills and restarts all three relay
+processes. Recovery must reuse the saved request, channel and wallet operation,
+activate exactly one successor, and refund its predecessor. Three pairs of
+opposing streams must deliver all 7,680 payloads before funding, while its reply
+is held and after restart; the final collection closes three channels and
+returns all 384 test sats. This shares the guest scenario's financial checks through
+`sim.renewal_interruption` and the settlement scenario's guarded process controls.
 
 ```sh
 python3 -B -m sim.wifi_settlement \
@@ -673,7 +683,7 @@ python3 -B -m sim.wifi_settlement \
 
 This shares the committed-reply and automatic-recovery assertions with the guest
 power-loss scenario below. It preserves the router kernels and management
-network, so it does not establish physical power-loss or flash-cache recovery.
+network, so neither case establishes physical power-loss or flash-cache recovery.
 Focused checks from `testing/chaos`: `PYTHONPATH=.:tests python3 -B -m unittest
 tests.test_committed_settlement tests.test_paid_settlement tests.test_settlement_fixture`.
 

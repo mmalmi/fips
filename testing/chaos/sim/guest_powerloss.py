@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from .cadence_workloads import stream
 from .committed_settlement import CommittedSettlement
 from .guest_system import Guest, digest
-from .guest_renewal import RENEWAL, RenewalCut
+from .renewal_interruption import RENEWAL, RenewalCut
 from .paid_finances import financial_snapshot, payments_credited
 from .paid_relay import eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
@@ -26,12 +26,15 @@ from .restart_finances import QUOTE_UNITS, recovered_exposure, retained_finances
 
 
 class PowerLossRun(CommittedSettlement):
-    settlement_evidence_key = 'power_cut'
+    interruption_key = 'power_cut'
 
-    def settlement_cut_metadata(self):
+    def recovery_ready(self):
+        return self.ready()
+
+    def interruption_metadata(self):
         return {'guest_pid': self.guest.process.pid}
 
-    def cut_settlement_participants(self):
+    def interrupt_participants(self):
         self.guest.cut_power()
 
     stream = stream

@@ -45,10 +45,10 @@ class Run(CommittedSettlement):
         assert self.stopped.wait(2), 'fixture interruption never arrived'
         raise RuntimeError('original process interrupted')
 
-    def settlement_cut_metadata(self):
+    def interruption_metadata(self):
         return {'scope': 'owned-participants'}
 
-    def cut_settlement_participants(self):
+    def interrupt_participants(self):
         assert self.barrier['phase'] == 'held'
         self.events.append('cut')
         self.stopped.set()
@@ -67,7 +67,7 @@ class Run(CommittedSettlement):
                 report=dict(self.report), released=True, refunded=True, wallet_refund_sat=self.report['refunded_sat'])
             self.journals['n02']['seller_settlements']['channel']['released'] = True
 
-    def ready(self):
+    def recovery_ready(self):
         return True
 
     def save(self):

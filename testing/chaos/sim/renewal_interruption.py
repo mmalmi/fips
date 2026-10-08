@@ -1,4 +1,4 @@
-"""Cut a guest while one successor's committed mint reply is withheld.
+"""Interrupt participants while one successor's committed mint reply is withheld.
 
 Raw wallet authority stays in memory. The existing settlement fixture closes
 exactly the two original channels and the one durably reserved successor.
@@ -43,13 +43,13 @@ class RenewalCut:
         self.old_terms = next(row['funded']['terms'] for row in self.original['n01']['funding'].values())
         require(all(not row['renewals'] and not row['buyer_settlements']
                     and not row['seller_settlements'] for row in self.original.values()),
-                'guest renewal started before the funding barrier')
+                'renewal started before the funding barrier')
         require(not self.sdk_original.get('admissions') and not self.sdk_original.get('pending_funding')
                 and all(key == 'r:' + opening['request']['client_request_id']
                         and self.sdk_original['open_requests'].get(key[2:]) == opening['channel_id']
                         and opening['channel_id'] in self.sdk_original['funding']
                         for key, opening in self.sdk_original.get('openings', {}).items()),
-                'guest has unresolved original funding')
+                'participants have unresolved original funding')
         armed = run.mint.request({'type': 'fault', 'command': {'action': 'arm_swap_reply'}})
         require(armed['phase'] == 'armed', 'mint funding barrier did not arm')
         run.ctl('n01', 'resume_renewals')
@@ -58,7 +58,7 @@ class RenewalCut:
             status = run.mint.request({'type': 'fault', 'command': {'action': 'status'}})
             return status if status['phase'] == 'held' else None
 
-        held = eventually('committed successor funding before guest power loss', committed, 45)
+        held = eventually('committed successor funding before participant interruption', committed, 45)
         require(held['generation'] == armed['generation'] and held['swaps'] == armed['swaps'] + 1,
                 'successor funding did not reach one committed mint swap')
         pending = self.controllers()
@@ -98,16 +98,16 @@ class RenewalCut:
                 'pending SDK funding changed while its reply was held')
         current_barrier = run.mint.request({'type': 'fault', 'command': {'action': 'status'}})
         require(current_barrier['phase'] == 'held' and current_barrier['generation'] == held['generation']
-                and current_barrier['swaps'] == held['swaps'], 'mint reply escaped before the power cut')
-        run.evidence['power_cut'] = {
+                and current_barrier['swaps'] == held['swaps'], 'mint reply escaped before interruption')
+        run.evidence[run.interruption_key] = {
             'channel_id': self.old_id, 'funding_stage': self.stage,
             'mint_armed': armed, 'mint_held': current_barrier, 'at': time.time(),
-            'guest_pid': run.guest.process.pid, 'finances_with_reply_held': self.before_cut,
+            **run.interruption_metadata(), 'finances_with_reply_held': self.before_cut,
             'pending_controller_sha256': {node: fingerprint(value) for node, value in self.pending.items()},
             'pending_sdk_sha256': fingerprint(self.sdk_pending),
         }
         run.save()
-        run.guest.cut_power()
+        run.interrupt_participants()
         released = run.mint.request({'type': 'fault', 'command': {
             'action': 'release', 'generation': held['generation']}})
         require(released['phase'] == 'released', 'mint funding reply remained held')
@@ -135,14 +135,14 @@ class RenewalCut:
         stopped = self.controllers()
         for node in run.nodes:
             require(all(stopped[node][key] == self.pending[node][key] for key in CONTROLLER_FIELDS),
-                    'guest lost durable replacement funding or original authority')
+                    'interruption lost durable replacement funding or original authority')
         recovered_sdk = self.sdk()
         require(all(recovered_sdk.get(key, {}) == self.sdk_pending.get(key, {}) for key in SDK_FIELDS),
-                'guest lost the original pending SDK operation')
+                'interruption lost the original pending SDK operation')
         lost = recovered_exposure(run.state_json('n02', 'seller/ledger.json'))
         for node in run.nodes:
             run.launch(node)
-        eventually('recovered guest renewal line', run.ready, 90)
+        eventually('recovered renewal line', run.recovery_ready, 90)
 
         def completed():
             record = run.state_json('n01', 'controller/controller.json')['renewals'].get(self.old_id)
@@ -186,7 +186,7 @@ class RenewalCut:
                     and funded['wallet_operation_id'] == opening['wallet_send']['operation_id'],
                     'recovery replaced the saved wallet operation or channel')
         restored = run.mint.request({'type': 'fault', 'command': {'action': 'status'}})
-        require(restored['restores'] > run.evidence['power_cut']['mint_held']['restores'],
+        require(restored['restores'] > run.evidence[run.interruption_key]['mint_held']['restores'],
                 'recovery did not restore a committed mint response')
         refund = verified_refund(current['n01'], self.old_id, self.old_terms)
         require(refund is not None, 'recovery did not return the original predecessor refund')
