@@ -1,8 +1,11 @@
 //! Real packet sockets in a disposable network namespace, with counted loss.
 use fips_core::config::{EthernetConfig, TransportInstances};
-use fips_relay::{control_transport::NeighborAdmission, service::ServiceConfig};
-use serde_json::Value;
-use std::{io::Write, process::Command, sync::Mutex};
+use fips_relay::{
+    control_transport::NeighborAdmission,
+    service::{AdminRequest, ServiceConfig, native_request, request},
+};
+use serde_json::{Value, json};
+use std::{collections::BTreeSet, io::Write, process::Command, sync::Mutex, time::Duration};
 
 pub(super) struct EthernetNetwork {
     pairs: Vec<(String, String)>,
@@ -47,20 +50,35 @@ impl EthernetNetwork {
             }
         }
         command("ip", &["link", "set", &network.bridge, "up"]);
-        // All nodes share one Ethernet medium, as on the radio triangle. Only
-        // the test EtherType's leaf-to-leaf shortcut is excluded; each relay
-        // uses one packet socket and the middle forwards over that same socket.
-        let table = &network.topology;
+        network
+    }
+
+    pub async fn discover_triangle(&self, configs: &[ServiceConfig], npubs: &[String]) {
+        let states = wait_topology(configs, npubs, false, 60).await;
+        for state in states {
+            assert_eq!(state["funding_budget"]["wallet_debited_sat"], 0);
+            assert_eq!(state["funding_budget"]["locked_sat"], 0);
+            assert_eq!(state["purchases"], json!([]));
+            assert_eq!(state["watched_routes"], json!([]));
+        }
+        eprintln!("sustained Ethernet topology: authenticated triangle with default beacon timing");
+    }
+
+    pub async fn form_line(&self, configs: &[ServiceConfig], npubs: &[String]) {
+        // Match the physical fixture: let all peers authenticate before cutting
+        // only the test EtherType's leaf shortcut on the shared medium.
+        let table = &self.topology;
         let mut rules = format!("create table netdev {table}\n");
-        for (direction, (endpoint, _)) in network.pairs.iter().enumerate() {
-            let other = mac(&network.pairs[1 - direction].0);
+        for (direction, (endpoint, _)) in self.pairs.iter().enumerate() {
+            let other = mac(&self.pairs[1 - direction].0);
             rules.push_str(&format!(
                 "add chain netdev {table} ingress{direction} {{ type filter hook ingress device \"{endpoint}\" priority -510; policy accept; }}\n\
                  add rule netdev {table} ingress{direction} ether type 0x88b5 ether saddr {other} counter drop\n"
             ));
         }
         nft(&rules);
-        network
+        wait_topology(configs, npubs, true, 100).await;
+        eprintln!("sustained Ethernet topology: shortcut peers removed; discovered line ready");
     }
 
     pub fn configure(&self, node: usize, config: &mut ServiceConfig) {
@@ -84,7 +102,6 @@ impl EthernetNetwork {
                             announce: Some(true),
                             auto_connect: Some(true),
                             accept_connections: Some(true),
-                            beacon_interval_secs: Some(1),
                             ..Default::default()
                         },
                     )
@@ -143,6 +160,59 @@ impl EthernetNetwork {
             (count("seen"), count("dropped"))
         })
     }
+}
+
+async fn wait_topology(
+    configs: &[ServiceConfig],
+    npubs: &[String],
+    line: bool,
+    seconds: u64,
+) -> Vec<Value> {
+    tokio::time::timeout(Duration::from_secs(seconds), async {
+        loop {
+            let mut ready = Vec::new();
+            for (node, config) in configs.iter().enumerate() {
+                let Ok(state) = request(config, &AdminRequest::Status).await else {
+                    continue;
+                };
+                let peers = state["peers"].as_array().unwrap();
+                let expected: BTreeSet<_> = npubs
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| *other != node && (!line || node.abs_diff(*other) == 1))
+                    .map(|(_, npub)| npub.as_str())
+                    .collect();
+                let connected: BTreeSet<_> = peers
+                    .iter()
+                    .filter(|p| p["connected"] == true && p["transport"] == "ethernet")
+                    .map(|p| p["npub"].as_str().unwrap())
+                    .collect();
+                // A stale direct peer can still affect route lookup. Require
+                // actual removal, as the physical fixture does.
+                if connected != expected || peers.len() != expected.len() {
+                    continue;
+                }
+                if !line {
+                    let report = native_request(config, &json!({"command":"show_transports"}))
+                        .await
+                        .unwrap();
+                    let stats = &report["data"]["transports"][0]["stats"];
+                    if stats["beacons_sent"].as_u64().unwrap() == 0
+                        || stats["beacons_recv"].as_u64().unwrap() == 0
+                    {
+                        continue;
+                    }
+                }
+                ready.push(state);
+            }
+            if ready.len() == configs.len() {
+                return ready;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("authenticated Ethernet topology should converge")
 }
 
 impl Drop for EthernetNetwork {

@@ -322,7 +322,9 @@ impl MixedBench {
                 },
             );
         }
-        ready(&configs, &paths, &npubs, &mut children).await;
+        if ethernet.is_none() {
+            ready(&configs, &paths, &npubs, &mut children).await;
+        }
         Self {
             _root: root,
             configs,
@@ -356,6 +358,15 @@ impl MixedBench {
 
     pub fn second_hop_kind(&self) -> &'static str {
         self.second_hop.kind()
+    }
+
+    pub(super) async fn form_ethernet_line(&self) {
+        if let Some(ethernet) = &self.ethernet {
+            ethernet.discover_triangle(&self.configs, &self.npubs).await;
+            self.deliver(0, 2).await;
+            eprintln!("sustained Ethernet topology: direct endpoint probe delivered before cut");
+            ethernet.form_line(&self.configs, &self.npubs).await;
+        }
     }
 
     pub(super) fn seed_carrier(&self) -> Option<&StreamProxy> {

@@ -53,6 +53,9 @@ async fn run(second_hop: SecondHop) {
     let running = bench.clone();
     let exercise = tokio::spawn(async move {
         let mut bench = running.lock().await;
+        // Topology setup has its own bounds. Keep the traffic/renewal deadline
+        // unchanged, and preserve funded profiles if setup fails too.
+        bench.form_ethernet_line().await;
         tokio::time::timeout(Duration::from_secs(380), exercise(&mut bench)).await
     })
     .await;
