@@ -575,7 +575,7 @@ impl Node {
         (completed, drained)
     }
 
-    async fn drain_endpoint_snapshots(&mut self) {
+    pub(super) async fn drain_endpoint_snapshots(&mut self) {
         if self.pending_endpoint_control.is_some() {
             return;
         }
