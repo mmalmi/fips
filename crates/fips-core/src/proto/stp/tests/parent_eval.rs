@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn parent_losing_root_selects_remaining_path_before_local_ancestry_refresh() {
+    let mut state = TreeState::new(make_node_addr(9));
+    let root = make_node_addr(1);
+    let parent = make_node_addr(5);
+    state.set_hold_down(60);
+    state.set_parent_hysteresis(0.2);
+    state.update_peer(
+        ParentDeclaration::new(parent, root, 1, 1000),
+        make_coords(&[5, 1]),
+    );
+    state.update_peer(
+        ParentDeclaration::self_root(root, 1, 1000),
+        make_coords(&[1]),
+    );
+    let costs = make_costs(&[(5, 1.0), (1, 5.0)]);
+    assert_eq!(state.evaluate_parent(&costs), Some(parent));
+    state.set_parent(parent, 2, 1000);
+    state.recompute_coords();
+    assert_eq!(state.evaluate_parent(&costs), None);
+
+    // TreeAnnounce updates the peer before recomputing our own ancestry.
+    // The slower direct link is now the only path to the elected root.
+    assert!(state.update_peer(
+        ParentDeclaration::self_root(parent, 2, 1001),
+        make_coords(&[5]),
+    ));
+    assert_eq!(state.root(), &root);
+    assert_eq!(state.evaluate_parent(&costs), Some(root));
+    state.set_parent(root, 3, 1001);
+    state.recompute_coords();
+    assert_eq!(
+        state.my_coords().node_addrs().copied().collect::<Vec<_>>(),
+        [make_node_addr(9), root]
+    );
+}
+
+#[test]
 fn test_evaluate_parent_picks_smallest_root() {
     // Node 5 starts as root. Peers 3 and 7 each claim different roots.
     // Peer 3's path: [3, 1] (root=1)

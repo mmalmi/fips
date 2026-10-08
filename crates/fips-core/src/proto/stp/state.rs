@@ -415,11 +415,14 @@ impl TreeState {
 
         // --- Mandatory switches (bypass hold-down and hysteresis) ---
 
-        // If our current parent is gone from peer_ancestry, our path is broken — always switch
+        // Our own root can lag a newly accepted parent declaration. If that
+        // parent disappeared or lost the best root, repair the path before
+        // applying cost hysteresis or hold-down to the surviving alternative.
         if !self.is_root()
-            && !self
+            && self
                 .peer_ancestry
-                .contains_key(self.my_declaration.parent_id())
+                .get(self.my_declaration.parent_id())
+                .is_none_or(|coords| *coords.root_id() != smallest_root)
         {
             return Some(best_peer_id);
         }
