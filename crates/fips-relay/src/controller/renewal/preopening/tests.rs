@@ -205,3 +205,134 @@ fn unbound_pair_and_corrupt_successor_binding_cannot_be_loaded() {
         store = reload(store);
     }
 }
+
+#[test]
+fn funded_handover_retains_both_capital_owners_through_restart_and_acceptance() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old, offer) = prepared(root.path());
+    let id = old.purchase.channel.id.clone();
+    store
+        .change(|j| {
+            // This fixture exercises persisted authority, not payment signatures.
+            let mut funding = j.funding[&old.funding_id].clone();
+            funding.id = "test-2".into();
+            let funded = funding.funded.as_mut().unwrap();
+            funded.terms.id = "successor-channel".into();
+            funded.opening.channel_id = funded.terms.id.clone();
+            funded.wallet_operation_id = "fixture-operation-2".into();
+            j.next_funding += 1;
+            j.renewals
+                .get_mut(&id)
+                .unwrap()
+                .preopening
+                .as_mut()
+                .unwrap()
+                .funding_id = Some(funding.id.clone());
+            j.funding.insert(funding.id.clone(), funding);
+            let payment = j.funding[&old.funding_id]
+                .funded
+                .as_ref()
+                .unwrap()
+                .opening
+                .clone();
+            j.buyer_settlements.insert(
+                id.clone(),
+                BuyerSettlement {
+                    kind: SettlementKind::Cooperative,
+                    provider: old.purchase.provider,
+                    channel: old.purchase.channel.clone(),
+                    usage: Some(ChannelUsage::default()),
+                    payment: Some(payment),
+                    report: None,
+                    released: false,
+                    refunded: false,
+                    wallet_refund_sat: None,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+    store = reload(store);
+    store
+        .change(|j| Controller::replace_renewal_routes(j, &id, vec![offer.clone()], true))
+        .unwrap();
+    store = reload(store);
+    let funding = Controller::selected_funding(&store.journal, &offer, None)
+        .unwrap()
+        .unwrap()
+        .clone();
+    assert_eq!(funding.id, "test-2");
+    let channel = funding.funded.as_ref().unwrap().terms.clone();
+    let successor = Outgoing {
+        offer: offer.clone(),
+        funding_id: funding.id,
+        purchase: Purchase {
+            provider: offer.provider,
+            contract: contract_from_offer(&offer, &channel).unwrap(),
+            channel,
+        },
+        accepted: false,
+        retired: false,
+    };
+    for accepted in [false, true] {
+        store
+            .change(|j| {
+                Controller::record_purchase(j, successor.clone())?;
+                if accepted {
+                    Controller::finish_acceptance(j, &successor.purchase.contract.id)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        store = reload(store);
+        assert_eq!(store.journal.funding.len(), 2);
+        assert!(!store.journal.buyer_settlements[&id].refunded);
+        assert!(!store.journal.renewals[&id].completed);
+        assert_eq!(Controller::capital(&store.journal).unwrap().locked_sat, 64);
+        assert!(!Controller::routing_eligible(
+            &store.journal,
+            &store.journal.outgoing[&old.purchase.contract.id]
+        ));
+        assert_eq!(
+            store.journal.outgoing[&successor.purchase.contract.id].accepted,
+            accepted
+        );
+        assert!(Controller::check_purchase(&store.journal, &offer, Some(&id)).is_err());
+        let mut unowned = offer.clone();
+        unowned.id = "unowned-successor".into();
+        assert!(Controller::check_purchase(&store.journal, &unowned, None).is_err());
+        let before = serde_json::to_value(&store.journal).unwrap();
+        assert!(
+            store
+                .change(|j| Controller::reserve_renewal(j, successor.purchase.channel.id.clone()))
+                .is_err()
+        );
+        for case in 0..5 {
+            assert!(
+                store
+                    .change(|j| {
+                        match case {
+                            0 => j.renewals.get_mut(&id).unwrap().completed = true,
+                            1 => j.buyer_settlements.get_mut(&id).unwrap().payment = None,
+                            2 => j.renewals.get_mut(&id).unwrap().handover = false,
+                            3 => {
+                                j.renewals
+                                    .get_mut(&id)
+                                    .unwrap()
+                                    .preopening
+                                    .as_mut()
+                                    .unwrap()
+                                    .funding_id = Some(old.funding_id.clone())
+                            }
+                            _ => j.buyer_settlements.get_mut(&id).unwrap().usage = None,
+                        }
+                        Controller::validate_journal(j, &j.policy, j.local)
+                    })
+                    .is_err(),
+                "case {case}"
+            );
+            assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
+        }
+    }
+    reload(store);
+}

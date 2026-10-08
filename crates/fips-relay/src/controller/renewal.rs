@@ -4,6 +4,7 @@ use super::*;
 use crate::ledger::ChannelUsage;
 use fips_core::node::ForwardingPolicy;
 
+mod handover;
 mod preopening;
 use preopening::Preopening;
 
@@ -99,6 +100,8 @@ pub(super) struct Renewal {
     replacements: Option<Vec<RouteOffer>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) preopening: Option<Preopening>,
+    #[serde(default)]
+    handover: bool,
     completed: bool,
 }
 
@@ -153,6 +156,7 @@ impl Controller {
         Self::validate_funding_neighbors(journal)?;
         for (id, renewal) in &journal.renewals {
             Self::validate_preopening(journal, id, renewal)?;
+            Self::validate_handover(journal, id, renewal)?;
             if !renewal.completed && Self::route_change_pending_on(journal, id) {
                 return Err("conflicting route and renewal intents".into());
             }
@@ -175,10 +179,11 @@ impl Controller {
                 return Err("invalid retained renewal purchase".into());
             }
             if let Some(offers) = &renewal.replacements {
-                if !journal
-                    .buyer_settlements
-                    .get(id)
-                    .is_some_and(|s| s.refunded)
+                if (!renewal.handover
+                    && !journal
+                        .buyer_settlements
+                        .get(id)
+                        .is_some_and(|s| s.refunded))
                     || offers.len() != renewal.previous.len()
                     || offers.iter().zip(&renewal.previous).any(|(offer, old)| {
                         !same_service(&old.offer, offer)
@@ -295,6 +300,7 @@ impl Controller {
                 previous,
                 replacements: None,
                 preopening: None,
+                handover: false,
                 completed: false,
             },
         );
@@ -382,11 +388,38 @@ impl Controller {
     // separately serializes payment and closure of this particular channel.
     async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
         renewal = self.prepare_renewal_funding(id, renewal).await?;
-        // Handshake retries can finish while the previous allowance still carries
-        // traffic. This neither seals the channel nor grants replacement credit.
+        let snapshot = self.snapshot().await?;
+        let active = renewal.handover
+            && renewal.replacements.as_ref().is_some_and(|offers| {
+                offers.iter().all(|offer| {
+                    snapshot
+                        .outgoing
+                        .values()
+                        .any(|o| o.accepted && o.offer == *offer && o.purchase.channel.id != id)
+                })
+            });
+        // An accepted successor must keep forwarding while recovery retries the
+        // old mint operation, even when no further spending budget remains.
+        if active {
+            let _channel = self.channel_work(id)?.lock_owned().await;
+            self.refund_purchase(id, false).await?;
+            return self.complete_renewal(id).await;
+        }
+        let handover = renewal.handover
+            || (Self::funded_successor(&snapshot, &renewal).is_some()
+                && snapshot
+                    .buyer_settlements
+                    .get(id)
+                    .is_none_or(|s| s.kind == SettlementKind::Cooperative && !s.refunded));
+        // Prepare streams while the previous allowance still carries traffic.
+        // Waiting for a prior payment's channel guard also precedes the pause.
         let previous = renewal.previous.first().ok_or("renewal purchase missing")?;
         let peer = self.neighbor(previous.purchase.provider).await?;
         self.services.acceptance.prepare(peer).await?;
+        if handover {
+            self.services.payments.prepare(peer).await?;
+        }
+        let _channel = self.channel_work(id)?.lock_owned().await;
         let admission_pause = self
             .services
             .buyer
@@ -402,19 +435,26 @@ impl Controller {
             "Renewal pause progress")
         };
         progress("paused");
-        if !self
-            .snapshot()
-            .await?
-            .buyer_settlements
-            .get(id)
-            .is_some_and(|s| s.kind == SettlementKind::Expiry && s.refunded)
-        {
-            let _channel = self.channel_work(id)?.lock_owned().await;
-            self.refund_purchase(id, false).await?;
-            // Existing settlement recovery retries report release independently
-            // after the verified refund. It must not delay replacement credit.
-        }
-        progress("settled");
+        let timing = TransitionTiming::new("refund", id);
+        let deferred_refund = if handover {
+            let old = self.prepare_refund(id, false, &timing).await?;
+            if !renewal.handover && !old.refunded {
+                self.acknowledge_final_payment(&old).await?;
+            }
+            Some(old)
+        } else {
+            if !self
+                .snapshot()
+                .await?
+                .buyer_settlements
+                .get(id)
+                .is_some_and(|s| s.kind == SettlementKind::Expiry && s.refunded)
+            {
+                self.refund_purchase(id, false).await?;
+            }
+            None
+        };
+        progress("previous_ready");
         if self
             .services
             .buyer
@@ -442,43 +482,10 @@ impl Controller {
                 }
                 offers.push(offer);
             }
-            let previous = renewal.previous.clone();
             let saved = offers.clone();
             let channel_id = id.to_string();
-            self.change(move |j| {
-                if !j
-                    .buyer_settlements
-                    .get(&channel_id)
-                    .is_some_and(|s| s.refunded)
-                {
-                    return Err("previous channel refund incomplete".into());
-                }
-                for old in &previous {
-                    j.outgoing
-                        .get_mut(&old.purchase.contract.id)
-                        .ok_or("old purchase missing")?
-                        .retired = true;
-                    j.requested.remove(&old.offer.id);
-                }
-                for offer in &saved {
-                    if j.requested.len() >= MAX_ROUTES
-                        || j.requested.contains_key(&offer.id)
-                        || j.requested.values().any(|o| {
-                            o.provider == offer.provider
-                                && o.destination.node_addr() == offer.destination.node_addr()
-                        })
-                    {
-                        return Err("replacement request capacity or identity conflict".into());
-                    }
-                    j.requested.insert(offer.id.clone(), offer.clone());
-                }
-                j.renewals
-                    .get_mut(&channel_id)
-                    .ok_or("renewal intent missing")?
-                    .replacements = Some(saved);
-                Ok(())
-            })
-            .await?;
+            self.change(move |j| Self::replace_renewal_routes(j, &channel_id, saved, handover))
+                .await?;
             renewal.replacements = Some(offers);
         }
         progress("replacements_ready");
@@ -488,10 +495,15 @@ impl Controller {
                 return Err("replacement reused closed funding".into());
             }
         }
-        // Each replacement is accepted, saved and active. The completion marker
-        // only closes recovery bookkeeping; fresh traffic can use its own credit.
         drop(admission_pause);
         progress("resumed");
+        if let Some(old) = deferred_refund {
+            self.finish_refund(old, &timing).await?;
+        }
+        self.complete_renewal(id).await
+    }
+
+    async fn complete_renewal(&self, id: &str) -> Result<(), String> {
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "renewal-complete").await?;
         let id = id.to_string();

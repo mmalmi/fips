@@ -23,6 +23,11 @@ impl Controller {
                 .as_ref()
                 .map(|id| &j.funding[id]));
         }
+        if let Some((_, r)) = Self::handover_for(j, offer) {
+            return Self::funded_successor(j, r)
+                .map(Some)
+                .ok_or("handover funding unavailable".into());
+        }
         Ok(j.funding
             .values()
             .find(|f| f.provider == offer.provider && !Self::funding_released(j, f)))
@@ -270,7 +275,13 @@ impl Controller {
             .as_ref()
             .ok_or("renewal preopening missing")?
             .offers[0];
-        self.fund_for(offer, Some(id)).await?;
+        // After sealing, retain the original funding while refreshing an expired
+        // offer above. Purchase still checks the funding against the fresh terms.
+        if !snapshot.buyer_settlements.contains_key(id)
+            || Self::funded_successor(&snapshot, &r).is_none()
+        {
+            self.fund_for(offer, Some(id)).await?;
+        }
         self.snapshot()
             .await?
             .renewals

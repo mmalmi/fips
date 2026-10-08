@@ -357,10 +357,15 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   authorized balance for closure, but cannot authorize a larger amount.
 * Optional `RenewalPolicy` schedules channel replacement from local submission
   evidence, byte limits, approaching expiry, or capacity consumed by reported
-  crash exposure. Such reports cannot authorize payment. The controller settles
-  the old channel and confirms its refund before funding a replacement. Fresh
-  offers must retain the provider, next hop, price, mint and byte allowance; changed service stops for a
-  new agreement. Historical channels and authorizations remain retained.
+  crash exposure. Such reports cannot authorize payment. When the capital limits
+  permit, the controller funds one exact successor while the old channel carries
+  traffic. It seals the old usage and obtains acknowledgment of its final signed
+  payment before activating the successor; mint settlement and refund follow.
+  Both funding records count against the limits until the refund is verified,
+  and an unfinished renewal prevents a third channel. Without that headroom, the
+  refund completes before replacement funding. Fresh offers retain the provider,
+  next hop, price, mint and byte allowance; changed service needs a new agreement.
+  Historical channels and unpaid crash exposure remain retained.
 * A second native controller test exhausts and replaces all six original channels
   while sending both ways across the three routers. It keeps the capital cap and
   lifetime spending limit, verifies positive relay margins and redeems/spends all

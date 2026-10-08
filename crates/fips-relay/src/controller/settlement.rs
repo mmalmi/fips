@@ -288,6 +288,16 @@ impl Controller {
         recovery_only: bool,
     ) -> Result<SettlementReport, String> {
         let timing = TransitionTiming::new("refund", id);
+        let purchase = self.prepare_refund(id, recovery_only, &timing).await?;
+        self.finish_refund(purchase, &timing).await
+    }
+
+    pub(super) async fn prepare_refund(
+        &self,
+        id: &str,
+        recovery_only: bool,
+        timing: &TransitionTiming,
+    ) -> Result<BuyerSettlement, String> {
         let channel_id = id.to_string();
         let mut purchase = self
             .change(move |j| {
@@ -321,7 +331,7 @@ impl Controller {
             .await?;
         timing.mark("intent_saved");
         if purchase.refunded {
-            return purchase.report.ok_or("settlement report missing".into());
+            return Ok(purchase);
         }
         if purchase.usage.is_none() {
             let peer = self.neighbor(purchase.provider).await?;
@@ -397,6 +407,19 @@ impl Controller {
             .await?;
         }
         timing.mark("signed");
+        Ok(purchase)
+    }
+
+    pub(super) async fn finish_refund(
+        &self,
+        mut purchase: BuyerSettlement,
+        timing: &TransitionTiming,
+    ) -> Result<SettlementReport, String> {
+        if purchase.refunded {
+            return purchase.report.ok_or("settlement report missing".into());
+        }
+        let channel_id = purchase.channel.id.clone();
+        let id = channel_id.as_str();
         if purchase.report.is_none() {
             let peer = self.neighbor(purchase.provider).await?;
             let payment = purchase.payment.clone().ok_or("final payment missing")?;

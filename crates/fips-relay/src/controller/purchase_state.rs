@@ -26,9 +26,11 @@ impl Controller {
             || j.funding.values().any(|f| {
                 f.provider == offer.provider
                     && !Self::funding_released(j, f)
-                    && f.funded
-                        .as_ref()
-                        .is_some_and(|funded| j.buyer_settlements.contains_key(&funded.terms.id))
+                    && f.funded.as_ref().is_some_and(|funded| {
+                        j.buyer_settlements.contains_key(&funded.terms.id)
+                            && Self::handover_for(j, offer)
+                                .is_none_or(|(old, _)| old != funded.terms.id)
+                    })
             })
         {
             return Err("provider channel is settling or closed".into());

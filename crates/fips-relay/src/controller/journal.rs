@@ -131,6 +131,7 @@ impl Controller {
                 || (!o.retired && j.requested.get(&o.offer.id) != Some(&o.offer))
                 || (o.retired
                     && !Self::changed_route_retires(j, &o.purchase)
+                    && !Self::handover_retires(j, &o.purchase)
                     && !j
                         .buyer_settlements
                         .get(&o.purchase.channel.id)
