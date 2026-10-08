@@ -7089,6 +7089,20 @@ Source, dependency, artifact and stopped-process verification pass. The earlier
 long seal wait does not recur, so this measurement-only change neither explains
 nor fixes it. Controlled loss reproduction and physical acceptance remain open.
 
+The existing impaired-carrier test now calls `prepare()` before its application
+request, while retaining the lost SYN/SYN-ACK sequence, 300-millisecond reply-loss
+window, original deadline, byte attribution and single-request assertions.
+`work/prepared-control-loss-r329` observes 2,032 milliseconds for preparation,
+then 2,040 milliseconds for the request, including 1,710 milliseconds after the
+link is restored. This demonstrates that handshake preparation alone does not
+bound the next reply's retry delay. It is consistent with TCP backoff, not proof
+of the cause of the historical renewal failure. The carrier case and both
+persistent-record cases pass, as do strict lint and source-size checks; no funds
+are created and production runtime code is unchanged. Source, artifact and
+stopped-process verification close the run. Removing settlement from the
+forwarding pause needs separate capital, cutover and recovery verification;
+neither retry nor packet-loss limits are relaxed by this test.
+
 Run the opt-in TLS case with the [matching dependency overrides](FUNDING-COSTS.md):
 
 ```sh

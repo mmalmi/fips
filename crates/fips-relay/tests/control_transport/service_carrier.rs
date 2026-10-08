@@ -252,6 +252,13 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
             assert_eq!(responder.statistics().snapshot().requests_received, 0);
             network.set_directed_link("receiver", "sender", None);
         };
+        let preparation_started = std::time::Instant::now();
+        let (prepared, ()) = tokio::join!(unrelated.prepare(bob), handshake);
+        prepared.unwrap();
+        let preparation_ms = preparation_started.elapsed().as_millis();
+        assert_eq!(unrelated.statistics().snapshot().requests_started, 0);
+        assert_eq!(unrelated.statistics().snapshot().stream_bytes_sent, 0);
+        assert_eq!(responder.statistics().snapshot().requests_received, 0);
         let response = async {
             let request = requests.recv().await.unwrap();
             let before = network.stats();
@@ -278,9 +285,12 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
             tokio::time::sleep(Duration::from_millis(300)).await;
             assert_eq!(unrelated.statistics().snapshot().stream_bytes_received, 0);
             network.set_directed_link("receiver", "sender", None);
+            std::time::Instant::now()
         };
-        let (reply, (), ()) =
-            tokio::join!(unrelated.request(bob, body.clone()), response, handshake);
+        let request_started = std::time::Instant::now();
+        let (reply, restored) = tokio::join!(unrelated.request(bob, body.clone()), response);
+        let request_ms = request_started.elapsed().as_millis();
+        let retry_after_recovery_ms = restored.elapsed().as_millis();
         assert_eq!(reply.unwrap(), body);
         assert_eq!(responder.statistics().snapshot().requests_received, 1);
         let application = unrelated.statistics().snapshot();
@@ -288,7 +298,7 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
         assert_eq!(application.stream_bytes_sent, record.len() as u64);
         assert_eq!(application.stream_bytes_received, record.len() as u64);
         eprintln!(
-            "control carrier recovered lost SYN, SYN/ACK and reply with one application request"
+            "prepared control carrier recovered lost SYN, SYN/ACK and reply with one application request; preparation_ms={preparation_ms} request_ms={request_ms} retry_after_recovery_ms={retry_after_recovery_ms}"
         );
         assert_eq!(measured.snapshot(), baseline_a);
         assert_eq!(server_measured.snapshot(), baseline_b);
