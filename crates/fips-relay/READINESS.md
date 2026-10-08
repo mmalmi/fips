@@ -358,6 +358,26 @@ existing rekey cases pass. This narrows the investigation without reproducing
 the physical failure: the fixture uses UDP, explicitly driven maintenance, and
 no concurrent paid renewal or router CPU pressure.
 
+The opt-in service regression in `work/renewal-carrier-r279` combines the same
+counted loss with five minutes of paid traffic, default key timing and ordinary
+daemon receive loops. Both directions complete three expiry renewals;
+79,786 of 84,000 originals arrive within 4,422 injected carrier drops, with no
+invalid or duplicate payloads. All 303 neighbor samples remain connected and
+every directed edge observes at least five key epochs. Fresh loss-free probes
+then pass, all channels settle, and all 384 test sats are conserved. Strict lint,
+formatting and source-size checks pass; source/dependency hashes and stopped
+processes are independently verified. Carrier counts include control frames and
+do not attribute each missing payload. An authenticated refresh replaces one
+local link handle without breaking these bounds. The earlier r277/r278 runs
+remain rejected for an extra fixed-handle assertion, with their financial records
+retained; r278 had already met the delivery bound. Handles now remain diagnostics,
+while peer identity, delivery, renewal and financial bounds determine acceptance.
+This native result does not reproduce or resolve r247's physical connection gap,
+qualify router CPU pressure, or replace paid-radio and phone acceptance.
+The existing short UDP/TCP exhaustion/restart case also passes against the same
+ordinary daemon, conserving another 384 test sats and checking the shared probe
+helper's unchanged default duration. These changes add test coverage only.
+
 The existing concurrent UDP/TLS renewal test also passes on the unchanged
 ordinary native program in `work/renewal-close-fixture-r254`: another buyer keeps
 paying while the provider's close reply is held, eight replacements complete,

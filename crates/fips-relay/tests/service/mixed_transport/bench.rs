@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::process::Child;
 
-use super::{proxy::StreamProxy, tls::TlsProxy};
+use super::{proxy::StreamProxy, tls::TlsProxy, udp_loss::UdpLoss};
 use crate::process_support::{command, config, ready, start};
 
 #[path = "recovery.rs"]
@@ -27,6 +27,7 @@ mod recovery;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecondHop {
+    Udp,
     Tcp,
     WebSocket,
     WebSocketSeed,
@@ -37,6 +38,7 @@ pub enum SecondHop {
 impl SecondHop {
     pub fn kind(self) -> &'static str {
         match self {
+            Self::Udp => "udp",
             Self::Tcp => "tcp",
             Self::WebSocket
             | Self::WebSocketSeed
@@ -47,7 +49,7 @@ impl SecondHop {
 
     fn address(self, socket: SocketAddr) -> String {
         match self {
-            Self::Tcp => socket.to_string(),
+            Self::Udp | Self::Tcp => socket.to_string(),
             Self::WebSocket
             | Self::WebSocketSeed
             | Self::WebSocketTls
@@ -72,6 +74,7 @@ pub struct MixedBench {
     pub npubs: Vec<String>,
     pub children: Vec<Child>,
     pub tls: Option<TlsProxy>,
+    pub(super) udp_loss: Vec<UdpLoss>,
     proxy: Option<StreamProxy>,
     second_hop: SecondHop,
     next_probe: AtomicU64,
@@ -94,12 +97,24 @@ impl MixedBench {
         configure: impl Fn(usize, &mut ServiceConfig),
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let udp: Vec<_> = (0..2)
+        let udp: Vec<_> = (0..3)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
             .collect();
         let tcp: Vec<_> = (0..2)
             .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
             .collect();
+        let mut udp_loss = Vec::new();
+        if second_hop == SecondHop::Udp {
+            for endpoint in [0, 2] {
+                udp_loss.push(
+                    UdpLoss::start(
+                        udp[endpoint].local_addr().unwrap(),
+                        udp[1].local_addr().unwrap(),
+                    )
+                    .await,
+                );
+            }
+        }
         let tls = if matches!(
             second_hop,
             SecondHop::WebSocketTls | SecondHop::WebSocketSelfSigned
@@ -136,7 +151,7 @@ impl MixedBench {
             std::fs::create_dir(&directory).unwrap();
             let mut config = config(&directory, mint);
             config.transports = Default::default();
-            if node < 2 {
+            if node < 2 || second_hop == SecondHop::Udp {
                 config.transports.udp = TransportInstances::Single(UdpConfig {
                     bind_addr: Some(udp[node].local_addr().unwrap().to_string()),
                     ..Default::default()
@@ -145,6 +160,7 @@ impl MixedBench {
             if node > 0 {
                 let bind_addr = Some(tcp[node - 1].local_addr().unwrap().to_string());
                 match second_hop {
+                    SecondHop::Udp => {}
                     SecondHop::Tcp => {
                         config.transports.tcp = TransportInstances::Single(TcpConfig {
                             bind_addr,
@@ -219,23 +235,37 @@ impl MixedBench {
         configs[0].neighbors = vec![PeerConfig::new(
             &npubs[1],
             "udp",
-            udp[1].local_addr().unwrap().to_string(),
+            udp_loss
+                .first()
+                .map_or_else(|| udp[1].local_addr().unwrap(), |p| p.address)
+                .to_string(),
         )];
         configs[1].neighbors = vec![PeerConfig::new(
             &npubs[0],
             "udp",
-            udp[0].local_addr().unwrap().to_string(),
+            udp_loss
+                .first()
+                .map_or_else(|| udp[0].local_addr().unwrap(), |p| p.address)
+                .to_string(),
         )];
         if !second_hop.is_seed() {
             configs[1].neighbors.push(PeerConfig::new(
                 &npubs[2],
                 second_hop.kind(),
-                second_hop.address(tcp[1].local_addr().unwrap()),
+                second_hop.address(
+                    udp_loss
+                        .get(1)
+                        .map_or_else(|| tcp[1].local_addr().unwrap(), |p| p.address),
+                ),
             ));
             configs[2].neighbors = vec![PeerConfig::new(
                 &npubs[1],
                 second_hop.kind(),
-                second_hop.address(tcp[0].local_addr().unwrap()),
+                second_hop.address(
+                    udp_loss
+                        .get(1)
+                        .map_or_else(|| tcp[0].local_addr().unwrap(), |p| p.address),
+                ),
             )];
         } else {
             // The bootstrap URL carries no peer identity. The known npubs
@@ -258,7 +288,7 @@ impl MixedBench {
             assert_eq!(client.seed_urls, vec![seed_url]);
         }
         assert!(
-            configs[2].transports.udp.is_empty(),
+            second_hop == SecondHop::Udp || configs[2].transports.udp.is_empty(),
             "stream endpoint has no UDP fallback"
         );
         assert_eq!(
@@ -291,11 +321,19 @@ impl MixedBench {
             npubs,
             children,
             tls,
+            udp_loss,
             proxy,
             second_hop,
             next_probe: AtomicU64::new(1),
             stage: "other-mixed-fixture",
         }
+    }
+
+    pub(super) fn preserve(self) {
+        eprintln!(
+            "retained failed daemon accounts at {}",
+            self._root.keep().display()
+        );
     }
 
     pub fn set_stage(&mut self, stage: &'static str) {
@@ -409,6 +447,19 @@ impl MixedBench {
         bytes: usize,
         rate: u32,
     ) -> SendProbe {
+        self.prepare_timed_probe(source, destination, count, bytes, rate, None)
+            .await
+    }
+
+    pub(super) async fn prepare_timed_probe(
+        &self,
+        source: usize,
+        destination: usize,
+        count: u32,
+        bytes: usize,
+        rate: u32,
+        max_duration_secs: Option<u64>,
+    ) -> SendProbe {
         let stream_id = format!("{:032x}", self.next_probe.fetch_add(1, Ordering::Relaxed));
         request(
             &self.configs[destination],
@@ -419,7 +470,7 @@ impl MixedBench {
                     packet_count: count,
                     payload_bytes: bytes,
                     measure_one_way_latency: false,
-                    lifetime_secs: None,
+                    lifetime_secs: max_duration_secs.map(|seconds| seconds + 60),
                     reflect: false,
                 },
             },
@@ -433,11 +484,11 @@ impl MixedBench {
             payload_bytes: bytes,
             packets_per_second: rate,
             measure_round_trip: false,
-            max_duration_secs: None,
+            max_duration_secs,
         }
     }
 
-    async fn submit_probe(&self, source: usize, probe: SendProbe) -> Value {
+    pub(super) async fn submit_probe(&self, source: usize, probe: SendProbe) -> Value {
         let count = probe.packet_count;
         let bytes = probe.payload_bytes;
         let submitted = request(&self.configs[source], &AdminRequest::SendProbe { probe })

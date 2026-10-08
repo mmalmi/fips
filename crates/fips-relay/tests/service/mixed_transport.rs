@@ -45,8 +45,12 @@ mod signer_storage;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/stream_probe.rs"]
 mod stream_probe;
+#[path = "mixed_transport/sustained_loss.rs"]
+mod sustained_loss;
 #[path = "mixed_transport/tls.rs"]
 mod tls;
+#[path = "mixed_transport/udp_loss.rs"]
+mod udp_loss;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
