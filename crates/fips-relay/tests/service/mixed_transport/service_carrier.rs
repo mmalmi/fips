@@ -84,3 +84,47 @@ pub(super) async fn assert_status(bench: &MixedBench, active: bool) {
         }
     }
 }
+
+impl MixedBench {
+    pub async fn assert_carriers(&self) {
+        if self.seed_carrier().is_some() {
+            let report = fips_relay::service::native_request(
+                &self.configs[2],
+                &serde_json::json!({"command": "show_transports"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(report["status"], "ok");
+            let transports = report["data"]["transports"].as_array().unwrap();
+            assert_eq!(transports.len(), 1);
+            assert_eq!(transports[0]["type"], "websocket");
+            assert_eq!(transports[0]["state"], "up");
+            assert!(
+                transports[0].get("local_addr").is_none(),
+                "seed client has no listener"
+            );
+        }
+        for (node, status) in self.states().await.iter().enumerate() {
+            let mut actual: Vec<_> = status["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|peer| peer["connected"] == true)
+                .map(|peer| peer["transport"].as_str().unwrap())
+                .collect();
+            actual.sort_unstable();
+            let first = if self.configs[0].transports.ethernet.is_empty() {
+                "udp"
+            } else {
+                "ethernet"
+            };
+            let mut expected = match node {
+                0 => vec![first],
+                1 => vec![self.second_hop_kind(), first],
+                _ => vec![self.second_hop_kind()],
+            };
+            expected.sort_unstable();
+            assert_eq!(actual, expected, "native carrier topology at node {node}");
+        }
+    }
+}

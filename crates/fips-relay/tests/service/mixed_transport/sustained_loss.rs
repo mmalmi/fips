@@ -10,6 +10,17 @@ const RATE: u32 = 140;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "five-minute ordinary UDP loss, renewal and rekey qualification"]
 async fn sustained_udp_loss_keeps_renewing_paid_neighbors_live() {
+    run(SecondHop::Udp).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "five-minute raw Ethernet qualification; needs fresh network namespace, ip and nft"]
+async fn sustained_ethernet_loss_keeps_discovered_paid_neighbors_live() {
+    run(SecondHop::Ethernet).await;
+}
+
+async fn run(second_hop: SecondHop) {
     let root = tempfile::tempdir().unwrap();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -19,12 +30,12 @@ async fn sustained_udp_loss_keeps_renewing_paid_neighbors_live() {
     let mint = LocalMint::start(
         root.path(),
         network.clone(),
-        "sustained-udp",
+        "sustained-carrier",
         IssuerMode::ClosedLoop,
     )
     .await
     .unwrap();
-    let bench = MixedBench::start_configured(mint.url(), &network, SecondHop::Udp, |_, cfg| {
+    let bench = MixedBench::start_configured(mint.url(), &network, second_hop, |_, cfg| {
         cfg.terms.fee_msat_per_kib = 1;
         cfg.terms.quote_max_units = 32 * 1024 * 1024;
         cfg.terms.quote_lifetime_secs = 90;
@@ -45,15 +56,13 @@ async fn sustained_udp_loss_keeps_renewing_paid_neighbors_live() {
         tokio::time::timeout(Duration::from_secs(380), exercise(&mut bench)).await
     })
     .await;
-    for proxy in &bench.lock().await.udp_loss {
-        proxy.enable(false);
-    }
     let settling = bench.clone();
     let mint_url = mint.url().to_owned();
     let accounting = network.clone();
     let cleanup = tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(120), async {
             let mut bench = settling.lock().await;
+            bench.enable_loss(false);
             bench.set_renewals_paused(true).await;
             for cfg in &bench.configs {
                 request(cfg, &AdminRequest::Settle).await.unwrap();
@@ -81,7 +90,7 @@ async fn sustained_udp_loss_keeps_renewing_paid_neighbors_live() {
             }
             assert_eq!(total, 384);
             assert!(accounting.accounting().unwrap().is_conserved());
-            eprintln!("sustained UDP: all 384 test sats conserved");
+            eprintln!("sustained carrier: all 384 test sats conserved");
         })
         .await
     })
@@ -93,12 +102,12 @@ async fn sustained_udp_loss_keeps_renewing_paid_neighbors_live() {
     }
     assert!(
         passed,
-        "sustained UDP acceptance failed; original accounts retained"
+        "sustained carrier acceptance failed; original accounts retained"
     );
 }
 
 async fn exercise(bench: &mut MixedBench) {
-    bench.set_stage("sustained-udp-setup");
+    bench.set_stage("sustained-carrier-setup");
     bench.assert_carriers().await;
     for (source, destination) in [(0, 2), (2, 0)] {
         request(
@@ -119,10 +128,8 @@ async fn exercise(bench: &mut MixedBench) {
                 .await,
         );
     }
-    for proxy in &bench.udp_loss {
-        proxy.enable(true);
-    }
-    bench.set_stage("sustained-udp-loss");
+    bench.enable_loss(true);
+    bench.set_stage("sustained-carrier-loss");
     let started = tokio::time::Instant::now();
     let sent = async {
         let (a, b) = tokio::join!(
@@ -142,12 +149,14 @@ async fn exercise(bench: &mut MixedBench) {
         observed
     };
     let ((), observed) = tokio::join!(sent, observe);
+    bench.enable_loss(false);
+    let counts = bench.loss_counts();
     let states = bench.states().await;
     let delivery: Vec<_> = [0, 2].into_iter().enumerate().map(|(direction, destination)| {
         let probe = states[destination]["probe"].clone();
         let received = probe["unique_packets"].as_u64().unwrap();
-        let (frames, dropped) = bench.udp_loss[direction].counts();
-        eprintln!("sustained UDP: destination={destination} received={received} frames={frames} dropped={dropped}");
+        let (frames, dropped) = counts[direction];
+        eprintln!("sustained carrier: destination={destination} received={received} frames={frames} dropped={dropped}");
         (probe, received, frames, dropped)
     }).collect();
     // Preserve both receiver totals before any delivery or link assertion fails.
@@ -155,7 +164,12 @@ async fn exercise(bench: &mut MixedBench) {
         assert_eq!(probe["invalid_packets"], 0);
         assert_eq!(probe["duplicate_packets"], 0);
         assert_eq!(probe["unique_bytes"], received * 1_000);
-        assert!(dropped > 0 && dropped == frames / 20);
+        let expected_drops = if bench.second_hop_kind() == "ethernet" {
+            frames.div_ceil(20)
+        } else {
+            frames / 20
+        };
+        assert!(dropped > 0 && dropped == expected_drops);
         assert!(received >= u64::from(PACKETS) * 9 / 10);
         assert!(
             u64::from(PACKETS) - received <= dropped,
@@ -163,9 +177,6 @@ async fn exercise(bench: &mut MixedBench) {
         );
     }
     observed.validate();
-    for proxy in &bench.udp_loss {
-        proxy.enable(false);
-    }
     bench.deliver_bidirectional([0, 2]).await;
 }
 
@@ -196,7 +207,11 @@ impl Observations {
         let states = bench.states().await;
         let delivered =
             [0, 2].map(|node| states[node]["probe"]["unique_packets"].as_u64().unwrap());
-        let drops: Vec<_> = bench.udp_loss.iter().map(|p| p.counts().1).collect();
+        let drops: Vec<_> = bench
+            .loss_counts()
+            .into_iter()
+            .map(|(_, drops)| drops)
+            .collect();
         let counts_before = self.channels.each_ref().map(BTreeSet::len);
         for (direction, source) in [0, 2].into_iter().enumerate() {
             for p in states[source]["purchases"].as_array().unwrap() {
@@ -244,7 +259,7 @@ impl Observations {
                 }
                 if self.previous.get(&(node, remote)) != Some(&peer) {
                     eprintln!(
-                        "sustained UDP event {}",
+                        "sustained carrier event {}",
                         json!({"kind":"neighbor", "node":node, "remote":remote,
                         "begin_us":begin_us, "end_us":started.elapsed().as_micros(), "wall_unix_us":wall_unix_us,
                         "peer":&peer, "delivered":delivered, "drops":drops})
@@ -255,7 +270,7 @@ impl Observations {
         }
         if counts != counts_before || self.samples.is_multiple_of(10) {
             eprintln!(
-                "sustained UDP event {}",
+                "sustained carrier event {}",
                 json!({"kind":"progress", "begin_us":begin_us,
                 "end_us":started.elapsed().as_micros(), "wall_unix_us":wall_unix_us,
                 "channels":counts, "delivered":delivered, "drops":drops})
@@ -266,7 +281,7 @@ impl Observations {
 
     fn report(&self) {
         eprintln!(
-            "sustained UDP: samples={} disconnected={} channels={:?} link_counts={:?} epoch_counts={:?}",
+            "sustained carrier: samples={} disconnected={} channels={:?} link_counts={:?} epoch_counts={:?}",
             self.samples,
             self.disconnected,
             self.channels.each_ref().map(BTreeSet::len),

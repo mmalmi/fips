@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::process::Child;
 
-use super::{proxy::StreamProxy, tls::TlsProxy, udp_loss::UdpLoss};
+use super::{ethernet::EthernetNetwork, proxy::StreamProxy, tls::TlsProxy, udp_loss::UdpLoss};
 use crate::process_support::{command, config, ready, start};
 
 #[path = "recovery.rs"]
@@ -28,6 +28,7 @@ mod recovery;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecondHop {
     Udp,
+    Ethernet,
     Tcp,
     WebSocket,
     WebSocketSeed,
@@ -39,6 +40,7 @@ impl SecondHop {
     pub fn kind(self) -> &'static str {
         match self {
             Self::Udp => "udp",
+            Self::Ethernet => "ethernet",
             Self::Tcp => "tcp",
             Self::WebSocket
             | Self::WebSocketSeed
@@ -49,7 +51,7 @@ impl SecondHop {
 
     fn address(self, socket: SocketAddr) -> String {
         match self {
-            Self::Udp | Self::Tcp => socket.to_string(),
+            Self::Udp | Self::Ethernet | Self::Tcp => socket.to_string(),
             Self::WebSocket
             | Self::WebSocketSeed
             | Self::WebSocketTls
@@ -74,7 +76,8 @@ pub struct MixedBench {
     pub npubs: Vec<String>,
     pub children: Vec<Child>,
     pub tls: Option<TlsProxy>,
-    pub(super) udp_loss: Vec<UdpLoss>,
+    udp_loss: Vec<UdpLoss>,
+    ethernet: Option<EthernetNetwork>,
     proxy: Option<StreamProxy>,
     second_hop: SecondHop,
     next_probe: AtomicU64,
@@ -97,6 +100,7 @@ impl MixedBench {
         configure: impl Fn(usize, &mut ServiceConfig),
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
+        let ethernet = (second_hop == SecondHop::Ethernet).then(EthernetNetwork::new);
         let udp: Vec<_> = (0..3)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
             .collect();
@@ -160,7 +164,7 @@ impl MixedBench {
             if node > 0 {
                 let bind_addr = Some(tcp[node - 1].local_addr().unwrap().to_string());
                 match second_hop {
-                    SecondHop::Udp => {}
+                    SecondHop::Udp | SecondHop::Ethernet => {}
                     SecondHop::Tcp => {
                         config.transports.tcp = TransportInstances::Single(TcpConfig {
                             bind_addr,
@@ -202,6 +206,9 @@ impl MixedBench {
                 before_expiry_secs: 30,
             });
             configure(node, &mut config);
+            if let Some(ethernet) = &ethernet {
+                ethernet.configure(node, &mut config);
+            }
             let path = directory.join("config.json");
             std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
             let initialized = command(&path, "init").await;
@@ -232,60 +239,62 @@ impl MixedBench {
             configs.push(config);
             paths.push(path);
         }
-        configs[0].neighbors = vec![PeerConfig::new(
-            &npubs[1],
-            "udp",
-            udp_loss
-                .first()
-                .map_or_else(|| udp[1].local_addr().unwrap(), |p| p.address)
-                .to_string(),
-        )];
-        configs[1].neighbors = vec![PeerConfig::new(
-            &npubs[0],
-            "udp",
-            udp_loss
-                .first()
-                .map_or_else(|| udp[0].local_addr().unwrap(), |p| p.address)
-                .to_string(),
-        )];
-        if !second_hop.is_seed() {
-            configs[1].neighbors.push(PeerConfig::new(
-                &npubs[2],
-                second_hop.kind(),
-                second_hop.address(
-                    udp_loss
-                        .get(1)
-                        .map_or_else(|| tcp[1].local_addr().unwrap(), |p| p.address),
-                ),
-            ));
-            configs[2].neighbors = vec![PeerConfig::new(
+        if ethernet.is_none() {
+            configs[0].neighbors = vec![PeerConfig::new(
                 &npubs[1],
-                second_hop.kind(),
-                second_hop.address(
-                    udp_loss
-                        .get(1)
-                        .map_or_else(|| tcp[0].local_addr().unwrap(), |p| p.address),
-                ),
+                "udp",
+                udp_loss
+                    .first()
+                    .map_or_else(|| udp[1].local_addr().unwrap(), |p| p.address)
+                    .to_string(),
             )];
-        } else {
-            // The bootstrap URL carries no peer identity. The known npubs
-            // remain test observations/destinations, not native peer rosters.
-            assert!(configs[2].neighbors.is_empty());
-            for config in &configs[1..] {
-                assert_eq!(
-                    config.neighbor_admission,
-                    NeighborAdmission::AuthenticatedAdjacent
-                );
-                assert!(config.neighbors.iter().all(|peer| {
-                    peer.addresses
-                        .iter()
-                        .all(|address| address.transport == "udp")
-                }));
+            configs[1].neighbors = vec![PeerConfig::new(
+                &npubs[0],
+                "udp",
+                udp_loss
+                    .first()
+                    .map_or_else(|| udp[0].local_addr().unwrap(), |p| p.address)
+                    .to_string(),
+            )];
+            if !second_hop.is_seed() {
+                configs[1].neighbors.push(PeerConfig::new(
+                    &npubs[2],
+                    second_hop.kind(),
+                    second_hop.address(
+                        udp_loss
+                            .get(1)
+                            .map_or_else(|| tcp[1].local_addr().unwrap(), |p| p.address),
+                    ),
+                ));
+                configs[2].neighbors = vec![PeerConfig::new(
+                    &npubs[1],
+                    second_hop.kind(),
+                    second_hop.address(
+                        udp_loss
+                            .get(1)
+                            .map_or_else(|| tcp[0].local_addr().unwrap(), |p| p.address),
+                    ),
+                )];
+            } else {
+                // The bootstrap URL carries no peer identity. The known npubs
+                // remain test observations/destinations, not native peer rosters.
+                assert!(configs[2].neighbors.is_empty());
+                for config in &configs[1..] {
+                    assert_eq!(
+                        config.neighbor_admission,
+                        NeighborAdmission::AuthenticatedAdjacent
+                    );
+                    assert!(config.neighbors.iter().all(|peer| {
+                        peer.addresses
+                            .iter()
+                            .all(|address| address.transport == "udp")
+                    }));
+                }
+                let client = configs[2].transports.websocket.iter().next().unwrap().1;
+                assert!(client.bind_addr.is_none());
+                assert!(client.public_url.is_none());
+                assert_eq!(client.seed_urls, vec![seed_url]);
             }
-            let client = configs[2].transports.websocket.iter().next().unwrap().1;
-            assert!(client.bind_addr.is_none());
-            assert!(client.public_url.is_none());
-            assert_eq!(client.seed_urls, vec![seed_url]);
         }
         assert!(
             second_hop == SecondHop::Udp || configs[2].transports.udp.is_empty(),
@@ -322,6 +331,7 @@ impl MixedBench {
             children,
             tls,
             udp_loss,
+            ethernet,
             proxy,
             second_hop,
             next_probe: AtomicU64::new(1),
@@ -388,41 +398,21 @@ impl MixedBench {
         }
     }
 
-    pub async fn assert_carriers(&self) {
-        if self.second_hop.is_seed() {
-            let report = native_request(
-                &self.configs[2],
-                &serde_json::json!({"command": "show_transports"}),
-            )
-            .await
-            .unwrap();
-            assert_eq!(report["status"], "ok");
-            let transports = report["data"]["transports"].as_array().unwrap();
-            assert_eq!(transports.len(), 1);
-            assert_eq!(transports[0]["type"], "websocket");
-            assert_eq!(transports[0]["state"], "up");
-            assert!(
-                transports[0].get("local_addr").is_none(),
-                "seed client has no listener"
-            );
+    pub(super) fn enable_loss(&self, enabled: bool) {
+        if let Some(ethernet) = &self.ethernet {
+            ethernet.enable(enabled);
+        } else {
+            for proxy in &self.udp_loss {
+                proxy.enable(enabled);
+            }
         }
-        for (node, status) in self.states().await.iter().enumerate() {
-            let mut actual: Vec<_> = status["peers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|peer| peer["connected"] == true)
-                .map(|peer| peer["transport"].as_str().unwrap())
-                .collect();
-            actual.sort_unstable();
-            let mut expected = match node {
-                0 => vec!["udp"],
-                1 => vec![self.second_hop_kind(), "udp"],
-                _ => vec![self.second_hop_kind()],
-            };
-            expected.sort_unstable();
-            assert_eq!(actual, expected, "native carrier topology at node {node}");
-        }
+    }
+
+    pub(super) fn loss_counts(&self) -> [(u64, u64); 2] {
+        self.ethernet.as_ref().map_or_else(
+            || std::array::from_fn(|i| self.udp_loss[i].counts()),
+            EthernetNetwork::counts,
+        )
     }
 
     pub async fn send_probe(

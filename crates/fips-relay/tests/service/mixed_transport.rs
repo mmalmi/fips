@@ -17,6 +17,8 @@ use std::{
 
 #[path = "mixed_transport/bench.rs"]
 mod bench;
+#[path = "mixed_transport/ethernet.rs"]
+mod ethernet;
 use crate::process_support;
 use bench::{MixedBench, SecondHop};
 #[cfg(feature = "testbench")]

@@ -358,25 +358,44 @@ existing rekey cases pass. This narrows the investigation without reproducing
 the physical failure: the fixture uses UDP, explicitly driven maintenance, and
 no concurrent paid renewal or router CPU pressure.
 
-The opt-in service regression in `work/renewal-carrier-r279` combines the same
-counted loss with five minutes of paid traffic, default key timing and ordinary
-daemon receive loops. Both directions complete three expiry renewals;
-79,786 of 84,000 originals arrive within 4,422 injected carrier drops, with no
-invalid or duplicate payloads. All 303 neighbor samples remain connected and
-every directed edge observes at least five key epochs. Fresh loss-free probes
-then pass, all channels settle, and all 384 test sats are conserved. Strict lint,
-formatting and source-size checks pass; source/dependency hashes and stopped
-processes are independently verified. Carrier counts include control frames and
-do not attribute each missing payload. An authenticated refresh replaces one
-local link handle without breaking these bounds. The earlier r277/r278 runs
-remain rejected for an extra fixed-handle assertion, with their financial records
-retained; r278 had already met the delivery bound. Handles now remain diagnostics,
-while peer identity, delivery, renewal and financial bounds determine acceptance.
-This native result does not reproduce or resolve r247's physical connection gap,
-qualify router CPU pressure, or replace paid-radio and phone acceptance.
-The existing short UDP/TCP exhaustion/restart case also passes against the same
-ordinary daemon, conserving another 384 test sats and checking the shared probe
-helper's unchanged default duration. These changes add test coverage only.
+The opt-in service workload combines five minutes of paid traffic, counted
+carrier loss, default key timing and ordinary daemon receive loops. The original
+UDP qualification and short UDP/TCP exhaustion/restart case pass in
+`work/renewal-carrier-r279`. The shared fixture subsequently passes:
+
+| Run | Carrier arrangement | Originals received / 84,000 | Injected carrier drops | Connected samples |
+| --- | --- | ---: | ---: | ---: |
+| `work/ethernet-renewal-r280` | Ethernet, separate middle interfaces | 79,782 | 4,424 | 301 / 301 |
+| `work/ethernet-renewal-r280/udp-regression` | Existing UDP workload | 79,815 | 4,426 | 303 / 303 |
+| `work/ethernet-shared-r281` | Ethernet, one shared interface per node | 79,788 | 4,426 | 301 / 301 |
+
+Each direction completes three expiry renewals, every directed link observes at
+least two key rotations, and payloads have no invalid or duplicate packets.
+Fresh loss-free probes pass, channels settle, and all 384 test sats per case are
+conserved. Strict lint, formatting and source-size checks pass; source/dependency
+hashes and stopped processes are independently verified. Carrier counts include
+control frames and do not attribute each missing payload.
+
+The current Ethernet case uses real Linux packet sockets, automatic authenticated
+discovery without configured peers, and one shared interface per node. An isolated
+bridge supplies the medium; filters exclude only the test EtherType's leaf
+shortcut and reproduce the router's every-twentieth-frame loss rule. Separate
+kernel probes verify adjacent delivery, shortcut rejection, actual packet loss
+and counter freezing. Build the service test executable outside a fresh network
+namespace, then run
+`mixed_transport::sustained_loss::sustained_ethernet_loss_keeps_discovered_paid_neighbors_live`
+with `--exact --ignored --nocapture` inside that namespace.
+It requires loopback up, `ip`, `nft`, and raw-socket/network-admin capabilities;
+`FIPS_RELAY_TEST_PROGRAM` selects the separately built ordinary daemon.
+
+Authenticated UDP refresh can replace a local link handle while these bounds hold.
+The earlier r277/r278 runs remain rejected for an extra fixed-handle assertion,
+with financial records retained; r278 had already met the delivery bound. Handles
+remain diagnostics while peer identity, delivery, renewal and financial bounds
+determine acceptance. Neither Ethernet arrangement reproduces r247's physical
+connection gap. These native checks do not qualify radio conditions, router CPU
+pressure, physical power loss or current phone behavior. Changes add test coverage
+only; fault-removal errors retain the original accounts for recovery.
 
 The existing concurrent UDP/TLS renewal test also passes on the unchanged
 ordinary native program in `work/renewal-close-fixture-r254`: another buyer keeps
