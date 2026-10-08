@@ -72,6 +72,7 @@ struct Bench {
     started: Vec<Instant>,
     tasks: JoinSet<()>,
     stops: Vec<oneshot::Sender<()>>,
+    outbound: Vec<crate::upper::tun::TunOutboundTx>,
     contact: Arc<Contact>,
 }
 
@@ -108,6 +109,7 @@ impl Bench {
             started: Vec::new(),
             tasks: JoinSet::new(),
             stops: Vec::new(),
+            outbound: Vec::new(),
             contact: Arc::new(Contact {
                 up: AtomicBool::new(initially_up),
                 cut_us: AtomicU64::new(0),
@@ -160,6 +162,7 @@ impl Bench {
             node.state = NodeState::Running;
             let (stop, mut stopped) = oneshot::channel();
             bench.stops.push(stop);
+            bench.outbound.push(tun_outbound_tx.clone());
             let (ready, started) = oneshot::channel();
             bench.tasks.spawn(async move {
                 let _tun_guard = tun_outbound_tx;
@@ -424,10 +427,7 @@ impl Bench {
                     "exercise must defer an updated child declaration"
                 );
             }
-            assert!(
-                self.contact.dropped.load(Ordering::Relaxed) > 0,
-                "carrier cut must discard real traffic"
-            );
+            self.assert_cut_discards_traffic().await;
             let retained = self.state(2, 1).await;
             assert_eq!(retained["link"], original["link"]);
             assert!(retained["srtt_ms"].as_f64().is_some_and(|v| v > 0.0));
@@ -436,6 +436,26 @@ impl Bench {
                 self.contact.dropped.load(Ordering::Relaxed)
             );
         }
+    }
+
+    async fn assert_cut_discards_traffic(&self) {
+        // A quiet connected peer need not emit maintenance traffic within this
+        // observation window. Send through the real RX loop after the cut to
+        // exercise the carrier without changing the contact or readiness bounds.
+        let before = self.contact.dropped.load(Ordering::Relaxed);
+        let packet = super::super::session::build_ipv6_packet(
+            &crate::FipsAddress::from_node_addr(self.peers[2].node_addr()),
+            &crate::FipsAddress::from_node_addr(self.peers[0].node_addr()),
+            b"traffic after the short contact ended",
+        );
+        self.outbound[2].try_send(packet).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while self.contact.dropped.load(Ordering::Relaxed) == before {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("carrier cut must discard real traffic");
     }
 
     fn checked_cut_us(&self, contact_ms: u64) -> u64 {
