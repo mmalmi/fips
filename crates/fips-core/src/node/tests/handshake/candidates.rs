@@ -11,6 +11,9 @@ use std::time::Instant;
 #[path = "rotation.rs"]
 mod rotation;
 
+#[path = "candidates/capacity_per_peer.rs"]
+mod capacity_per_peer;
+
 struct Candidate {
     link: LinkId,
     index: SessionIndex,

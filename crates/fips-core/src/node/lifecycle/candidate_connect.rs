@@ -273,6 +273,12 @@ impl Node {
             return 0;
         }
 
+        self.outbound_handshake_slots()
+            .min(self.outbound_link_slots())
+            .min(self.peer_candidate_slots(peer_node_addr))
+    }
+
+    pub(in crate::node) fn peer_candidate_slots(&self, peer_node_addr: &NodeAddr) -> usize {
         let in_flight_for_peer = self
             .peers
             .connection_values()
@@ -289,9 +295,7 @@ impl Node {
                     .count(),
             );
 
-        self.outbound_handshake_slots()
-            .min(self.outbound_link_slots())
-            .min(MAX_PARALLEL_PATH_CANDIDATES_PER_PEER.saturating_sub(in_flight_for_peer))
+        MAX_PARALLEL_PATH_CANDIDATES_PER_PEER.saturating_sub(in_flight_for_peer)
     }
 
     pub(super) fn reclaim_lower_priority_inflight_candidate_for_peer(
@@ -607,6 +611,12 @@ impl Node {
                 "Connection already in progress for candidate path"
             );
             return Ok(());
+        }
+
+        if self.peer_candidate_slots(&peer_node_addr) == 0 {
+            return Err(NodeError::HandshakeFailed(
+                "Peer candidate capacity reached".into(),
+            ));
         }
 
         if self.outbound_handshake_slots() == 0 {

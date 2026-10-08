@@ -873,6 +873,14 @@ impl Node {
         // cross-connection exception, including its temporary extra link;
         // fresh strangers and replacements still need available capacity.
         let crossed_dial = self.has_unpaired_outbound_handshake(&peer_node_addr);
+        // Path selection already budgets candidates per identity. Enforce the
+        // same bound for authenticated inbound paths; retries on an existing
+        // path were handled above without consuming another reservation.
+        if !crossed_dial && self.peer_candidate_slots(&peer_node_addr) == 0 {
+            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
+                .await;
+            return;
+        }
         if (replacing_neighbor || !crossed_dial)
             && (self.outbound_handshake_slots() == 0 || self.outbound_link_slots() == 0)
         {
