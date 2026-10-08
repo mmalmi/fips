@@ -170,7 +170,7 @@
 
         /// Push same-destination datagrams to the kernel in batches without
         /// building a per-packet address tuple batch first.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
         pub async fn send_batch_to<B>(
             &self,
             payloads: &B,
@@ -180,19 +180,36 @@
         where
             B: crate::transport::udp::UdpPayloadBatch + ?Sized,
         {
-            loop {
-                let mut guard = self
-                    .inner
-                    .writable()
-                    .await
-                    .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
-
-                match guard.try_io(|inner| inner.get_ref().send_batch_to(payloads, offset, dest)) {
-                    Ok(Ok(n)) => return Ok(n),
-                    Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
-                    Err(_would_block) => continue,
-                }
+            // Keep Android's borrowed scalar fast path for an ordinary single
+            // packet; only fragmented payloads need vectors in that case.
+            #[cfg(target_os = "android")]
+            if payloads.len().saturating_sub(offset) == 1
+                && let Some(data) = payloads.contiguous_payload(offset)
+            {
+                return self.send_to(data, &dest).await.map(|_| 1);
             }
+
+            let send = async {
+                loop {
+                    let mut guard = self
+                        .inner
+                        .writable()
+                        .await
+                        .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
+
+                    match guard.try_io(|inner| inner.get_ref().send_batch_to(payloads, offset, dest)) {
+                        Ok(Ok(n)) => return Ok(n),
+                        Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
+                        Err(_would_block) => continue,
+                    }
+                }
+            };
+            // Android previously used bounded scalar sends. Keep that bound
+            // when sending an already-collected batch, including readiness waits.
+            #[cfg(target_os = "android")]
+            return bounded_control_send(send).await;
+            #[cfg(not(target_os = "android"))]
+            send.await
         }
     }
 

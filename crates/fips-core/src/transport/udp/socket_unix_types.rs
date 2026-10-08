@@ -4,12 +4,12 @@
 
     /// Maximum number of datagrams a single send batch pushes to the kernel.
     ///
-    /// Linux uses sendmmsg/GSO and keeps this at 256 because the rx_loop can
-    /// drain up to 256 outbound commands per scheduler tick. macOS uses
+    /// Linux/Android use sendmmsg (with GSO on Linux) and keep this at 256
+    /// because the rx_loop can drain up to 256 outbound commands per tick. macOS uses
     /// Darwin sendmsg_x; 64 matches the macOS TUN read burst so a full tunnel
     /// burst can leave in one syscall without growing the stack frame as much
     /// as the Linux path.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     const SEND_BATCH_SIZE: usize = 256;
     #[cfg(target_os = "macos")]
     const SEND_BATCH_SIZE: usize = 64;

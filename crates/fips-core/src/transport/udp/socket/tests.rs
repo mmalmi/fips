@@ -1,12 +1,12 @@
 use super::*;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
 #[derive(Debug)]
 struct TestPayloadBatch {
     payloads: Vec<Vec<Vec<u8>>>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
 impl TestPayloadBatch {
     fn new(payloads: Vec<Vec<&[u8]>>) -> Self {
         Self {
@@ -18,7 +18,7 @@ impl TestPayloadBatch {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
 impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
     fn len(&self) -> usize {
         self.payloads.len()
@@ -45,9 +45,20 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
 #[tokio::test]
 async fn scalar_batch_send_preserves_successful_prefix() {
+    assert_batch_preserves_successful_prefix(false).await;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[tokio::test]
+async fn native_batch_send_preserves_successful_prefix() {
+    assert_batch_preserves_successful_prefix(true).await;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+async fn assert_batch_preserves_successful_prefix(native: bool) {
     use crate::transport::udp::{UdpSendSnapshot, UdpStats};
     use tokio::time::{Duration, timeout};
 
@@ -56,28 +67,48 @@ async fn scalar_batch_send_preserves_successful_prefix() {
         let socket = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65_536, 65_536).unwrap();
         let stats = Arc::new(UdpStats::new());
         let sender = UdpSendSnapshot {
-            local_addr: socket.local_addr(), socket: socket.into_async().unwrap(),
-            mtu: u16::MAX, stats: stats.clone(),
+            local_addr: socket.local_addr(),
+            socket: socket.into_async().unwrap(),
+            mtu: u16::MAX,
+            stats: stats.clone(),
         };
         let mut payloads = TestPayloadBatch::new(vec![vec![b"a"], vec![b"b", b"b"], vec![b"ccc"]]);
         if let Some(index) = failure_at {
-            // Force a kernel send failure inside the production scalar loop.
+            // Force a kernel send failure inside the production send path.
             payloads.payloads[index] = vec![vec![0; 65_536]];
         }
         let sent = failure_at.unwrap_or(3);
-        let failed = sender.send_payload_batch_scalar_to(&payloads, receiver.local_addr().unwrap()).await;
+        let failed = if native {
+            sender
+                .send_payload_batch_to(&payloads, receiver.local_addr().unwrap())
+                .await
+        } else {
+            sender
+                .send_payload_batch_scalar_to(&payloads, receiver.local_addr().unwrap())
+                .await
+        };
         assert_eq!(failed, 3 - sent, "failure at {failure_at:?}");
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.packets_sent, sent as u64);
         assert_eq!(snapshot.bytes_sent, (sent * (sent + 1) / 2) as u64);
         assert_eq!(snapshot.send_errors, u64::from(failure_at.is_some()));
         let mut buffer = [0; 8];
-        for expected in [b"a".as_slice(), b"bb".as_slice(), b"ccc".as_slice()].iter().take(sent) {
-            let length = timeout(Duration::from_secs(1), receiver.recv(&mut buffer)).await.unwrap().unwrap();
+        for expected in [b"a".as_slice(), b"bb".as_slice(), b"ccc".as_slice()]
+            .iter()
+            .take(sent)
+        {
+            let length = timeout(Duration::from_secs(1), receiver.recv(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(&buffer[..length], *expected);
         }
-        assert!(timeout(Duration::from_millis(30), receiver.recv(&mut buffer)).await.is_err(),
-                "a datagram after the failed item was sent");
+        assert!(
+            timeout(Duration::from_millis(30), receiver.recv(&mut buffer))
+                .await
+                .is_err(),
+            "a datagram after the failed item was sent"
+        );
     }
 }
 
@@ -315,7 +346,7 @@ async fn stalled_control_send_hits_total_deadline() {
     assert!(matches!(result, Err(TransportError::Timeout)));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
 #[tokio::test]
 async fn send_batch_to_sends_vectored_payloads() {
     use crate::transport::udp::UdpPayloadBatch;
@@ -343,6 +374,12 @@ async fn send_batch_to_sends_vectored_payloads() {
             .await
             .expect("send batch");
         assert!(batch_sent > 0, "partial batch send must make progress");
+        #[cfg(target_os = "android")]
+        assert_eq!(
+            batch_sent,
+            payloads.len() - sent,
+            "Android should batch the queued burst"
+        );
         sent = sent.saturating_add(batch_sent);
     }
 
@@ -404,4 +441,69 @@ async fn recv_batch_writes_into_vec_spare_capacity() {
     );
     assert_eq!(addrs[0], Some(addr1));
     assert_eq!(gro_segment_sizes[0], 0);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[tokio::test]
+async fn native_batch_send_respects_offset_and_empty_tail() {
+    use crate::transport::udp::UdpPayloadBatch;
+    // Cover a vectored suffix and contiguous/vectored singleton tails.
+    let cases = [
+        (
+            TestPayloadBatch::new(vec![vec![b"skip"], vec![b"split", b"-body"], vec![b"last"]]),
+            1,
+            vec![b"split-body".as_slice(), b"last".as_slice()],
+        ),
+        (
+            TestPayloadBatch::new(vec![vec![b"skip"], vec![b"last"]]),
+            1,
+            vec![b"last".as_slice()],
+        ),
+        (
+            TestPayloadBatch::new(vec![vec![b"only", b"-fragment"]]),
+            0,
+            vec![b"only-fragment".as_slice()],
+        ),
+    ];
+    for (payloads, first, expected) in cases {
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let socket = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65_536, 65_536)
+            .unwrap()
+            .into_async()
+            .unwrap();
+        let destination = receiver.local_addr().unwrap();
+        assert_eq!(
+            socket
+                .send_batch_to(&payloads, payloads.len(), destination)
+                .await
+                .unwrap(),
+            0
+        );
+        let mut offset = first;
+        while offset < payloads.len() {
+            let sent = socket
+                .send_batch_to(&payloads, offset, destination)
+                .await
+                .unwrap();
+            assert!(sent > 0);
+            offset += sent;
+        }
+        let mut bytes = [0; 32];
+        for expected in expected {
+            let size =
+                tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv(&mut bytes))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(&bytes[..size], expected);
+        }
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(30),
+                receiver.recv(&mut bytes)
+            )
+            .await
+            .is_err()
+        );
+    }
 }

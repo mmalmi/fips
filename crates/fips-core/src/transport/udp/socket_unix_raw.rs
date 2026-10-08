@@ -445,7 +445,7 @@
 
         /// Send same-destination payloads without first materializing
         /// `(payload, addr)` tuples for every packet.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         pub fn send_batch_to<B>(
             &self,
             payloads: &B,
@@ -460,6 +460,7 @@
                 return Ok(0);
             }
 
+            #[cfg(target_os = "linux")]
             if !UDP_GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
                 let gso_n = udp_gso_prefix_len(payloads, offset, n);
                 if gso_n > 1 {
@@ -529,6 +530,7 @@
                 return Err(std::io::Error::last_os_error());
             }
             let sent = r as usize;
+            #[cfg(target_os = "linux")]
             crate::perf_profile::record_udp_send_sendmmsg_batch(sent);
             Ok(sent)
         }
