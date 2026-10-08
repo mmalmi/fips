@@ -33,35 +33,49 @@ impl OriginatedSessionObserver for SessionCompletions {
 #[test]
 fn endpoint_snapshot_progresses_during_bounded_handshake_completions() {
     super::super::session::run_large_stack_async_test("endpoint-control-progress", || {
-        exercise(false, 200, false)
+        exercise(false, 200, false, false)
     });
 }
 
 #[test]
 fn endpoint_snapshot_progresses_during_bounded_session_completions() {
     super::super::session::run_large_stack_async_test("endpoint-session-control-progress", || {
-        exercise(true, 200, false)
+        exercise(true, 200, false, false)
     });
 }
 
 #[test]
 fn endpoint_snapshot_and_sessions_progress_with_immediate_completions() {
     super::super::session::run_large_stack_async_test("endpoint-control-positive", || {
-        exercise(true, 0, false)
+        exercise(true, 0, false, false)
     });
 }
 
 #[test]
 fn endpoint_snapshots_progress_during_stall_and_raw_data_drains_after_recovery() {
     super::super::session::run_large_stack_async_test("sustained-session-control", || {
-        exercise(true, 200, true)
+        exercise(true, 200, true, false)
     });
 }
 
-async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool) {
+#[test]
+fn endpoint_snapshot_progresses_during_bounded_lookup_replies() {
+    super::super::session::run_large_stack_async_test("lookup-control-progress", || {
+        exercise(false, 200, false, true)
+    });
+}
+
+#[test]
+fn endpoint_snapshot_and_lookup_replies_progress_with_immediate_completions() {
+    super::super::session::run_large_stack_async_test("lookup-control-positive", || {
+        exercise(false, 0, false, true)
+    });
+}
+
+async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool, lookup: bool) {
     const CLIENTS: usize = 32;
     let name = format!(
-        "endpoint-control-progress-{}-{session}-{completion_delay_ms}-{sustained}",
+        "endpoint-control-progress-{}-{session}-{completion_delay_ms}-{sustained}-{lookup}",
         std::process::id()
     );
     let network = SimNetwork::new(719);
@@ -114,14 +128,20 @@ async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool) {
             .await
             .unwrap();
     }
-    if session {
+    if session || lookup {
         crate::node::tests::spanning_tree::drain_all_packets(&mut nodes, false).await;
         assert_eq!(nodes[0].node.peer_count(), CLIENTS);
         for client in &nodes[1..] {
             assert!(client.node.get_peer(&server).unwrap().has_session());
         }
     }
-    let delivered_target = if session {
+    let delivered_target = if lookup {
+        let before = network.stats().packets_sent;
+        for client in &mut nodes[1..] {
+            assert_eq!(client.node.initiate_lookup(&server, 5).await, 1);
+        }
+        before + CLIENTS as u64
+    } else if session {
         let before = network.stats().packets_sent;
         for client in &mut nodes[1..] {
             client
@@ -134,8 +154,8 @@ async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool) {
     } else {
         CLIENTS as u64
     };
-    // All inputs are genuinely generated Noise msg1 packets, already delivered
-    // to the production packet channel before the server actor is started.
+    // Inputs are genuine Noise msg1 or authenticated lookup packets, already
+    // delivered to the production channel before the server actor is started.
     tokio::time::timeout(Duration::from_secs(2), async {
         while network.stats().packets_delivered < delivered_target {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -314,11 +334,12 @@ async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool) {
     .await
     .is_ok();
 
-    if session {
+    if session || lookup {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let mut authenticated = 0;
     let mut sessions = 0;
+    let mut lookup_recipients = 0;
     for (index, (stop, task)) in actors.into_iter().enumerate() {
         let _ = stop.send(());
         let mut node = task.await.unwrap();
@@ -358,6 +379,9 @@ async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool) {
                 node.get_peer(&server)
                     .is_some_and(|peer| peer.has_session())
             );
+            if lookup && node.stats().discovery.resp_received > 0 {
+                lookup_recipients += 1;
+            }
         }
         for transport in node.transports.values_mut() {
             transport.stop().await.unwrap();
@@ -384,6 +408,12 @@ async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool) {
         records.len()
     );
     assert!(entered && complete && authenticated == CLIENTS);
+    if lookup {
+        assert_eq!(
+            lookup_recipients, CLIENTS,
+            "every requesting client receives a real lookup reply after the delay is lifted"
+        );
+    }
     if session {
         assert_eq!(sessions, CLIENTS);
         assert_eq!(ack_destinations.len(), CLIENTS);
