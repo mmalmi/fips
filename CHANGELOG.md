@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating unused input channels for control sends, clone retry settings
   only for eligible peers, and format session names only when a log is due. Keep
   encrypted output, receipt accounting, retry eligibility, and log timing unchanged.
+- Reuse the warmed transport-group buffer during empty completion turns instead
+  of allocating a replacement. Preserve immediate sends and packet ordering.
 - Stop scalar UDP batches at the first send failure so packet, byte, and completion
   accounting describe the same successful prefix.
 - Send already-collected Android UDP bursts with borrowed vectors and `sendmmsg`.
