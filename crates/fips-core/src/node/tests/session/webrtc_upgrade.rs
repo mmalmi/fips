@@ -9,6 +9,34 @@ use crate::transport::{ConnectionState, TransportHandle, packet_channel};
 const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
+#[test]
+fn outbound_creation_keeps_node_preparation_on_immediate_poll() {
+    run_large_stack_async_test("fips-webrtc-creation-poll", || async {
+        let mut nodes = vec![make_dual_transport_node(fixed_identity(6, 0x03)).await];
+        let peer = Identity::generate();
+        let identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        nodes[0]
+            .node
+            .initiate_connection(
+                TransportId::new(WEBRTC_TRANSPORT_NUMBER),
+                identity_transport_addr(&peer),
+                identity,
+            )
+            .await
+            .unwrap();
+        assert_eq!(nodes[0].node.pending_connects.len(), 1);
+
+        // Poll before the spawned physical setup can publish a pending dial.
+        nodes[0].node.poll_pending_connects().await;
+        let preparations = nodes[0].node.pending_connects.len();
+        cleanup_nodes(&mut nodes).await;
+        assert_eq!(
+            preparations, 1,
+            "Node must retain the in-flight setup owner"
+        );
+    });
+}
+
 async fn take_webrtc_signal(
     node: &mut Node,
 ) -> crate::transport::link_negotiation::OutboundLinkNegotiation {

@@ -39,6 +39,82 @@ async fn next_offer(transport: &mut WebRtcTransport) -> WebRtcSignal {
     .unwrap()
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn outbound_creation_reports_connecting_before_the_setup_task_runs() {
+    let mut transport = transport().await;
+    let peer = crate::Identity::generate();
+    let addr = test_webrtc_addr(&peer);
+    transport.connect_async(&addr).await.unwrap();
+
+    // The single-threaded executor has not polled the spawned setup task yet.
+    // Node polls this public state to decide whether to keep its preparation.
+    let resources = transport.resource_snapshot();
+    assert_eq!(resources.creating, 1);
+    assert_eq!(resources.created_total, 0);
+    let state = transport.connection_state_sync(&addr);
+    transport.stop_async().await.unwrap();
+    assert!(
+        matches!(state, ConnectionState::Connecting),
+        "An owned setup must not look like a missing connection attempt: {state:?}"
+    );
+}
+
+#[tokio::test]
+async fn outbound_creation_state_covers_active_setup_but_not_failed_or_stopped() {
+    let mut transport = transport().await;
+    let addr = test_webrtc_addr(&crate::Identity::generate());
+    let reservation = transport.physical.reserve(&addr).unwrap();
+    let pc = reservation.activate(transport.runtime().new_peer_connection().await.unwrap());
+    // This is the production boundary after creation and before publication
+    // into pending, while data-channel setup may still be awaiting progress.
+    assert_eq!(transport.resource_snapshot().active, 1);
+    assert!(transport.pending.lock().await.is_empty());
+    let active_state = transport.connection_state_sync(&addr);
+    transport
+        .failed
+        .lock()
+        .await
+        .insert(addr.clone(), "setup failed".into());
+    let failed_state = transport.connection_state_sync(&addr);
+    transport.failed.lock().await.remove(&addr);
+    transport.physical.stop_accepting();
+    let stopped_state = transport.connection_state_sync(&addr);
+    close_peer_connection_bounded(pc).await;
+    transport.stop_async().await.unwrap();
+    assert_eq!(active_state, ConnectionState::Connecting);
+    assert_eq!(failed_state, ConnectionState::Failed("setup failed".into()));
+    assert_eq!(stopped_state, ConnectionState::None);
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::None
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn outbound_creation_cleanup_does_not_report_connecting() {
+    let mut transport = transport().await;
+    let addr = test_webrtc_addr(&crate::Identity::generate());
+    let reservation = transport.physical.reserve(&addr).unwrap();
+    let pc = reservation.activate(transport.runtime().new_peer_connection().await.unwrap());
+    let cleanup = start_peer_connection_cleanup(pc);
+    assert_eq!(
+        transport.physical.phase(&addr),
+        Some(PhysicalPhase::Closing)
+    );
+    let closing_state = transport.connection_state_sync(&addr);
+    tokio::time::timeout(Duration::from_secs(3), cleanup.wait())
+        .await
+        .expect("physical cleanup completes");
+    let resources = transport.resource_snapshot();
+    assert_eq!(resources.created_total, resources.closed_total);
+    assert_eq!(closing_state, ConnectionState::None);
+    assert_eq!(
+        transport.connection_state_sync(&addr),
+        ConnectionState::None
+    );
+    transport.stop_async().await.unwrap();
+}
+
 #[tokio::test]
 async fn close_and_stop_cancel_recovery_after_new_peer_creation() {
     for stop in [false, true] {
