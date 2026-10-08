@@ -62,9 +62,9 @@ impl Node {
                 direct_fsp_sources,
                 self.has_deferred_session_forwards(),
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut *io.endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut *io.endpoint_data_rx),
                     endpoint_limit: limits.endpoint,
-                    tun_outbound_rx: &mut *io.tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut *io.tun_outbound_rx),
                     tun_limit: limits.tun,
                     endpoint_tx: io.endpoint_tx,
                     transports: &self.transports,
@@ -87,9 +87,9 @@ impl Node {
             .pump_completion_output_turn_with_transport_batch(
                 self.has_deferred_session_forwards(),
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut *io.endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut *io.endpoint_data_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut *io.tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut *io.tun_outbound_rx),
                     tun_limit: 0,
                     endpoint_tx: io.endpoint_tx,
                     transports: &self.transports,

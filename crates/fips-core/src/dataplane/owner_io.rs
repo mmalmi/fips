@@ -531,10 +531,6 @@ impl OwnerState {
         };
 
         let dest_addr = self.owner.node_addr();
-        let fallback_session_name = self
-            .source_peer
-            .map(|peer| peer.short_npub())
-            .unwrap_or_else(|| dest_addr.to_string());
         let mode = mmp.mode();
         let prior_failures = mmp.sender.consecutive_send_failures();
 
@@ -584,6 +580,10 @@ impl OwnerState {
         }
 
         if mmp.should_log(now) {
+            let fallback_session_name = self
+                .source_peer
+                .map(|peer| peer.short_npub())
+                .unwrap_or_else(|| dest_addr.to_string());
             let snapshot = DataplaneFspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp, now);
             batch.metric_logs.push(snapshot);
             mmp.mark_logged(now);

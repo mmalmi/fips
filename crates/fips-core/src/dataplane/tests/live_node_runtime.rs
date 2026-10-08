@@ -8,8 +8,6 @@
     ) -> DataplaneLiveNodeTurn
     {
         let mut raw_source = VecDeque::<DataplaneRawIngress>::new();
-        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         live_node
             .pump_turn_with_firsts_and_transport_batch(
                 None,
@@ -17,9 +15,9 @@
                 0,
                 outbound_firsts,
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: None,
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: None,
                     tun_limit: 0,
                     endpoint_tx,
                     transports,
@@ -108,9 +106,9 @@
                 8,
                 DataplaneLiveOutboundFirsts::default(),
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut endpoint_data_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut tun_outbound_rx),
                     tun_limit: 8,
                     endpoint_tx: &endpoint_io.event_tx,
                     transports: &transports,
@@ -199,9 +197,9 @@
             .pump_completion_output_turn_with_transport_batch(
                 false,
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut endpoint_data_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut tun_outbound_rx),
                     tun_limit: 0,
                     endpoint_tx: &endpoint_io.event_tx,
                     transports: &transports,
@@ -271,9 +269,9 @@
                 .pump_completion_output_turn_with_transport_batch(
                     false,
                     DataplaneLiveTurnIo {
-                        endpoint_data_rx: &mut endpoint_data_rx,
+                        endpoint_data_rx: Some(&mut endpoint_data_rx),
                         endpoint_limit: 0,
-                        tun_outbound_rx: &mut tun_outbound_rx,
+                        tun_outbound_rx: Some(&mut tun_outbound_rx),
                         tun_limit: 0,
                         endpoint_tx: &endpoint_io.event_tx,
                         transports: &transports,
@@ -323,9 +321,9 @@
             .pump_completion_output_turn_with_transport_batch(
                 false,
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut endpoint_data_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut tun_outbound_rx),
                     tun_limit: 0,
                     endpoint_tx: &endpoint_io.event_tx,
                     transports: &transports,
@@ -438,9 +436,9 @@
             .pump_completion_output_turn_with_transport_batch(
                 false,
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut endpoint_data_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut tun_outbound_rx),
                     tun_limit: 0,
                     endpoint_tx: &endpoint_io.event_tx,
                     transports: &transports,
@@ -484,9 +482,9 @@
                 .pump_completion_output_turn_with_transport_batch(
                     false,
                     DataplaneLiveTurnIo {
-                        endpoint_data_rx: &mut endpoint_data_rx,
+                        endpoint_data_rx: Some(&mut endpoint_data_rx),
                         endpoint_limit: 0,
-                        tun_outbound_rx: &mut tun_outbound_rx,
+                        tun_outbound_rx: Some(&mut tun_outbound_rx),
                         tun_limit: 0,
                         endpoint_tx: &endpoint_io.event_tx,
                         transports: &transports,

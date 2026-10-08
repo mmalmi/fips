@@ -444,9 +444,9 @@ mod tests {
                 3,
                 DataplaneLiveOutboundFirsts::default(),
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut endpoint_data_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut tun_outbound_rx),
                     tun_limit: 0,
                     endpoint_tx: &endpoint_tx,
                     transports: &node.transports,

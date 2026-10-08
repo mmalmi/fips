@@ -97,9 +97,9 @@ async fn receive_epoch_wire(node: &mut Node, raw: crate::dataplane::DataplaneRaw
                 1,
                 DataplaneLiveOutboundFirsts::default(),
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_rx,
+                    endpoint_data_rx: Some(&mut endpoint_rx),
                     endpoint_limit: 0,
-                    tun_outbound_rx: &mut tun_rx,
+                    tun_outbound_rx: Some(&mut tun_rx),
                     tun_limit: 0,
                     endpoint_tx: &endpoint_tx,
                     transports: &node.transports,

@@ -520,8 +520,6 @@ impl Node {
             tx
         });
         let mut empty_raw_ingress = std::collections::VecDeque::new();
-        let (_, mut empty_endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_, mut empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let mut turn = self
             .dataplane
             .pump_turn_with_firsts_and_transport_batch(
@@ -530,9 +528,9 @@ impl Node {
                 0,
                 firsts,
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut empty_endpoint_data_rx,
+                    endpoint_data_rx: None,
                     endpoint_limit,
-                    tun_outbound_rx: &mut empty_tun_outbound_rx,
+                    tun_outbound_rx: None,
                     tun_limit,
                     endpoint_tx: &endpoint_tx,
                     transports: &self.transports,

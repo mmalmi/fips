@@ -108,9 +108,9 @@
                         Default::default(),
                         true,
                         DataplaneLiveTurnIo {
-                            endpoint_data_rx: &mut endpoint_data_rx,
+                            endpoint_data_rx: Some(&mut endpoint_data_rx),
                             endpoint_limit: 0,
-                            tun_outbound_rx: &mut tun_outbound_rx,
+                            tun_outbound_rx: Some(&mut tun_outbound_rx),
                             tun_limit: 0,
                             endpoint_tx: &endpoint_io.event_tx,
                             transports: &transports,
@@ -181,9 +181,9 @@
                     ..Default::default()
                 },
                 DataplaneLiveTurnIo {
-                    endpoint_data_rx: &mut endpoint_data_rx,
+                    endpoint_data_rx: Some(&mut endpoint_data_rx),
                     endpoint_limit,
-                    tun_outbound_rx: &mut tun_outbound_rx,
+                    tun_outbound_rx: Some(&mut tun_outbound_rx),
                     tun_limit: 0,
                     endpoint_tx,
                     transports,

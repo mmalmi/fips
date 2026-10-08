@@ -26,6 +26,7 @@ mod graph_fallback;
 #[cfg(feature = "sim-transport")]
 mod handshake_retention;
 mod handshake_timeout;
+mod idle_control;
 mod mtu_exceeded;
 mod mtu_notification;
 mod multihop_pmtud;

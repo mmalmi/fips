@@ -446,19 +446,17 @@ impl Node {
         let peer_configs = self
             .configured_peers
             .auto_connect_peer_configs()
+            .filter(|(node_addr, peer_config)| {
+                !self.retry_pending.contains_key(node_addr)
+                    && self.peers.contains_key(node_addr)
+                    && !self.is_connecting_to_peer(node_addr)
+                    && self.active_peer_should_keep_direct_retry(node_addr, peer_config)
+            })
             .map(|(node_addr, peer_config)| (*node_addr, peer_config.clone()))
             .collect::<Vec<_>>();
 
         for (node_addr, peer_config) in peer_configs {
-            if self.retry_pending.contains_key(&node_addr)
-                || !self.peers.contains_key(&node_addr)
-                || self.is_connecting_to_peer(&node_addr)
-                || !self.active_peer_should_keep_direct_retry(&node_addr, &peer_config)
-            {
-                continue;
-            }
-
-            let mut state = crate::node::retry::RetryState::new(peer_config.clone());
+            let mut state = crate::node::retry::RetryState::new(peer_config);
             state.reconnect = true;
             state.retry_after_ms = now_ms;
             self.retry_pending.insert(node_addr, state);

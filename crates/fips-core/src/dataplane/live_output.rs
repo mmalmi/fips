@@ -11,9 +11,9 @@ pub(crate) struct DataplaneLiveOutboundFirsts {
 pub(crate) struct DataplaneRouteTableOutboundSource<'a> {
     first_endpoint_data_batch: Option<NodeEndpointDataBatch>,
     first_tun_packet: Option<Vec<u8>>,
-    endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    endpoint_data_rx: Option<&'a mut EndpointDataBatchRx>,
     endpoint_limit: usize,
-    tun_outbound_rx: &'a mut TunOutboundRx,
+    tun_outbound_rx: Option<&'a mut TunOutboundRx>,
     tun_limit: usize,
     routes: &'a DataplaneLiveRouteTable,
     buffers: &'a mut DataplaneRouteTableOutboundBuffers,
@@ -104,9 +104,9 @@ impl DataplaneOutboundAdmission<'_> {
 
 impl<'a> DataplaneRouteTableOutboundSource<'a> {
     fn new(
-        endpoint_data_rx: &'a mut EndpointDataBatchRx,
+        endpoint_data_rx: Option<&'a mut EndpointDataBatchRx>,
         endpoint_limit: usize,
-        tun_outbound_rx: &'a mut TunOutboundRx,
+        tun_outbound_rx: Option<&'a mut TunOutboundRx>,
         tun_limit: usize,
         routes: &'a DataplaneLiveRouteTable,
         buffers: &'a mut DataplaneRouteTableOutboundBuffers,
@@ -141,7 +141,10 @@ impl<'a> DataplaneRouteTableOutboundSource<'a> {
 
 impl DataplaneRouteTableOutboundSource<'_> {
     fn cache_first_tun_packet(&mut self) {
-        if self.first_tun_packet.is_none() && let Ok(packet) = self.tun_outbound_rx.try_recv() {
+        if self.first_tun_packet.is_none()
+            && let Some(rx) = self.tun_outbound_rx.as_deref_mut()
+            && let Ok(packet) = rx.try_recv()
+        {
             self.first_tun_packet = Some(packet);
         }
     }
@@ -164,7 +167,10 @@ impl DataplaneRouteTableOutboundSource<'_> {
             );
         }
         while drained_cost < limit {
-            let Ok(batch) = self.endpoint_data_rx.try_recv() else {
+            let Some(rx) = self.endpoint_data_rx.as_deref_mut() else {
+                break;
+            };
+            let Ok(batch) = rx.try_recv() else {
                 break;
             };
             drained_cost = drained_cost.saturating_add(batch.drain_cost());
@@ -224,7 +230,10 @@ impl DataplaneRouteTableOutboundSource<'_> {
             let packet = if let Some(packet) = self.first_tun_packet.take() {
                 packet
             } else {
-                let Ok(packet) = self.tun_outbound_rx.try_recv() else {
+                let Some(rx) = self.tun_outbound_rx.as_deref_mut() else {
+                    break;
+                };
+                let Ok(packet) = rx.try_recv() else {
                     break;
                 };
                 packet

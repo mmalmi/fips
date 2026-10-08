@@ -933,3 +933,4 @@ fn completion_only_turn_retires_worker_completion_without_new_dispatch() {
 include!("aead_owner_activity/rekey_activity.rs");
 include!("aead_owner_activity/receiver_epochs.rs");
 include!("aead_owner_activity/completion_source.rs");
+include!("aead_owner_activity/idle_logging.rs");

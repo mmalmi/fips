@@ -11,6 +11,7 @@ mod config_capacity_classifiers;
 mod dataplane_readiness;
 mod degraded_route_idle;
 mod endpoint_events;
+mod idle_retries;
 mod link_registry_rx;
 mod liveness_fallback;
 mod liveness_reconnect;

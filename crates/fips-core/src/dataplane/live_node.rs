@@ -156,9 +156,10 @@ pub(crate) struct DataplaneLiveNode {
 }
 
 pub(crate) struct DataplaneLiveTurnIo<'a> {
-    pub(crate) endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    // First packets remain admissible when there is no live input channel.
+    pub(crate) endpoint_data_rx: Option<&'a mut EndpointDataBatchRx>,
     pub(crate) endpoint_limit: usize,
-    pub(crate) tun_outbound_rx: &'a mut TunOutboundRx,
+    pub(crate) tun_outbound_rx: Option<&'a mut TunOutboundRx>,
     pub(crate) tun_limit: usize,
     pub(crate) endpoint_tx: &'a EndpointEventSender,
     pub(crate) transports: &'a HashMap<TransportId, TransportHandle>,

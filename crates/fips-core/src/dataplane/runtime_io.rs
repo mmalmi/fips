@@ -12,9 +12,9 @@ impl DataplaneTurnDriver {
             raw_ingress,
             routes,
             raw_ingress_limit,
-            endpoint_data_rx,
+            mut endpoint_data_rx,
             endpoint_limit,
-            tun_outbound_rx,
+            mut tun_outbound_rx,
             tun_limit,
             outbound_firsts,
             deferred_raw_ingress,
@@ -42,9 +42,9 @@ impl DataplaneTurnDriver {
 
         if reserved_outbound_limit > 0 {
             let mut outbound_source = DataplaneRouteTableOutboundSource::new(
-                endpoint_data_rx,
+                endpoint_data_rx.as_deref_mut(),
                 endpoint_limit,
-                tun_outbound_rx,
+                tun_outbound_rx.as_deref_mut(),
                 tun_limit,
                 routes,
                 &mut outbound_buffers,
