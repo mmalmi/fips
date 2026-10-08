@@ -78,6 +78,15 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(result["native"], {"status": native, "routing": routing,
                                            "transports": transports})
         self.assertEqual(result["data_carrier"], status()["data_carrier"])
+        supervised = copy.deepcopy(native)
+        supervised['data']['exe_path'] = '/usr/sbin/fips-relay'
+        client = node(frame(native_status=json.dumps(supervised), native_routing=json.dumps(routing),
+                            native_transports=json.dumps(transports)))
+        client.process_binary = '/usr/sbin/fips-relay'
+        self.assertEqual(snapshot(client, 'n01', True)['native']['status'], supervised)
+        with self.assertRaises(ValueError):
+            snapshot(node(frame(native_status=json.dumps(supervised), native_routing=json.dumps(routing),
+                                native_transports=json.dumps(transports))), 'n01', True)
         for evidence in (raw, frame()):
             with self.assertRaises(ValueError):
                 snapshot(node(evidence), "n01", native_counters=evidence != raw)

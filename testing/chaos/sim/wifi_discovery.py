@@ -100,7 +100,7 @@ class WifiRun:
         self.root.mkdir(mode=0o700)
         self.run = secrets.token_hex(6)
         self.open_mesh = "fips-open-" + self.run if getattr(args, "open_mesh", False) else None
-        self.nodes = {f"n{i + 1:02}": Router(spec, self.run, self.root, self.open_mesh)
+        self.nodes = {f"n{i + 1:02}": self.make_router(spec, i)
                       for i, spec in enumerate(specs)}
         self.monitor = ManagementMonitor(self.nodes)
         self.evidence = {"run": self.run, "phases": [], "passed": False,
@@ -113,6 +113,9 @@ class WifiRun:
                          "paid_relay.py", "paid_faults.py")}
         self.original = {}
         self.financial = {}
+
+    def make_router(self, spec, index):
+        return Router(spec, self.run, self.root, self.open_mesh)
 
     def save(self):
         temporary = self.root / "result.json.new"

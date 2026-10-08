@@ -95,6 +95,7 @@ def command(node, native_counters=False, drop_logs=False, link_loss=False, *, aq
         raise ValueError("AQM observation requires link-loss capture")
     temporary = shlex.quote(checked_path(node.temporary))
     binary = shlex.quote(checked_path(node.binary))
+    process_binary = shlex.quote(checked_path(getattr(node, "process_binary", node.binary)))
     config = shlex.quote(checked_path(node.config))
     proc = shlex.quote(checked_path(PROC))
     native = (f"""native_status=$(printf '%s\\n' '{{"command":"show_status"}}' | {binary} native {config})
@@ -121,9 +122,9 @@ case "$pid" in ''|*[!0-9]*) exit 1;; esac
 test "$pid" -gt 0
 owned() {{
   test "$(cat {temporary}/process.pid)" = "$pid"
-  test "$(readlink {proc}/$pid/exe)" = {binary}
+  test "$(readlink {proc}/$pid/exe)" = {process_binary}
   actual=$(sha256sum <{proc}/$pid/cmdline)
-  expected=$(printf '%s\\000' {binary} run {config} | sha256sum)
+  expected=$(printf '%s\\000' {process_binary} run {config} | sha256sum)
   test "$actual" = "$expected"
   {log_check}
 }}
@@ -185,7 +186,7 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=
         identity = native["status"]["data"]
         if (identity.get("npub") != status.get("npub")
                 or unsigned(identity.get("pid")) != pid
-                or identity.get("exe_path") != node.binary):
+                or identity.get("exe_path") != getattr(node, "process_binary", node.binary)):
             raise ValueError("native diagnostics came from a different process")
         status["native"] = native
     if drop_logs:

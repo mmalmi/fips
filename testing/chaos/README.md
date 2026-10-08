@@ -674,6 +674,20 @@ This checks physical-router kernel/cache loss with electrical power present;
 it does not qualify flash power interruption or unattended service recovery.
 Include `tests.test_wifi_kernel_restart` in the focused Linux checks.
 
+Use `sim.wifi_boot_restart` instead to exercise the installed init/UCI service.
+Its binary, startup wrapper and clock hook must match the tested sources. Before
+traffic, the fixture saves the middle router's UCI file and selects the fresh paid
+profile for its next boot. After reset, it must observe that exact account running
+under procd before staging observation tools; it issues no relay start or init.
+The pre-reset journal independently predicts the recovered unbilled allowance.
+Collection requires the supervised process to exit, then cleanup restores the
+original UCI file and service. Changed configuration or service ownership stops
+restoration instead of overwriting another owner. If the controller disappears
+during reboot, preserve the selected paid profile for deliberate recovery; no RAM
+lease survives the reset. This mode uses test funds and pauses offered traffic.
+Include `tests.test_wifi_boot_restart` and `tests.test_wifi_measurements` in the
+focused checks; physical power cuts remain separate.
+
 ### Router funding and settlement interruption
 
 `sim.wifi_settlement` uses the same three-router inventory, ordinary
