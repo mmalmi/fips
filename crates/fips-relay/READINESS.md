@@ -7,14 +7,14 @@ real-money operation and public deployment are separate authorization decisions.
 
 Acceptance targets fresh wallet/controller profiles. Migrating legacy profiles
 is outside this greenfield scope; historical migration notes below do not add a
-requirement to the current milestone. Existing accounts remain untouched.
+requirement to the current milestone. Original service accounts remain untouched.
 
 ## Scope and outstanding acceptance
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Earlier prepared-control CPU/loss trials observed source-queue expiry; the latest five-minute quarter-CPU ARM run retains complete logs with zero source-queue drops. | Qualify the latest handover, wallet-recovery and root-loss changes on routers; extend route recovery and resource-pressure acceptance beyond the finite ARM trials. Cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
-| Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r366 includes root-loss recovery, funded renewal handover and completed-expiry settlement cleanup, and passes all eight build gates, including six lifecycle tests. Earlier r338/r339 verify empty-account Pixel startup and three-router binary compatibility; their temporary artifacts are removed. Current paid device acceptance is pending. Physical r220 phone transit on the earlier r219 APK delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Run paid physical acceptance of the current Android and router candidates; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r366 includes root-loss recovery, funded renewal handover and completed-expiry settlement cleanup, and passes all eight build gates, including six lifecycle tests. Its physical r369 transit test with the matching r361 router binaries delivers 19 MiB over the same phone process and original channels, including five minutes with the activity hidden; unpaid traffic is refused, all 512 test sats return and 804 management checks pass. Independent device, financial and artifact checks pass. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Current physical radio/recovery qualification; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Full physical paid-recovery acceptance for durable quotes and the updated TCP graph. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit; independent refunds and renewals complete while another mint close is held, with wallet imports still serialized. See [wallet progress](#independent-wallet-progress) and [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -855,8 +855,26 @@ native packaging, signature and manifest verification. The packaged ARM64 librar
 matches the independently stripped new native build; core default features and
 an SDK without simulation are verified. Independent closure checks the original
 source files, dependencies and absent build processes. All 20 artifact/evidence
-files are archived with matching hashes. This build does not install a phone app;
-physical acceptance of this APK remains pending.
+files are archived with matching hashes.
+
+That APK and the matching ordinary r361 router binaries pass the unchanged
+four-account sustained transit workload in `work/phone-current-r369`, with
+harness `a10bf6490`. All 19 MiB arrive and are acknowledged with matching digests,
+including nine MiB per direction during the 300-second hidden-activity window.
+All 52 background samples retain the expected links and foreground routing
+service in the same phone process. The phone credits two provider channels and
+pays one onward channel while receiving zero application packets. Unpaid traffic
+delivers zero bytes. All four original channels settle, all 512 test sats return,
+the four wallets end empty and all 804 management checks pass. Independent
+postflight verifies source/artifact custody, unchanged spending limits and
+original accounts, restored routers and Wi-Fi, and stopped test processes/mint.
+All four closed accounts are archived with matching file hashes, the temporary
+phone app is uninstalled and the three test profiles are removed from router
+storage. The original app remains and each router still meets the storage reserve.
+During the background window, version-three counters attribute 2.463 seconds of
+CPU to payments, or 136.8 ms per delivered MiB; whole-process CPU is 188.31 seconds
+including diagnostics. These are finite USB-powered LAN measurements, without
+a claim about natural deep idle, battery cost, renewal, movement or phone 802.11s.
 
 The preceding r337 APK starts on the Pixel with an empty account in
 `work/phone-startup-r338`. The setup screen is visually checked; no profile,
@@ -865,23 +883,23 @@ original accounts and normal Wi-Fi, restored foreground activity and dozing
 display state, and removal of the owned app/process. No temporary acceptance apps
 remain installed. This startup check does not exercise paid transit or background
 routing. The r220 physical result above remains evidence for its earlier APK;
-current paid phone acceptance, deep idle, renewal and network suspension remain
-open.
+r369 adds current paid LAN transit. Deep idle, renewal and network suspension
+remain open.
 
 All three routers execute the earlier ordinary ARM64 binary from r334 in
 `work/router-handover-smoke-r339`, producing the expected usage exit without
 creating accounts or starting a candidate service. Independent postflight verifies
 the qualified binary hash, original service/configuration baselines and removal
 of the temporary executables/processes. This checks runtime compatibility only.
-The latest read-only preflight in `work/expiry-device-readiness-r365` preserves
-all three original network baselines. One router has 7,576 KiB of persistent free
-space, 104 KiB below the unchanged 7,680 KiB wallet-test reserve; the other two
-meet it. The sustained phone-transit scenario has its own stricter 8,192 KiB gate:
-its three routers are short by 616, 308 and 336 KiB. Neither gate is lowered.
-Inspection found saved account data, installed tools and system metadata; no
-disposable files were removed. The Pixel is connected and unlocked with no
-temporary acceptance packages installed. Full persistent four-node paid recovery
-and current phone-transit acceptance remain outstanding.
+The storage shortfall recorded in `work/expiry-device-readiness-r365` is resolved
+in `work/router-cleanup-r368`. With explicit cleanup authorization, 115 inactive
+profiles from fully collected historical test runs are removed after checking
+their account archives, file hashes and open-file ownership. The three routers
+recover 4,220, 3,708 and 3,504 KiB, leaving 11,796, 11,592 and 11,360 KiB free on
+persistent storage. Original service and network baselines remain unchanged.
+Both the 7,680 KiB wallet reserve and stricter 8,192 KiB phone-transit reserve pass
+without lowering either gate. This removes the storage blocker; it does not
+itself establish paid recovery or physical power-loss acceptance.
 
 The earlier Android build from `65766fab1`, including the qualified TCP/FIPS
 handshake backport and version-three payment CPU measurements, passes ARM64 JNI
