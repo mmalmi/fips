@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import signal
 
-from .paid_finances import financial_snapshot, payments_credited
+from .paid_finances import financial_observation, financial_snapshot, payments_credited
 from .paid_faults import paid_progress, validate_finances
 from .paid_relay import PaidRelayRun, eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
@@ -157,6 +157,9 @@ class PaidWifiRun(WifiRun):
 
     def finances(self):
         return financial_snapshot(self, wallet=None)
+
+    def financial_observation(self):
+        return financial_observation(self, wallet=None)
 
     def assert_finances(self):
         current = eventually("consistent hardware financial observation", self.finances)

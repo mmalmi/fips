@@ -19,12 +19,19 @@ def account_journals(run):
 
 def financial_snapshot(run, *, wallet):
     """Read live accounting; pass None when a live wallet snapshot is unavailable."""
-    result = {}
+    return financial_observation(run, wallet=wallet)[1]
+
+
+def financial_observation(run, *, wallet):
+    """Return the exact journal reads behind the summary, with later liability."""
+    journals, result = {}, {}
     for node in run.nodes:
         status = run.ctl(node, "status")
         buyer = run.state_json(node, "buyer/buyer.json")
         controller = run.state_json(node, "controller/controller.json")
-        seller = run.state_json(node, "seller/ledger.json")["ledger"]
+        seller_journal = run.state_json(node, "seller/ledger.json")
+        seller = seller_journal["ledger"]
+        journals[node] = {"buyer": buyer, "controller": controller, "seller": seller_journal}
         authorized = sum(channel["authorized_sat"] for channel in buyer["channels"].values())
         if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized:
             # Journals and status are individually atomic, not one snapshot.
@@ -50,7 +57,7 @@ def financial_snapshot(run, *, wallet):
         buyer = run.state_json(node, "buyer/buyer.json")
         result[node]["signed_after"] = {
             key: item["authorized_sat"] for key, item in buyer["channels"].items()}
-    return result
+    return journals, result
 
 
 def payments_credited(current):

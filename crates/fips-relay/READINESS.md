@@ -901,6 +901,26 @@ Both the 7,680 KiB wallet reserve and stricter 8,192 KiB phone-transit reserve p
 without lowering either gate. This removes the storage blocker; it does not
 itself establish paid recovery or physical power-loss acceptance.
 
+The current ordinary router repeat in `work/radio-current-r370` remains rejected:
+separate journal and financial-summary reads race live signatures until the
+unchanged 30-second observation deadline expires. Both original streams finish
+(79,811 of 84,000 packets arrive under deliberate frame loss), but the case does
+not reach its post-loss recovery check. All 384 test sats are collected; independent
+postflight verifies restored routers, stopped test processes/mint and archived
+accounts before the closed profiles are removed.
+
+The renewal observer now uses the exact journal reads underlying its shared
+financial summary, removing nine redundant reads per sample. The independent
+status comparison, later durable-liability bracket, all authority/refund/usage
+checks and the 30-second deadline remain. A focused live-signature regression
+reproduces the old mismatch and passes on the correction; 61 accounting, renewal,
+loss and settlement checks pass. This changes test observation only. A fresh
+Linux guard run confirms 320 successful checks, with one explicitly excluded
+case requiring a separate network-disabled container with `NET_ADMIN`. An
+observation timeout is reconciled against the original process; only the 26
+uncaptured cases are rerun after it terminates. All test processes are absent.
+A fresh physical repeat is required before accepting current impaired radio renewal.
+
 The earlier Android build from `65766fab1`, including the qualified TCP/FIPS
 handshake backport and version-three payment CPU measurements, passes ARM64 JNI
 compilation, strict Android-target lint, all six JVM lifecycle tests, APK lint and signature/manifest

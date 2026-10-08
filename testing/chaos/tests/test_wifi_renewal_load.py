@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sim.paid_settlement import SettlementFixture, settle_and_collect
-from sim.paid_finances import FinancialObservationChanged
+from sim.paid_finances import FinancialObservationChanged, account_journals, financial_snapshot
+from sim.paid_wifi import PaidWifiRun
 from sim.wifi_profiles import RelayCommands
 from sim.wifi_renewal_finances import NAMES, QUOTE_UNITS, RENEWAL, RenewalAccounts
 from sim.wifi_renewal_load import PACKETS, RATE, RenewalLoadRun, validate
@@ -28,6 +29,7 @@ class AccountsFixture:
         self.run.nodes = {name: SimpleNamespace(npub=name, state="/tmp/bench-state", stop=Mock()) for name in NAMES}
         self.run.evidence = {"phases": []}
         self.run.finances.side_effect = lambda: summary(self.raw)
+        self.run.financial_observation.side_effect = lambda: (account_journals(self.run), self.run.finances())
         self.run.state_json.side_effect = lambda name, path: copy.deepcopy(self.raw[name][path.split('/')[0]])
         self.accounts = RenewalAccounts(self.run, IDS, expected_renewals=expected_renewals)
 
@@ -425,6 +427,27 @@ class RenewalTests(unittest.TestCase):
         f.run.finances.side_effect = RuntimeError("invalid monetary evidence")
         with self.assertRaisesRegex(ValueError, "invalid monetary evidence"):
             f.accounts.observe()
+
+    def test_payment_advancing_before_status_keeps_matching_journal_evidence(self):
+        f = AccountsFixture().funded()
+        for state in f.raw.values():
+            state["seller"]["ledger"]["accounts"] = []
+
+        def status(name, kind):
+            self.assertEqual(kind, "status")
+            if name == "n01":
+                f.raw[name]["buyer"]["channels"]["channel-n01-old"]["authorized_sat"] = 27
+                rows = f.raw["n02"]["seller"]["ledger"]["channels"]
+                next(row for row in rows if row["terms"]["id"] == "channel-n01-old")["usage"]["paid_msat"] = 27000
+            current = summary(f.raw)[name]
+            return {"remaining_budget_sat": current["remaining"], "funding_budget": current["budget"]}
+
+        f.run.ctl.side_effect = status
+        f.run.finances.side_effect = lambda: financial_snapshot(f.run, wallet=None)
+        f.run.financial_observation.side_effect = lambda: PaidWifiRun.financial_observation(f.run)
+        observed, _ = f.accounts.observe()
+        self.assertEqual(observed["financial"]["n01"]["authorized"], 27)
+        self.assertEqual(f.accounts.previous["n01"]["buyer"]["channels"]["channel-n01-old"]["authorized_sat"], 27)
 
     def test_later_signature_snapshot_preserves_total_budget_and_all_seen_liability(self):
         for later in ({"channel-n01-old": 32, "channel-n01-new": 32, "third": 1},

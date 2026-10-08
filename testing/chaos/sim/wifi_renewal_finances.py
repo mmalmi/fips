@@ -69,7 +69,7 @@ class RenewalAccounts:
 
     def observe(self):
         try:
-            raw, summary = account_journals(self.run), self.run.finances()
+            raw, summary = self.run.financial_observation()
             self.retain_closed_routes(raw)
             fixture, lineage = self.check(raw, summary)
         except FinancialObservationChanged:
