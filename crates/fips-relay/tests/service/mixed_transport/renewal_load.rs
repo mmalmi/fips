@@ -201,8 +201,7 @@ async fn held_close_with_other_payment(
     let close_journal = journal.clone();
     let closing_channel = channels[0].clone();
     // Successor funding can swap before the provider closes the original.
-    // Only that provider close holds the shared wallet lock under test; the
-    // other buyer remains paused until this exact settlement has started.
+    // The other buyer remains paused until this provider settlement starts.
     let (committed, release) = proxy.state.pause_matching_swap_reply(move |_| {
         let state = read_journal(&close_journal).unwrap();
         let sale = &state["seller_settlements"][&closing_channel];
@@ -229,37 +228,41 @@ async fn held_close_with_other_payment(
     request(&bench.configs[2], &AdminRequest::ResumeRenewals)
         .await
         .unwrap();
-    let overlapping = tokio::time::timeout(Duration::from_secs(10), async {
+    let independent = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let state: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
-            if channels.iter().all(|id| {
-                state["seller_settlements"][id]["payment"].is_object()
-                    && state["seller_settlements"][id]["report"].is_null()
-            }) {
+            let status = request(&bench.configs[2], &AdminRequest::Status)
+                .await
+                .unwrap();
+            let purchases = status["purchases"].as_array().unwrap();
+            if purchases.len() == 1 && purchases[0]["channel"]["id"] != channels[1] {
+                let state = read_journal(&journal).unwrap();
+                let held = &state["seller_settlements"][&channels[0]];
+                assert!(held["payment"].is_object() && held["report"].is_null());
                 let safe = controller_phases(&state);
                 let settlements = safe["seller_settlements"].as_array().unwrap();
                 assert!(settlements.len() <= 16);
-                for id in channels {
-                    let row = settlements.iter().find(|row| row["id"] == *id).unwrap();
-                    assert_eq!(
-                        row,
-                        &serde_json::json!({
-                            "id": id,
-                            "has_payment": true,
-                            "has_report": false,
-                        }),
-                        "held settlements expose only their identifiers and presence flags"
-                    );
-                }
+                let row = settlements
+                    .iter()
+                    .find(|row| row["id"] == channels[0])
+                    .unwrap();
+                assert_eq!(
+                    row,
+                    &serde_json::json!({
+                        "id": channels[0],
+                        "has_payment": true,
+                        "has_report": false,
+                    }),
+                    "held settlement exposes only its identifier and presence flags"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await;
-    if overlapping.is_err() {
+    if independent.is_err() {
         bench.failure_snapshot().await;
-        panic!("both provider settlements overlap before the held close returns");
+        panic!("the independent channel must renew before the held close returns");
     }
     release
         .send(())

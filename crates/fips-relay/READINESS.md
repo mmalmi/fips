@@ -13,11 +13,11 @@ requirement to the current milestone. Existing accounts remain untouched.
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). The current renewal control passes 47 focused relay checks and two matched ARM emulation CPU/loss trials. Across the paired trials, median pauses fall from 1.98 to 1.89 seconds and the maximum from 3.49 to 2.41 seconds; source-queue expiry remains. Earlier physical renewal results are scoped below. | Qualify the pending-key recovery and prepared-control changes on routers, and eliminate renewal queue expiry under CPU pressure. Then cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
+| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). The prepared-control revision passes 47 focused relay checks and two matched ARM emulation CPU/loss trials. Across the paired trials, median pauses fall from 1.98 to 1.89 seconds and the maximum from 3.49 to 2.41 seconds; source-queue expiry remains. Earlier physical renewal results are scoped below. | Qualify the pending-key, prepared-control and wallet-progress changes on routers, recover initial routes after a triangle-to-line cut, and eliminate renewal queue expiry under CPU pressure. Then cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r308 passes all eight build gates, including six lifecycle tests, with the pending-key and prepared-renewal-control fixes; physical acceptance is pending. Physical r220 phone transit on the earlier r219 APK delivers 19 MiB over the same process and original channels, including a five-minute hidden-activity interval; all 512 test sats return and 810 management checks pass. Independent device, financial, artifact and app/data-removal closure passes. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Run paid physical acceptance of the current Android and router candidates; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Full physical paid-recovery acceptance for durable quotes and the updated TCP graph. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
-| Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit, and concurrent settlement requests share a bounded relay wallet. See [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
+| Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit; independent refunds and renewals complete while another mint close is held, with wallet imports still serialized. See [wallet progress](#independent-wallet-progress) and [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Payment SDK/CDK corrections still require the accepted source graph; registry TCP 0.2.4 is qualified. Each deployment needs matching native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional [TollGate adapter](TOLLGATE.md) remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
@@ -7018,25 +7018,42 @@ executable hashes remain unchanged. An initial run was interrupted by the disk
 reserve guard; the completed replay uses its exact binaries after reclaiming
 superseded build outputs. This does not reproduce or explain the historical stalls.
 
-An opt-in three-daemon UDP/TLS regression now checks four renewal cycles in both
-directions, with fresh delivery and automatic payment on every channel generation.
-One cycle holds a committed mint close reply while the same provider accepts new
-credit from its other buyer. Both original signed settlements must then be
-durably pending before the reply is released. The shared wallet serializes closes
-without blocking that other payment. All eight replacements preserve original
-funding operations and spending limits; final collection reconciles 384 test sats.
-The case passes with and without measurements. It uses the existing bounded
-delivery retries and 20/40-second payment/renewal waits, plus an explicit request
-budget for its isolated mint. It is ignored during routine tests; run it with
-the [matching dependency overrides](FUNDING-COSTS.md):
+### Independent wallet progress
+
+A provider's mint close formerly held the shared wallet lock while awaiting the
+network reply, blocking an unrelated outgoing refund. The lock now starts at
+payout import and remains owned by the blocking worker through that wallet work.
+Receiver close recovery, channel claims, spending bounds and wallet capacity stay
+unchanged. No message, dependency or stored-state format changes.
+
+The existing four-node, full-capacity wallet fixture reproduces the blocked refund
+on the previous daemon, then passes on the candidate. Six delayed-mint, expiry and
+successor-funding cases also pass. Their swap counts include the explicitly
+completed independent settlement while still rejecting extra closes. The earlier
+aggregate-count failure retains its original unfinished accounts in
+`work/wallet-close-qualified-r315`; it is not a successful financial closure.
+
+The updated opt-in UDP/TLS fixture checks four renewal cycles in both directions
+and a mint key change. While one committed close response is held, the other
+buyer must advance automatic payment and complete its renewal within ten seconds.
+All eight replacements preserve original funding operations and spending limits.
+With the ordinary Linux daemon, these eight process checks account for all 3,200
+test sats. Strict lint, source-size checks and the ordinary ARM64 build pass.
+Source, dependency, artifact and stopped-process checks close
+`work/wallet-close-qualified-r316` and `work/wallet-close-tls-r318`.
+
+The ARM CPU/loss attempt in `work/wallet-close-pressure-r317` fails initial native
+route lookup after cutting the triangle into a line, before opening any paid
+channel. All 384 test sats remain unspent in the original wallets, checked against
+the mint's records and preserved with the failed fixture. This run provides no
+renewal-performance result. Route recovery, current physical-router/phone
+acceptance and renewal queue expiry under CPU pressure remain open.
+
+Run the opt-in TLS case with the [matching dependency overrides](FUNDING-COSTS.md):
 
 ```sh
-cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test service mixed_transport::renewal_load:: -- --ignored --test-threads=1 --nocapture
+cargo test --config /path/to/local-dependencies.toml -p fips-relay --no-default-features --features measurements,testbench --test service mixed_transport::renewal_load:: -- --ignored --test-threads=1 --nocapture
 ```
-
-Use `--no-default-features` instead of `--all-features` for the second profile.
-This finite turnover check neither identifies the historical stall causes nor
-establishes sustained physical-router performance. It changes only test code.
 
 Broader five-node controller runs also retained two failures before the new
 payment-loss or repurchase checks: a no-default-feature run timed out during

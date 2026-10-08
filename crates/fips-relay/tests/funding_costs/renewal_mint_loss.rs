@@ -174,6 +174,15 @@ async fn scenario(root: &Path, boundary: Boundary) {
     })
     .await
     .expect("held mint close cannot stall another buyer's payment");
+    // Close the independent channel explicitly before its quote can expire.
+    // Its mint swap may proceed while the original close response is held.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        request(&configs[2], &AdminRequest::Settle),
+    )
+    .await
+    .expect("held mint close cannot stall another buyer's settlement")
+    .unwrap();
     if matches!(boundary, Boundary::AdmissionWait) {
         admission_cohorts(&configs, &npubs, id).await;
     } else {
@@ -213,8 +222,8 @@ async fn scenario(root: &Path, boundary: Boundary) {
     );
     assert_eq!(
         proxy.state.swaps.load(Ordering::SeqCst),
-        swaps_before + 1,
-        "only the original close reaches the mint while held"
+        swaps_before + 2,
+        "only the original and independent closes reach the mint while held"
     );
     let pending = read(&journal);
     assert_eq!(pending["renewals"][id]["completed"], false);

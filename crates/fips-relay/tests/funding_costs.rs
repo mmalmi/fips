@@ -162,7 +162,8 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
             let capacity = middle_db.storage_capacity().await.unwrap().unwrap();
             assert_eq!(capacity.charged_bytes, capacity.maximum_bytes);
         }
-        let settlements = concurrent_settlement::settle(&configs, &proxy, &middle_db).await;
+        let (settlements, independent_refund) =
+            concurrent_settlement::settle(&configs, &proxy, &middle_db).await;
         let outgoing = &settlements[1];
         assert!(settlements[0]["paid_sat"].as_u64().unwrap() > 0);
         assert!(outgoing["paid_sat"].as_u64().unwrap() > 0);
@@ -242,6 +243,13 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
         );
         for child in &mut children {
             stop(child).await;
+        }
+        let fees = spent - returned - paid;
+        assert_eq!(available + fees, 512);
+        eprintln!("shared wallet closure: all 512 test sats accounted for; available={available} fees={fees}");
+        if !independent_refund {
+            panic!("held mint close blocked an unrelated refund; settled fixture retained at {}",
+                root.keep().display());
         }
     })
     .await

@@ -185,12 +185,10 @@ impl Controller {
         let usage = sale.usage.ok_or("seal channel before mint settlement")?;
         let control = self.services.payment_control.clone();
         let seller = self.services.seller.clone();
-        let wallet_guard = self.wallet.clone().lock_owned().await;
+        let wallet = self.wallet.clone();
         let runtime = tokio::runtime::Handle::current();
-        timing.mark("wallet_ready");
         let wallet_timing = timing.clone();
         let report = blocking(move || {
-            let _wallet = wallet_guard;
             runtime.block_on(async move {
                 let closed = control.close_at_mint(&sale.channel.id).await?;
                 wallet_timing.mark("mint_closed");
@@ -206,6 +204,10 @@ impl Controller {
                 {
                     return Err("mint close does not match final agreement".into());
                 }
+                // Mint closing owns receiver records; reserve the wallet for
+                // payout import and keep ownership inside the blocking worker.
+                let _wallet = wallet.lock_owned().await;
+                wallet_timing.mark("wallet_ready");
                 control.import_wallet_payout(&sale.channel.id).await?;
                 wallet_timing.mark("payout_imported");
                 // A retained receiver signature can have reached its journal
