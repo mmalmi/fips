@@ -12,6 +12,7 @@ from sim.wifi_active_outage import active_radio_outage
 from sim.wifi_discovery import WifiRun
 from test_wifi_roundtrip import round_trip_report
 from test_paid_wifi import accounts
+from test_wifi_root_loss import ADDRESSES, trees
 
 
 def probe_report(count, expected=24, stream="a" * 32):
@@ -30,10 +31,11 @@ class ActiveOutageTests(unittest.TestCase):
     def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False,
                 late_cut=False, cut_error=False, outage_node="n03", stale_peer=None, timing=False,
                 diagnostic_error=False, brief=False, radio_station=False, removed_peer=None,
-                replaced_link=None, recreated_peer=None):
+                replaced_link=None, recreated_peer=None, root=False):
         run = Mock()
-        run.args = SimpleNamespace(recovery_timing=timing, brief_outage=brief)
+        run.args = SimpleNamespace(recovery_timing=timing, brief_outage=brief, root_outage=root)
         run.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
+        run.state_json.side_effect = lambda name, _path: {'local': list(bytes.fromhex(ADDRESSES[name]))}
         rejoined = False
         for name, node in run.nodes.items():
             node.interface = "mesh0"
@@ -43,6 +45,9 @@ class ActiveOutageTests(unittest.TestCase):
             node.remote.side_effect = lambda command: (
                 b"1000\n20.50\n" if isinstance(command, str) else b"Station test\n")
             def native(command, name=name, node=node):
+                if command['command'] == 'show_tree':
+                    selected = int(outage_node[-1])
+                    return {'status': 'ok', 'data': trees(selected, selected if radio_down else None)[name]}
                 if command["command"] != "show_peers":
                     return node.native.return_value
                 peers = [{"npub": other, "connectivity": "stale" if radio_down and
@@ -117,6 +122,7 @@ class ActiveOutageTests(unittest.TestCase):
                       return_value="Station still joined" if radio_station else ""), \
                 patch("sim.wifi_probes.eventually", side_effect=lambda _d, f, _s: f()), \
                 patch("sim.wifi_active_outage.eventually", side_effect=observed), \
+                patch("sim.wifi_root_loss.eventually", side_effect=observed), \
                 patch("sim.wifi_active_outage.time.sleep"):
             executor.return_value.__enter__.return_value = pool
             error = None
@@ -127,6 +133,22 @@ class ActiveOutageTests(unittest.TestCase):
         pool.submit.assert_called_once()
         future.result.assert_called_once_with(timeout=35)
         return run, error
+
+    def test_actual_root_is_removed_replaced_and_restored_at_each_position(self):
+        for name in ('n01', 'n02', 'n03'):
+            with self.subTest(root=name):
+                run, error = self.run_cut(root=True, outage_node=name)
+                self.assertIsNone(error)
+                evidence = run.evidence['active_outage']
+                self.assertEqual(evidence['root_loss']['node'], name)
+                self.assertEqual(evidence['pre_cut_route'][name]['root'], ADDRESSES[name])
+                for survivor in set(run.nodes)-{name}:
+                    self.assertNotEqual(evidence['root_loss']['isolated'][survivor]['root'], ADDRESSES[name])
+                self.assertTrue(all(row['root'] == ADDRESSES[name]
+                                    for row in evidence['root_loss']['rejoined'].values()))
+                run.nodes[name].mesh_down.assert_called_once()
+                run.nodes[name].mesh_up.assert_called_once()
+                self.assertTrue(evidence['passed'])
 
     def test_brief_cut_recovers_before_peer_eviction_on_leaf_and_bridge(self):
         for node in ("n02", "n03"):

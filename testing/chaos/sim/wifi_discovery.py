@@ -132,8 +132,8 @@ class WifiRun:
         return self.nodes
 
     def ready(self, *, line=False, isolated=False, outage_node="n03"):
-        if isolated and outage_node not in ("n02", "n03"):
-            raise ValueError("outage node must be n02 or n03")
+        if isolated and outage_node not in ("n01", "n02", "n03"):
+            raise ValueError("outage node must be n01, n02 or n03")
         self.monitor.check()
         statuses = {name: self.ctl(name, "status") for name in self.nodes}
         self.evidence["last_peer_observation"] = {name: state["peers"] for name, state in statuses.items()}

@@ -9,6 +9,7 @@ from .paid_settlement import require
 from .wifi_measurements import snapshot, unsigned
 from .wifi_priority_checks import round_trip_latency, submitted
 from .wifi_recovery_timing import RecoveryTiming, stations
+from .wifi_root_loss import RootLoss
 
 
 def processes(run):
@@ -58,11 +59,18 @@ def authenticated_peers(sessions):
 
 
 def active_radio_outage(run, *, outage_node="n03"):
-    require(outage_node in ("n02", "n03"), "unsupported active outage node")
     brief = getattr(getattr(run, "args", None), "brief_outage", False) is True
+    root_loss = None
+    if getattr(getattr(run, "args", None), "root_outage", False) is True:
+        require(not brief, "root replacement requires peer eviction")
+        root_loss = RootLoss(run)
+        outage_node = root_loss.node
+    require(outage_node in ("n01", "n02", "n03"), "unsupported active outage node")
     evidence = {"passed": False, "outage_node": outage_node, "brief_outage": brief,
                 "processes_before": processes(run)}
     run.evidence["active_outage"] = evidence
+    if root_loss:
+        evidence['root_loss'] = root_loss.data
     if brief:
         evidence["peer_sessions_before"] = peer_sessions(run)
     timing = (RecoveryTiming(run, evidence, outage_node)
@@ -74,13 +82,16 @@ def active_radio_outage(run, *, outage_node="n03"):
     evidence["shape"] = shape
     radio = run.nodes[outage_node]
     try:
-        probes.send_with_radio_cut(run, "n01", "n03", shape, 2, radio, evidence, round_trip=True)
+        probes.send_with_radio_cut(run, "n01", "n03", shape, 2, radio, evidence, round_trip=True,
+                                   verify_route=root_loss.before_cut if root_loss else None)
         run.phase("radio left during partially delivered paid round trips")
         if not brief:
             evidence["isolated_peers"] = eventually(
                 "active radio departure establishes the partition", lambda: ready(
                     "partition", line=True, isolated=True, outage_node=outage_node), 100)
             evidence["eviction_observed"] = time.monotonic()
+            if root_loss:
+                root_loss.partition()
         first = probes.receive(run, "n01", "n03", shape, round_trip=True)
         require(0 < evidence["before_cut"]["unique_packets"] <= first["unique_packets"]
                 < shape["packet_count"], "active radio cut did not interrupt paid replies")
@@ -113,6 +124,8 @@ def active_radio_outage(run, *, outage_node="n03"):
             evidence["rejoined_peers"] = eventually(
                 "same paid processes rejoin automatically", lambda: ready("rejoin", line=True), 150)
             evidence["rejoin_observed"] = time.monotonic()
+            if root_loss:
+                root_loss.rejoined()
             evidence["profile_check_started"] = time.monotonic()
             run.verify_open_profiles()
             evidence["profile_check_completed"] = time.monotonic()

@@ -58,11 +58,21 @@ class PaidWifiTests(unittest.TestCase):
         setup.assert_not_called()
 
     def test_outage_selection_is_validated_before_creating_any_run(self):
-        for active, target in ((False, "n02"), (False, "n03"), (True, "n01")):
+        for active, target in ((False, "n02"), (False, "n03"), (True, "n04")):
             args = SimpleNamespace(active_outage=active, outage_node=target)
             with self.subTest(active=active, target=target), \
                     patch("sim.paid_wifi.WifiRun.__init__") as setup, \
                     self.assertRaisesRegex(ValueError, "outage"):
+                PaidWifiRun(args)
+            setup.assert_not_called()
+
+    def test_root_outage_rejects_conflicting_modes_before_creating_any_run(self):
+        for field, value in (('active_outage', False), ('outage_node', 'n02'),
+                             ('brief_outage', True), ('streams', True), ('interrupted_promotion', True)):
+            args = SimpleNamespace(root_outage=True, active_outage=True)
+            setattr(args, field, value)
+            with self.subTest(field=field), patch('sim.paid_wifi.WifiRun.__init__') as setup, \
+                    self.assertRaises(ValueError):
                 PaidWifiRun(args)
             setup.assert_not_called()
 

@@ -467,7 +467,18 @@ of stale disconnected entries. Rejoin must restore exactly n01↔n02↔n03. The
 result records the selected radio and all three rosters, retains the same process
 epochs and financial authority, then requires fresh replies, both-direction paid
 progress, and the existing 384-test-sat collection. `--outage-node` is valid only
-with `--active-outage`; `n03` explicitly selects the default leaf case.
+with `--active-outage`; `n03` explicitly selects the default leaf case and `n01`
+selects the source radio.
+
+Use `--active-outage --root-outage` to select the currently elected routing root
+automatically. The fixture binds signed native tree observations to the three
+saved identities and verifies the selected root immediately before the cut.
+After peer eviction, every surviving connected component must replace that root
+with loop-free coordinates using only its remaining links. Rejoin must restore
+the original root and two-hop tree before fresh paid replies can qualify.
+Processes, channels and spending limits remain unchanged. This mode cannot be
+combined with a fixed `--outage-node`, `--brief-outage`, `--streams` or
+`--interrupted-promotion`.
 
 Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at

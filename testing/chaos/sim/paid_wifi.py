@@ -46,8 +46,12 @@ class PaidWifiRun(WifiRun):
         if requested_outage is not None:
             if not getattr(args, "active_outage", False):
                 raise ValueError("--outage-node requires --active-outage")
-            if requested_outage not in ("n02", "n03"):
-                raise ValueError("outage node must be n02 or n03")
+            if requested_outage not in ("n01", "n02", "n03"):
+                raise ValueError("outage node must be n01, n02 or n03")
+        if getattr(args, 'root_outage', False):
+            if (not getattr(args, 'active_outage', False) or requested_outage is not None
+                    or any(getattr(args, name, False) for name in ('brief_outage', 'streams', 'interrupted_promotion'))):
+                raise ValueError('root outage requires the active probe scenario and automatic radio selection')
         self.outage_node = requested_outage or "n03"
         if getattr(args, "brief_outage", False) and not getattr(args, "active_outage", False):
             raise ValueError("--brief-outage requires --active-outage")
@@ -288,8 +292,10 @@ def main():
                         help="record bounded recovery observations and scoped native logs")
     parser.add_argument("--beacon-interval-secs", type=int, choices=(10, 30),
                         help="compare native discovery intervals with --recovery-timing; default unchanged")
-    parser.add_argument("--outage-node", choices=("n02", "n03"),
-                        help="radio to remove with --active-outage: n02 bridge or n03 leaf (default)")
+    parser.add_argument("--outage-node", choices=("n01", "n02", "n03"),
+                        help="radio to remove with --active-outage: n01 source, n02 bridge or n03 leaf (default)")
+    parser.add_argument('--root-outage', action='store_true',
+                        help='select the elected root, observe its replacement and require the original tree after rejoin')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.outage_node is not None and not args.active_outage:

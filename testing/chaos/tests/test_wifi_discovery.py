@@ -597,7 +597,7 @@ class AcceptanceTests(unittest.TestCase):
         run = object.__new__(WifiRun)
         run.ctl = Mock()
         with self.assertRaisesRegex(ValueError, "outage node"):
-            run.ready(line=True, isolated=True, outage_node="n01")
+            run.ready(line=True, isolated=True, outage_node="n04")
         run.ctl.assert_not_called()
 
 
