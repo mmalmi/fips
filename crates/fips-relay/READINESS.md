@@ -455,6 +455,19 @@ and all owned processes and CPU limits are removed. The key-recovery regression
 is fixed, while renewal latency under CPU pressure and current hardware acceptance
 remain open. This does not establish the cause of the earlier r247 router failure.
 
+The transit-refund fixture could miss a completed upstream settlement after
+ordinary channel-history retirement removed its individual record. The rejected
+qualification in `work/renewal-control-prepare-r300` is reproduced with bounded
+snapshots in `work/transit-recovery-diagnostic-r304`: the exact original channel
+is compacted at 64.322 seconds, retaining its 41-sat wallet debit, 33-sat refund
+and zero signed spend, but the old predicate still fails at 112.787 seconds.
+Each failed case conserves all 512 test sats as 498 available plus 14 mint fees.
+The corrected four-node case in `work/renewal-control-qualified-r305` passes
+through autonomous retirement and checks both original wallets' spendable refunds
+before fixture cleanup. It reuses the existing terminal-refund verifier and
+retains failed fixture directories. This corrects the acceptance observation;
+it does not qualify renewal performance or change runtime financial rules.
+
 The opt-in Linux provider-suspension case passes on the ordinary native daemon
 in `work/provider-suspension-r289`. After initial bidirectional paid delivery,
 the middle process stops for 91.001 seconds. Both endpoints observe unavailable

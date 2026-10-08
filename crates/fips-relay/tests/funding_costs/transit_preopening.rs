@@ -23,6 +23,31 @@ struct Upstream {
     credit_msat: u64,
 }
 
+fn upstream_refunded(original: &Upstream, current: &Value, status: &Value) -> bool {
+    let (id, intent) = original.source["funding"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    let funded = &intent["funded"];
+    let debit = funded["wallet_cost"]["wallet_debit_sat"].as_u64().unwrap();
+    terminal_refund(
+        current,
+        status,
+        id,
+        funded["wallet_operation_id"].as_str().unwrap(),
+        &(debit..=debit),
+    ) && if let Some(saved) = current["funding"].get(id) {
+        saved["funded"]["terms"] == original.terms
+    } else {
+        let history = &current["history"]["channels"]["totals"];
+        history["channels"] == 1
+            && history["capacity_sat"] == original.terms["capacity_sat"]
+            && history["cost"] == funded["wallet_cost"]
+    }
+}
+
 fn upstream_boundary(
     configs: &[fips_relay::service::ServiceConfig],
     middle: &Value,
@@ -179,14 +204,16 @@ async fn source_withdrawn(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
+    let retained = tempfile::tempdir().unwrap();
+    let path = retained.path().to_owned();
+    let result = tokio::spawn(async move {
     tokio::time::timeout(Duration::from_secs(360), async {
-        let root = tempfile::tempdir().unwrap();
-        let (mint, network) = setup::start_mint(root.path(), 9622).await;
+        let (mint, network) = setup::start_mint(&path, 9622).await;
         let proxy = MintProxy::start(mint.url()).await;
         // Bound each payer's original fee-bearing operation. Assertions reject
         // replacement funding. All four wallets receive exactly 128 test sats.
         let setup::Bench { mint, configs, paths, npubs, mut children } =
-            setup::start_line(root.path(), mint, network, &proxy.url, 60, 5,
+            setup::start_line(&path, mint, network, &proxy.url, 60, 5,
                               &[48, 48, 40, 40]).await;
         let initial: Vec<_> = configs.iter().map(journal).collect();
         let cfg = &configs[1];
@@ -308,17 +335,24 @@ async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
                     &original.intent_id, &original.operation, &allowance);
                 last_status = status;
             }
-            let settlements = &source_now["buyer_settlements"][channel];
-            upstream_closed |= settlements["refunded"] == true
-                && (settlements["released"] == true || settlements["kind"] == "expiry")
-                && settlements["channel"] == upstream.terms;
-            if automatic && upstream_closed { break; }
+            if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(2),
+                request(&configs[0], &AdminRequest::Status)).await {
+                upstream_closed |= upstream_refunded(&upstream, &source_now, &status);
+            }
+            // Completion remains observable after normal history retirement.
+            if automatic && upstream_closed
+                && source_now["history"]["channels"]["totals"]["channels"] == 1 { break; }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let before_cleanup = journal(cfg);
         let source_status = tokio::time::timeout(Duration::from_secs(2),
             request(&configs[0], &AdminRequest::Status)).await.ok().and_then(Result::ok);
         let upstream_budget = source_status.as_ref().map(|status| status["funding_budget"].clone());
+        let source_after = journal(&configs[0]);
+        check(&mut errors, source_status.as_ref().is_some_and(|status|
+            upstream_refunded(&upstream, &source_after, status))
+            && source_after["history"]["channels"]["totals"]["channels"] == 1,
+            "upstream refund did not survive autonomous history retirement");
         check(&mut errors, upstream_budget.as_ref().is_some_and(|budget|
             budget["pending_reserved_sat"] == 0 && budget["locked_sat"] == 0
             && budget["wallet_debited_sat"].as_u64().is_some_and(|n| (33..=48).contains(&n))),
@@ -361,6 +395,15 @@ async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
                 "original transit refund was not spendable before fixture cleanup");
             eprintln!("transit pre-cleanup spendable_sat={balance} expected_sat={expected} seller_proceeds_sat={proceeds}");
         }
+        if upstream_closed {
+            let budget = upstream_budget.as_ref().unwrap();
+            let balance = spendable_balance(&configs[0].state_directory.join("wallet"), &proxy.url).await;
+            let expected = 128 - budget["wallet_debited_sat"].as_u64().unwrap()
+                + budget["wallet_refunded_sat"].as_u64().unwrap();
+            check(&mut errors, balance == expected,
+                "retired upstream refund was not spendable before fixture cleanup");
+            eprintln!("upstream retired pre-cleanup spendable_sat={balance} expected_sat={expected}");
+        }
         // Stop the acceptance window before any cleanup-only administrative call.
         // Cleanup can reclaim only original unowned sends, never edit a journal.
         let conserved = cleanup_wallet_sends(&configs, &mut children, &proxy).await;
@@ -395,4 +438,11 @@ async fn interrupted_transit_wallet_send_recovers_without_a_middle_watch() {
         }
         assert!(errors.is_empty(), "transit pre-opening recovery: {errors:?}");
     }).await.expect("bounded four-daemon transit recovery and fixture closure");
+    }).await;
+    if let Err(error) = result {
+        panic!(
+            "{error}; retained failed fixture at {}",
+            retained.keep().display()
+        );
+    }
 }
