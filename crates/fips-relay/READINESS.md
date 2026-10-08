@@ -13,7 +13,7 @@ requirement to the current milestone. Original service accounts remain untouched
 
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
-| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Earlier prepared-control CPU/loss trials observed source-queue expiry; the latest five-minute quarter-CPU ARM run retains complete logs with zero source-queue drops. | Qualify the latest handover, wallet-recovery and root-loss changes on routers; extend route recovery and resource-pressure acceptance beyond the finite ARM trials. Cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
+| Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Current physical r371 crosses six expiry renewals during five minutes of impaired saved-SAE radio traffic, then delivers all recovery packets and collects all 384 test sats. Complete logs show zero source-queue drops, as in the earlier quarter-CPU ARM run. | Physical interruption during handover and wallet recovery; current physical root-loss qualification; extend route recovery and resource-pressure acceptance beyond the finite ARM trials. Cover rapid restarts, slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r366 includes root-loss recovery, funded renewal handover and completed-expiry settlement cleanup, and passes all eight build gates, including six lifecycle tests. Its physical r369 transit test with the matching r361 router binaries delivers 19 MiB over the same phone process and original channels, including five minutes with the activity hidden; unpaid traffic is refused, all 512 test sats return and 804 management checks pass. Independent device, financial and artifact checks pass. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Current physical radio/recovery qualification; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, remote WebSocket/TLS deployment, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, and current ARM64 middle-router process recovery on persistent overlay/UBIFS with exact bounded unbilled exposure. | Full physical paid-recovery acceptance for durable quotes and the updated TCP graph. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
@@ -919,7 +919,25 @@ Linux guard run confirms 320 successful checks, with one explicitly excluded
 case requiring a separate network-disabled container with `NET_ADMIN`. An
 observation timeout is reconciled against the original process; only the 26
 uncaptured cases are rerun after it terminates. All test processes are absent.
-A fresh physical repeat is required before accepting current impaired radio renewal.
+The unchanged physical workload then passes in `work/radio-current-r371`, using
+ordinary runtime `382b557cf` and observer `ade50c07c`. With every twentieth test
+frame dropped, 79,787 of 84,000 originals arrive within the existing loss bounds.
+All six successors deliver and earn fresh credit while their streams are active;
+all 128 recovery packets arrive after filter removal. The same processes retain
+their original spending and capital limits through all three renewals in each
+direction. Eight channels settle, all 384 test sats are collected and all 639
+management checks pass.
+
+Independent postflight verifies source/artifact custody, original router and
+network restoration, stopped test processes/mint and three account archives.
+Complete process logs show renewal pauses of 0.434–0.697 seconds and zero source
+admission drops from expiry, capacity or invalidation. All 142 neighbor samples
+within the stream window show no disconnected peers. The observer records three
+transient cross-read changes while continuing to obtain consistent snapshots;
+its deadline remains unchanged. Closed device profiles are removed after archive
+verification. This is finite physical renewal under saved-SAE radio loss, not
+power-loss, open-radio mobility, maximum throughput or an explanation of every
+earlier loss. Targeted diagnostics exclude an untraced performance comparison.
 
 The earlier Android build from `65766fab1`, including the qualified TCP/FIPS
 handshake backport and version-three payment CPU measurements, passes ARM64 JNI
