@@ -20,7 +20,14 @@ async fn sustained_ethernet_loss_keeps_discovered_paid_neighbors_live() {
     lifecycle::run(SecondHop::Ethernet, lifecycle::Workload::SustainedLoss).await;
 }
 
-pub(super) async fn exercise(bench: &mut MixedBench) {
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "raw Ethernet route recovery; needs fresh network namespace, ip and nft"]
+async fn ethernet_shortcut_removal_recovers_paid_routes() {
+    lifecycle::run(SecondHop::Ethernet, lifecycle::Workload::RouteRecovery).await;
+}
+
+pub(super) async fn establish_paid_route(bench: &mut MixedBench) {
     bench.set_stage("sustained-carrier-setup");
     bench.assert_carriers().await;
     for (source, destination) in [(0, 2), (2, 0)] {
@@ -34,6 +41,10 @@ pub(super) async fn exercise(bench: &mut MixedBench) {
         .unwrap();
     }
     bench.deliver_bidirectional([0, 2]).await;
+}
+
+pub(super) async fn exercise(bench: &mut MixedBench) {
+    establish_paid_route(bench).await;
     let mut probes = Vec::new();
     for (source, destination) in [(0, 2), (2, 0)] {
         probes.push(

@@ -5,6 +5,8 @@ use fips_relay::controller::RenewalPolicy;
 pub(super) enum Workload {
     SustainedLoss,
     #[cfg(target_os = "linux")]
+    RouteRecovery,
+    #[cfg(target_os = "linux")]
     SuspendedProvider,
 }
 
@@ -47,6 +49,10 @@ pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
         tokio::time::timeout(Duration::from_secs(380), async {
             match workload {
                 Workload::SustainedLoss => super::sustained_loss::exercise(&mut bench).await,
+                #[cfg(target_os = "linux")]
+                Workload::RouteRecovery => {
+                    super::sustained_loss::establish_paid_route(&mut bench).await
+                }
                 #[cfg(target_os = "linux")]
                 Workload::SuspendedProvider => super::suspension::exercise(&mut bench).await,
             }

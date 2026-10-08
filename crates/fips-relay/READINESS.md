@@ -7067,7 +7067,18 @@ the mint's records and preserved with the failed fixture. This run provides no
 renewal-performance result. Route recovery, current physical-router/phone
 acceptance and renewal queue expiry under CPU pressure remain open.
 
-Two subsequent diagnostic runs recover the route after the cut. In
+The existing lifecycle fixture now exposes a focused Ethernet route-cut case,
+sharing paid setup, bidirectional delivery, settlement and failure preservation
+with the sustained workload. `work/route-recovery-driver-r341` passes compilation,
+strict lint and source-size checks; production code is unchanged. The current
+ordinary ARM64 daemon passes that focused case at quarter CPU in
+`work/route-cut-focus-r342`, with all 384 test sats conserved. Its bounded trace
+observes lookup moving from the removed shortcut to the surviving relay.
+Source/dependency/artifact and stopped-process checks pass. This run does not
+reproduce or explain the earlier intermittent failure, or establish a recovery
+bound. The full sustained acceptance remains a separate unchanged workload.
+
+Two earlier diagnostic runs also recover the route after the cut. In
 `work/route-cut-diagnostic-r319`, delivery exceeds the injected-loss allowance by
 135 packets; all 384 test sats reconcile. The controlled address-order replay in
 `work/route-order-pressure-r321` passes that bound with 79,704 of 84,000 payloads
@@ -7172,6 +7183,17 @@ whole-lifetime trace. Source/dependency/artifact, quota, stopped-process and
 namespace cleanup checks pass. This single artificial-pressure result does not
 qualify physical radios, establish a general recovery bound or replace broader
 CPU/loss and device acceptance.
+
+The same current daemon also passes the full workload with the original failed
+run's relative node ordering in `work/handover-route-order-r343`, using the
+already-qualified ordering driver from r320. All 384 test sats reconcile;
+79,801 of 84,000 payloads arrive within the unchanged injected-loss allowance.
+Both directions complete three renewals, 299 samples observe no disconnected
+neighbors, and the six captured pauses are 0.358–0.462 seconds. The retained
+snapshot contains no source-queue expiry; it is not a whole-lifetime trace.
+Independent source/dependency/artifact, quota and cleanup checks pass. This
+artificial-pressure replay also recovers the initial route, so it does not
+reproduce or explain the earlier intermittent lookup failure.
 
 Run the opt-in TLS case with the [matching dependency overrides](FUNDING-COSTS.md):
 
