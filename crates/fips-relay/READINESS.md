@@ -509,6 +509,19 @@ application packets. This supports retaining connection preparation, while pause
 above the two-second queue lifetime, current router/phone acceptance, and CPU
 cost attribution remain open.
 
+A separate compiler-only experiment in `work/renewal-crypto-current-r310`
+optimizes `secp256k1-sys` for speed, leaving the current runtime unchanged.
+Ordinary native/ARM builds, strict lint and delayed-renewal recovery pass.
+The matched quarter-CPU pair in r311/r312 also passes both delivery bounds with
+no sampled disconnects and all 768 test sats conserved. However, the candidate's
+median pause falls from 1.825 to 1.687 seconds while its maximum rises from
+2.292 to 2.676 seconds and snapshot queue expirations rise from 52 to 105.
+Whole-run relay CPU, including setup and teardown, rises from 2.585 to 2.661
+seconds per delivered MiB. This finite comparison shows no convincing overall
+improvement, so the compiler override is not adopted. Source, artifacts, complete
+comparison evidence and independent process/accounting closure remain retained;
+these measurements are not payment-only CPU or physical-router qualification.
+
 The opt-in Linux provider-suspension case passes on the ordinary native daemon
 in `work/provider-suspension-r289`. After initial bidirectional paid delivery,
 the middle process stops for 91.001 seconds. Both endpoints observe unavailable
