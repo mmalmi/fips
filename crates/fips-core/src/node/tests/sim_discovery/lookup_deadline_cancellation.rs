@@ -9,7 +9,33 @@ use std::panic::AssertUnwindSafe;
 
 #[test]
 fn canceled_lookup_batch_keeps_unreserved_target_due() {
-    run_large_stack_async_test("lookup-cancel", || async {
+    run_scenario(None);
+}
+
+#[test]
+fn endpoint_snapshot_precedes_ready_lookup_transport_await() {
+    run_scenario(Some(ControlProbe::Queued));
+}
+
+#[test]
+fn endpoint_snapshot_during_lookup_completes_within_its_existing_deadline() {
+    run_scenario(Some(ControlProbe::InFlight));
+}
+
+#[test]
+fn due_lookup_progresses_under_continuous_endpoint_snapshots() {
+    run_scenario(Some(ControlProbe::Continuous));
+}
+
+#[derive(Clone, Copy)]
+enum ControlProbe {
+    Queued,
+    InFlight,
+    Continuous,
+}
+
+fn run_scenario(control_progress: Option<ControlProbe>) {
+    run_large_stack_async_test("lookup-cancel", move || async move {
         let name = format!("lookup-deadline-cancel-{}", std::process::id());
         let network = SimNetwork::new(271);
         network.set_default_link(SimLink {
@@ -36,7 +62,7 @@ fn canceled_lookup_batch_keeps_unreserved_target_due() {
             nodes.push(configured_discovering_node(config, address).await);
         }
         nodes.sort_by_key(|node| *node.node.node_addr());
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network))
+        let result = AssertUnwindSafe(exercise(&mut nodes, &network, control_progress))
             .catch_unwind()
             .await;
         for node in &nodes {
@@ -91,7 +117,11 @@ async fn cancel_after_delivery<F: Future<Output = ()>>(network: &SimNetwork, ope
     // Drop the unfinished future at a send await, as a maintenance budget does.
 }
 
-async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
+async fn exercise(
+    nodes: &mut [TestNode],
+    network: &SimNetwork,
+    control_progress: Option<ControlProbe>,
+) {
     let ids: Vec<_> = nodes.iter().map(|node| *node.node.node_addr()).collect();
     for remote in [1, 2] {
         network.set_link(
@@ -172,6 +202,19 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
     while Node::now_ms() < due {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+    if let Some(probe) = control_progress {
+        if matches!(probe, ControlProbe::Continuous) {
+            exercise_control_flood(&mut nodes[0]).await;
+        } else {
+            exercise_control_progress(
+                &mut nodes[0],
+                network,
+                matches!(probe, ControlProbe::InFlight),
+            )
+            .await;
+        }
+        return;
+    }
     let batch_now = Node::now_ms();
     let source = nodes[0].addr.as_str().unwrap().to_owned();
     let before = network.stats().packets_sent;
@@ -248,5 +291,131 @@ async fn exercise(nodes: &mut [TestNode], network: &SimNetwork) {
             (peer.link_id(), peer.our_index(), peer.authenticated_at()),
             owners[offset]
         );
+    }
+}
+
+async fn exercise_control_flood(test: &mut TestNode) {
+    use crate::node::NodeEndpointControlCommand;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::sync::{mpsc, oneshot};
+
+    let (control_tx, control_rx) = mpsc::channel(8);
+    test.node.endpoint_control_rx = Some(control_rx);
+    let (_unused_tx, unused_rx) = packet_channel(8);
+    test.node.packet_rx = Some(std::mem::replace(&mut test.packet_rx, unused_rx));
+    test.node.state = NodeState::Running;
+    let completed = Arc::new(AtomicUsize::new(0));
+    let observed = completed.clone();
+    // Fill the bounded lane before starting the real actor. The producer keeps
+    // at most64 reply waiters, so neither it nor the actor gets an empty-lane
+    // shortcut. No production scheduling hook or injected actor delay.
+    let mut replies = std::collections::VecDeque::new();
+    for _ in 0..8 {
+        let (response_tx, response_rx) = oneshot::channel();
+        control_tx
+            .send(NodeEndpointControlCommand::PeerSnapshot { response_tx })
+            .await
+            .unwrap();
+        replies.push_back(response_rx);
+    }
+    let producer = tokio::spawn(async move {
+        loop {
+            if replies.len() == 64 {
+                if replies.pop_front().unwrap().await.is_err() {
+                    break;
+                }
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+            let (response_tx, response_rx) = oneshot::channel();
+            if control_tx
+                .send(NodeEndpointControlCommand::PeerSnapshot { response_tx })
+                .await
+                .is_err()
+            {
+                break;
+            }
+            replies.push_back(response_rx);
+        }
+    });
+    // The coarse maintenance tick is not yet due, isolating the continuously
+    // ready endpoint lane from the already-due lookup work.
+    let result = tokio::time::timeout(Duration::from_millis(250), test.node.run_rx_loop()).await;
+    producer.abort();
+    let _ = producer.await;
+    assert!(result.is_err(), "real RX loop remains active");
+    assert!(
+        completed.load(Ordering::Relaxed) >= 64,
+        "status lane stayed busy"
+    );
+    assert!(
+        test.node
+            .pending_lookups
+            .iter()
+            .any(|(_, entry)| entry.attempt > 1),
+        "continuous endpoint snapshots starved a due real lookup retry"
+    );
+}
+
+async fn exercise_control_progress(test: &mut TestNode, network: &SimNetwork, after_send: bool) {
+    use crate::node::NodeEndpointControlCommand;
+    use tokio::sync::{mpsc, oneshot};
+
+    // Genuine Noise/tree/filter setup and original retry deadlines above.
+    // A carrier delivers encrypted packets but delays send completion, as in
+    // the cancellation test. A management request already waiting at a select
+    // boundary must not start behind that unrelated transport await.
+    let source = test.addr.as_str().unwrap();
+    network.set_node_send_completion_delay(source, 60_000);
+    let before = network.stats().packets_sent;
+    let (control_tx, control_rx) = mpsc::channel(8);
+    let (response_tx, response_rx) = oneshot::channel();
+    test.node.endpoint_control_rx = Some(control_rx);
+    let (_unused_tx, unused_rx) = packet_channel(8);
+    test.node.packet_rx = Some(std::mem::replace(&mut test.packet_rx, unused_rx));
+    test.node.state = NodeState::Running;
+
+    let running = test.node.run_rx_loop();
+    tokio::pin!(running);
+    if after_send {
+        tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(1), async {
+                while network.stats().packets_sent == before {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }) => result.expect("real retry must enter its carrier before the snapshot"),
+            result = &mut running => panic!("RX loop ended unexpectedly: {result:?}"),
+        }
+    }
+    control_tx
+        .send(NodeEndpointControlCommand::PeerSnapshot { response_tx })
+        .await
+        .unwrap();
+    let deadline = if after_send {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_millis(250)
+    };
+    let result = tokio::select! {
+        result = tokio::time::timeout(deadline, response_rx) => result,
+        result = &mut running => panic!("RX loop ended unexpectedly: {result:?}"),
+    };
+    let snapshot = result
+        .expect("endpoint snapshot missed its deadline behind due lookup transport sends")
+        .expect("RX loop must answer the snapshot");
+    assert_eq!(snapshot.len(), 2, "both authenticated peers remain visible");
+    network.set_node_send_completion_delay(source, 0);
+    let before_resume = network.stats().packets_sent;
+    // The priority of a finite management request must not suppress discovery:
+    // with the same RX loop still alive, its pending retry must hit the carrier.
+    tokio::select! {
+        _ = tokio::time::timeout(Duration::from_secs(3), async {
+            while network.stats().packets_sent == before_resume {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }) => assert!(network.stats().packets_sent > before_resume, "due lookup still progresses"),
+        result = &mut running => panic!("RX loop ended unexpectedly: {result:?}"),
     }
 }

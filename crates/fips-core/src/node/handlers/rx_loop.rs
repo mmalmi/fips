@@ -289,29 +289,6 @@ impl Node {
                         tick.reset();
                     }
                 }
-                _ = wait_for_optional_epoch_deadline(
-                    self.discovery_work_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
-                ) => {
-                    let (completed, drained) = self.run_rx_loop_lookup_turn(
-                        &mut dataplane_runtime.io(),
-                    ).await;
-                    if drained.has_data_drained() {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
-                    self.drain_control_queries(
-                        &mut control_query_rx, None, CONTROL_QUERY_INTERLEAVE_BUDGET,
-                    ).await;
-                    if !completed {
-                        crate::perf_profile::record_event(
-                            crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
-                        );
-                        self.mark_rx_loop_maintenance_timeout();
-                        lookup_not_before_ms = Self::now_ms().saturating_add(
-                            self.config.node.tick_interval_secs.saturating_mul(1000).max(1),
-                        );
-                        warn!("Pending lookup send timed out; continuing packet processing");
-                    }
-                }
                 Some(message) = control_query_rx.recv() => {
                     self.drain_control_queries(
                         &mut control_query_rx,
@@ -340,6 +317,29 @@ impl Node {
                                 network_rebind_completion_tx.clone(),
                             );
                         }
+                    }
+                }
+                _ = wait_for_optional_epoch_deadline(
+                    self.discovery_work_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
+                ) => {
+                    let (completed, drained) = self.run_rx_loop_lookup_turn(
+                        &mut dataplane_runtime.io(),
+                    ).await;
+                    if drained.has_data_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                    self.drain_control_queries(
+                        &mut control_query_rx, None, CONTROL_QUERY_INTERLEAVE_BUDGET,
+                    ).await;
+                    if !completed {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+                        );
+                        self.mark_rx_loop_maintenance_timeout();
+                        lookup_not_before_ms = Self::now_ms().saturating_add(
+                            self.config.node.tick_interval_secs.saturating_mul(1000).max(1),
+                        );
+                        warn!("Pending lookup send timed out; continuing packet processing");
                     }
                 }
                 _ = wait_for_optional_deadline(
