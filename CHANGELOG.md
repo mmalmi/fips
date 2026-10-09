@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queues or changing nonblocking UDP and bulk-data admission.
 - Reuse expired discovery cooldown slots under target churn without evicting
   active ingress/origin/target intervals or bypassing authenticated-peer budgets.
+- Bound protected discovery reply reservations to each connected peer's share
+  so unanswered traffic cannot reserve quiet peers' slots; retain admitted paths.
 - Release the matching core and endpoint libraries as 0.4.96. Identity remains
   0.3.3; protocol messages, routing semantics, and wire layouts are unchanged.
 

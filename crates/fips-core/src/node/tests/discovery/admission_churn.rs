@@ -73,8 +73,7 @@ async fn prepare(nodes: &mut [TestNode]) {
     }
     assert_eq!(node.peers.len(), PEER_COUNT);
     assert_eq!(
-        (crate::node::handlers::discovery::MAX_RECENT_DISCOVERY_REQUESTS / node.peers.len())
-            .max(crate::node::handlers::discovery::MIN_RECENT_DISCOVERY_REQUESTS_PER_PEER),
+        (crate::node::handlers::discovery::MAX_RECENT_DISCOVERY_REQUESTS / node.peers.len()).max(1),
         64
     );
     assert!(node.recent_requests.is_empty());

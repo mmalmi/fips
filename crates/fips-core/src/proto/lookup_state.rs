@@ -57,15 +57,13 @@ pub(crate) struct RecentDiscoveryRequestAdmission {
 pub(crate) struct RecentDiscoveryRequestLimits {
     pub(crate) max_entries: usize,
     pub(crate) peer_count: usize,
-    pub(crate) min_per_peer: usize,
 }
 
 impl RecentDiscoveryRequestLimits {
-    pub(crate) const fn new(max_entries: usize, peer_count: usize, min_per_peer: usize) -> Self {
+    pub(crate) const fn new(max_entries: usize, peer_count: usize) -> Self {
         Self {
             max_entries,
             peer_count,
-            min_per_peer,
         }
     }
 }
@@ -138,7 +136,11 @@ impl RecentDiscoveryRequests {
                 evicted: false,
             };
         };
-        let share = (limits.max_entries / limits.peer_count.max(1)).max(limits.min_per_peer);
+        // A per-peer floor above the actual share overcommits this bounded
+        // table. Busy peers can then protect every slot until expiry, denying
+        // even the first request from an otherwise quiet connected peer.
+        // Released replies remain replaceable; in-flight replies stay owned.
+        let share = (limits.max_entries / limits.peer_count.max(1)).max(1);
         let over_share = self
             .by_peer
             .get(&from_peer)
@@ -339,11 +341,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn growing_peer_inventory_does_not_evict_protected_paths() {
+        let mut recent = RecentDiscoveryRequests::default();
+        let heavy = NodeAddr::from_bytes([1; 16]);
+        let quiet = NodeAddr::from_bytes([2; 16]);
+        let target = NodeAddr::from_bytes([3; 16]);
+        for id in 0..4 {
+            assert!(
+                recent
+                    .record_request(
+                        id,
+                        heavy,
+                        target,
+                        100,
+                        RecentDiscoveryRequestLimits::new(4, 1)
+                    )
+                    .accepted()
+            );
+            recent.protect(id);
+        }
+        let limits = RecentDiscoveryRequestLimits::new(4, 2);
+        assert!(
+            !recent
+                .record_request(4, quiet, target, 101, limits)
+                .accepted()
+        );
+        assert!((0..4).all(|id| recent.contains_key(&id)));
+        recent.purge_expired(10_101, 10_000);
+        for id in 4..8 {
+            if recent
+                .record_request(id, heavy, target, 10_101, limits)
+                .accepted()
+            {
+                recent.protect(id);
+            }
+        }
+        assert_eq!(recent.len(), 2, "new admissions use the smaller share");
+        assert!(
+            recent
+                .record_request(8, quiet, target, 10_101, limits)
+                .accepted()
+        );
+        assert_eq!(recent.indexed_len(), recent.len());
+    }
+
+    #[test]
     fn expiry_hint_preserves_boundaries_clock_rollback_and_removed_oldest() {
         let mut recent = RecentDiscoveryRequests::default();
         let peer = NodeAddr::from_bytes([1; 16]);
         let target = NodeAddr::from_bytes([2; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(10, 1, 1);
+        let limits = RecentDiscoveryRequestLimits::new(10, 1);
         assert!(
             recent
                 .record_request(1, peer, target, 100, limits)
@@ -393,7 +440,7 @@ mod tests {
         let heavy = NodeAddr::from_bytes([1; 16]);
         let light = NodeAddr::from_bytes([2; 16]);
         let target = NodeAddr::from_bytes([3; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(4, 2, 1);
+        let limits = RecentDiscoveryRequestLimits::new(4, 2);
         assert!(
             recent
                 .record_request(100, light, target, 1, limits)
@@ -433,7 +480,7 @@ mod tests {
     fn global_capacity_evicts_only_unprotected_records_then_rejects() {
         let mut recent = RecentDiscoveryRequests::default();
         let target = NodeAddr::from_bytes([9; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(3, 1, 1);
+        let limits = RecentDiscoveryRequestLimits::new(3, 1);
         for id in 1..=3 {
             let peer = NodeAddr::from_bytes([id as u8; 16]);
             assert!(
@@ -472,7 +519,7 @@ mod tests {
         let mut recent = RecentDiscoveryRequests::default();
         let peer = NodeAddr::from_bytes([1; 16]);
         let target = NodeAddr::from_bytes([2; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1);
         assert!(recent.record_request(1, peer, target, 1, limits).accepted());
         recent.protect(1);
         assert_eq!(
@@ -504,7 +551,7 @@ mod tests {
         let mut recent = RecentDiscoveryRequests::default();
         let peer = NodeAddr::from_bytes([1; 16]);
         let target = NodeAddr::from_bytes([2; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1);
         assert!(
             recent
                 .record_request(1, peer, target, 100, limits)
@@ -533,7 +580,7 @@ mod tests {
         let mut recent = RecentDiscoveryRequests::default();
         let peer = NodeAddr::from_bytes([1; 16]);
         let target = NodeAddr::from_bytes([2; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1);
         assert!(
             recent
                 .record_request(10, peer, target, 7, limits)
@@ -566,7 +613,7 @@ mod tests {
         let mut recent = RecentDiscoveryRequests::default();
         let peer = NodeAddr::from_bytes([1; 16]);
         let target = NodeAddr::from_bytes([2; 16]);
-        let limits = RecentDiscoveryRequestLimits::new(1, 1, 1);
+        let limits = RecentDiscoveryRequestLimits::new(1, 1);
         recent.last_admission_generation = u64::MAX - 1;
         assert!(
             recent

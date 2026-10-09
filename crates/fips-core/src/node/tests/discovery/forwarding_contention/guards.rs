@@ -169,7 +169,7 @@ async fn exercise(nodes: &mut [TestNode], case: Case) {
                 source,
                 target,
                 original.timestamp_ms,
-                crate::node::RecentDiscoveryRequestLimits::new(4096, 3, 64),
+                crate::node::RecentDiscoveryRequestLimits::new(4096, 3),
             );
             assert!(admitted.accepted());
             let replacement = nodes[1].node.recent_requests.get(&100).unwrap();

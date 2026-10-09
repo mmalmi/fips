@@ -58,7 +58,7 @@ async fn exercise(nodes: &mut [TestNode]) {
                 *peer,
                 target,
                 Node::now_ms(),
-                crate::node::RecentDiscoveryRequestLimits::new(4096, node.peers.len(), 64),
+                crate::node::RecentDiscoveryRequestLimits::new(4096, node.peers.len()),
             );
             if admitted.accepted() {
                 node.recent_requests.protect(id);
