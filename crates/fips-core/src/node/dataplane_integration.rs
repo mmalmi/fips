@@ -558,12 +558,15 @@ impl Node {
                 break;
             };
             processed = processed
-                .saturating_add(Box::pin(self.process_dataplane_control_ingress(&mut turn)).await);
+                .saturating_add(self.process_dataplane_control_ingress(&mut turn).await);
             turns = turns.saturating_add(1);
         }
-        processed = processed.saturating_add(usize::from(
-            Box::pin(self.flush_pending_root_traffic()).await,
-        ));
+        // The recovery future is large; allocate it only when root traffic is queued.
+        if self.pending_root_traffic.is_some() {
+            processed = processed.saturating_add(usize::from(
+                Box::pin(self.flush_pending_root_traffic()).await,
+            ));
+        }
         if !self.deferred_dataplane_control_turns.is_empty() {
             self.dataplane.readiness_notify().notify_one();
         }
