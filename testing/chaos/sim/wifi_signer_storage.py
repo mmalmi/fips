@@ -63,12 +63,20 @@ class SignerStorageRun(PaidWifiRun):
         config['terms'].update(fee_msat_per_kib=1, max_rate_msat_per_kib=1,
                                quote_max_units=QUOTE_UNITS)
         config['return_allowance'] = False
+        if getattr(self.args, 'sqlite_probe', None):
+            config['terms']['wallet_capacity_bytes'] = 64 * 1024 * 1024
         return config
 
     def before_launch(self):
         self.evidence['storage_fault']['unfunded_probe'] = self.nodes[self.fault_node].storage_probe
         self.save()
         super().before_launch()
+        probe = getattr(self.args, 'sqlite_probe', None)
+        if probe:
+            node = self.nodes[self.fault_node]
+            require(isinstance(node, VolumeRouter), 'SQLite probe requires an isolated wallet volume')
+            self.evidence['sqlite_probe'] = node.check_sqlite_write(probe)
+            self.save()
 
     def client_hash(self):
         node = self.nodes['n01']
@@ -162,6 +170,8 @@ def main():
     parser.add_argument('--mint-address', required=True)
     parser.add_argument('--volume-image', type=Path,
                         help='fresh 8 MiB ext4 image for a full-wallet-filesystem fault')
+    parser.add_argument('--sqlite-probe', type=Path,
+                        help='funding_costs test executable: verify SQLite rollback before routing')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

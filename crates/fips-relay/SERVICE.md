@@ -421,9 +421,23 @@ money. One transit relay lives on a disposable filesystem. It fills that volume
 with real writes, requires ENOSPC from a controller journal write and SQLite's
 disk-full error from a wallet write, then interrupts the relay. Restart must fail
 while the volume is full. After removing only the test ballast, the shared
-recovery scenario resumes paid traffic, settles the original channels and checks
+SQLite check retries the identical write, reads it back and removes it. All wallet
+proof records and logical storage charges must remain unchanged after rollback
+and after removing the recovered probe. The recovery scenario resumes paid traffic,
+settles the original channels and checks
 balances and lifetime spending limits. This tests failed writes and process
 recovery, not power loss or physical flash behavior.
+
+The physical Wi-Fi storage fixture can also run the smaller ignored
+`filesystem_exhaustion::sqlite_full::funded_wallet_write_recovers_after_filesystem_full`
+test from the `funding_costs` executable. It uses the same transaction checks with
+a 256 KiB value on the stopped, funded test wallet, before paid routing starts.
+The fixture initializes the ordinary service's 64 MiB logical wallet allowance;
+the much smaller test filesystem provides the physical storage fault.
+The controller supplies the marked wallet mount and `FIPS_TEST_STORAGE_WALLET`;
+the test refuses an empty wallet or a different wallet path. This executable is
+test tooling with development features, separate from the ordinary relay binary.
+See [router storage acceptance](../../testing/chaos/README.md#router-wallet-snapshot-failure).
 
 Use a dedicated mounted 32–128 MiB filesystem. The test rejects the parent
 filesystem and requires a matching marker and token; it never creates a mount.

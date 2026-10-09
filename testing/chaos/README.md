@@ -668,10 +668,22 @@ The lease guard frees that filler if the controller disappears. Normal cleanup
 unmounts the stopped wallet and retains its image and file hashes for independent
 inspection and archival before removing the closed test profile.
 
+To check an actual SQLite write while full, also pass `--sqlite-probe` with the
+ARM64 `funding_costs` test executable built from the same frozen dependency graph.
+The fixture initializes a 64 MiB logical wallet allowance through normal service
+setup. The helper runs on the stopped, funded wallet before relay startup. It opens the
+real database, fills the marked wallet filesystem, and requires SQLite's disk-full
+error for a 256 KiB write that fits the logical allowance. The failed key must be
+absent; every proof record and the storage charge must remain unchanged. Freeing
+the filler must allow the identical write and readback, then removing the key must
+restore the original accounting. The ordinary relay then runs the six-stream
+payment/recovery scenario and collects all test funds. The helper is a test
+executable with development features; it does not replace the ordinary relay.
+
 These finite wallet-commit checks leave whole-router filesystem exhaustion,
 read-only-wallet operation, slow storage and electrical power cuts as separate
-qualifications. The full-volume case does not restart the relay or exercise a
-SQLite write while full.
+qualifications. The signer-volume case does not restart the relay; its optional
+SQLite check runs before routing starts.
 
 Use `sim.wifi_full_state` with the same required arguments and `--volume-image`
 to place the middle relay's entire account on the dedicated flash-backed volume.

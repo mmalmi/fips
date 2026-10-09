@@ -151,6 +151,41 @@ class VolumeRouter(WalletFaultRouter):
                                    f'cat {self.temporary}/wallet-files.sha256')
             (self.output / 'wallet-files.sha256').write_bytes(manifest)
 
+    def check_sqlite_write(self, binary):
+        require(self.volume == self.state + '/wallet', 'SQLite probe requires a wallet-only volume')
+        content = Path(binary).read_bytes()
+        checksum = digest(content)
+        executable = self.temporary + '/sqlite-probe'
+        self.write(executable, content)
+        require(self.remote(['sha256sum', executable]).decode().split()[0] == checksum,
+                'SQLite probe checksum differs')
+        output = self.guarded(f'''test ! -e {self.temporary}/process.pid
+chmod 700 {executable}
+device=$(awk -v p={self.volume} '$5==p {{split($3,a,":"); if(a[1]!=7 || a[2]>=256) exit 1; print a[1]*256+a[2]}}' /proc/self/mountinfo)
+test -n "$device"
+capacity=$(df -k {self.volume} | awk 'NR==2 {{print $2*1024}}')
+printf '{{"schema":1,"device":%s,"capacity_bytes":%s,"token":"{self.table_owner}"}}' "$device" "$capacity" >{self.volume}/.fips-storage-test.json
+export FIPS_TEST_STORAGE_VOLUME={self.volume}
+export FIPS_TEST_STORAGE_WALLET={self.volume}
+export FIPS_TEST_STORAGE_TOKEN={self.table_owner}
+{executable} --ignored --exact filesystem_exhaustion::sqlite_full::funded_wallet_write_recovers_after_filesystem_full --nocapture >{self.temporary}/sqlite-probe.log 2>&1 &
+probe_pid=$!
+(sleep 45; kill -TERM "$probe_pid" 2>/dev/null || :) &
+watchdog=$!
+code=0
+wait "$probe_pid" || code=$?
+kill "$watchdog" 2>/dev/null || :
+wait "$watchdog" 2>/dev/null || :
+cat {self.temporary}/sqlite-probe.log
+test "$code" = 0
+rm {self.volume}/.fips-storage-test.json
+''', timeout=55).decode()
+        (self.output / 'sqlite-probe.log').write_text(output)
+        require('1 passed; 0 failed' in output and 'SQLite FULL: 262144-byte write rolled back' in output
+                and 'same 262144-byte write succeeded after freeing space' in output,
+                'SQLite rollback or identical-write recovery evidence missing')
+        return {'sha256': checksum, 'write_bytes': 262144, 'passed': True}
+
     def storage_script(self):
         return f'''#!/bin/sh
 set -eu
