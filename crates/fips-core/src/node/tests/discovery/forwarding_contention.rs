@@ -13,6 +13,7 @@ mod guards;
 mod late_reply_loss;
 mod lost_filter;
 mod reachable_after_backoff;
+mod reply_capacity;
 mod rx_loop;
 mod shared_ingress;
 mod target_capacity;
