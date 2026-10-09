@@ -382,6 +382,7 @@ pub struct PacketTx {
     priority_queued_packets: Arc<AtomicUsize>,
     // Reservations cover channel-owned packets and pending receive-batch tails.
     priority_reserved_packets: Arc<AtomicUsize>,
+    priority_space: Arc<tokio::sync::Notify>,
     queued_packets: Arc<AtomicUsize>,
     bulk_reserved_packets: Arc<AtomicUsize>,
     bulk_packet_capacity: usize,
@@ -429,6 +430,7 @@ struct ReservedPacketQueueItem {
 #[derive(Debug)]
 struct PacketCredits {
     reserved: Arc<AtomicUsize>,
+    priority_space: Option<Arc<tokio::sync::Notify>>,
     priority_queued: Option<Arc<AtomicUsize>>,
     queued: Option<Arc<AtomicUsize>>,
     remaining: usize,
@@ -537,6 +539,8 @@ impl PacketCredits {
         }
         Self {
             reserved: Arc::clone(tx.reserved(owner)),
+            priority_space: matches!(tx, PacketQueueTx::Priority)
+                .then(|| Arc::clone(&owner.priority_space)),
             priority_queued,
             queued,
             remaining: count,
@@ -558,6 +562,9 @@ impl PacketCredits {
         debug_assert!(!self.channel_owned && self.remaining > 0);
         self.remaining -= 1;
         release_reserved_packets(&self.reserved, 1);
+        if let Some(space) = &self.priority_space {
+            space.notify_one();
+        }
     }
 }
 
@@ -565,6 +572,11 @@ impl Drop for PacketCredits {
     fn drop(&mut self) {
         self.leave_channel();
         release_reserved_packets(&self.reserved, self.remaining);
+        if let Some(space) = &self.priority_space {
+            for _ in 0..self.remaining {
+                space.notify_one();
+            }
+        }
     }
 }
 

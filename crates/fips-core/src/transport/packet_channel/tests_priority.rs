@@ -232,3 +232,111 @@ fn item_drop_returns_credit_when_receiver_closes_during_channel_send() {
     assert_eq!(reserved.load(Relaxed), 0);
     assert_eq!(queued.load(Relaxed), 0);
 }
+
+#[tokio::test]
+async fn stream_control_waits_for_consumed_batch_credit_without_blocking_bulk() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (tx, mut rx) = packet_channel(1);
+    tx.send_packet_batch(packet_batch(
+        (0..64).map(|_| forged_priority(0x11)).collect(),
+    ))
+    .unwrap();
+    rx.try_recv().unwrap();
+    tx.send(forged_priority(0x22)).unwrap();
+    let mut waiting = Box::pin(tx.send_stream_packet(forged_priority(0x33)));
+    poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 64);
+    // Full bulk still drops immediately: it cannot stall a stream reader ahead
+    // of later control frames or consume the separate priority reserve.
+    for marker in [0xaa, 0xbb] {
+        tx.send_stream_packet(received_packet(
+            TransportId::new(1),
+            TransportAddr::from_string("test"),
+            bulk_packet(marker),
+        ))
+        .await
+        .unwrap();
+    }
+    assert_eq!(bulk_reserved_packets(&tx), 1);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 64);
+    for _ in 0..62 {
+        assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    }
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x22);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xaa);
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 0);
+    assert_eq!(bulk_reserved_packets(&tx), 0);
+}
+
+#[tokio::test]
+async fn cancelling_notified_stream_reader_hands_space_to_next_reader() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (tx, mut rx) = packet_channel(1);
+    tx.send_packet_batch(packet_batch(
+        (0..64).map(|_| forged_priority(0x11)).collect(),
+    ))
+    .unwrap();
+    let mut first = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    let mut second = Box::pin(tx.send_stream_packet(forged_priority(0x33)));
+    poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        assert!(second.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    rx.try_recv().unwrap();
+    drop(first);
+    tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 64);
+    for _ in 0..63 {
+        assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    }
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 0);
+}
+
+#[tokio::test]
+async fn receiver_close_wakes_all_stream_control_waiters() {
+    let (tx, rx) = packet_channel(1);
+    tx.send_packet_batch(packet_batch(
+        (0..64).map(|_| forged_priority(0x11)).collect(),
+    ))
+    .unwrap();
+    let mut tasks = Vec::new();
+    for marker in 0..8 {
+        let tx = tx.clone();
+        tasks.push(tokio::spawn(async move {
+            tx.send_stream_packet(forged_priority(marker)).await
+        }));
+    }
+    tokio::task::yield_now().await;
+    assert!(tasks.iter().all(|task| !task.is_finished()));
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 64);
+    drop(rx);
+    for (marker, task) in tasks.into_iter().enumerate() {
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(packet_marker(&error.0), marker as u8);
+    }
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 0);
+}

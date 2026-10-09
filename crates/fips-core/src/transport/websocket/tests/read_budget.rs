@@ -1,14 +1,14 @@
 use super::*;
 use std::io::{self, Cursor, Read, Write};
 use tokio_tungstenite::tungstenite::{
-    protocol::{
-        frame::{
-            coding::{Data, OpCode},
-            Frame,
-        },
-        Role,
-    },
     Error, WebSocket,
+    protocol::{
+        Role,
+        frame::{
+            Frame,
+            coding::{Data, OpCode},
+        },
+    },
 };
 
 const READ_BUDGET: usize = 16 * 1024;
@@ -188,7 +188,7 @@ impl tokio::io::AsyncWrite for ReadyWire {
 
 #[tokio::test]
 async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
-    use std::future::{poll_fn, Future};
+    use std::future::{Future, poll_fn};
     use std::task::Poll;
 
     const MESSAGES: usize = 256;
@@ -264,7 +264,7 @@ async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
 
 #[tokio::test]
 async fn concurrent_websocket_readers_preserve_control_at_shared_capacity() {
-    use std::future::{poll_fn, Future};
+    use std::future::{Future, poll_fn};
     use std::task::Poll;
 
     // Each reader has less than one cooperative turn, but their aggregate
@@ -352,4 +352,83 @@ async fn concurrent_websocket_readers_preserve_control_at_shared_capacity() {
         READERS * PER_READER,
         "shared capacity must backpressure ready control frames instead of losing them"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn blocked_control_admission_obeys_idle_timeout_and_local_close() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    for idle_secs in [0, 1] {
+        let record = build_msg1(
+            SessionIndex::new(1),
+            &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+        );
+        let mut encoder = WebSocket::from_raw_socket(Cursor::new(Vec::new()), Role::Client, None);
+        encoder.send(Message::Binary(record.into())).unwrap();
+        let (packet_tx, mut packet_rx) = packet_channel(8);
+        let transport = WebSocketTransport::new(
+            TransportId::new(7),
+            None,
+            WebSocketConfig {
+                ping_interval_secs: Some(0),
+                idle_timeout_secs: Some(idle_secs),
+                ..Default::default()
+            },
+            packet_tx,
+            &Identity::generate(),
+        );
+        for _ in 0..64 {
+            transport
+                .runtime
+                .packet_tx
+                .send(ReceivedPacket::with_timestamp(
+                    TransportId::new(7),
+                    TransportAddr::from_string("buffered"),
+                    PacketBuffer::new(build_msg1(
+                        SessionIndex::new(1),
+                        &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+                    )),
+                    0,
+                ))
+                .unwrap();
+        }
+        let socket = WebSocketStream::from_raw_socket(
+            ReadyWire(Cursor::new(encoder.get_ref().get_ref().clone())),
+            Role::Server,
+            Some(transport.runtime.websocket_config()),
+        )
+        .await;
+        let addr = TransportAddr::from_string("ws://blocked.invalid/fips");
+        let mut connection = Box::pin(run_framing_connection(
+            transport.runtime.clone(),
+            addr.clone(),
+            socket,
+            transport.runtime.next_generation(),
+            Direction::Inbound,
+            false,
+            0,
+        ));
+        poll_fn(|cx| {
+            assert!(connection.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(transport.stats().frames_received, 0);
+        if idle_secs == 0 {
+            transport.close_connection_async(&addr).await;
+        } else {
+            tokio::time::advance(Duration::from_secs(1)).await;
+        }
+        let result = tokio::time::timeout(Duration::from_millis(10), connection)
+            .await
+            .expect("a capacity wait must not suspend connection lifetime");
+        if idle_secs == 0 {
+            result.unwrap();
+        } else {
+            assert!(matches!(result, Err(TransportError::Timeout)));
+        }
+        assert!(transport.runtime.connections().is_empty());
+        assert_eq!(packet_rx.drain_ready(128, |_| true), 64);
+    }
 }

@@ -137,9 +137,13 @@ where
                         PacketBuffer::new(data.to_vec()),
                         now_ms(),
                     );
-                    runtime.packet_tx.send(packet).map_err(|_| {
-                        TransportError::RecvFailed("node packet channel closed".into())
-                    })?;
+                    runtime
+                        .packet_tx
+                        .send_stream_packet(packet)
+                        .await
+                        .map_err(|_| {
+                            TransportError::RecvFailed("node packet channel closed".into())
+                        })?;
                     runtime
                         .stats
                         .frames_received
@@ -174,9 +178,8 @@ where
             })?;
         }
         // One socket read can leave hundreds of complete frames buffered.
-        // Neither next() on that buffer nor PacketTx::send's nonblocking
-        // admission yields. Give the node and other connections a turn before
-        // this reader alone can exhaust the bounded 64-packet priority lane.
+        // Bulk admission and control admission with available space don't
+        // yield. Give the node and other connections a turn even then.
         ready_frames += 1;
         if ready_frames == 32 {
             ready_frames = 0;
