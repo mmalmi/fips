@@ -15,7 +15,7 @@ pre-existing service accounts.
 | Requirement | Evidence in place | Outstanding acceptance |
 | --- | --- | --- |
 | Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Current physical r371 crosses six expiry renewals during five minutes of impaired saved-SAE radio traffic, then delivers all recovery packets and collects all 384 test sats. Complete logs show zero source-queue drops, as in the earlier quarter-CPU ARM run. Current r398 adds two consecutive five-minute windows with all 168,000 packets delivered, six expiry renewals and full test-fund collection. | Physical wallet-transition boundaries beyond the committed funding/settlement replies below; extend root-loss, route recovery and resource-pressure acceptance beyond the finite ARM trials. Extend repeated-boot coverage beyond the three unsynced boots passed in r403; finite allowance can still run out. Cover slow storage and remaining CPU/storage/wire attribution. |
-| Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r366 includes root-loss recovery, funded renewal handover and completed-expiry settlement cleanup, and passes all eight build gates, including six lifecycle tests. Its physical r369 transit test with the matching r361 router binaries delivers 19 MiB over the same phone process and original channels, including five minutes with the activity hidden; unpaid traffic is refused, all 512 test sats return and 804 management checks pass. Independent device, financial and artifact checks pass. Current r376 adds physical radio/WSS forwarding with self-signed TLS, automatic reconnect on the original paid channels and full collection. Current r382 verifies elected-root radio loss, replacement and rejoin during paid traffic, retaining the original processes and channels. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Physical power-loss qualification; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, longer and WAN WebSocket/TLS workloads, and acceptance before enabling additional core adapters. |
+| Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Current Android r404 includes adaptive crash windows and passes all eight build gates, including six lifecycle tests. Its physical r405 transit test with the matching r400 router binaries delivers all 19 MiB over the same phone process and four original channels, including five minutes with the activity hidden; unpaid traffic is refused, all 512 test sats return and 813 management checks pass. Independent device, financial and artifact checks pass; the temporary app and router profiles are removed. Current r376 adds physical radio/WSS forwarding with self-signed TLS, automatic reconnect on the original paid channels and full collection. Current r382 verifies elected-root radio loss, replacement and rejoin during paid traffic, retaining the original processes and channels. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Physical power-loss qualification; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, renewal and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, longer and WAN WebSocket/TLS workloads, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, current r372 ordinary ARM64 middle-router process recovery during an original paid radio stream, retaining both channels and exact bounded unbilled exposure on persistent accounts; and r377 physical process loss after a committed mint close, with provider recovery while its buyer remains offline, automatic original refund/release and full collection; r380 adds committed successor-funding recovery on all three physical routers, preserving the original wallet operation and carrying paid traffic before and after restart; r381 recovers the very first committed purchase without another buy request, then delivers paid traffic and collects every test sat. Current r392 retains the original paid accounts across an unsynced router kernel reset, delivers all 48,000 payloads and collects all test funds. Current r395 adds automatic recovery through the installed OpenWrt init/UCI service, retaining the original channels and limits with all 48,000 packets delivered and all test funds collected. Current r396 repeats that recovery during a 207.51-second mint outage, with complete paid delivery and collection after the original mint resumes. Current r403 retains both original channels across three unsynced boots, delivers all 24,000 packets and collects all 384 test sats with adaptive durable windows. | Full physical paid-recovery acceptance for durable quotes and the updated TCP graph. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit; independent refunds and renewals complete while another mint close is held, with wallet imports still serialized. See [wallet progress](#independent-wallet-progress) and [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
@@ -839,12 +839,12 @@ verifies restored routers, stopped test processes/mint, unchanged original phone
 accounts and normal Wi-Fi, and 263 retained acceptance files. A cleanup check
 that matched its own inspection command is corrected using actual executable
 identities without repeating traffic or financial operations. See
-[the phone CPU measurements](CADENCE-RESULTS.md#sustained-background-phone-transit--7-october-2026).
+[the phone CPU measurements](CADENCE-RESULTS.md#sustained-background-phone-transit--9-october-2026).
 This USB-powered, awake, finite LAN case does not qualify natural deep idle,
 battery cost, renewal, network suspension, movement, phone 802.11s or long-run
 impaired performance.
 
-The current Android candidate in `work/android-expiry-recovery-r366` uses runtime
+The earlier Android candidate in `work/android-expiry-recovery-r366` uses runtime
 `382b557cf`, including root-loss recovery, funded renewal handover and completed
 expiry-refund settlement cleanup. It freezes the r363 sources with the ordinary
 native/ARM builds from r361 and six-case paid recovery qualification from r364.
@@ -876,6 +876,33 @@ During the background window, version-three counters attribute 2.463 seconds of
 CPU to payments, or 136.8 ms per delivered MiB; whole-process CPU is 188.31 seconds
 including diagnostics. These are finite USB-powered LAN measurements, without
 a claim about natural deep idle, battery cost, renewal, movement or phone 802.11s.
+
+The current Android candidate in `work/android-adaptive-window-r404` adds the
+adaptive crash-window runtime `45f44135b`, matching the ordinary native/ARM
+candidate from r400. All 908 runtime Rust files and 17 Android build/shell files
+match the integrated source; the accepted dependency graph and Android shell are
+unchanged. All eight build gates pass, including six JVM lifecycle tests, strict
+Android-target Rust lint and APK lint. The packaged ARM64 library matches the
+independently stripped native build, and production features exclude wallet
+simulation. Independent closure verifies unchanged sources/dependencies and
+stopped build processes; 22 artifact/evidence files are archived with matching
+hashes.
+
+That APK and the matching r400 router binaries pass the unchanged four-account
+transit workload in `work/phone-adaptive-window-r405`; 80 focused Linux harness
+checks also pass. All 19 MiB arrive with matching digests and acknowledgments,
+including nine MiB per direction over five minutes with the activity hidden.
+All 53 background observations retain the expected links and foreground routing
+service, and the same phone process spans every window. The phone earns on two
+channels, pays one onward channel and receives no application packets. Unpaid
+traffic delivers zero bytes. The four original channels settle, all 512 test sats
+return and all 813 management checks pass. Independent closure verifies restored
+routers/Wi-Fi, unchanged original accounts and limits, stopped owned processes,
+four complete account archives, and removal of the temporary app and router
+profiles. The 279-file evidence inventory verifies those records. See
+[the current phone costs](CADENCE-RESULTS.md#sustained-background-phone-transit--9-october-2026).
+This USB-powered, awake, finite LAN trial does not qualify natural deep idle,
+battery cost, phone crash recovery, renewal, network suspension or mobility.
 
 The preceding r337 APK starts on the Pixel with an empty account in
 `work/phone-startup-r338`. The setup screen is visually checked; no profile,
@@ -1215,8 +1242,9 @@ Independent closure verifies restored networking, stopped test processes/mint,
 three complete financial archives and removal of closed test profiles. The exact
 unchanged harness retains its 108-check Linux qualification. Traffic pauses at
 each reset and electrical power remains present: this qualifies neither physical
-power cuts nor indefinite restart continuity or performance. Android qualification
-for this runtime change remains outstanding.
+power cuts nor indefinite restart continuity or performance. Android r404/r405
+above qualifies the matching runtime for steady foreground/background transit;
+phone crash recovery remains separate acceptance work.
 
 The earlier Android build from `65766fab1`, including the qualified TCP/FIPS
 handshake backport and version-three payment CPU measurements, passes ARM64 JNI

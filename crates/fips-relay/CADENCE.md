@@ -169,7 +169,7 @@ Android build and five-minute background phone transit pass in
 are acknowledged, all four original channels settle, all 512 test sats return
 and all 810 management checks pass. Exact APK/account archives are verified
 before removing the completed test app and its Android data. See
-[the scoped phone costs](CADENCE-RESULTS.md#sustained-background-phone-transit--7-october-2026).
+[the scoped phone costs](CADENCE-RESULTS.md#sustained-background-phone-transit--9-october-2026).
 This finite existing-LAN, USB-powered case does not qualify deep idle, movement,
 renewal or battery cost, and the scheduling hint is not an exact shared-credit
 or latency forecast.

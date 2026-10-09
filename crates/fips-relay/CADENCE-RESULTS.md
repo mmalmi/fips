@@ -328,44 +328,45 @@ expiry success does not demonstrate a performance improvement or explain the
 That failure remains preserved; broader sustained, impaired and power-loss
 acceptance is still open.
 
-## Sustained background phone transit — 7 October 2026
+## Sustained background phone transit — 9 October 2026
 
-`work/phone-sustained-r220` uses the ordinary `ab00e5fbe` runtime, the exact
-qualified APK from `work/android-current-r219`, matching ARM64 router binaries
-and harness `5664ed564`. The wallet SDK has no simulation features; only the
-capped issuer uses test money. The router → phone → router → router path uses
-UDP over the existing LAN, with USB power and the phone awake.
+`work/phone-adaptive-window-r405` rechecks the r220/r369 workload with adaptive
+crash-window runtime `45f44135b`, the qualified r404 APK, matching ordinary r400
+ARM64 router binaries and harness `1afcdbe0a`. The wallet SDK excludes simulation;
+only the capped issuer uses test money. The router → phone → router → router path
+uses UDP over the existing LAN, with USB power and the phone awake.
 
 Unpaid delivery is zero. Foreground traffic delivers 512 KiB per direction;
 the hidden activity then relays nine MiB per direction at 32 KiB/s in an interval
 of at least 300 seconds, including setup and ACK drain. Both directions have
-complete delivery, ACK and matching digests. All 53 background samples retain
-the foreground service and the same process. The phone earns on two channels,
-pays one onward channel and receives no application packets itself. All four
-original channels settle, all 512 simulated sats return, and all 810 management
-checks pass. Original device state is restored; the completed phone app and its
-Android data are removed after APK and private account archive verification.
+complete delivery, ACK and matching digests. All 53 background observations retain
+the expected links and foreground service; the same process spans every window.
+The phone earns on two channels, pays one onward channel and receives no
+application packets itself. All four original channels settle, all 512 test sats
+return, and all 813 management checks pass. Independent closure verifies restored
+devices and unchanged original accounts; the temporary app and router profiles
+are removed after all four completed accounts are archived.
 
-Shared version-three counter validation compares two live native snapshots
-around the background window. Costs below cover only the phone and are divided
-by the 18 MiB delivered in that window, not summed across the route.
+Version-three counter validation compares two live native snapshots around the
+background window. Costs cover only the phone and are divided by the 18 MiB
+delivered in that window, rather than summed across the route.
 
 | Measurement | Background-window result |
 | --- | ---: |
-| Attributed payment CPU | 2,434.22 ms; 135.23 ms / delivered MiB |
-| Whole-process CPU | 10.382 s / delivered MiB |
-| Android process CPU tick delta | 186.92 s |
+| Attributed payment CPU | 2,553.75 ms; 141.88 ms / delivered MiB |
+| Whole-process CPU | 9.713 s / delivered MiB |
+| Android process CPU tick delta | 174.96 s |
 | Logical relay journal writes / syncs / commits | 98 / 196 / 98 |
-| Logical relay journal bytes | 255,102 |
+| Logical relay journal bytes | 256,849 |
 | Payment requests started / received | 28 / 84 |
 | Local payment stream bytes sent / received | 21,970 / 24,054 |
 
 Whole-process CPU includes diagnostic work. Payment spans exclude scheduler scans
 and TCP/FIPS/core transport CPU; relay journal bytes exclude physical flash and
-wallet SQLite attribution. These low-rate observations establish neither an
-optimal cadence nor throughput or battery cost. Natural deep idle, renewal,
-network suspension, movement, phone 802.11s and long-run impaired traffic remain
-separate acceptance work. The 500-ms default is unchanged.
+wallet SQLite attribution. This single low-rate trial establishes neither an
+optimization comparison nor optimal cadence, throughput or battery cost. Natural
+deep idle, renewal, network suspension, movement, phone 802.11s and long-run
+impaired traffic remain separate acceptance work. The 500-ms default is unchanged.
 
 ## Current storage syscall comparison — 7 October 2026
 
