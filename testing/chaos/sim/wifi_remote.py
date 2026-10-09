@@ -190,6 +190,10 @@ class Router(RelayCommands, SshCommands):
                         f"mv {self.temporary}/heartbeat.new {self.temporary}/heartbeat; fi")
         self.remote("set -eu; " + command, timeout=10)
 
+    def guard_restore_command(self):
+        """Optional leased fault restoration; it must be safe to repeat."""
+        return ":"
+
     def guard_script(self):
         # Independent remote expiry restores an owned outage even if SSH/the runner dies.
         from .wifi_customer import guard_helpers
@@ -222,7 +226,9 @@ cleanup() {{
   if [ ! -f {t}/open-armed ]; then
     remove_owned_table {self.original_table} {t}/original-isolated
   fi
+  {self.guard_restore_command()} || echo 'fault restoration pending process shutdown' >&2
   stop_candidate
+  {self.guard_restore_command()}
   touch {t}/guard-cleaned
   flock -u 9
   exec 9>&-

@@ -144,6 +144,18 @@ class GuardTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("guard did not acknowledge readiness")
 
+    def test_failed_fault_restore_cannot_mark_cleanup_complete(self):
+        restored = self.remote / 'fault-restored'
+        self.node.guard_restore_command = lambda: f'test -f {restored}'
+        self.guard.write_bytes(self.node.guard_script())
+        self.start_guard()
+        with self.assertRaises(RuntimeError):
+            self.local(['sh', str(self.guard), 'cleanup'])
+        self.assertFalse((self.remote / 'guard-cleaned').exists())
+        restored.touch()
+        self.local(['sh', str(self.guard), 'cleanup'])
+        self.assertTrue((self.remote / 'guard-cleaned').exists())
+
     def test_pinned_diagnostic_filter_reaches_the_owned_candidate(self):
         self.start_guard()
         expected = "warn,fips_core::node::handlers::rx_loop::dataplane=debug"

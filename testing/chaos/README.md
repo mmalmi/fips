@@ -306,6 +306,10 @@ pass both `--mint-host /private/operator/mint-host.json` (the shared remote-mint
 host specification) and `--mint-address` with that host's assigned private LAN
 IPv4 address. This runs the supplied ARM64 or x86-64 Linux mint there with a
 128-sat issuance cap; the binary architecture must match the host.
+The host JSON contains `host`, `state_parent`, optional `ssh_config`, and optional
+integer `port` (0–65535). Omitting `port` or setting it to zero lets the host pick
+a port; an explicit port can use an existing permitted LAN ingress rule. The
+fixture checks reachability before issuing test money.
 All three routers must reach it before the single source grant. A single watch
 compares provider tariffs of 128/160 msat per KiB under a 192-msat ceiling. The
 normal selector defaults remain intact, including the 32-KiB trial and 60-second
@@ -621,6 +625,35 @@ checks; those cases skip on other hosts. The [readiness assessment](../../crates
 records the passing same-process and full source-process restart hardware runs
 and their limits. Whole-router power loss and arbitrary mobile mesh encounters
 remain separate checks.
+
+### Router wallet snapshot failure
+
+`sim.wifi_signer_storage` binds one fresh test wallet's snapshot onto itself on
+the router's flash. Reads, locks and unrelated writes remain available; atomic
+snapshot replacement fails with `EBUSY`. An unfunded preflight proves the fault
+and restoration before any test money is issued. The existing lease guard
+restores the owned mount if the controller disappears.
+
+```sh
+python3 -m sim.wifi_signer_storage \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address 192.0.2.10 \
+  --output /private/results/new-router-snapshot-fault
+```
+
+Six 1,024-packet streams cover both directions before, during and after the
+fault. Acceptance requires an unchanged saved snapshot, retained pending
+authorization, continued payment by the opposite buyer and automatic retry
+after unmount. Both original channels, spending limits and relay processes must
+survive, every payload must arrive once, and all 384 test sats must be collected.
+This finite snapshot-commit check leaves full-filesystem, read-only-wallet and
+electrical power-cut recovery as separate qualifications.
+
+Focused Linux checks: `python3 -m unittest tests.test_wifi_signer_storage
+tests.test_wifi_discovery tests.test_remote_mint` from `testing/chaos`.
 
 ### Router load, restart and frame loss
 

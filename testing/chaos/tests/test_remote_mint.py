@@ -241,6 +241,21 @@ class MintHostTests(unittest.TestCase):
 
 
 class RemoteMintTests(unittest.TestCase):
+    def test_explicit_mint_port_preserves_the_assigned_address(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'mint'
+            binary.write_bytes(b'\x7fELF\x02\x01' + b'\x00' * 12 + b'\xb7\x00')
+            spec = {'host': 'lab', 'state_parent': '/tmp/bench'}
+            for index, override in enumerate(({}, {'port': 0}, {'port': 8088})):
+                output = root / str(index)
+                output.mkdir()
+                mint = RemoteMint({**spec, **override}, binary, '123456789abc', output, '192.0.2.10')
+                self.assertEqual(mint.settings['bind'], f"192.0.2.10:{override.get('port', 0)}")
+            for port in (True, -1, 65536, '8088', None):
+                with self.subTest(port=port), self.assertRaisesRegex(ValueError, 'mint port'):
+                    RemoteMint({**spec, 'port': port}, binary, '123456789abc', root, '192.0.2.10')
+
     def test_refuses_wrong_architecture_and_excessive_test_funding(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

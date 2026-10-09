@@ -22,6 +22,9 @@ class RemoteMint(SshCommands):
             raise ValueError("mint requires an assigned private LAN address")
         if type(max_issued_sat) is not int or not 1 <= max_issued_sat <= 512:
             raise ValueError("phone acceptance issuance is capped at 512 test sats")
+        port = spec.get('port', 0)
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError('mint port must be an integer in 0..65535')
         self.spec, self.host = spec, checked_name(spec["host"])
         self.source = Path(binary).resolve(strict=True)
         header = self.source.read_bytes()[:20]
@@ -37,7 +40,7 @@ class RemoteMint(SshCommands):
         state = self.root + "/mint-state"
         if len((state + "/control.sock").encode()) > 100:
             raise ValueError("mint control socket path is too long")
-        self.settings = {"state_directory": state, "bind": f"{ip}:0",
+        self.settings = {"state_directory": state, "bind": f"{ip}:{port}",
                          "max_issued_sat": max_issued_sat}
         self.info = {"host": self.host, "binary": self.binary, "config": self.config,
                      "address": str(ip), "binary_sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}
