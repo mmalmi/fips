@@ -383,6 +383,7 @@ pub struct PacketTx {
     // Reservations cover channel-owned packets and pending receive-batch tails.
     priority_reserved_packets: Arc<AtomicUsize>,
     priority_space: Arc<tokio::sync::Notify>,
+    priority_stream_turn: Arc<tokio::sync::Mutex<()>>,
     queued_packets: Arc<AtomicUsize>,
     bulk_reserved_packets: Arc<AtomicUsize>,
     bulk_packet_capacity: usize,
