@@ -1,5 +1,9 @@
 //! The phone's actual customer lifecycle can host a paid intermediate relay.
 use super::*;
+use cashu_service::simulation::MintProxy;
+use fips_relay::controller::RenewalPolicy;
+#[path = "renewal.rs"]
+mod renewal;
 use fips_relay::{
     control_transport::NeighborAdmission, probe::stream::StreamProbe, service::native_request,
 };
@@ -28,261 +32,307 @@ async fn duplex(
     vec![left, right]
 }
 
+fn assert_delivery(reports: &[Result<Value, String>], bytes: u64) {
+    for report in reports {
+        let report = &report.as_ref().unwrap()["probe"];
+        for field in ["accepted_bytes", "received_bytes", "acknowledged_bytes"] {
+            assert_eq!(report[field], bytes);
+        }
+    }
+    assert_eq!(
+        reports[0].as_ref().unwrap()["probe"]["received_sha256"],
+        reports[1].as_ref().unwrap()["probe"]["received_sha256"]
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
-    tokio::time::timeout(Duration::from_secs(120), async {
-        let root = tempfile::tempdir().unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let network = PaymentNetwork::new(175, 0, Arc::new(VirtualClock::new(now)));
-        let mint = LocalMint::start(
-            root.path(),
-            network.clone(),
-            "phone-transit",
-            IssuerMode::ClosedLoop,
-        )
-        .await
-        .unwrap();
-        let directory = root.path().join("phone");
-        let mut configs = vec![
-            config(&root.path().join("left"), mint.url()),
-            config(&directory, mint.url()),
-            config(&root.path().join("onward"), mint.url()),
-            config(&root.path().join("right"), mint.url()),
-        ];
-        let mut reservations = Vec::new();
-        let mut npubs = vec![String::new(); 4];
-        for node in [0, 2, 3] {
-            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-            configs[node].transports = udp_transports(socket.local_addr().unwrap());
-            configs[node].neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
-            configs[node].terms.billing = BillingBasis::ForwardingData;
-            configs[node].terms.fee_msat_per_kib = 1;
-            configs[node].terms.quote_max_units = 8 * 1024 * 1024;
-            reservations.push(socket);
-            std::fs::create_dir_all(configs[node].state_directory.parent().unwrap()).unwrap();
-            npubs[node] = RelayService::initialize(configs[node].clone())
-                .await
-                .unwrap();
-            fund(
-                &configs[node].state_directory.join("wallet"),
-                mint.url(),
-                &network,
-                128,
-            )
-            .await;
-        }
-        let mut policy = profile(
-            &npubs[0],
-            udp_bind(&configs[0]).to_string(),
-            &npubs[3],
-            mint.url(),
+    exercise(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "waits for the customer's real renewal clock; run explicitly"]
+async fn customer_rebinds_while_expiry_renewal_close_is_held() {
+    exercise(true).await;
+}
+
+async fn exercise(renewal: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().to_owned();
+    let result = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(180), scenario(&path, renewal))
+            .await
+            .expect("phone lifecycle transit and settlement deadline");
+    })
+    .await;
+    if let Err(error) = result {
+        panic!(
+            "{error}; retained failed fixture at {}",
+            root.keep().display()
         );
-        policy.billing = BillingBasis::ForwardingData;
-        policy.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
-        let mut client = CustomerClient::open(&directory).unwrap();
-        assert!(client.execute(Action::NetworkChanged).await.is_err());
-        let setup = client
-            .execute(Action::Setup {
-                profile: policy.clone(),
-            })
+    }
+}
+
+async fn scenario(root: &Path, renewal: bool) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let network = PaymentNetwork::new(175, 0, Arc::new(VirtualClock::new(now)));
+    let mint = LocalMint::start(
+        root,
+        network.clone(),
+        "phone-transit",
+        IssuerMode::ClosedLoop,
+    )
+    .await
+    .unwrap();
+    let proxy = if renewal {
+        Some(MintProxy::start(mint.url()).await)
+    } else {
+        None
+    };
+    let mint_url = proxy.as_ref().map_or(mint.url(), |p| p.url.as_str());
+    let directory = root.join("phone");
+    let mut configs = vec![
+        config(&root.join("left"), mint_url),
+        config(&directory, mint_url),
+        config(&root.join("onward"), mint_url),
+        config(&root.join("right"), mint_url),
+    ];
+    let mut reservations = Vec::new();
+    let mut npubs = vec![String::new(); 4];
+    for node in [0, 2, 3] {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        configs[node].transports = udp_transports(socket.local_addr().unwrap());
+        configs[node].neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
+        configs[node].terms.billing = BillingBasis::ForwardingData;
+        configs[node].terms.fee_msat_per_kib = 1;
+        configs[node].terms.quote_max_units = 8 * 1024 * 1024;
+        if renewal {
+            configs[node].terms.quote_lifetime_secs = 90;
+            configs[node].terms.controller.renewal = Some(RenewalPolicy {
+                at_capacity_percent: 80,
+                before_expiry_secs: 30,
+            });
+        }
+        reservations.push(socket);
+        std::fs::create_dir_all(configs[node].state_directory.parent().unwrap()).unwrap();
+        npubs[node] = RelayService::initialize(configs[node].clone())
             .await
             .unwrap();
-        npubs[1] = setup["npub"].as_str().unwrap().into();
         fund(
-            &configs[1].state_directory.join("wallet"),
-            mint.url(),
+            &configs[node].state_directory.join("wallet"),
+            mint_url,
             &network,
             128,
         )
         .await;
-        let mut changed = policy.clone();
-        changed.neighbor_admission = NeighborAdmission::ConfiguredOnly;
-        assert!(
-            client
-                .execute(Action::Setup { profile: changed })
-                .await
-                .is_err()
-        );
-        let paths = [
-            root.path().join("left.json"),
-            root.path().join("onward.json"),
-            root.path().join("right.json"),
-        ];
-        std::fs::write(&paths[0], serde_json::to_vec(&configs[0]).unwrap()).unwrap();
-        drop(reservations);
-        let mut children = vec![process_support::start(&paths[0]).await];
-        // CustomerClient starts the same service used by Android, with only its
-        // configured entry. The onward relay must establish a new adjacency.
-        // A separate final recipient makes onward purchases observable: direct
-        // delivery to a neighbor has no additional relay to pay.
-        client.execute(Action::Start).await.unwrap();
-        let report = native_request(&configs[1], &json!({"command":"show_transports"}))
-            .await
-            .unwrap();
-        let mut address: SocketAddr = report["data"]["transports"][0]["local_addr"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_ne!(address.port(), 0);
-        address.set_ip(Ipv4Addr::LOCALHOST.into());
-        configs[2].neighbors = vec![
-            PeerConfig::new(&npubs[1], "udp", address.to_string()),
-            PeerConfig::new(&npubs[3], "udp", udp_bind(&configs[3]).to_string()),
-        ];
-        for node in [2, 3] {
-            std::fs::write(
-                &paths[node - 1],
-                serde_json::to_vec(&configs[node]).unwrap(),
-            )
-            .unwrap();
-            children.push(process_support::start(&paths[node - 1]).await);
-        }
-        tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
-                let mut ready = true;
-                for (node, config) in configs.iter().enumerate() {
-                    ready &= request(config, &AdminRequest::Status)
-                        .await
-                        .is_ok_and(|state| process_support::has_line_peers(&state, &npubs, node));
-                }
-                if ready {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
+    }
+    let mut policy = profile(
+        &npubs[0],
+        udp_bind(&configs[0]).to_string(),
+        &npubs[3],
+        mint_url,
+    );
+    policy.billing = BillingBasis::ForwardingData;
+    policy.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
+    let mut client = CustomerClient::open(&directory).unwrap();
+    assert!(client.execute(Action::NetworkChanged).await.is_err());
+    let setup = client
+        .execute(Action::Setup {
+            profile: policy.clone(),
         })
         .await
-        .expect("only the four-node transit line must form");
-        let denied = duplex(&configs, &npubs, 74, 1024, 2).await;
-        let unpaid = request(&configs[1], &AdminRequest::Status).await.unwrap();
-        for (source, destination) in [(0, 3), (3, 0)] {
-            request(
-                &configs[source],
-                &AdminRequest::Buy {
-                    destination: npubs[destination].clone(),
-                },
-            )
+        .unwrap();
+    npubs[1] = setup["npub"].as_str().unwrap().into();
+    fund(
+        &configs[1].state_directory.join("wallet"),
+        mint_url,
+        &network,
+        128,
+    )
+    .await;
+    let mut changed = policy.clone();
+    changed.neighbor_admission = NeighborAdmission::ConfiguredOnly;
+    assert!(
+        client
+            .execute(Action::Setup { profile: changed })
             .await
-            .unwrap();
-        }
-        let before = client.execute(Action::Status).await.unwrap();
-        let delivery = duplex(&configs, &npubs, 75, 128 * 1024, 6).await;
-        let after = client.execute(Action::Status).await.unwrap();
-        let mut prior = Vec::new();
-        for config in &configs {
-            prior.push(request(config, &AdminRequest::Status).await.unwrap());
-        }
-        let rebound = client.execute(Action::NetworkChanged).await.unwrap();
-        assert_eq!(rebound["rebound_transports"], 1);
-        let moved = native_request(&configs[1], &json!({"command":"show_transports"}))
-            .await
-            .unwrap();
-        let moved: SocketAddr = moved["data"]["transports"][0]["local_addr"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_ne!(address.port(), moved.port());
-        // Reuse the live customer, authenticated neighbors and paid contracts.
-        // No Start/Buy command or new financial authority follows the rebind.
-        let recovery = duplex(&configs, &npubs, 76, 1024 * 1024, 15).await;
-        let recovered = client.execute(Action::Status).await.unwrap();
-        let mut later = Vec::new();
-        for config in &configs {
-            later.push(request(config, &AdminRequest::Status).await.unwrap());
-        }
-        eprintln!("phone transit results: {delivery:?}; rebound: {recovery:?}");
-        // Retain the measured outcome before closing and reconciling accounts.
-        for config in &configs {
-            request(config, &AdminRequest::Settle).await.unwrap();
-        }
-        let settled = client.execute(Action::Status).await.unwrap();
-        client.execute(Action::Stop).await.unwrap();
-        assert!(client.execute(Action::NetworkChanged).await.is_err());
-        for child in &mut children {
-            process_support::stop(child).await;
-        }
-        let mut total = 0;
-        for config in &configs {
-            total += load_mint_balance(&config.state_directory.join("wallet"), mint.url())
-                .await
-                .unwrap()
-                .balance_sat;
-        }
-        assert_eq!(total, 512);
-        assert!(network.accounting().unwrap().is_conserved());
-        assert_eq!(settled["relay"]["funding_budget"]["locked_sat"], 0);
-        assert_eq!(
-            settled["relay"]["funding_budget"]["pending_reserved_sat"],
-            0
-        );
-        assert!(denied.iter().all(Result::is_err));
-        assert_eq!(unpaid["funding_budget"]["wallet_debited_sat"], 0);
-        assert_eq!(before["profile"], after["profile"]);
-        assert_eq!(
-            before["relay"]["funding_budget"],
-            after["relay"]["funding_budget"]
-        );
-        assert_eq!(after["profile"], recovered["profile"]);
-        for (before, after) in prior.iter().zip(&later) {
-            for field in ["npub", "purchases", "funding_budget"] {
-                assert_eq!(before[field], after[field], "rebind changed {field}");
-            }
-            for (channel, progress) in before["payment_progress"].as_object().unwrap() {
-                let new = &after["payment_progress"][channel];
-                assert!(
-                    new["evidence_msat"].as_u64().unwrap()
-                        > progress["evidence_msat"].as_u64().unwrap()
-                );
-                assert!(
-                    new["authorized_sat"].as_u64().unwrap()
-                        > progress["authorized_sat"].as_u64().unwrap()
-                );
-                assert!(
-                    new["acknowledged_msat"].as_u64().unwrap()
-                        > progress["acknowledged_msat"].as_u64().unwrap()
-                );
-            }
-        }
-        for (delivery, bytes) in [(delivery, 128 * 1024), (recovery, 1024 * 1024)] {
-            let reports: Vec<_> = delivery
-                .into_iter()
-                .map(|r| r.unwrap()["probe"].clone())
-                .collect();
-            for report in &reports {
-                for field in ["accepted_bytes", "received_bytes", "acknowledged_bytes"] {
-                    assert_eq!(report[field], bytes);
-                }
-            }
-            assert_eq!(reports[0]["received_sha256"], reports[1]["received_sha256"]);
-        }
-        // Positive provider credit and onward evidence establish actual paid
-        // transit, independently of native packet counters or mere adjacency.
-        let ledger: Value = serde_json::from_slice(
-            &std::fs::read(configs[1].state_directory.join("seller/ledger.json")).unwrap(),
+            .is_err()
+    );
+    let paths = [
+        root.join("left.json"),
+        root.join("onward.json"),
+        root.join("right.json"),
+    ];
+    std::fs::write(&paths[0], serde_json::to_vec(&configs[0]).unwrap()).unwrap();
+    drop(reservations);
+    let mut children = vec![process_support::start(&paths[0]).await];
+    // CustomerClient starts the same service used by Android, with only its
+    // configured entry. The onward relay must establish a new adjacency.
+    // A separate final recipient makes onward purchases observable: direct
+    // delivery to a neighbor has no additional relay to pay.
+    client.execute(Action::Start).await.unwrap();
+    let report = native_request(&configs[1], &json!({"command":"show_transports"}))
+        .await
+        .unwrap();
+    let mut address: SocketAddr = report["data"]["transports"][0]["local_addr"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(address.port(), 0);
+    address.set_ip(Ipv4Addr::LOCALHOST.into());
+    configs[2].neighbors = vec![
+        PeerConfig::new(&npubs[1], "udp", address.to_string()),
+        PeerConfig::new(&npubs[3], "udp", udp_bind(&configs[3]).to_string()),
+    ];
+    for node in [2, 3] {
+        std::fs::write(
+            &paths[node - 1],
+            serde_json::to_vec(&configs[node]).unwrap(),
         )
         .unwrap();
-        let channels = ledger["ledger"]["channels"].as_array().unwrap();
-        assert_eq!(channels.len(), 2);
-        assert!(
-            channels
-                .iter()
-                .all(|row| row["usage"]["submitted_msat"].as_u64().unwrap() > 0
-                    && row["usage"]["paid_msat"].as_u64().unwrap() > 0)
-        );
-        let progress = after["relay"]["payment_progress"].as_object().unwrap();
-        assert_eq!(progress.len(), 1);
-        assert!(
-            progress
-                .values()
-                .all(|p| p["evidence_msat"].as_u64().unwrap() > 0)
-        );
-        assert_eq!(after["relay"]["received"]["packets"], 0);
+        children.push(process_support::start(&paths[node - 1]).await);
+    }
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let mut ready = true;
+            for (node, config) in configs.iter().enumerate() {
+                ready &= request(config, &AdminRequest::Status)
+                    .await
+                    .is_ok_and(|state| process_support::has_line_peers(&state, &npubs, node));
+            }
+            if ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     })
     .await
-    .expect("phone lifecycle transit and settlement deadline");
+    .expect("only the four-node transit line must form");
+    let denied = duplex(&configs, &npubs, 74, 1024, 2).await;
+    let unpaid = request(&configs[1], &AdminRequest::Status).await.unwrap();
+    for (source, destination) in [(0, 3), (3, 0)] {
+        request(
+            &configs[source],
+            &AdminRequest::Buy {
+                destination: npubs[destination].clone(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let before = client.execute(Action::Status).await.unwrap();
+    let delivery = duplex(&configs, &npubs, 75, 128 * 1024, 6).await;
+    let after = client.execute(Action::Status).await.unwrap();
+    let mut prior = Vec::new();
+    for config in &configs {
+        prior.push(request(config, &AdminRequest::Status).await.unwrap());
+    }
+    let rebound = client.execute(Action::NetworkChanged).await.unwrap();
+    assert_eq!(rebound["rebound_transports"], 1);
+    let moved = native_request(&configs[1], &json!({"command":"show_transports"}))
+        .await
+        .unwrap();
+    let moved: SocketAddr = moved["data"]["transports"][0]["local_addr"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(address.port(), moved.port());
+    // Reuse the live customer, authenticated neighbors and paid contracts.
+    // No Start/Buy command or new financial authority follows the rebind.
+    let recovery = duplex(&configs, &npubs, 76, 1024 * 1024, 15).await;
+    let recovered = client.execute(Action::Status).await.unwrap();
+    let mut later = Vec::new();
+    for config in &configs {
+        later.push(request(config, &AdminRequest::Status).await.unwrap());
+    }
+    eprintln!("phone transit results: {delivery:?}; rebound: {recovery:?}");
+    if let Some(proxy) = &proxy {
+        renewal::rebind_during_close(&configs, &npubs, &mut client, proxy).await;
+    }
+    // Retain the measured outcome before closing and reconciling accounts.
+    for config in &configs {
+        request(config, &AdminRequest::Settle).await.unwrap();
+    }
+    let settled = client.execute(Action::Status).await.unwrap();
+    client.execute(Action::Stop).await.unwrap();
+    assert!(client.execute(Action::NetworkChanged).await.is_err());
+    for child in &mut children {
+        process_support::stop(child).await;
+    }
+    let mut total = 0;
+    for config in &configs {
+        total += load_mint_balance(&config.state_directory.join("wallet"), mint_url)
+            .await
+            .unwrap()
+            .balance_sat;
+    }
+    assert_eq!(total, 512);
+    assert!(network.accounting().unwrap().is_conserved());
+    assert_eq!(settled["relay"]["funding_budget"]["locked_sat"], 0);
+    assert_eq!(
+        settled["relay"]["funding_budget"]["pending_reserved_sat"],
+        0
+    );
+    assert!(denied.iter().all(Result::is_err));
+    assert_eq!(unpaid["funding_budget"]["wallet_debited_sat"], 0);
+    assert_eq!(before["profile"], after["profile"]);
+    assert_eq!(
+        before["relay"]["funding_budget"],
+        after["relay"]["funding_budget"]
+    );
+    assert_eq!(after["profile"], recovered["profile"]);
+    for (before, after) in prior.iter().zip(&later) {
+        for field in ["npub", "purchases", "funding_budget"] {
+            assert_eq!(before[field], after[field], "rebind changed {field}");
+        }
+        for (channel, progress) in before["payment_progress"].as_object().unwrap() {
+            let new = &after["payment_progress"][channel];
+            assert!(
+                new["evidence_msat"].as_u64().unwrap()
+                    > progress["evidence_msat"].as_u64().unwrap()
+            );
+            assert!(
+                new["authorized_sat"].as_u64().unwrap()
+                    > progress["authorized_sat"].as_u64().unwrap()
+            );
+            assert!(
+                new["acknowledged_msat"].as_u64().unwrap()
+                    > progress["acknowledged_msat"].as_u64().unwrap()
+            );
+        }
+    }
+    for (delivery, bytes) in [(delivery, 128 * 1024), (recovery, 1024 * 1024)] {
+        assert_delivery(&delivery, bytes);
+    }
+    // Positive provider credit and onward evidence establish actual paid
+    // transit, independently of native packet counters or mere adjacency.
+    let ledger: Value = serde_json::from_slice(
+        &std::fs::read(configs[1].state_directory.join("seller/ledger.json")).unwrap(),
+    )
+    .unwrap();
+    let channels = ledger["ledger"]["channels"].as_array().unwrap();
+    if renewal {
+        assert!((2..=4).contains(&channels.len()));
+    } else {
+        assert_eq!(channels.len(), 2);
+    }
+    assert!(
+        channels
+            .iter()
+            .all(|row| row["usage"]["submitted_msat"].as_u64().unwrap() > 0
+                && row["usage"]["paid_msat"].as_u64().unwrap() > 0)
+    );
+    let progress = after["relay"]["payment_progress"].as_object().unwrap();
+    assert_eq!(progress.len(), 1);
+    assert!(
+        progress
+            .values()
+            .all(|p| p["evidence_msat"].as_u64().unwrap() > 0)
+    );
+    assert_eq!(after["relay"]["received"]["packets"], 0);
 }
