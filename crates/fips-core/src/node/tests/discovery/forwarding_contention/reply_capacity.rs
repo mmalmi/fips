@@ -23,8 +23,9 @@ async fn exercise(nodes: &mut [TestNode]) {
     let target = *nodes[2].node.node_addr();
     let mut busy = Vec::new();
     // The real UDP/Noise links carry the payload. Completed Noise fixtures
-    // supply the same authenticated peer inventory as the loaded seed test.
-    for index in 3..300 {
+    // supply 128 authenticated peers within the unchanged default limits.
+    // The loaded seed uses 300; either inventory exposes the 64-slot floor.
+    for index in 3..128 {
         let node = &mut nodes[1].node;
         let link = LinkId::new(1_000 + index as u64);
         let (connection, identity) =
@@ -43,7 +44,7 @@ async fn exercise(nodes: &mut [TestNode]) {
             );
         }
     }
-    assert_eq!(nodes[1].node.peers.len(), 300);
+    assert_eq!(nodes[1].node.peers.len(), 128);
     let began = Instant::now();
     let mut protected = Vec::new();
     // Model pending, already-forwarded requests using normal bounded admission
