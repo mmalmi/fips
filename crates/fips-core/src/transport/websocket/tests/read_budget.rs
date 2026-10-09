@@ -1,14 +1,14 @@
 use super::*;
 use std::io::{self, Cursor, Read, Write};
 use tokio_tungstenite::tungstenite::{
-    Error, WebSocket,
     protocol::{
-        Role,
         frame::{
-            Frame,
             coding::{Data, OpCode},
+            Frame,
         },
+        Role,
     },
+    Error, WebSocket,
 };
 
 const READ_BUDGET: usize = 16 * 1024;
@@ -188,7 +188,7 @@ impl tokio::io::AsyncWrite for ReadyWire {
 
 #[tokio::test]
 async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
-    use std::future::{Future, poll_fn};
+    use std::future::{poll_fn, Future};
     use std::task::Poll;
 
     const MESSAGES: usize = 256;
@@ -264,7 +264,7 @@ async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
 
 #[tokio::test]
 async fn concurrent_websocket_readers_preserve_control_at_shared_capacity() {
-    use std::future::{Future, poll_fn};
+    use std::future::{poll_fn, Future};
     use std::task::Poll;
 
     // Each reader has less than one cooperative turn, but their aggregate
@@ -302,7 +302,7 @@ async fn concurrent_websocket_readers_preserve_control_at_shared_capacity() {
             Some(transport.runtime.websocket_config()),
         )
         .await;
-        let addr = TransportAddr::from_string(format!("ws://buffered-{reader}.invalid/fips"));
+        let addr = TransportAddr::from_string(&format!("ws://buffered-{reader}.invalid/fips"));
         let connection = Box::pin(run_framing_connection(
             transport.runtime.clone(),
             addr.clone(),
