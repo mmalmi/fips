@@ -340,3 +340,41 @@ async fn receiver_close_wakes_all_stream_control_waiters() {
     }
     assert_eq!(tx.priority_reserved_packets.load(Relaxed), 0);
 }
+
+#[tokio::test]
+async fn stream_control_capacity_cannot_be_stolen_from_an_older_waiter() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (tx, mut rx) = packet_channel(1);
+    for _ in 0..64 {
+        tx.send(forged_priority(0x11)).unwrap();
+    }
+    let mut older = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    poll_fn(|cx| {
+        assert!(older.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    rx.try_recv().unwrap();
+
+    // The consumer has released one credit and woken the waiting reader, but
+    // it has not been scheduled yet. A hot new reader must not steal its turn.
+    let mut newer = Box::pin(tx.send_stream_packet(forged_priority(0x33)));
+    poll_fn(|cx| {
+        assert!(
+            newer.as_mut().poll(cx).is_pending(),
+            "new stream reader stole capacity from an older notified waiter"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    older.await.unwrap();
+    rx.try_recv().unwrap();
+    newer.await.unwrap();
+    for _ in 0..62 {
+        assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    }
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x22);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
+}
