@@ -41,10 +41,11 @@ def validate_blocked(before, blocked, opposite, channel, before_hash, blocked_ha
 
 class SignerStorageRun(PaidWifiRun):
     stream = stream
+    fault_node = 'n01'
 
     def __init__(self, args):
         super().__init__(args)
-        self.evidence.update(storage_fault={'kind': self.nodes['n01'].fault_kind}, physical_power_loss=False)
+        self.evidence.update(storage_fault={'kind': self.nodes[self.fault_node].fault_kind}, physical_power_loss=False)
         self.evidence['harness_sha256']['wifi_signer_storage.py'] = digest(
             Path(__file__).read_bytes())
         self.evidence['harness_sha256']['wifi_storage_faults.py'] = digest(
@@ -65,7 +66,7 @@ class SignerStorageRun(PaidWifiRun):
         return config
 
     def before_launch(self):
-        self.evidence['storage_fault']['unfunded_probe'] = self.nodes['n01'].storage_probe
+        self.evidence['storage_fault']['unfunded_probe'] = self.nodes[self.fault_node].storage_probe
         self.save()
         super().before_launch()
 

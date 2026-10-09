@@ -673,8 +673,22 @@ read-only-wallet operation, slow storage and electrical power cuts as separate
 qualifications. The full-volume case does not restart the relay or exercise a
 SQLite write while full.
 
+Use `sim.wifi_full_state` with the same required arguments and `--volume-image`
+to place the middle relay's entire account on the dedicated flash-backed volume.
+After paid traffic in both directions, it fills that volume, requires a controller
+journal write to fail with `ENOSPC`, and crashes the owned relay. Startup must exit
+with a storage failure while the volume remains full; controller, buyer and seller
+journal hashes must remain unchanged. The guard keeps the normal router filesystem
+writable. Removing the filler must allow the same account and two original channels
+to recover with exactly the unbilled exposure predicted by the stopped journal.
+Four 1,024-packet streams, automatic payments after recovery and collection of all
+384 test sats are required. The stopped account image is retained for independent
+filesystem and file-hash verification. This still does not exercise system-wide
+router exhaustion, a SQLite write while full or electrical power loss.
+
 Focused Linux checks: `python3 -m unittest tests.test_wifi_signer_storage
-tests.test_wifi_discovery tests.test_remote_mint` from `testing/chaos`.
+tests.test_wifi_full_state tests.test_wifi_discovery tests.test_remote_mint
+tests.test_wifi_restart` from `testing/chaos`.
 
 ### Router load, restart and frame loss
 

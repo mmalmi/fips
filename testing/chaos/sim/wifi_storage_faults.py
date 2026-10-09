@@ -109,7 +109,7 @@ class VolumeRouter(WalletFaultRouter):
     fault_kind = 'full-wallet-filesystem'
     image_bytes = 8 * 1024 * 1024
 
-    def __init__(self, *args, image, **kwargs):
+    def __init__(self, *args, image, whole_state=False, **kwargs):
         self.image = Path(image).resolve(strict=True)
         require(self.image.stat().st_size == self.image_bytes, 'wallet volume must be exactly 8 MiB')
         content = self.image.read_bytes()
@@ -120,6 +120,9 @@ class VolumeRouter(WalletFaultRouter):
                 'wallet volume requires a journaled ext4 filesystem with 4 KiB blocks')
         self.storage_probe = {'image_sha256': digest(content), 'image_bytes': len(content)}
         super().__init__(*args, **kwargs)
+        self.volume = self.state if whole_state else self.state + '/wallet'
+        if whole_state:
+            self.fault_kind = 'full-state-filesystem'
 
     def prepare(self, binary, config):
         super().prepare(binary, config)
@@ -130,14 +133,14 @@ class VolumeRouter(WalletFaultRouter):
                 == self.storage_probe['image_sha256'], 'staged wallet volume checksum differs')
         self.storage_probe['volume'] = json.loads(self.guarded(
             f'sh {self.temporary}/storage-fault.sh mount'))
-        self.guarded(f'printf retained >{self.state}/wallet/.sentinel')
+        self.guarded(f'printf retained >{self.volume}/.sentinel')
         try:
             self.storage_probe['fault'] = self.storage_fault('arm')
-            self.guarded(f'test "$(cat {self.state}/wallet/.sentinel)" = retained')
+            self.guarded(f'test "$(cat {self.volume}/.sentinel)" = retained')
         finally:
             restored = self.storage_fault('restore')
         self.storage_probe['restoration'] = restored
-        self.guarded(f'rm {self.state}/wallet/.sentinel')
+        self.guarded(f'rm {self.volume}/.sentinel')
 
     def cleanup(self):
         super().cleanup()
@@ -151,7 +154,7 @@ class VolumeRouter(WalletFaultRouter):
     def storage_script(self):
         return f'''#!/bin/sh
 set -eu
-volume={self.state}/wallet
+volume={self.volume}
 image={self.parent}/wallet-volume.img
 temporary={self.temporary}
 mounted() {{ awk -v p="$volume" '$5==p {{print $1":"$3}}' /proc/self/mountinfo; }}
@@ -203,8 +206,8 @@ case "$1" in
     grep -qi 'no space left on device' "$temporary/storage-byte-error"
     sync
     test "$(df -k "$volume" | awk 'NR==2 {{print $4}}')" = 0
-    printf writable >{self.state}/.storage-parent-probe
-    rm {self.state}/.storage-parent-probe
+    printf writable >{self.parent}/.storage-parent-probe
+    rm {self.parent}/.storage-parent-probe
     test "$(df -k {self.parent} | awk 'NR==2 {{print $4}}')" -ge 8192
     echo '{{"filesystem_full":true,"last_byte_refused":true,"parent_writable":true}}'
     ;;

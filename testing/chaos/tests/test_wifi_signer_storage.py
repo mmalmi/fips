@@ -21,7 +21,7 @@ class SignerStorageTests(unittest.TestCase):
             wallet, temporary = root / 'state/wallet', root / 'temporary'
             wallet.mkdir(parents=True)
             temporary.mkdir()
-            node = SimpleNamespace(state=str(wallet.parent), parent=str(root),
+            node = SimpleNamespace(state=str(wallet.parent), volume=str(wallet), parent=str(root),
                                    temporary=str(temporary))
             script = temporary / 'storage-fault.sh'
             script.write_text(VolumeRouter.storage_script(node))
