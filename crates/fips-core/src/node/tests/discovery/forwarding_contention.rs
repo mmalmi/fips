@@ -15,6 +15,7 @@ mod lost_filter;
 mod reachable_after_backoff;
 mod rx_loop;
 mod shared_ingress;
+mod target_capacity;
 mod wire_tap;
 
 #[test]
