@@ -221,9 +221,10 @@ async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
         Some(transport.runtime.websocket_config()),
     )
     .await;
+    let addr = TransportAddr::from_string("ws://buffered.invalid/fips");
     let mut connection = Box::pin(run_framing_connection(
         transport.runtime.clone(),
-        TransportAddr::from_string("ws://buffered.invalid/fips"),
+        addr.clone(),
         socket,
         transport.runtime.next_generation(),
         Direction::Inbound,
@@ -253,6 +254,10 @@ async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
     }
     assert_eq!(received, MESSAGES, "framing fairness must not lose records");
     assert_eq!(transport.stats().frames_received, MESSAGES as u64);
-    drop(connection);
+    transport.close_connection_async(&addr).await;
+    tokio::time::timeout(Duration::from_secs(1), connection)
+        .await
+        .expect("closed framing task must finish")
+        .unwrap();
     assert!(transport.runtime.connections().is_empty());
 }
