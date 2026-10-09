@@ -1,12 +1,6 @@
-"""Recover automatic payments after blocked wallet snapshot replacement on OpenWrt.
-
-Bind one test snapshot onto itself: reads and locks work, but atomic replacement
-fails with EBUSY on the router's flash. The existing lease guard restores the
-mount if the controller disappears.
-"""
+"""Recover automatic payments after a native wallet commit fails on OpenWrt."""
 
 import argparse
-import json
 import os
 from pathlib import Path
 import signal
@@ -20,98 +14,7 @@ from .restart_finances import QUOTE_UNITS, retained_finances
 from .wifi_measurements import snapshot
 from .wifi_priority_checks import received, submitted
 from .wifi_remote import Router, digest
-
-
-class StorageRouter(Router):
-    def guard_restore_command(self):
-        return (f'if [ -f {self.temporary}/storage-armed ]; then '
-                f'sh {self.temporary}/storage-fault.sh restore; fi')
-
-    def stage_runtime(self, binary):
-        super().stage_runtime(binary)
-        self.write(self.temporary + '/storage-fault.sh', self.storage_script().encode())
-
-    def prepare(self, binary, config):
-        super().prepare(binary, config)
-        # Exercise the mount before funding, then remove the empty placeholder.
-        self.guarded(f'mkdir -p {self.state}/wallet; '
-                     f'set -C; : >{self.state}/wallet/spilman-client.json')
-        try:
-            self.storage_probe = {'mount': self.storage_fault('arm')}
-            self.guarded(f'printf probe >{self.state}/wallet/.replace-probe; '
-                         f'if mv {self.state}/wallet/.replace-probe '
-                         f'{self.state}/wallet/spilman-client.json '
-                         f'2>{self.temporary}/storage-error; then exit 1; fi; '
-                         f'grep -qi "resource busy" {self.temporary}/storage-error')
-            self.storage_probe['replacement_refused'] = True
-        finally:
-            restored = self.storage_fault('restore')
-        self.storage_probe['restoration'] = restored
-        self.guarded(f'mv {self.state}/wallet/.replace-probe '
-                     f'{self.state}/wallet/spilman-client.json; '
-                     f'rm {self.state}/wallet/spilman-client.json')
-
-    def storage_script(self):
-        return f'''#!/bin/sh
-set -eu
-snapshot={self.state}/wallet/spilman-client.json
-temporary={self.temporary}
-mounted() {{ awk -v p="$snapshot" '$5==p {{print $1}}' /proc/self/mountinfo; }}
-identity() {{
-  test -f "$snapshot" && test ! -L "$snapshot" || return 1
-  device=$(awk -v p="$snapshot" '$5=="/" || p==$5 || index(p,$5"/")==1 {{
-    if (length($5)>n) {{n=length($5); device=$3}}
-  }} END {{if (!n) exit 1; print device}}' /proc/self/mountinfo)
-  inode=$(ls -di "$snapshot" | awk '{{print $1}}')
-  test -n "$inode"
-  printf '%s:%s\\n' "$device" "$inode"
-}}
-case "$1" in
-  arm)
-    test ! -e "$temporary/storage-armed"
-    test -z "$(mounted)"
-    identity >"$temporary/storage-identity"
-    rm -f "$temporary/storage-mount-id"
-    touch "$temporary/storage-armed"
-    mount -o bind "$snapshot" "$snapshot"
-    mounted >"$temporary/storage-mount-id"
-    test -s "$temporary/storage-mount-id"
-    test "$(identity)" = "$(cat "$temporary/storage-identity")"
-    awk -v p="$snapshot" '$5==p && $6 ~ /(^|,)rw(,|$)/ {{found++}}
-      END {{exit found != 1}}' /proc/self/mountinfo
-    # Native reads tighten file permissions; leave those and the lock writable.
-    chmod 600 "$snapshot"
-    cat "$snapshot" >/dev/null
-    printf writable >{self.state}/.storage-parent-probe
-    rm {self.state}/.storage-parent-probe
-    echo '{{"snapshot_mounted":true,"parent_writable":true}}'
-    ;;
-  restore)
-    test -f "$temporary/storage-armed" || exit 0
-    current=$(mounted)
-    if [ -n "$current" ]; then
-      test "$(identity)" = "$(cat "$temporary/storage-identity")"
-      # A lost mount reply can precede the saved mount ID. The fresh owned path
-      # and original inode still identify that one bind; refuse stacked mounts.
-      test "$(printf '%s\\n' "$current" | wc -l)" = 1
-      if [ -s "$temporary/storage-mount-id" ]; then
-        test "$current" = "$(cat "$temporary/storage-mount-id")"
-      fi
-      umount "$snapshot"
-    fi
-    test -z "$(mounted)"
-    # Automatic payment may already replace the snapshot after unmount.
-    rm "$temporary/storage-armed"
-    echo '{{"snapshot_mounted":false,"restored":true}}'
-    ;;
-  *) exit 2;;
-esac
-'''
-
-    def storage_fault(self, action):
-        require(action in ('arm', 'restore'), 'unknown storage operation')
-        output = self.guarded(f'sh {self.temporary}/storage-fault.sh {action}')
-        return json.loads(output) if output.strip() else {'snapshot_mounted': False, 'restored': True}
+from .wifi_storage_faults import SnapshotRouter, VolumeRouter
 
 
 def retained(before, current):
@@ -141,12 +44,17 @@ class SignerStorageRun(PaidWifiRun):
 
     def __init__(self, args):
         super().__init__(args)
-        self.evidence.update(storage_fault={}, physical_power_loss=False)
+        self.evidence.update(storage_fault={'kind': self.nodes['n01'].fault_kind}, physical_power_loss=False)
         self.evidence['harness_sha256']['wifi_signer_storage.py'] = digest(
             Path(__file__).read_bytes())
+        self.evidence['harness_sha256']['wifi_storage_faults.py'] = digest(
+            Path(__file__).with_name('wifi_storage_faults.py').read_bytes())
 
     def make_router(self, spec, index):
-        kind = StorageRouter if index == 0 else Router
+        if index == 0 and getattr(self.args, 'volume_image', None):
+            return VolumeRouter(spec, self.run, self.root, self.open_mesh,
+                                image=self.args.volume_image)
+        kind = SnapshotRouter if index == 0 else Router
         return kind(spec, self.run, self.root, self.open_mesh)
 
     def profile_config(self, node):
@@ -206,9 +114,9 @@ class SignerStorageRun(PaidWifiRun):
                 error = state.get('last_error') or ''
                 row['observed_error'] = error
                 self.save()
-                return error if error.startswith('payment signer failed: failed to write Spilman client store:') and 'os error 16' in error else None
+                return error if error.startswith('payment signer failed: failed to write Spilman client store:') and f'os error {node.storage_errno}' in error else None
 
-            row['signer_error'] = eventually('native snapshot replacement failure', signer_failed, 30)
+            row['signer_error'] = eventually('native wallet commit failure', signer_failed, 30)
             row['blocked'] = self.finances()
             self.cohort('n03', 'n01', 'opposite-buyer')
 
@@ -230,7 +138,7 @@ class SignerStorageRun(PaidWifiRun):
                 current = self.credited()
                 return current if current and current['n02']['credited'][channel] >= row['blocked']['n01']['signed'][channel] * 1000 else None
 
-            row['recovered'] = eventually('automatic original payment retry after snapshot unmount', recovered, 45)
+            row['recovered'] = eventually('automatic original payment retry after storage recovery', recovered, 45)
             retained(before, row['recovered'])
             for source, destination in (('n01', 'n03'), ('n03', 'n01')):
                 self.cohort(source, destination, 'recovered')
@@ -251,6 +159,8 @@ def main():
     for name in ('inventory', 'binary', 'mint-binary', 'mint-host', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--mint-address', required=True)
+    parser.add_argument('--volume-image', type=Path,
+                        help='fresh 8 MiB ext4 image for a full-wallet-filesystem fault')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

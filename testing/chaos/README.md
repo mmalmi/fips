@@ -649,8 +649,29 @@ fault. Acceptance requires an unchanged saved snapshot, retained pending
 authorization, continued payment by the opposite buyer and automatic retry
 after unmount. Both original channels, spending limits and relay processes must
 survive, every payload must arrive once, and all 384 test sats must be collected.
-This finite snapshot-commit check leaves full-filesystem, read-only-wallet and
-electrical power-cut recovery as separate qualifications.
+For real `ENOSPC` on a wallet filesystem, add `--volume-image` pointing to a fresh
+8 MiB journaled ext4 image. Create it on Linux, then copy it to the controller:
+
+```sh
+image="$(mktemp /tmp/fips-wallet-volume.XXXXXX)"
+truncate -s 8M "$image"
+mkfs.ext4 -q -F -m 0 -b 4096 \
+  -E lazy_itable_init=0,lazy_journal_init=0 "$image"
+```
+
+The fixture copies the fresh, unfunded wallet onto that volume and verifies every
+file by hash before funding. The image lives on router flash; bounded random
+writes fill only its filesystem. A final one-byte write must also fail, and the
+parent filesystem must remain writable with at least 8 MiB free. The same payment
+and delivery checks then require recovery after deleting only the owned filler.
+The lease guard frees that filler if the controller disappears. Normal cleanup
+unmounts the stopped wallet and retains its image and file hashes for independent
+inspection and archival before removing the closed test profile.
+
+These finite wallet-commit checks leave whole-router filesystem exhaustion,
+read-only-wallet operation, slow storage and electrical power cuts as separate
+qualifications. The full-volume case does not restart the relay or exercise a
+SQLite write while full.
 
 Focused Linux checks: `python3 -m unittest tests.test_wifi_signer_storage
 tests.test_wifi_discovery tests.test_remote_mint` from `testing/chaos`.

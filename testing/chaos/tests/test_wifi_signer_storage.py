@@ -8,11 +8,43 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from sim.wifi_signer_storage import StorageRouter, retained, validate_blocked
+from sim.wifi_signer_storage import retained, validate_blocked
+from sim.wifi_storage_faults import SnapshotRouter, VolumeRouter
 from tests.test_wifi_restart_load import accounts
 
 
 class SignerStorageTests(unittest.TestCase):
+    @unittest.skipUnless(Path('/proc/self/mountinfo').exists(), 'Linux mount inspection')
+    def test_volume_cleanup_requires_ownership_and_preserves_the_account_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wallet, temporary = root / 'state/wallet', root / 'temporary'
+            wallet.mkdir(parents=True)
+            temporary.mkdir()
+            node = SimpleNamespace(state=str(wallet.parent), parent=str(root),
+                                   temporary=str(temporary))
+            script = temporary / 'storage-fault.sh'
+            script.write_text(VolumeRouter.storage_script(node))
+            ballast = wallet / '.fips-ballast'
+            ballast.write_text('unowned')
+            armed = temporary / 'storage-armed'
+            armed.touch()
+            (temporary / 'storage-volume-id').write_text('1:7:0\n')
+            result = subprocess.run(['sh', str(script), 'restore'], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(ballast.read_text(), 'unowned')
+            self.assertTrue(armed.exists())
+            armed.unlink()
+            image = root / 'wallet-volume.img'
+            image.write_bytes(b'closed wallet account')
+            active = temporary / 'active'
+            active.touch()
+            result = subprocess.run(['sh', str(script), 'release'], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            active.unlink()
+            subprocess.run(['sh', str(script), 'release'], capture_output=True, check=True)
+            self.assertEqual(image.read_bytes(), b'closed wallet account')
+
     @unittest.skipUnless(Path('/proc/self/mountinfo').exists(), 'Linux mount inspection')
     def test_restore_accepts_payment_replacing_snapshot_after_unmount(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -30,7 +62,7 @@ class SignerStorageTests(unittest.TestCase):
             replacement.write_text('automatic payment')
             replacement.replace(snapshot)
             node = SimpleNamespace(state=str(wallet.parent), temporary=str(temporary))
-            script = StorageRouter.storage_script(node)
+            script = SnapshotRouter.storage_script(node)
             result = subprocess.run(['sh', '-s', 'restore'], input=script, text=True,
                                     capture_output=True, check=True)
             self.assertIn('"restored":true', result.stdout)
