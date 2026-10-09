@@ -248,9 +248,13 @@ async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
             assert_eq!(packet.data.as_slice(), record);
             received += 1;
         }
-        if transport.stats().frames_received == MESSAGES as u64 {
+        if received == MESSAGES {
             break;
         }
+        // Manual polls returning Ready above never yield this parent task.
+        // Let the runtime replenish cooperative budgets (including stream
+        // admission), while still checking each framing poll's exact bound.
+        tokio::task::yield_now().await;
     }
     assert_eq!(received, MESSAGES, "framing fairness must not lose records");
     assert_eq!(transport.stats().frames_received, MESSAGES as u64);
