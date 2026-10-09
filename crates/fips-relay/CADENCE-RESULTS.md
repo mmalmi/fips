@@ -368,6 +368,50 @@ optimization comparison nor optimal cadence, throughput or battery cost. Natural
 deep idle, renewal, network suspension, movement, phone 802.11s and long-run
 impaired traffic remain separate acceptance work. The 500-ms default is unchanged.
 
+### Phone CPU profile and allocation experiment
+
+`work/phone-cpu-profile-r406` repeats the same paid workload and records a bounded
+45-second user-space CPU profile during background transit. All 19 MiB arrive,
+all four original channels settle, all 512 test sats return and all 810 management
+checks pass. Independent closure verifies device restoration, empty wallets,
+account archives and removal of the temporary app and router profiles.
+
+Of 1,588 samples, 91.7% run on the customer runtime threads. Allocation, freeing
+and memory copying account for 25.1% of sampled user CPU; this excludes kernel
+CPU and is not a fraction of total process CPU. No samples are lost, but 244
+stacks are truncated. Symbols are resolved against the exact native library
+whose stripped bytes match the installed APK. These instrumented figures are
+for diagnosis, not a speed comparison against the unprofiled trial above.
+
+The profile identifies per-turn control work for inspection. The qualified
+Android binary allocates 15,344-byte and 536-byte futures in
+`finish_dataplane_turn`, even when little control work is pending. Direct awaits
+preserve both operations and their ordering without those two explicit boxes.
+Candidate `912faa273` passes 28 focused receive-loop/recovery checks, strict
+relay lint, source-size checks and ordinary native/ARM builds in
+`work/rx-future-allocation-r407`. Its r409 APK passes all eight Android build
+gates, including six lifecycle tests and native packaging verification.
+
+`work/phone-rx-allocation-r410` compares that phone candidate with the unchanged
+r400 router binaries, workload, harness, prices and spending limits. All 19 MiB
+arrive, all 52 background observations retain the expected links/service and
+same process, and all four original channels settle. All 512 test sats return;
+813 management checks and independent financial/device closure pass. The
+temporary app and router profiles are removed and four closed accounts archived.
+
+| Phone background-window measurement | Baseline r405 | Candidate r410 |
+| --- | ---: | ---: |
+| Android process CPU tick delta | 174.96 s | 186.04 s |
+| Whole-process CPU / delivered MiB | 9.713 s | 10.336 s |
+| Attributed payment CPU / delivered MiB | 141.88 ms | 133.47 ms |
+
+The candidate does not demonstrate a total CPU saving and is **not retained**.
+One trial per version, even with a matched workload, does not establish a causal
+regression or a payment-CPU improvement. The compiled candidate also inlines
+other deferred-work allocations, so a count of allocator calls in this one
+function cannot establish total allocation cost. Existing awaits, cadence and
+financial policy remain in place; the profile informs further investigation.
+
 ## Current storage syscall comparison — 7 October 2026
 
 The current ordinary Linux ARM64 executable on `29a88d481`, with measurement
