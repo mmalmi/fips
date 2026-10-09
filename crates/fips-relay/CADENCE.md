@@ -115,6 +115,22 @@ updates still persist before exposing credit. Those durability requirements are
 independent of the decision to ask for another payment. Forwarding callbacks
 continue using only the previously persisted allowance while disk work runs.
 
+The configured window is a maximum. When retained loss or debt from an older
+channel consumes relationship grace, new checkpoints reserve at most half the
+remaining unpaid allowance, with a one-msat floor. Existing published ceilings
+remain valid until replaced; a checkpoint cannot revoke concurrent admissions.
+For example, with 8,000-msat grace and a 4,000-msat maximum window, three crashes
+of unused windows can retain 4,000, 6,000 and 7,000 msat of cumulative loss instead
+of consuming all grace on the second crash. Loss remains reserved and unbilled.
+
+A valid packet that fits the configured maximum and verified relationship credit
+can request a larger window for its channel. The checkpoint worker persists that
+allowance even when no packet has yet consumed the smaller window. The request
+does not itself reserve bytes or authorize credit; idle and fulfilled requests
+cause no further writes. Smaller windows can increase checkpoint work after
+failures. Repeated failures can still exhaust the finite allowance, and packets
+whose cost exceeds its remaining credit cannot be made live by a checkpoint.
+
 Window and grace must cover the desired bursts and actual control/disk delays
 at the aggregate price. Merely selecting a longer payment interval can exhaust
 credit. There is no automatic increase of unpaid exposure to hide such drops.

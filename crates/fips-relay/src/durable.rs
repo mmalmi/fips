@@ -18,10 +18,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -66,7 +63,7 @@ pub struct DurableRelay {
     directory: PathBuf,
     window_msat: u64,
     windows: RwLock<PublishedWindows>,
-    window_blocked: AtomicBool,
+    blocked_windows: Mutex<BTreeMap<String, u64>>,
     admission_changed: Arc<tokio::sync::Notify>,
     writer: Mutex<()>,
     _owner: File,
@@ -90,7 +87,7 @@ impl DurableRelay {
             directory: directory.to_path_buf(),
             window_msat,
             windows: RwLock::new(PublishedWindows::default()),
-            window_blocked: AtomicBool::new(false),
+            blocked_windows: Mutex::default(),
             admission_changed: Arc::default(),
             writer: Mutex::new(()),
             _owner: owner,
@@ -127,7 +124,7 @@ impl DurableRelay {
             directory: directory.to_path_buf(),
             window_msat: journal.window_msat,
             windows: RwLock::new(PublishedWindows::default()),
-            window_blocked: AtomicBool::new(false),
+            blocked_windows: Mutex::default(),
             admission_changed: Arc::default(),
             writer: Mutex::new(()),
             _owner: owner,
@@ -169,12 +166,17 @@ impl DurableRelay {
         if !windows.ready {
             return Err(DurableError::Suspended);
         }
-        let blocked = self.window_blocked.load(Ordering::Relaxed);
+        let blocked = self
+            .blocked_windows
+            .lock()
+            .map_err(|_| DurableError::Suspended)?;
         for (id, ceiling) in &windows.ceilings {
             let usage = self.ledger.channel_usage(id).ok_or(DurableError::Format)?;
             let recorded = windows.reserved_at_checkpoint.get(id).copied().unwrap_or(0);
-            if usage.reserved_msat > recorded
-                && (blocked || ceiling.saturating_sub(usage.reserved_msat) <= self.window_msat / 2)
+            let remaining = ceiling.saturating_sub(usage.reserved_msat);
+            if blocked.get(id).is_some_and(|cost| *cost > remaining)
+                || (usage.reserved_msat > recorded
+                    && remaining <= ceiling.saturating_sub(recorded) / 2)
             {
                 return Ok(true);
             }
@@ -382,7 +384,12 @@ impl DurableRelay {
             .clone();
         // Clear before sampling reservations so a later admission can request
         // another checkpoint while this one is being written.
-        self.window_blocked.store(false, Ordering::Relaxed);
+        let blocked = std::mem::take(
+            &mut *self
+                .blocked_windows
+                .lock()
+                .map_err(|_| DurableError::Suspended)?,
+        );
         let ledger = self.ledger.snapshot();
         let mut ceilings = BTreeMap::new();
         let mut usage = BTreeMap::new();
@@ -398,7 +405,26 @@ impl DurableRelay {
                     .reservation_limit(&channel.terms.id)
                     .ok_or(DurableError::Format)?;
                 let window = if allow_next_window {
-                    self.window_msat
+                    // Preserve half the remaining relationship grace after loss.
+                    // A real packet may request a larger window, still within
+                    // the configured maximum and verified credit below.
+                    let fresh_limit = channel
+                        .usage
+                        .paid_msat
+                        .saturating_add(channel.terms.grace_msat)
+                        .min(channel.terms.capacity_sat.saturating_mul(1_000));
+                    let adaptive = if channel.usage.lost_msat == 0 && maximum == fresh_limit {
+                        self.window_msat
+                    } else {
+                        maximum
+                            .saturating_sub(channel.usage.paid_msat)
+                            .saturating_sub(channel.usage.lost_msat)
+                            / 2
+                    };
+                    adaptive
+                        .max(1)
+                        .max(blocked.get(&channel.terms.id).copied().unwrap_or(0))
+                        .min(self.window_msat)
                 } else {
                     0
                 };
@@ -506,84 +532,4 @@ pub(crate) fn acquire_owner(directory: &Path) -> Result<File, DurableError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use fips_core::{Identity, NodeAddr, PeerIdentity};
-    use std::sync::{Arc, mpsc};
-    use std::time::Duration;
-
-    #[test]
-    fn node_callbacks_do_not_wait_for_a_checkpoint_writer() {
-        let root = tempfile::tempdir().unwrap();
-        let relay = Arc::new(
-            DurableRelay::create(&root.path().join("relay"), Limits::default(), 10).unwrap(),
-        );
-        let identity = Identity::from_secret_bytes(&[1; 32]).unwrap();
-        let terms = ChannelTerms {
-            refund_after_unix: None,
-            id: "channel".into(),
-            buyer: *identity.node_addr(),
-            mint_url: "http://test.invalid".into(),
-            expires_unix: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 600,
-            capacity_sat: 1,
-            grace_msat: 100,
-        };
-        relay.open_channel_verified(terms.clone(), 0).unwrap();
-        relay
-            .add_contract(Contract {
-                billing: Default::default(),
-                id: "quote".into(),
-                channel_id: terms.id,
-                destination: NodeAddr::from_bytes([2; 16]),
-                next_hop: NodeAddr::from_bytes([3; 16]),
-                expires_unix: terms.expires_unix,
-                price: crate::ledger::BytePrice {
-                    msat: 1,
-                    per_bytes: 1,
-                },
-                max_units: 100,
-            })
-            .unwrap();
-        let gate = relay.writer.lock().unwrap();
-        let worker = Arc::clone(&relay);
-        let (sent, received) = mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            let identity = Identity::from_secret_bytes(&[1; 32]).unwrap();
-            let mut request = ForwardingRequest {
-                ingress: PeerIdentity::from_pubkey_full(identity.pubkey_full()),
-                source: NodeAddr::from_bytes([1; 16]),
-                destination: NodeAddr::from_bytes([2; 16]),
-                next_hop: NodeAddr::from_bytes([3; 16]),
-                session_payload: b"packet",
-            };
-            let token = worker
-                .admit(&request)
-                .expect("previous durable window stays usable during the writer's work");
-            worker.complete(token, ForwardingOutcome::Submitted);
-            assert_eq!(worker.channel_usage("channel").unwrap().submitted_msat, 6);
-            request.session_payload = b"later";
-            assert_eq!(
-                worker.decide(&request),
-                fips_core::node::ForwardingDecision::Retry
-            );
-            assert_eq!(worker.channel_usage("channel").unwrap().reserved_msat, 6);
-            // Both callbacks finish while the writer is held. The checkpoint
-            // and manual re-admission below check recovery after its release.
-            sent.send(()).unwrap();
-            assert!(worker.checkpoint_if_due().unwrap());
-            let token = worker
-                .admit(&request)
-                .expect("checkpoint restores allowance");
-            worker.complete(token, ForwardingOutcome::Submitted);
-            assert_eq!(worker.channel_usage("channel").unwrap().submitted_msat, 11);
-        });
-        let result = received.recv_timeout(Duration::from_secs(1));
-        drop(gate);
-        thread.join().unwrap();
-        result.expect("callbacks must return while the controller owns the disk gate");
-    }
-}
+mod tests;

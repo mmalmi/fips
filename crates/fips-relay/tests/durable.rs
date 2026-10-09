@@ -67,6 +67,118 @@ fn take_admission_wake(relay: &DurableRelay) -> bool {
         .is_ready()
 }
 
+fn crash_profile(path: &std::path::Path) -> DurableRelay {
+    let relay = DurableRelay::create(path, Limits::default(), 4_000).unwrap();
+    let mut terms = channel();
+    terms.capacity_sat = 32;
+    terms.grace_msat = 8_000;
+    relay.open_channel_verified(terms, 0).unwrap();
+    let mut quote = contract();
+    quote.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
+    quote.max_units = 32 * 1024;
+    quote.price = BytePrice {
+        msat: 1_000,
+        per_bytes: 1_024,
+    };
+    relay.add_contract(quote).unwrap();
+    relay
+}
+
+#[test]
+fn repeated_crashes_preserve_loss_and_leave_room_for_postpaid_traffic() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("relay");
+    let mut relay = crash_profile(&path);
+    for (index, loss) in [4_000, 6_000, 7_000].into_iter().enumerate() {
+        drop(relay);
+        relay = DurableRelay::load(&path).unwrap();
+        let before = relay.channel_usage("neighbor").unwrap();
+        assert_eq!(before.lost_msat, loss);
+        assert_eq!(before.submitted_msat, index as u64 * 1_000);
+        assert_eq!(before.paid_msat, before.submitted_msat);
+        assert!(
+            !relay.checkpoint_if_due().unwrap(),
+            "idle recovery must not write"
+        );
+        let bytes = [0; 1_024];
+        let mut admission = relay.admit(&request(&bytes));
+        if admission.is_none() {
+            assert!(relay.checkpoint_if_due().unwrap());
+            admission = relay.admit(&request(&bytes));
+        }
+        relay.complete(
+            admission.expect("original channel still forwards"),
+            ForwardingOutcome::Submitted,
+        );
+        let submitted = (index as u64 + 1) * 1_000;
+        relay.apply_verified_balance("neighbor", submitted).unwrap();
+        let after = relay.channel_usage("neighbor").unwrap();
+        assert_eq!(after.submitted_msat, submitted);
+        assert_eq!(
+            after.lost_msat, loss,
+            "payment cannot forgive crash exposure"
+        );
+        assert_eq!(after.reserved_msat, submitted + loss);
+        assert!(!relay.checkpoint_if_due().unwrap());
+    }
+}
+
+#[test]
+fn a_fresh_reduced_window_can_grow_for_one_valid_large_packet() {
+    for renewed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("relay");
+        drop(crash_profile(&path));
+        let relay = DurableRelay::load(&path).unwrap();
+        let id = if renewed {
+            relay.seal_channel("neighbor").unwrap();
+            let mut terms = channel();
+            terms.id = "next".into();
+            terms.capacity_sat = 32;
+            terms.grace_msat = 8_000;
+            relay.open_channel_verified(terms, 0).unwrap();
+            let mut quote = contract();
+            quote.id = "next-quote".into();
+            quote.channel_id = "next".into();
+            quote.max_units = 32 * 1_024;
+            quote.price = BytePrice {
+                msat: 1_000,
+                per_bytes: 1_024,
+            };
+            relay.add_contract(quote).unwrap();
+            "next"
+        } else {
+            "neighbor"
+        };
+        let bytes = [0; 3_072];
+        assert_eq!(
+            relay.decide(&request(&bytes)),
+            fips_core::node::ForwardingDecision::Retry
+        );
+        let prior = relay.channel_usage(id).unwrap();
+        assert_eq!(prior.submitted_msat, 0);
+        assert!(
+            relay.checkpoint_if_due().unwrap(),
+            "a fresh window can grow before any admission"
+        );
+        assert!(
+            !relay.checkpoint_if_due().unwrap(),
+            "a fulfilled request cannot cause idle writes"
+        );
+        let token = relay.admit(&request(&bytes)).unwrap();
+        relay.complete(token, ForwardingOutcome::Submitted);
+        let usage = relay.channel_usage(id).unwrap();
+        assert_eq!(usage.submitted_msat, 3_000);
+        assert_eq!(usage.paid_msat, 0);
+        assert_eq!(usage.lost_msat, prior.lost_msat);
+        assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 4_000);
+        assert!(
+            relay.admit(&request(&[0; 4_097])).is_none(),
+            "configured maximum remains enforced"
+        );
+    }
+}
+
 #[test]
 fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
     use fips_core::node::ForwardingDecision;
@@ -311,7 +423,13 @@ fn windows_are_durable_before_admission_and_crashes_never_reset_grace() {
     assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 20);
     drop(relay);
     let relay = DurableRelay::load(&path).unwrap();
-    assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 30);
+    assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 25);
+    let mut relay = relay;
+    for expected in [27, 28, 29, 30] {
+        drop(relay);
+        relay = DurableRelay::load(&path).unwrap();
+        assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, expected);
+    }
     assert!(
         relay.admit(&request(b"x")).is_none(),
         "repeated restarts exhaust the same allowance"

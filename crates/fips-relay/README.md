@@ -495,6 +495,10 @@ against the same neighbor relationship. A new channel's reservation limit is its
 verified payment plus grace, minus outstanding reservations on older channels,
 capped by its funded capacity. If repeated failures consume the available allowance,
 automatic forwarding stops; a restart is not permission to write off that loss.
+After loss, [adaptive durable windows](CADENCE.md#independent-durable-windows)
+reserve less uncertainty to preserve room for subsequent traffic and payments.
+They retain the configured maximum and all earlier loss; finite grace can still
+be exhausted.
 This implementation assumes the accounting files survive the process restart.
 Never automatically replace missing/corrupt state with a newly initialized ledger.
 

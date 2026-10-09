@@ -37,11 +37,18 @@ impl ForwardingPolicy for DurableRelay {
                 class: ForwardingClass::Unspecified,
             }),
             Admission::CreditExhausted => ForwardingDecision::Retry,
-            Admission::WindowExhausted => {
+            Admission::WindowExhausted {
+                channel_id,
+                cost_msat,
+            } => {
                 crate::measurements::admission_denied(
                     crate::measurements::AdmissionDenial::DurableWindow,
                 );
-                self.window_blocked.store(true, Ordering::Relaxed);
+                let Ok(mut blocked) = self.blocked_windows.lock() else {
+                    return ForwardingDecision::Reject;
+                };
+                let requested = blocked.entry(channel_id).or_default();
+                *requested = (*requested).max(cost_msat);
                 ForwardingDecision::Retry
             }
         }

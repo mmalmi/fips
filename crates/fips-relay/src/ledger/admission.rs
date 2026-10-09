@@ -4,14 +4,14 @@ use super::*;
 pub(crate) enum Admission {
     Granted(u64),
     CreditExhausted,
-    WindowExhausted,
+    WindowExhausted { channel_id: String, cost_msat: u64 },
 }
 
 impl RelayLedger {
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
         match self.admit_with_windows(request, now_unix, None)? {
             Admission::Granted(token) => Some(token),
-            Admission::CreditExhausted | Admission::WindowExhausted => None,
+            Admission::CreditExhausted | Admission::WindowExhausted { .. } => None,
         }
     }
 
@@ -110,7 +110,10 @@ impl RelayLedger {
         if channel_reserved
             > windows.map_or(u64::MAX, |(w, _)| w.get(&channel_id).copied().unwrap_or(0))
         {
-            return Some(Admission::WindowExhausted);
+            return Some(Admission::WindowExhausted {
+                channel_id,
+                cost_msat: incremental_cost,
+            });
         }
         let a = state.accounts.get_mut(&id)?;
         a.usage.reserved_units = prospective;
