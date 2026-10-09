@@ -8,6 +8,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 async fn duplex(
     configs: &[ServiceConfig],
     npubs: &[String],
+    stream: u8,
     bytes: u64,
     duration: u64,
 ) -> Vec<Result<Value, String>> {
@@ -15,9 +16,9 @@ async fn duplex(
         let config = configs[source].clone();
         let probe = StreamProbe {
             peer: npubs[destination].clone(),
-            stream_id: "75".repeat(16),
+            stream_id: format!("{stream:02x}").repeat(16),
             bytes,
-            bytes_per_second: 64 * 1024,
+            bytes_per_second: 256 * 1024,
             duration_secs: duration,
             connect: source == 0,
         };
@@ -59,7 +60,7 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
             configs[node].neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
             configs[node].terms.billing = BillingBasis::ForwardingData;
             configs[node].terms.fee_msat_per_kib = 1;
-            configs[node].terms.quote_max_units = 1024 * 1024;
+            configs[node].terms.quote_max_units = 8 * 1024 * 1024;
             reservations.push(socket);
             std::fs::create_dir_all(configs[node].state_directory.parent().unwrap()).unwrap();
             npubs[node] = RelayService::initialize(configs[node].clone())
@@ -82,6 +83,7 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
         policy.billing = BillingBasis::ForwardingData;
         policy.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
         let mut client = CustomerClient::open(&directory).unwrap();
+        assert!(client.execute(Action::NetworkChanged).await.is_err());
         let setup = client
             .execute(Action::Setup {
                 profile: policy.clone(),
@@ -155,7 +157,7 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
         })
         .await
         .expect("only the four-node transit line must form");
-        let denied = duplex(&configs, &npubs, 1024, 2).await;
+        let denied = duplex(&configs, &npubs, 74, 1024, 2).await;
         let unpaid = request(&configs[1], &AdminRequest::Status).await.unwrap();
         for (source, destination) in [(0, 3), (3, 0)] {
             request(
@@ -168,15 +170,39 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
             .unwrap();
         }
         let before = client.execute(Action::Status).await.unwrap();
-        let delivery = duplex(&configs, &npubs, 128 * 1024, 6).await;
+        let delivery = duplex(&configs, &npubs, 75, 128 * 1024, 6).await;
         let after = client.execute(Action::Status).await.unwrap();
-        eprintln!("phone transit stream results: {delivery:?}");
+        let mut prior = Vec::new();
+        for config in &configs {
+            prior.push(request(config, &AdminRequest::Status).await.unwrap());
+        }
+        let rebound = client.execute(Action::NetworkChanged).await.unwrap();
+        assert_eq!(rebound["rebound_transports"], 1);
+        let moved = native_request(&configs[1], &json!({"command":"show_transports"}))
+            .await
+            .unwrap();
+        let moved: SocketAddr = moved["data"]["transports"][0]["local_addr"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_ne!(address.port(), moved.port());
+        // Reuse the live customer, authenticated neighbors and paid contracts.
+        // No Start/Buy command or new financial authority follows the rebind.
+        let recovery = duplex(&configs, &npubs, 76, 1024 * 1024, 15).await;
+        let recovered = client.execute(Action::Status).await.unwrap();
+        let mut later = Vec::new();
+        for config in &configs {
+            later.push(request(config, &AdminRequest::Status).await.unwrap());
+        }
+        eprintln!("phone transit results: {delivery:?}; rebound: {recovery:?}");
         // Retain the measured outcome before closing and reconciling accounts.
         for config in &configs {
             request(config, &AdminRequest::Settle).await.unwrap();
         }
         let settled = client.execute(Action::Status).await.unwrap();
         client.execute(Action::Stop).await.unwrap();
+        assert!(client.execute(Action::NetworkChanged).await.is_err());
         for child in &mut children {
             process_support::stop(child).await;
         }
@@ -201,16 +227,39 @@ async fn customer_relays_paid_duplex_for_an_unconfigured_adjacent_peer() {
             before["relay"]["funding_budget"],
             after["relay"]["funding_budget"]
         );
-        let reports: Vec<_> = delivery
-            .into_iter()
-            .map(|r| r.unwrap()["probe"].clone())
-            .collect();
-        for report in &reports {
-            for field in ["accepted_bytes", "received_bytes", "acknowledged_bytes"] {
-                assert_eq!(report[field], 128 * 1024);
+        assert_eq!(after["profile"], recovered["profile"]);
+        for (before, after) in prior.iter().zip(&later) {
+            for field in ["npub", "purchases", "funding_budget"] {
+                assert_eq!(before[field], after[field], "rebind changed {field}");
+            }
+            for (channel, progress) in before["payment_progress"].as_object().unwrap() {
+                let new = &after["payment_progress"][channel];
+                assert!(
+                    new["evidence_msat"].as_u64().unwrap()
+                        > progress["evidence_msat"].as_u64().unwrap()
+                );
+                assert!(
+                    new["authorized_sat"].as_u64().unwrap()
+                        > progress["authorized_sat"].as_u64().unwrap()
+                );
+                assert!(
+                    new["acknowledged_msat"].as_u64().unwrap()
+                        > progress["acknowledged_msat"].as_u64().unwrap()
+                );
             }
         }
-        assert_eq!(reports[0]["received_sha256"], reports[1]["received_sha256"]);
+        for (delivery, bytes) in [(delivery, 128 * 1024), (recovery, 1024 * 1024)] {
+            let reports: Vec<_> = delivery
+                .into_iter()
+                .map(|r| r.unwrap()["probe"].clone())
+                .collect();
+            for report in &reports {
+                for field in ["accepted_bytes", "received_bytes", "acknowledged_bytes"] {
+                    assert_eq!(report[field], bytes);
+                }
+            }
+            assert_eq!(reports[0]["received_sha256"], reports[1]["received_sha256"]);
+        }
         // Positive provider credit and onward evidence establish actual paid
         // transit, independently of native packet counters or mere adjacency.
         let ledger: Value = serde_json::from_slice(

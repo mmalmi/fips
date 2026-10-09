@@ -26,6 +26,7 @@ pub enum CustomerCommand {
     Setup { profile: CustomerProfile },
     Start,
     Status,
+    NetworkChanged,
     Import { token: String },
     Balance,
     Buy,
@@ -105,6 +106,7 @@ impl CustomerClient {
                     self.status().await
                 }
                 Status => self.status().await,
+                NetworkChanged => self.control(&AdminRequest::NetworkChanged).await,
                 Import { token } => self.wallet(WalletRequest::Import { token }).await,
                 Balance => self.wallet(WalletRequest::Balance).await,
                 Export { id, amount_sat } => {

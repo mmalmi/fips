@@ -64,6 +64,10 @@ public final class MainActivityTest {
         Wallet.relayEnabled = false;
         Wifi.binds = 0;
         Wifi.unbinds = 0;
+        Wifi.pending = false;
+        Wifi.listener = null;
+        Wallet.rebinds = 0;
+        Wallet.failRebind = false;
     }
 
     @Test public void routingSurvivesScreenRecreationAndNotificationStopsIt() throws Exception {
@@ -163,19 +167,78 @@ public final class MainActivityTest {
         BenchClient.WORK.submit(() -> { assertTrue(release.await(10, TimeUnit.SECONDS)); return null; });
         ServiceController<RoutingService> replacement;
         try {
+            Runnable stale = Wifi.listener;
             first.destroy();
             replacement = Robolectric.buildService(RoutingService.class, start).create();
             replacement.get().onStartCommand(start, 0, 1);
+            stale.run();
         } finally { release.countDown(); }
         drain();
         assertTrue(Wallet.running);
         assertEquals(1, Wallet.starts);
         assertEquals(0, Wallet.stops);
         assertEquals(0, Wifi.unbinds);
-        replacement.destroy();
+        CountDownLatch cleanup = new CountDownLatch(1);
+        BenchClient.WORK.submit(() -> { assertTrue(cleanup.await(10, TimeUnit.SECONDS)); return null; });
+        try {
+            replacement.destroy();
+            // A newer owner can disappear before receiving its first start command.
+            // It must still stop the inherited native session.
+            Robolectric.buildService(RoutingService.class, start).create().destroy();
+        } finally { cleanup.countDown(); }
         drain();
+        assertFalse(Wallet.running);
         assertEquals(1, Wallet.stops);
         assertEquals(1, Wifi.unbinds);
+    }
+
+    @Test public void networkCallbacksCoalesceRetryAndCannotRestartStoppedRouting() throws Exception {
+        Intent start = new Intent(RuntimeEnvironment.getApplication(), RoutingService.class)
+            .putExtra(RoutingService.ACTION, "start");
+        ServiceController<RoutingService> owner = Robolectric.buildService(RoutingService.class, start).create();
+        owner.get().onStartCommand(start, 0, 1);
+        drain();
+        CountDownLatch release = new CountDownLatch(1);
+        BenchClient.WORK.submit(() -> { assertTrue(release.await(10, TimeUnit.SECONDS)); return null; });
+        try {
+            Wifi.pending = true;
+            for (int i = 0; i < 1000; i++) Wifi.listener.run();
+        } finally { release.countDown(); }
+        drain();
+        assertEquals(1, Wallet.rebinds);
+        assertEquals(1, Wallet.starts);
+        assertFalse(Wifi.pending);
+
+        Wallet.failRebind = true;
+        Wifi.pending = true;
+        Wifi.listener.run();
+        drain();
+        assertEquals(2, Wallet.rebinds);
+        assertTrue(Wifi.pending);
+        assertEquals(0, Wifi.unbinds);
+        Wifi.listener.run();
+        drain();
+        assertEquals(3, Wallet.rebinds);
+        assertFalse(Wifi.pending);
+        assertEquals(1, Wallet.starts);
+
+        CountDownLatch stop = new CountDownLatch(1);
+        BenchClient.WORK.submit(() -> { assertTrue(stop.await(10, TimeUnit.SECONDS)); return null; });
+        Runnable stale = Wifi.listener;
+        try {
+            owner.get().onStartCommand(new Intent(start).putExtra(RoutingService.ACTION, "stop"), 0, 2);
+            Wifi.pending = true;
+            for (int i = 0; i < 1000; i++) stale.run();
+        } finally { stop.countDown(); }
+        drain();
+        owner.destroy();
+        stale.run();
+        drain();
+        assertFalse(Wallet.running);
+        assertEquals(3, Wallet.rebinds);
+        assertEquals(1, Wallet.starts);
+        assertEquals(1, Wallet.stops);
+        assertEquals(null, Wifi.listener);
     }
 
     @Test public void interruptedReturnKeepsItsRequestAndRemainsRetryableAfterRestart() throws Exception {
@@ -336,6 +399,8 @@ public final class MainActivityTest {
         static int stops;
         static boolean failStop;
         static boolean relayEnabled;
+        static int rebinds;
+        static boolean failRebind;
         @Implementation protected static void __staticInitializer__() {}
         @Implementation protected static String execute(String directory, String encoded) throws Exception {
             JSONObject command = new JSONObject(encoded);
@@ -352,6 +417,15 @@ public final class MainActivityTest {
                     }
                     result = new JSONObject().put("balance_sat", balance); break;
                 case "start": starts++; running = true; result = new JSONObject(); break;
+                case "network_changed":
+                    assertTrue(running);
+                    assertTrue(Wifi.pending);
+                    rebinds++;
+                    if (failRebind) {
+                        failRebind = false;
+                        return new JSONObject().put("error", "Rebind failed").toString();
+                    }
+                    result = new JSONObject().put("rebound_transports", 1); break;
                 case "stop":
                     stops++;
                     if (failStop) {
@@ -398,9 +472,15 @@ public final class MainActivityTest {
     public static final class Wifi {
         static int binds;
         static int unbinds;
+        static boolean pending;
+        static Runnable listener;
         @Implementation protected void __constructor__(Context context) {}
         @Implementation protected JSONObject bind(String address) { binds++; return new JSONObject(); }
         @Implementation protected void unbindAfterStop() { unbinds++; }
+        @Implementation protected void setListener(Runnable next) { listener = next; }
+        @Implementation protected void clearListener(Runnable owner) { if (listener == owner) listener = null; }
+        @Implementation protected boolean refresh() { return pending; }
+        @Implementation protected void rebound() { pending = false; }
         @Implementation protected void close() {}
     }
 }

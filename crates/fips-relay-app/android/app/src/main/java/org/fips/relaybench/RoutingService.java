@@ -14,6 +14,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.ResultReceiver;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONObject;
 
 /** User-started lifetime for the native session; leaving the activity keeps it running. */
@@ -27,12 +28,17 @@ public final class RoutingService extends Service {
     private long generation;
     private int latestStart;
     private BenchClient client;
-    private boolean stopped;
+    private volatile boolean stopped;
+    private volatile boolean destroyed;
+    private final AtomicBoolean networkDirty = new AtomicBoolean();
+    private final AtomicBoolean networkQueued = new AtomicBoolean();
+    private final Runnable networkChanged = this::networkChanged;
 
     @Override public void onCreate() {
         super.onCreate();
         generation = GENERATION.incrementAndGet();
         client = BenchClient.get(this);
+        client.wifi.setListener(networkChanged);
         getSystemService(NotificationManager.class).createNotificationChannel(
             new NotificationChannel(CHANNEL, getString(R.string.routing_channel), NotificationManager.IMPORTANCE_LOW));
     }
@@ -48,6 +54,7 @@ public final class RoutingService extends Service {
             Bundle result = new Bundle();
             boolean end = false;
             try {
+                if (destroyed || GENERATION.get() != generation) throw new IllegalStateException("Routing session was replaced");
                 JSONObject response;
                 switch (operation) {
                     case "start":
@@ -60,6 +67,7 @@ public final class RoutingService extends Service {
                             response.put("wifi", client.wifi.bind(checked.getString("entry_ip")));
                             client.call(BenchClient.command("start"));
                         }
+                        networkChanged();
                         break;
                     case "stop":
                     case "finish":
@@ -76,7 +84,8 @@ public final class RoutingService extends Service {
                 // A failed start or finish may still own a live native session.
                 // Release its binding only after status confirms it is stopped.
                 try {
-                    if (!client.call(BenchClient.command("status")).optBoolean("running")) {
+                    if (!destroyed && GENERATION.get() == generation
+                            && !client.call(BenchClient.command("status")).optBoolean("running")) {
                         client.wifi.unbindAfterStop();
                         stopped = true;
                         end = true;
@@ -101,6 +110,36 @@ public final class RoutingService extends Service {
         return START_NOT_STICKY;
     }
 
+    private void networkChanged() {
+        if (destroyed || GENERATION.get() != generation) return;
+        networkDirty.set(true);
+        if (!networkQueued.compareAndSet(false, true)) return;
+        BenchClient.WORK.execute(() -> {
+            networkDirty.set(false);
+            int notice = R.string.routing_active;
+            try {
+                if (destroyed || stopped || GENERATION.get() != generation) return;
+                if (client.wifi.refresh()) {
+                    client.call(BenchClient.command("network_changed"));
+                    client.wifi.rebound();
+                }
+            } catch (Exception error) {
+                notice = R.string.routing_attention;
+            } finally {
+                int text = notice;
+                main.post(() -> {
+                    if (!destroyed && !stopped && GENERATION.get() == generation) {
+                        getSystemService(NotificationManager.class).notify(NOTIFICATION,
+                            notification(text));
+                    }
+                });
+                networkQueued.set(false);
+                // One refresh per queued task lets Stop run even during rapid changes.
+                if (networkDirty.get()) networkChanged();
+            }
+        });
+    }
+
     @SuppressWarnings("deprecation")
     private static ResultReceiver receiver(Intent intent) {
         if (intent == null) return null;
@@ -120,6 +159,8 @@ public final class RoutingService extends Service {
     }
 
     @Override public void onDestroy() {
+        destroyed = true;
+        client.wifi.clearListener(networkChanged);
         // A replacement service may already be queued. Its new generation owns
         // the shared session; delayed cleanup must not stop that replacement.
         BenchClient.WORK.execute(() -> {

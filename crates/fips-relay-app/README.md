@@ -206,7 +206,14 @@ custody and the activity never automatically discards those wallet records. See
 **Stop** action. On Android 13 or later it first requests notification permission
 so that control remains visible. Leaving or recreating the screen keeps the
 session running, with its existing purchases and limits. The process-wide Wi-Fi
-binding stays in place; losing Wi-Fi does not switch traffic to cellular.
+binding stays in place; losing Wi-Fi does not switch traffic to cellular. While
+running, a change of Wi-Fi network, interface or local address rebinds FIPS's
+sockets after selecting one on-link Wi-Fi path to the saved entry address.
+Duplicate callbacks and DNS-only changes do not rebind. Missing or ambiguous
+paths retain the binding until a usable Wi-Fi path appears. Rebinding preserves
+the native session, identity, channels and spending limits; it never starts a
+stopped session or buys a new route. This covers paths to the configured entry,
+not automatic selection of a different entry relay.
 **Stop** ends the session without settling; **Settle and stop** closes channels
 first. Neither action deletes the account.
 
@@ -234,7 +241,9 @@ with a simulated native wallet and Wi-Fi binding. They cover an interrupted retu
 restart at zero balance, atomic-file backup recovery, incomplete saved requests,
 later funds and a failed balance refresh after export. Service checks cover
 screen recreation, the notification's Stop action, stop failure, service
-destruction, replacement races and notification permission. They do not execute JNI,
+destruction, replacement races and notification permission. Network checks cover
+callback coalescing, retry after a failed rebind, Stop taking priority, retained
+bindings during loss, changed addresses and ambiguous paths. They do not execute JNI,
 contact a mint or prove physical power-loss behavior. Run with Java 17 and the
 Android SDK available:
 
@@ -258,7 +267,10 @@ With `measurements`, the customer suite also tests a four-node line:
 endpoint → phone client → onward relay → endpoint. The onward relay connects
 without static enrollment in the phone profile. Unfunded payloads are denied;
 after funding, both endpoints deliver and acknowledge 128 KiB, the phone earns
-provider credit and pays for onward forwarding, and all 512 test sats reconcile.
+provider credit and pays for onward forwarding. The running customer's UDP socket
+then moves to a new local port. Both endpoints deliver another 1 MiB, and each
+original channel advances its signed payment and acknowledged credit without
+changing identities, purchases or funding budgets. All 512 test sats reconcile.
 This exercises the same native `CustomerClient` used by JNI, on a local host.
 It does not establish actual phone background or screen-off delivery.
 

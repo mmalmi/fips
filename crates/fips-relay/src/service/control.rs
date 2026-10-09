@@ -9,6 +9,14 @@ mod route_quality_tests;
 impl RelayService {
     async fn handle(&self, request: AdminRequest) -> Result<Value, String> {
         match request {
+            AdminRequest::NetworkChanged => {
+                let rebound = self
+                    .endpoint
+                    .rebind_network_transports(None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"rebound_transports": rebound}))
+            }
             #[cfg(feature = "testbench")]
             AdminRequest::TestAcceptBarrierArm {
                 buyer,
@@ -231,6 +239,7 @@ pub enum AdminRequest {
     #[cfg(feature = "testbench")]
     TestAcceptBarrierRelease,
     Status,
+    NetworkChanged,
     RouteQuality {
         destination: String,
     },
