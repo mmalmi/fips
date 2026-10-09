@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from .paid_finances import financial_snapshot, payments_credited
 from .paid_phone import PaidPhoneRun
 from .paid_phone_checks import guest_source
+from .paid_phone_finances import validate_reopened
 from .paid_relay import eventually, relay_config
 from .paid_settlement import require
 from .phone_customer import ACTIVITY, save
@@ -24,6 +25,8 @@ from .wifi_profiles import configure_stopped
 class PhoneTransitRun(PaidPhoneRun):
     def __init__(self, args):
         require(args.transit and not args.open_mesh, 'LAN transit cannot change radio profiles')
+        require(not getattr(args, 'forced_idle', False) or not (getattr(args, 'screen_off', False)
+                or getattr(args, 'sustained_transit', False)), 'idle is a separate transit workload')
         super().__init__(args)
         require(self.customer['interface'] == self.nodes['n01'].management,
                 'transit must use the existing management LAN')
@@ -184,6 +187,14 @@ class PhoneTransitRun(PaidPhoneRun):
         self.background = True
         self.phone.shell('input', 'keyevent', 'KEYCODE_HOME')
         self.stream('background')
+        if getattr(self.args, 'forced_idle', False):
+            from .phone_idle import exercise
+            before = self.journals('before-idle')
+            exercise(self)
+            eventually('original transit links after idle', self.topology, 90)
+            self.stream('background-after-idle')
+            validate_reopened(self.journals('after-idle'), before, self.mint_url, self.expected_edges())
+            self.phase('original paid channels retained through Android idle without another purchase')
         if self.evidence['screen_off_requested']:
             self.phone.shell('input', 'keyevent', 'KEYCODE_SLEEP')
             eventually('phone screen off or ambient display', lambda: self.screen('screen_off'), 10)

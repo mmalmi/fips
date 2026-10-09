@@ -547,6 +547,8 @@ def main():
                         help='also test transit with the screen off; operator unlock is needed afterward')
     parser.add_argument('--sustained-transit', action='store_true',
                         help='transfer nine MiB per direction through the background phone for at least five minutes')
+    parser.add_argument('--forced-idle', action='store_true',
+                        help='verify paid foreground-service transit during and after forced Android Doze')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
@@ -556,6 +558,8 @@ def main():
         parser.error('--screen-off requires --transit')
     if args.sustained_transit and not args.transit:
         parser.error('--sustained-transit requires --transit')
+    if args.forced_idle and not args.transit:
+        parser.error('--forced-idle requires --transit')
     os.umask(0o077)
     seconds = 1500 if args.load else 1200
 

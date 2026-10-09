@@ -1179,6 +1179,20 @@ and process CPU include diagnostic overhead; they do not measure unplugged
 battery life, Android deep idle or payment-specific CPU. Physical results remain
 separate from harness tests.
 
+Add `--forced-idle` to `--transit` for one controlled Android Doze window.
+It requires an initially active phone and a temporary acceptance app without a
+battery-optimization exemption. After the paid background window, force deep
+idle for at least 45 seconds and require 512 KiB of acknowledged, digest-verified
+delivery in each direction. Verify that Android's network policy allows the
+foreground routing service despite Doze, without a battery exemption. A
+device-side 90-second watchdog restores normal idle policy even if the controller
+disappears. Then require fresh paid
+delivery with the same app process, channel identities, terms and lifetime
+budgets, without another purchase. This mode cannot be combined with
+`--screen-off` or `--sustained-transit`. This finite, USB-powered test measures
+forced-idle continuity; it does not measure natural sleep, battery life or
+recovery from a network outage.
+
 Add `--phone-restart` to split the same eight-packet workload into two cohorts,
 each with two packets in each direction. After the first cohort is delivered
 and paid, the harness records the app process identity, force-stops that exact
