@@ -143,3 +143,116 @@ fn websocket_read_budget_preserves_fragments_and_size_limits() {
         Err(Error::Capacity(_))
     ));
 }
+
+// A TCP/TLS read can contain many already-framed messages. Those messages do
+// not necessarily poll the underlying socket again, so socket cooperation is
+// not a bound on a framing task's receive turn.
+struct ReadyWire(Cursor<Vec<u8>>);
+
+impl tokio::io::AsyncRead for ReadyWire {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        if self.0.position() == self.0.get_ref().len() as u64 {
+            return std::task::Poll::Pending;
+        }
+        let count = self.0.read(buffer.initialize_unfilled()).unwrap();
+        buffer.advance(count);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl tokio::io::AsyncWrite for ReadyWire {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::task::Poll::Ready(Ok(bytes.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    const MESSAGES: usize = 256;
+    let record = build_msg1(
+        SessionIndex::new(1),
+        &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+    );
+    let mut encoder = WebSocket::from_raw_socket(Cursor::new(Vec::new()), Role::Client, None);
+    for _ in 0..MESSAGES {
+        encoder
+            .send(Message::Binary(record.clone().into()))
+            .unwrap();
+    }
+    let identity = Identity::generate();
+    let (packet_tx, mut packet_rx) = packet_channel(8);
+    let transport = WebSocketTransport::new(
+        TransportId::new(7),
+        None,
+        WebSocketConfig {
+            ping_interval_secs: Some(0),
+            idle_timeout_secs: Some(0),
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    );
+    let socket = WebSocketStream::from_raw_socket(
+        ReadyWire(Cursor::new(encoder.get_ref().get_ref().clone())),
+        Role::Server,
+        Some(transport.runtime.websocket_config()),
+    )
+    .await;
+    let mut connection = Box::pin(run_framing_connection(
+        transport.runtime.clone(),
+        TransportAddr::from_string("ws://buffered.invalid/fips"),
+        socket,
+        transport.runtime.next_generation(),
+        Direction::Inbound,
+        false,
+        0,
+    ));
+    let mut received = 0;
+    for _ in 0..MESSAGES * 2 {
+        let before = transport.stats().frames_received;
+        poll_fn(|cx| {
+            assert!(connection.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let advanced = transport.stats().frames_received - before;
+        assert!(
+            advanced < 64,
+            "ready WebSocket burst must yield before exhausting priority reserve"
+        );
+        while let Ok(packet) = packet_rx.try_recv() {
+            assert_eq!(packet.data.as_slice(), record);
+            received += 1;
+        }
+        if transport.stats().frames_received == MESSAGES as u64 {
+            break;
+        }
+    }
+    assert_eq!(received, MESSAGES, "framing fairness must not lose records");
+    assert_eq!(transport.stats().frames_received, MESSAGES as u64);
+    drop(connection);
+    assert!(transport.runtime.connections().is_empty());
+}

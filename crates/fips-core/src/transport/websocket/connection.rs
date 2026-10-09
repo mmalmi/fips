@@ -88,6 +88,7 @@ async fn read<S>(
 where
     S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
+    let mut ready_frames = 0;
     loop {
         let reply = match stream.next().await {
             Some(Ok(Message::Binary(data))) => {
@@ -171,6 +172,15 @@ where
             replies.try_send(reply).map_err(|_| {
                 TransportError::SendFailed("WebSocket control reply queue unavailable".into())
             })?;
+        }
+        // One socket read can leave hundreds of complete frames buffered.
+        // Neither next() on that buffer nor PacketTx::send's nonblocking
+        // admission yields. Give the node and other connections a turn before
+        // this reader alone can exhaust the bounded 64-packet priority lane.
+        ready_frames += 1;
+        if ready_frames == 32 {
+            ready_frames = 0;
+            tokio::task::yield_now().await;
         }
     }
 }
