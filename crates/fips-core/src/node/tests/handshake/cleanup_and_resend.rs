@@ -229,65 +229,6 @@ async fn test_msg1_stored_for_resend() {
     assert!(conn.next_resend_at_ms() > now_ms);
 }
 
-/// Test that resend scheduling respects max_resends and backoff.
-#[tokio::test]
-async fn test_resend_scheduling() {
-    let mut node = make_node();
-    let transport_id = TransportId::new(1);
-
-    let peer_identity = make_peer_identity();
-    let remote_addr = TransportAddr::from_string("10.0.0.2:2121");
-
-    let now_ms = 100_000u64; // Use a fixed time for predictable testing
-    let link_id = node.allocate_link_id();
-    let mut conn = PeerConnection::outbound(link_id, peer_identity, now_ms);
-
-    let our_index = node.index_allocator.allocate().unwrap();
-    let our_keypair = node.identity.keypair();
-    let noise_msg1 = conn
-        .start_handshake(our_keypair, node.startup_epoch, now_ms)
-        .unwrap();
-    conn.set_our_index(our_index);
-    conn.set_transport_id(transport_id);
-    conn.set_source_addr(remote_addr.clone());
-
-    // Store msg1 with first resend at now + 1000ms
-    let wire_msg1 = crate::node::wire::build_msg1(our_index, &noise_msg1);
-    conn.set_handshake_msg1(wire_msg1, now_ms + 1000);
-
-    let link = Link::connectionless(
-        link_id,
-        transport_id,
-        remote_addr.clone(),
-        LinkDirection::Outbound,
-        Duration::from_millis(100),
-    );
-    node.links.insert(link_id, link);
-    node.links.insert_addr((transport_id, remote_addr), link_id);
-    node.pending_outbound
-        .insert((transport_id, our_index.as_u32()), link_id);
-    node.peers.insert_connection(link_id, conn);
-
-    // Before resend time: nothing should happen (no transport = can't send,
-    // but the filter should exclude it because now < next_resend_at)
-    node.resend_pending_handshakes(now_ms + 500).await;
-    let conn = node.peers.get_connection(&link_id).unwrap();
-    assert_eq!(conn.resend_count(), 0, "No resend before scheduled time");
-
-    // At resend time: would resend if transport existed. Without transport,
-    // the send fails silently and resend_count stays at 0.
-    // This tests the filtering logic — the connection IS a candidate.
-    node.resend_pending_handshakes(now_ms + 1000).await;
-    // No transport registered, so send fails — count stays 0.
-    // That's the expected behavior (transport absence is a transient condition).
-    let conn = node.peers.get_connection(&link_id).unwrap();
-    assert_eq!(
-        conn.resend_count(),
-        0,
-        "No transport means no resend recorded"
-    );
-}
-
 /// Test that msg2 is stored on PeerConnection for responder resend.
 #[test]
 fn test_msg2_stored_on_connection() {

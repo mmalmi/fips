@@ -335,14 +335,18 @@ impl Node {
                 false
             };
 
-            if sent && let Some(conn) = self.peers.get_connection_mut(&link_id) {
+            // Local send failures consume the same finite attempt budget as
+            // packet loss. Otherwise an unreachable carrier remains due on
+            // every maintenance tick until the handshake timeout.
+            if let Some(conn) = self.peers.get_connection_mut(&link_id) {
                 let count = conn.resend_count() + 1;
                 let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
                 conn.record_resend(next);
                 debug!(
                     link_id = %link_id,
                     resend = count,
-                    "Resent handshake msg1"
+                    sent,
+                    "Attempted handshake msg1 resend"
                 );
             }
         }
