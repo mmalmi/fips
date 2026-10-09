@@ -499,7 +499,8 @@ pub(crate) struct DataplaneAeadWorkerPool {
 impl DataplaneAeadWorkerPool {
     // Refilled once per live turn, not by each collect/retire pass within it.
     fn begin_live_turn(&mut self) {
-        self.inline_control_remaining = usize::from(cfg!(target_os = "android"));
+        self.inline_control_remaining =
+            usize::from(cfg!(any(target_os = "android", target_os = "ios")));
     }
 
     pub(crate) fn new(max_in_flight: usize) -> Self {
