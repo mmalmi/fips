@@ -697,11 +697,14 @@ through the installed service, and retain cumulative unbilled exposure plus at
 most one additional durable window per channel. Funding, capital and lifetime
 spending limits remain unchanged. Traffic pauses at each reset; this is separate
 from the mint-outage and active-traffic restart experiments.
-This continuity test currently exposes a limit of the fixed profile: two lost
-4,000-msat windows consume its entire 8,000-msat relationship grace, after which
-forwarding can stop despite remaining channel funds. The hardware trial rejects
-incomplete delivery and collects its test funds; three-boot continuity is not
-qualified. Renewing a channel does not erase the relationship's retained loss.
+The earlier r399 trial rejected incomplete delivery after two lost 4,000-msat
+windows consumed its 8,000-msat relationship grace despite remaining channel
+funds. Adaptive durable windows pass the same workload and limits in r403: all
+24,000 packets arrive across three boots, with cumulative loss of 4,000, 6,000
+and 7,000 msat per original channel. All test funds are collected. The test still
+requires complete delivery and exact retained loss; renewing a channel does not
+erase it. Finite allowance can still run out. This does not qualify indefinite
+restart continuity or electrical power cuts.
 
 Use `sim.wifi_boot_mint_outage` to repeat that paid boot with an unresponsive mint.
 After the first three paid cohorts, the owned Linux mint is suspended before
