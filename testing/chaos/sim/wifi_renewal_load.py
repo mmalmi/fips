@@ -1,4 +1,4 @@
-"""Five minutes of simultaneous paid traffic through automatic channel renewal.
+"""Bounded windows of simultaneous paid traffic through automatic channel renewal.
 
 Fresh capped test accounts, one middle relay and the saved guarded radio mesh.
 Finite sends are never replayed; optional loss requires observed filter counters.
@@ -68,22 +68,18 @@ def successor_chain(rows, count):
     return ordered
 
 
-def validate(evidence, identities):
-    """Require paid successor delivery while both one-shot streams are active."""
+def validate_window(evidence, identities, ids):
+    """Verify each original stream before using its live payment observations."""
     streams, samples = evidence["streams"], evidence["samples"]
     require(set(streams) == set(ENDPOINTS) and samples, "renewal run lacks both streams and observations")
     every = evidence.get("frame_loss_every")
     require(every is None or type(every) is int and every == EVERY, "unexpected frame-loss policy")
     impaired = every is not None
-    expected = evidence.get("expected_renewals", 1)
-    require(type(expected) is int and expected in EXPIRY_QUOTES
-            and (expected == 1 or evidence.get("expiry_renewal", False)),
-            "unexpected renewal count or mode")
     if impaired:
         require(set(evidence.get("loss_removed", {})) == set(ENDPOINTS)
                 and set(evidence.get("recovery_streams", {})) == set(ENDPOINTS),
                 "impaired renewal lacks filter removal or recovery streams")
-    ids = set()
+    live = {}
     for source in ENDPOINTS:
         row = streams[source]
         shape = row["shape"]
@@ -112,13 +108,49 @@ def validate(evidence, identities):
             received(recovery["receiver"], recovery["shape"], identities[source], complete=True)
         require(row["sender"]["elapsed_us"] >= (PACKETS - 1) * 1_000_000 // RATE,
                 "renewal send finished before the continuous paced window")
-        live = [sample for sample in samples if sample["ended_at"]
+        live[source] = [sample for sample in samples if row["dispatch_started"] <= sample["ended_at"]
                 < row["dispatch_started"] + (PACKETS - 1) / RATE]
+    return live
+
+
+def validate(evidence, identities):
+    """Require every successor to deliver and receive credit during offered load."""
+    count = evidence.get('window_count', 1)
+    require(type(count) is int and count in (1, 2), 'unexpected traffic window count')
+    windows = evidence.get('windows', [evidence])
+    require(len(windows) == count, 'missing sustained traffic window')
+    expected = evidence.get('expected_renewals', 1)
+    require(type(expected) is int and expected in EXPIRY_QUOTES
+            and (expected == 1 or evidence.get('expiry_renewal', False)),
+            'unexpected renewal count or mode')
+    impaired = evidence.get('frame_loss_every') is not None
+    require(count == 1 or expected == 3 and evidence.get('expiry_renewal') and not impaired,
+            'two windows require three expiry renewals without frame loss')
+    budget = evidence.get('buyer_budget_sat', 64)
+    require(type(budget) is int and budget == 64 * count, 'unexpected lifetime budget')
+    ids, live = set(), {source: [] for source in ENDPOINTS}
+    for index, window in enumerate(windows):
+        require(window.get('frame_loss_every') == evidence.get('frame_loss_every'),
+                'window frame-loss policy changed')
+        observed = validate_window(window, identities, ids)
+        for source in ENDPOINTS:
+            live[source].extend(observed[source])
+            if count > 1:
+                row = window['streams'][source]
+                require((PACKETS - 1) / RATE <= row['dispatch_finished'] - row['dispatch_started'] <= SEND_TIMEOUT,
+                        'traffic window did not span its declared paced send')
+            if index:
+                gap = window['streams'][source]['dispatch_started'] - windows[index - 1]['streams'][source]['dispatch_finished']
+                require(0 <= gap <= 30, 'traffic windows overlap or pause for more than 30 seconds')
+        for name in NAMES:
+            require_same_process(windows[0]['before'][name], window['before'][name])
+            require_same_process(window['before'][name], window['after'][name])
+    for source in ENDPOINTS:
         chain = successor_chain(evidence["accounts_after"]["renewals"][source], expected)
         for lineage in chain:
             replacement = lineage["replacement"]
             paid, observed = [], []
-            for sample in live:
+            for sample in live[source]:
                 rows = sample["accounts"]["renewals"][source]
                 matching = [r for r in rows if r["previous"] == lineage["previous"]
                             and r["replacement"] == replacement]
@@ -131,27 +163,26 @@ def validate(evidence, identities):
                           "previous_paid_sat", "previous_observed_units")
                 expiry, created = lineage[fields[0]], lineage[fields[1]]
                 require(evidence["renewal"] == EXPIRY_RENEWAL
-                        and evidence["quote_lifetime_secs"] == EXPIRY_QUOTES[expected]
+                        and evidence["quote_lifetime_secs"] == EXPIRY_QUOTES[expected] * count
                         and expiry - EXPIRY_RENEWAL["before_expiry_secs"] <= created < expiry
                         and lineage["previous_paid_sat"] < 32
                         and lineage["previous_observed_units"] < QUOTE_UNITS
                         and all(row[field] == lineage[field] for row in observed for field in fields),
                         "expiry renewal must precede expiry without exhausting capacity or byte allowance")
-            first = paid[0]
-            first_count = first["receivers"][source]["unique_packets"]
-            first_credit = first["accounts"]["financial"]["n02"]["credited"].get(replacement, 0)
-            require(any(sample["receivers"][source]["unique_packets"] > first_count
-                        and sample["accounts"]["financial"]["n02"]["credited"].get(replacement, 0) > first_credit
-                        and (not impaired or loss_delta(first["frame_loss"][destination(source)],
-                                                       sample["frame_loss"][destination(source)]) > 0)
-                        for sample in paid[1:]), "fresh delivery and automatic successor credit did not advance")
+            require(any(
+                second['receivers'][source]['stream_id'] == first['receivers'][source]['stream_id']
+                and second['receivers'][source]['unique_packets'] > first['receivers'][source]['unique_packets']
+                and second['accounts']['financial']['n02']['credited'].get(replacement, 0)
+                    > first['accounts']['financial']['n02']['credited'].get(replacement, 0)
+                and (not impaired or loss_delta(first['frame_loss'][destination(source)],
+                                               second['frame_loss'][destination(source)]) > 0)
+                for first, second in zip(paid, paid[1:])),
+                'fresh delivery and automatic successor credit did not advance')
         final = evidence["accounts_after"]["financial"][source]
         require(len(final["funding"]) == expected + 1
                 and all(0 < final["signed"][row["replacement"]] <= 32 for row in chain)
-                and final["authorized"] <= 64,
+                and final["authorized"] <= budget,
                 "expected real replacements within unchanged lifetime authority")
-    for name in NAMES:
-        require_same_process(evidence["before"][name], evidence["after"][name])
 
 
 class RenewalLoadRun(PaidWifiRun):
@@ -161,7 +192,8 @@ class RenewalLoadRun(PaidWifiRun):
         super().__init__(args)
         self.loss_filters = {}
         self.evidence["renewal_load"] = {"passed": False, "samples": [], "streams": {},
-            "sample_errors": [], "packets_per_direction": PACKETS, "packets_per_second": RATE,
+            "sample_errors": [], "packets_per_direction": PACKETS,
+            "window_count": self.window_count, "buyer_budget_sat": self.buyer_budget, "packets_per_second": RATE,
             "payload_bytes": 1000, "send_seconds": SEND_SECONDS, "receive_seconds": RECEIVE_SECONDS,
             "quote_max_units": QUOTE_UNITS, "renewal": dict(self.renewal_policy),
             "expiry_renewal": bool(getattr(args, "expiry_renewal", False)),
@@ -208,6 +240,19 @@ class RenewalLoadRun(PaidWifiRun):
         return result
 
     @property
+    def window_count(self):
+        count = getattr(self.args, 'windows', 1)
+        require(type(count) is int and count in (1, 2), 'unexpected traffic window count')
+        require(count == 1 or getattr(self.args, 'expiry_renewal', 0) == 3
+                and not getattr(self.args, 'frame_loss', False),
+                'two windows require three expiry renewals without frame loss')
+        return count
+
+    @property
+    def buyer_budget(self):
+        return 64 * self.window_count
+
+    @property
     def renewal_policy(self):
         return EXPIRY_RENEWAL if getattr(self.args, "expiry_renewal", False) else RENEWAL
 
@@ -219,7 +264,7 @@ class RenewalLoadRun(PaidWifiRun):
 
     @property
     def quote_lifetime(self):
-        return EXPIRY_QUOTES[self.expected_renewals] if getattr(self.args, "expiry_renewal", False) else 1200
+        return EXPIRY_QUOTES[self.expected_renewals] * self.window_count if getattr(self.args, "expiry_renewal", False) else 1200
 
     def profile_config(self, node):
         config = super().profile_config(node)
@@ -351,7 +396,8 @@ class RenewalLoadRun(PaidWifiRun):
             native = initial[name]["native"]["status"]["data"]
             require(native["npub"] == node.npub, "renewal native identity differs from prepared profile")
             identities[name] = list(bytes.fromhex(native["node_addr"]))
-        accounts = RenewalAccounts(self, identities, self.renewal_policy, self.expected_renewals)
+        accounts = RenewalAccounts(self, identities, self.renewal_policy, self.expected_renewals,
+                                   buyer_budget_sat=self.buyer_budget)
         try:
             for source in ENDPOINTS:
                 self.ctl(source, "buy", destination=self.nodes[destination(source)].npub)
@@ -364,7 +410,16 @@ class RenewalLoadRun(PaidWifiRun):
                                      for name in ENDPOINTS}
                 evidence["loss_armed"] = {name: fault.enable() for name, fault in self.loss_filters.items()}
                 self.save()
-            self.continuous_streams(accounts)
+            if self.window_count == 1:
+                self.continuous_streams(accounts)
+            else:
+                evidence['windows'] = []
+                for _ in range(self.window_count):
+                    evidence.update(streams={}, samples=[])
+                    self.continuous_streams(accounts)
+                    evidence['windows'].append({key: evidence.pop(key)
+                        for key in ('streams', 'samples', 'before', 'after')})
+                    self.save()
             if self.loss_filters:
                 self.clear_loss()
                 self.recover_delivery()
@@ -395,6 +450,8 @@ def main():
                         help="require one expiry replacement (180-second quotes) or three (90-second quotes)")
     parser.add_argument("--frame-loss", action="store_true",
                         help="drop every twentieth test frame during both streams, then verify full recovery")
+    parser.add_argument('--windows', type=int, choices=(1, 2), default=1,
+                        help='two five-minute windows use 180-second quotes and a fresh 128-sat signing limit; requires --expiry-renewal 3')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)
@@ -403,7 +460,7 @@ def main():
         raise TimeoutError("router renewal acceptance exceeded its bounded window")
 
     signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(900)
+    signal.alarm(900 + (args.windows - 1) * SEND_SECONDS)
     RenewalLoadRun(args).execute()
 
 

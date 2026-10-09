@@ -846,6 +846,16 @@ credit on every successor before its next replacement. The observer retains all
 earlier usage, refunds and funding operations; lifetime spending and capital
 limits are the same. This mode also accepts `--frame-loss`.
 
+Add `--windows 2` to `--expiry-renewal 3` for ten minutes of offered traffic at
+the same rate, using two consecutive five-minute windows and 180-second quotes.
+The same processes and accounts span both windows; every successor must show
+delivery and growing credit within an active window. The gap between windows is
+measured and limited to 30 seconds. Fresh profiles declare 128-sat lifetime signing
+limits before funding, while channel capacity, wallet exposure, locked capital,
+prices and the total 384-test-sat issuance cap remain as above. Every original
+packet in both windows must arrive. This mode excludes injected frame loss and
+does not claim uninterrupted traffic across the measured gap.
+
 Expired, closed routes may be compacted by the ordinary runtime. The finite
 observer keeps earlier purchases in memory and verifies the native retirement
 fence, exact retained byte costs and terminal refund before accepting removal.

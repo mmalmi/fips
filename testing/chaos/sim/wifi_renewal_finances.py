@@ -54,8 +54,10 @@ def route_usage(buyer, contract):
 
 
 class RenewalAccounts:
-    def __init__(self, run, identities, renewal=RENEWAL, expected_renewals=1):
+    def __init__(self, run, identities, renewal=RENEWAL, expected_renewals=1, *, buyer_budget_sat=64):
         check(type(expected_renewals) is int and expected_renewals in (1, 3), "unexpected renewal count")
+        check(type(buyer_budget_sat) is int and buyer_budget_sat in (64, 128), 'unexpected buyer budget')
+        self.buyer_budget = buyer_budget_sat
         self.run, self.identities = run, identities
         self.expected_renewals = expected_renewals
         self.renewal = dict(renewal)
@@ -149,7 +151,7 @@ class RenewalAccounts:
             check(policy["mint_url"] == self.run.mint_url and policy["renewal"] == self.renewal
                   and policy["channel_capacity_sat"] == 32 and policy["max_locked_sat"] == 64
                   and policy["max_wallet_spend_sat"] == 128 and policy["max_funding_overhead_sat"] == 0
-                  and policy["channel_lifetime_secs"] == 1800 and buyer["total_budget_sat"] == 64,
+                  and policy["channel_lifetime_secs"] == 1800 and buyer["total_budget_sat"] == self.buyer_budget,
                   "renewal widened the original spending, lifetime or capital bounds")
             check(controller["renewals_paused"] is self.paused and not controller["watched_routes"],
                   "renewal changed its autonomous purchase policy")
@@ -232,22 +234,22 @@ class RenewalAccounts:
             self.check_buyer(name, state, summary[name], owner_channels, previous)
         lineage = self.check_routes(raw, channels, refunds)
         self.check_seller(raw, summary, channels)
-        fixture = SettlementFixture(dict.fromkeys(NAMES, 128), dict.fromkeys(NAMES, 64), 32,
+        fixture = SettlementFixture(dict.fromkeys(NAMES, 128), dict.fromkeys(NAMES, self.buyer_budget), 32,
             {key: row["owner"] for key, row in channels.items()}, dict.fromkeys(channels, "n02"), refunds)
         return fixture, lineage
 
     def check_buyer(self, name, state, summary, channels, previous):
         buyer = state["buyer"]
         later = {key: amount(value) for key, value in summary["signed_after"].items()}
-        check(amount(summary["authorized"]) == sum(amount(value) for value in summary["signed"].values()) <= 64
-              and sum(later.values()) <= 64 and all(value <= 32 for value in later.values())
-              and amount(summary["remaining"]) + summary["authorized"] == 64,
+        check(amount(summary["authorized"]) == sum(amount(value) for value in summary["signed"].values()) <= self.buyer_budget
+              and sum(later.values()) <= self.buyer_budget and all(value <= 32 for value in later.values())
+              and amount(summary["remaining"]) + summary["authorized"] == self.buyer_budget,
               "renewal reset the lifetime buyer budget")
         observed = (summary["signed"], self.latest_signed[name],
                     {key: row["authorized_sat"] for key, row in buyer["channels"].items()})
         check(all(later.get(key, -1) >= amount(value) for snapshot in observed for key, value in snapshot.items()),
               "later buyer snapshot lost signed liability")
-        check(sum(amount(row["authorized_sat"]) for row in buyer["channels"].values()) <= 64,
+        check(sum(amount(row["authorized_sat"]) for row in buyer["channels"].values()) <= self.buyer_budget,
               "renewal exceeded durable lifetime buyer authority")
         consistent_observation(set(buyer["channels"]) <= set(channels), "buyer registration changed during renewal sampling")
         signed = {}

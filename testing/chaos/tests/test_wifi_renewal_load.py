@@ -19,9 +19,10 @@ from tests.test_wifi_priority import reports
 
 
 class AccountsFixture:
-    def __init__(self, expected_renewals=1):
+    def __init__(self, expected_renewals=1, buyer_budget=64):
         self.raw = empty()
         for state in self.raw.values():
+            state['buyer']['total_budget_sat'] = buyer_budget
             state["controller"]["policy"]["renewal"] = dict(RENEWAL)
             state["controller"]["renewals_paused"] = False
             state["seller"].update(version=2, window_msat=4000)
@@ -31,7 +32,8 @@ class AccountsFixture:
         self.run.finances.side_effect = lambda: summary(self.raw)
         self.run.financial_observation.side_effect = lambda: (account_journals(self.run), self.run.finances())
         self.run.state_json.side_effect = lambda name, path: copy.deepcopy(self.raw[name][path.split('/')[0]])
-        self.accounts = RenewalAccounts(self.run, IDS, expected_renewals=expected_renewals)
+        self.accounts = RenewalAccounts(self.run, IDS, expected_renewals=expected_renewals,
+                                        buyer_budget_sat=buyer_budget)
 
     def channel(self, source, suffix, paid, created=None):
         terms = add_channel(self.raw, source, suffix, paid)
@@ -175,6 +177,57 @@ def repeated_evidence():
 
 
 class RenewalTests(unittest.TestCase):
+    def test_discovery_checks_the_budget_declared_by_the_fresh_long_run(self):
+        run = object.__new__(RenewalLoadRun)
+        run.args = SimpleNamespace(windows=2, expiry_renewal=3)
+        run.channel_anchor = None
+        current = AccountsFixture(buyer_budget=128).run.finances()
+        run.finances = Mock(return_value=current)
+        self.assertEqual(run.assert_finances(), current)
+        for change in (
+            lambda s: s.update(remaining=64),
+            lambda s: s['signed'].update(unexpected=1),
+            lambda s: s['budget'].update(locked_sat=1),
+        ):
+            candidate = copy.deepcopy(current)
+            change(candidate['n01'])
+            run.finances.return_value = candidate
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                run.assert_finances()
+
+    def test_two_windows_require_fresh_delivery_and_preserve_one_process_epoch(self):
+        evidence = repeated_evidence()
+        evidence.update(window_count=2, buyer_budget_sat=128, quote_lifetime_secs=180,
+                        frame_loss_every=None, windows=[])
+        for index in range(2):
+            window = {key: copy.deepcopy(evidence[key]) for key in ('streams', 'samples', 'before', 'after')}
+            for position, (source, row) in enumerate(window['streams'].items()):
+                identifier = f'{index * 2 + position + 10:032x}'
+                for key in ('shape', 'sender', 'receiver'):
+                    row[key]['stream_id'] = identifier
+                row['receiver'].update(unique_packets=PACKETS, unique_bytes=PACKETS * 1000, missing_packets=0)
+                row['frame_loss'] = None
+                row.update(dispatch_started=100 + index * 310, dispatch_finished=400 + index * 310)
+                for sample in window['samples']:
+                    sample['receivers'][source]['stream_id'] = identifier
+            for sample in window['samples']:
+                sample['ended_at'] += index * 310
+            evidence['windows'].append(window)
+        for key in ('streams', 'samples', 'before', 'after', 'loss_removed', 'recovery_streams'):
+            evidence.pop(key, None)
+        validate(evidence, dict(zip(NAMES, NAMES)))
+        for change in (
+            lambda e: e['windows'][1]['streams']['n01']['receiver'].update(
+                unique_packets=PACKETS - 1, unique_bytes=(PACKETS - 1) * 1000, missing_packets=1),
+            lambda e: e['windows'][1]['before']['n02']['host_process'].update(pid=11),
+            lambda e: e['windows'][1]['streams']['n01'].update(dispatch_started=500),
+            lambda e: e.update(buyer_budget_sat=64),
+        ):
+            candidate = copy.deepcopy(evidence)
+            change(candidate)
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                validate(candidate, dict(zip(NAMES, NAMES)))
+
     def test_repeated_expiry_requires_a_paid_chain_for_every_replacement(self):
         evidence = repeated_evidence()
         validate(evidence, dict(zip(NAMES, NAMES)))
@@ -254,6 +307,9 @@ class RenewalTests(unittest.TestCase):
         expected["terms"]["quote_lifetime_secs"] = 90
         self.assertEqual(run.profile_config(node), expected)
         self.assertEqual(run.expected_renewals, 3)
+        run.args.windows = 2
+        expected['terms'].update(buyer_budget_sat=128, quote_lifetime_secs=180)
+        self.assertEqual(run.profile_config(node), expected)
 
     def test_expiry_acceptance_requires_successor_before_expiry_without_exhaustion(self):
         evidence = accepted_evidence()
@@ -331,29 +387,30 @@ class RenewalTests(unittest.TestCase):
                 f.accounts.observe()
 
     def test_repeated_retirement_preserves_all_channel_liability_and_refunds(self):
-        f = AccountsFixture(expected_renewals=3)
-        f.original = {name: f.channel(name, f"{name}-0", 10, created=100) for name in ("n01", "n03")}
-        f.accounts.observe()
-        for index in range(1, 4):
-            replacements = {}
-            for name, outgoing in f.original.items():
-                before = copy.deepcopy(outgoing)
-                old = outgoing["purchase"]["channel"]["id"]
-                settle(f.raw, name, old)
-                outgoing["retired"] = True
-                new = f.channel(name, f"{name}-{index}", 10, created=100 + index * 90)
-                f.raw[name]["controller"]["renewals"][old] = {
-                    "previous": [before], "replacements": [copy.deepcopy(new["offer"])], "completed": True}
-                replacements[name] = new
-            f.compact(controller=True)
-            observed, fixture = f.accounts.observe()
-            self.assertEqual(len(fixture.channel_owners), 2 * (index + 1))
-            self.assertEqual(len(fixture.prior_settlements), 2 * index)
-            for name in ("n01", "n03"):
-                self.assertEqual(len(observed["renewals"][name]), index)
-                self.assertEqual(observed["financial"][name]["authorized"], 10 * (index + 1))
-                self.assertEqual(observed["financial"][name]["remaining"], 64 - 10 * (index + 1))
-            f.original = replacements
+        for budget, paid in ((64, 10), (128, 24)):
+            f = AccountsFixture(expected_renewals=3, buyer_budget=budget)
+            f.original = {name: f.channel(name, f"{name}-0", paid, created=100) for name in ("n01", "n03")}
+            f.accounts.observe()
+            for index in range(1, 4):
+                replacements = {}
+                for name, outgoing in f.original.items():
+                    before = copy.deepcopy(outgoing)
+                    old = outgoing["purchase"]["channel"]["id"]
+                    settle(f.raw, name, old)
+                    outgoing["retired"] = True
+                    new = f.channel(name, f"{name}-{index}", paid, created=100 + index * 90)
+                    f.raw[name]["controller"]["renewals"][old] = {
+                        "previous": [before], "replacements": [copy.deepcopy(new["offer"])], "completed": True}
+                    replacements[name] = new
+                f.compact(controller=True)
+                observed, fixture = f.accounts.observe()
+                self.assertEqual(len(fixture.channel_owners), 2 * (index + 1))
+                self.assertEqual(len(fixture.prior_settlements), 2 * index)
+                for name in ("n01", "n03"):
+                    self.assertEqual(len(observed["renewals"][name]), index)
+                    self.assertEqual(observed["financial"][name]["authorized"], paid * (index + 1))
+                    self.assertEqual(observed["financial"][name]["remaining"], budget - paid * (index + 1))
+                f.original = replacements
 
     def test_changed_funding_authority_refund_or_successor_cannot_pass(self):
         changes = (

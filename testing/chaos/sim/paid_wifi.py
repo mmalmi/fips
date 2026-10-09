@@ -94,9 +94,14 @@ class PaidWifiRun(WifiRun):
                               self.run, self.root, args.mint_address, max_issued_sat=384)
         return LocalMint(args.mint_binary, args.mint_address, self.root)
 
+    @property
+    def buyer_budget(self):
+        return 64
+
     def profile_config(self, node):
         config = relay_config([node.interface], self.mint_url)
         config["state_directory"] = node.state
+        config["terms"]["buyer_budget_sat"] = self.buyer_budget
         if getattr(self.args, "active_outage", False):
             config["return_allowance"] = False
         config["transports"]["ethernet"][node.interface]["ethertype"] = ETHERTYPE
@@ -170,7 +175,7 @@ class PaidWifiRun(WifiRun):
         if self.channel_anchor is None:
             for state in current.values():
                 require(not state["funding"] and not state["signed"] and not state["credited"]
-                        and not any(state["budget"].values()) and state["remaining"] == 64,
+                        and not any(state["budget"].values()) and state["remaining"] == self.buyer_budget,
                         "discovery created spending or payment authority")
         else:
             retain_channels(self.channel_anchor, current)

@@ -90,7 +90,7 @@ def summary(raw):
         result[name] = {"funding": funding, "budget": {"wallet_debited_sat": len(funding) * 32,
             "pending_reserved_sat": reserved, "locked_sat": (len(funding) - len(refunds)) * 32 + reserved,
             "wallet_refunded_sat": refunded, "exposure_sat": len(funding) * 32 + reserved - refunded},
-            "remaining": 64 - sum(signed.values()), "authorized": sum(signed.values()),
+            "remaining": buyer["total_budget_sat"] - sum(signed.values()), "authorized": sum(signed.values()),
             "signed": signed, "signed_after": dict(signed), "credited": credited,
             "buyer_units": {key: row["submitted_units"] for key, row in buyer["quotes"].items()},
             "buyer_observed_units": {key: row["observed_units"] for key, row in buyer["quotes"].items()}}
