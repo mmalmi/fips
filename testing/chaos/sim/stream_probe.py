@@ -62,9 +62,9 @@ def duplex(run, record, *, label, count, duration, rate, observe, expect_denial=
                 raise
             require(isinstance(observed, dict), 'unpaid stream status is unavailable')
             result = {'probe': observed, 'observed_after_error': True}
+        save(operations / (name + '-result.json'), result)
         if expect_denial:
             denied(result['probe'], shapes[name])
-        save(operations / (name + '-result.json'), result)
         return result['probe']
 
     jobs = {}

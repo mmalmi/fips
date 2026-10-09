@@ -1193,6 +1193,16 @@ budgets, without another purchase. This mode cannot be combined with
 forced-idle continuity; it does not measure natural sleep, battery life or
 recovery from a network outage.
 
+Use `--phone-outage` with `--transit` to interrupt the phone's UDP link to the
+middle router after paid background delivery. An exact address/port filter
+blocks both directions under the existing router cleanup lease; normal LAN
+traffic remains allowed. Require fresh zero-delivery probes, real drop counters,
+disconnection at both ends and continued connectivity on the other two links.
+Remove the filter, then require fresh acknowledged traffic without another
+purchase or a process restart. The same channel terms and lifetime budgets must
+survive. This mode runs separately from idle, screen-off and sustained transit;
+it tests a link outage, not physical movement or address changes.
+
 Add `--phone-restart` to split the same eight-packet workload into two cohorts,
 each with two packets in each direction. After the first cohort is delivered
 and paid, the harness records the app process identity, force-stops that exact

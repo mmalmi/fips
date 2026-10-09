@@ -549,6 +549,8 @@ def main():
                         help='transfer nine MiB per direction through the background phone for at least five minutes')
     parser.add_argument('--forced-idle', action='store_true',
                         help='verify paid foreground-service transit during and after forced Android Doze')
+    parser.add_argument('--phone-outage', action='store_true',
+                        help='cut one phone UDP link, verify peer loss, then recover original paid channels')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
@@ -560,6 +562,8 @@ def main():
         parser.error('--sustained-transit requires --transit')
     if args.forced_idle and not args.transit:
         parser.error('--forced-idle requires --transit')
+    if args.phone_outage and not args.transit:
+        parser.error('--phone-outage requires --transit')
     os.umask(0o077)
     seconds = 1500 if args.load else 1200
 

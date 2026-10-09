@@ -71,6 +71,9 @@ class StreamProbeTests(unittest.TestCase):
                            rate=1024, observe=lambda: {}, expect_denial=True)
                     self.assertEqual(record['results'], reports)
                 self.assertEqual(run.ctl.call_count, 4)
+                for name in run.nodes:
+                    saved = json.loads((run.root / 'stream-denied' / (name+'-result.json')).read_text())
+                    self.assertEqual(saved['probe'], reports[name])
 
     def test_observer_failure_retains_both_completed_requests_without_replay(self):
         with tempfile.TemporaryDirectory() as root:

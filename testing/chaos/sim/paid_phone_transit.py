@@ -20,6 +20,7 @@ from .phone_customer import ACTIVITY, save
 from .phone_diagnostics import control, native, resources
 from .stream_probe import duplex, validate_stream
 from .wifi_profiles import configure_stopped
+from . import phone_idle, phone_outage
 
 
 class PhoneTransitRun(PaidPhoneRun):
@@ -27,6 +28,9 @@ class PhoneTransitRun(PaidPhoneRun):
         require(args.transit and not args.open_mesh, 'LAN transit cannot change radio profiles')
         require(not getattr(args, 'forced_idle', False) or not (getattr(args, 'screen_off', False)
                 or getattr(args, 'sustained_transit', False)), 'idle is a separate transit workload')
+        require(not getattr(args, 'phone_outage', False) or not any(getattr(args, flag, False)
+                for flag in ('screen_off', 'sustained_transit', 'forced_idle')),
+                'phone outage is a separate transit workload')
         super().__init__(args)
         require(self.customer['interface'] == self.nodes['n01'].management,
                 'transit must use the existing management LAN')
@@ -187,14 +191,20 @@ class PhoneTransitRun(PaidPhoneRun):
         self.background = True
         self.phone.shell('input', 'keyevent', 'KEYCODE_HOME')
         self.stream('background')
-        if getattr(self.args, 'forced_idle', False):
-            from .phone_idle import exercise
-            before = self.journals('before-idle')
-            exercise(self)
-            eventually('original transit links after idle', self.topology, 90)
-            self.stream('background-after-idle')
-            validate_reopened(self.journals('after-idle'), before, self.mint_url, self.expected_edges())
-            self.phase('original paid channels retained through Android idle without another purchase')
+        event = ('idle' if getattr(self.args, 'forced_idle', False) else
+                 'outage' if getattr(self.args, 'phone_outage', False) else None)
+        if event:
+            before = self.journals('before-' + event)
+            (phone_idle if event == 'idle' else phone_outage).exercise(self)
+            eventually('original transit links after ' + event, self.topology, 90)
+            self.stream('background-after-' + event)
+            validate_reopened(self.journals('after-' + event), before, self.mint_url, self.expected_edges())
+            if event == 'outage':
+                row = self.evidence['phone_outage']
+                row['recovered_processes'] = phone_outage.processes(self)
+                require(row['recovered_processes'] == row['before_processes'],
+                        'recovery restarted a paid participant')
+            self.phase('original paid channels retained through ' + event + ' without another purchase')
         if self.evidence['screen_off_requested']:
             self.phone.shell('input', 'keyevent', 'KEYCODE_SLEEP')
             eventually('phone screen off or ambient display', lambda: self.screen('screen_off'), 10)
