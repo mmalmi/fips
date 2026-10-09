@@ -261,3 +261,95 @@ async fn buffered_websocket_burst_gives_priority_receiver_a_turn() {
         .unwrap();
     assert!(transport.runtime.connections().is_empty());
 }
+
+#[tokio::test]
+async fn concurrent_websocket_readers_preserve_control_at_shared_capacity() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    // Each reader has less than one cooperative turn, but their aggregate
+    // exceeds the same 64-packet reserve. Yielding per reader is insufficient.
+    const READERS: usize = 8;
+    const PER_READER: usize = 16;
+    let record = build_msg1(
+        SessionIndex::new(1),
+        &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+    );
+    let mut encoder = WebSocket::from_raw_socket(Cursor::new(Vec::new()), Role::Client, None);
+    for _ in 0..PER_READER {
+        encoder
+            .send(Message::Binary(record.clone().into()))
+            .unwrap();
+    }
+    let identity = Identity::generate();
+    let (packet_tx, mut packet_rx) = packet_channel(8);
+    let transport = WebSocketTransport::new(
+        TransportId::new(7),
+        None,
+        WebSocketConfig {
+            ping_interval_secs: Some(0),
+            idle_timeout_secs: Some(0),
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    );
+    let mut connections = Vec::new();
+    for reader in 0..READERS {
+        let socket = WebSocketStream::from_raw_socket(
+            ReadyWire(Cursor::new(encoder.get_ref().get_ref().clone())),
+            Role::Server,
+            Some(transport.runtime.websocket_config()),
+        )
+        .await;
+        let addr = TransportAddr::from_string(format!("ws://buffered-{reader}.invalid/fips"));
+        let connection = Box::pin(run_framing_connection(
+            transport.runtime.clone(),
+            addr.clone(),
+            socket,
+            transport.runtime.next_generation(),
+            Direction::Inbound,
+            false,
+            0,
+        ));
+        connections.push((addr, connection));
+    }
+    let mut received = 0;
+    let mut maximum_queued = 0;
+    for _ in 0..READERS * PER_READER {
+        poll_fn(|cx| {
+            for (_, connection) in &mut connections {
+                assert!(connection.as_mut().poll(cx).is_pending());
+            }
+            Poll::Ready(())
+        })
+        .await;
+        let mut queued = 0;
+        while let Ok(packet) = packet_rx.try_recv() {
+            assert_eq!(packet.data.as_slice(), record);
+            received += 1;
+            queued += 1;
+        }
+        maximum_queued = maximum_queued.max(queued);
+        if transport.stats().frames_received == (READERS * PER_READER) as u64 {
+            break;
+        }
+    }
+    for (addr, connection) in connections {
+        transport.close_connection_async(&addr).await;
+        tokio::time::timeout(Duration::from_secs(1), connection)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(transport.runtime.connections().is_empty());
+    assert!(
+        maximum_queued <= 64,
+        "shared priority reserve must remain bounded"
+    );
+    assert_eq!(
+        received,
+        READERS * PER_READER,
+        "shared capacity must backpressure ready control frames instead of losing them"
+    );
+}
