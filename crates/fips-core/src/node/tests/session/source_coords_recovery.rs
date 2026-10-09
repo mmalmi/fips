@@ -132,7 +132,9 @@ async fn advertise_reachability(nodes: &mut [TestNode], destination: NodeAddr, e
     let transit = *nodes[1].node.node_addr();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let computed = loop {
-        let announce = nodes[1].node.build_filter_announce(&source);
+        let inputs = nodes[1].node.peer_inbound_filters();
+        let filters = nodes[1].node.bloom_state.prepare_outgoing_filters(&inputs);
+        let announce = nodes[1].node.build_filter_announce(&source, &filters);
         if announce.filter.contains(&destination) {
             break announce;
         }

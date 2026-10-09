@@ -5,6 +5,51 @@ use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use super::BloomFilter;
 use crate::NodeAddr;
 
+/// One immutable input view for a recipient fanout. Shared bits survive the
+/// exclusion of any one peer, including overlap with our local identities.
+pub(crate) struct OutgoingBloomFilters<'a> {
+    peers: &'a HashMap<NodeAddr, BloomFilter>,
+    combined: Vec<u8>,
+    shared: Vec<u8>,
+    hash_count: u8,
+}
+
+impl OutgoingBloomFilters<'_> {
+    fn excluded(&self, peer: &NodeAddr) -> Option<&BloomFilter> {
+        self.peers
+            .get(peer)
+            .filter(|filter| filter.num_bytes() == self.combined.len())
+    }
+
+    pub(crate) fn for_peer(&self, peer: &NodeAddr) -> BloomFilter {
+        let mut bytes = self.combined.clone();
+        if let Some(excluded) = self.excluded(peer) {
+            for ((byte, shared), excluded) in
+                bytes.iter_mut().zip(&self.shared).zip(excluded.as_bytes())
+            {
+                *byte &= !*excluded | *shared;
+            }
+        }
+        BloomFilter::from_bytes(bytes, self.hash_count).expect("valid base filter parameters")
+    }
+
+    fn matches(&self, peer: &NodeAddr, last: &BloomFilter) -> bool {
+        if last.num_bytes() != self.combined.len() || last.hash_count() != self.hash_count {
+            return false;
+        }
+        match self.excluded(peer) {
+            Some(excluded) => last
+                .as_bytes()
+                .iter()
+                .zip(&self.combined)
+                .zip(&self.shared)
+                .zip(excluded.as_bytes())
+                .all(|(((last, all), shared), excluded)| *last == *all & (!*excluded | *shared)),
+            None => last.as_bytes() == self.combined,
+        }
+    }
+}
+
 /// State for managing Bloom filter announcements.
 ///
 /// Tracks local filter state and what needs to be sent to peers.
@@ -258,6 +303,26 @@ impl BloomState {
         peer_addrs: &[NodeAddr],
         peer_filters: &HashMap<NodeAddr, BloomFilter>,
     ) {
+        let filters = self.prepare_outgoing_filters(peer_filters);
+
+        for peer_addr in peer_addrs {
+            if peer_addr == exclude_from {
+                continue;
+            }
+            let changed = self
+                .last_sent_filters
+                .get(peer_addr)
+                .is_none_or(|last| !filters.matches(peer_addr, last));
+            if changed {
+                self.mark_update_needed(*peer_addr);
+            }
+        }
+    }
+
+    pub(crate) fn prepare_outgoing_filters<'a>(
+        &self,
+        peer_filters: &'a HashMap<NodeAddr, BloomFilter>,
+    ) -> OutgoingBloomFilters<'a> {
         let base = self.base_filter();
         let mut combined = base.as_bytes().to_vec();
         let mut shared = vec![0; combined.len()];
@@ -272,34 +337,11 @@ impl BloomState {
                 *all |= incoming;
             }
         }
-
-        for peer_addr in peer_addrs {
-            if peer_addr == exclude_from {
-                continue;
-            }
-            let changed = self.last_sent_filters.get(peer_addr).is_none_or(|last| {
-                if last.num_bits() != base.num_bits() || last.hash_count() != base.hash_count() {
-                    return true;
-                }
-                match peer_filters
-                    .get(peer_addr)
-                    .filter(|filter| filter.num_bits() == base.num_bits())
-                {
-                    Some(excluded) => last
-                        .as_bytes()
-                        .iter()
-                        .zip(&combined)
-                        .zip(&shared)
-                        .zip(excluded.as_bytes())
-                        .any(|(((last, all), shared), excluded)| {
-                            *last != *all & (!*excluded | *shared)
-                        }),
-                    None => last.as_bytes() != combined,
-                }
-            });
-            if changed {
-                self.mark_update_needed(*peer_addr);
-            }
+        OutgoingBloomFilters {
+            peers: peer_filters,
+            combined,
+            shared,
+            hash_count: base.hash_count(),
         }
     }
 

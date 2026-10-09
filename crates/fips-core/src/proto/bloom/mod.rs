@@ -21,6 +21,7 @@ use thiserror::Error;
 
 pub use filter::BloomFilter;
 pub use state::BloomState;
+pub(crate) use state::OutgoingBloomFilters;
 
 /// Default filter size in bits (1KB = 8,192 bits).
 ///

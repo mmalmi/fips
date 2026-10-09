@@ -5,6 +5,7 @@
 
 use crate::NodeAddr;
 use crate::bloom::BloomFilter;
+use crate::proto::bloom::OutgoingBloomFilters;
 use crate::protocol::FilterAnnounce;
 
 use super::{Node, NodeError};
@@ -33,11 +34,12 @@ impl Node {
     /// The outgoing filter excludes the destination peer's own filter
     /// to prevent routing loops (don't tell a peer about destinations
     /// reachable only through them).
-    pub(super) fn build_filter_announce(&mut self, exclude_peer: &NodeAddr) -> FilterAnnounce {
-        let peer_filters = self.peer_inbound_filters();
-        let filter = self
-            .bloom_state
-            .compute_outgoing_filter(exclude_peer, &peer_filters);
+    pub(super) fn build_filter_announce(
+        &mut self,
+        exclude_peer: &NodeAddr,
+        filters: &OutgoingBloomFilters<'_>,
+    ) -> FilterAnnounce {
+        let filter = filters.for_peer(exclude_peer);
         let sequence = self.bloom_state.next_sequence();
         FilterAnnounce::new(filter, sequence)
     }
@@ -46,9 +48,10 @@ impl Node {
     ///
     /// If the peer is rate-limited, the update stays pending for
     /// delivery when its debounce deadline expires.
-    pub(super) async fn send_filter_announce_to_peer(
+    async fn send_filter_announce_to_peer(
         &mut self,
         peer_addr: &NodeAddr,
+        filters: &OutgoingBloomFilters<'_>,
     ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
 
@@ -66,7 +69,7 @@ impl Node {
             .defer_update_retry(peer_addr, self.filter_announce_retry_at_ms());
 
         // Build and encode
-        let announce = self.build_filter_announce(peer_addr);
+        let announce = self.build_filter_announce(peer_addr, filters);
         let sent_filter = announce.filter.clone();
         let encoded = announce.encode().map_err(|e| NodeError::SendFailed {
             node_addr: *peer_addr,
@@ -183,12 +186,23 @@ impl Node {
     }
 
     async fn send_filter_announces_to_peers(&mut self, ready: Vec<NodeAddr>) {
+        if ready.is_empty() {
+            return;
+        }
+        // Link-send continuations defer control ingress, so tree/filter inputs
+        // cannot change during this fanout. A later or cancelled/retried batch
+        // constructs a fresh view. No recipient history advances before send.
+        let peer_filters = self.peer_inbound_filters();
+        let filters = self.bloom_state.prepare_outgoing_filters(&peer_filters);
         for peer_addr in ready {
             if !self.peers.contains_key(&peer_addr) {
                 self.bloom_state.remove_peer_state(&peer_addr);
                 continue;
             }
-            if let Err(e) = self.send_filter_announce_to_peer(&peer_addr).await {
+            if let Err(e) = self
+                .send_filter_announce_to_peer(&peer_addr, &filters)
+                .await
+            {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
