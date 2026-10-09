@@ -1203,6 +1203,21 @@ purchase or a process restart. The same channel terms and lifetime budgets must
 survive. This mode runs separately from idle, screen-off and sustained transit;
 it tests a link outage, not physical movement or address changes.
 
+Use `--phone-renewal` with `--transit` to reconnect Android Wi-Fi during
+automatic expiry renewal. The provider issues 180-second quotes; the phone and
+reverse endpoint renew with the existing 80%/30-second policy. The isolated mint
+holds only the original phone channel's committed close reply, selected by hashes
+of its funding inputs. Other funding and settlement requests continue normally.
+After the successor activates, a USB-controlled Wi-Fi reconnect must change the
+native UDP socket without restarting any paid participant. A device timer restores
+Wi-Fi independently of the controller. Require another MiB of fresh, acknowledged
+traffic in each direction and increased successor payment and provider credit
+while the original refund remains unresolved. Then release the reply, pause
+renewals, settle all six channels and collect all 512 test sats. The original
+identity, terms and lifetime budgets remain unchanged. This workload runs
+separately from other transit variants and tests one reconnect on the configured
+LAN, not arbitrary mobile mesh movement.
+
 Add `--phone-restart` to split the same eight-packet workload into two cohorts,
 each with two packets in each direction. After the first cohort is delivered
 and paid, the harness records the app process identity, force-stops that exact

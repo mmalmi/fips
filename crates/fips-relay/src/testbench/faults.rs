@@ -2,15 +2,22 @@
 use cashu_service::simulation::MintProxy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::atomic::Ordering;
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeSet, sync::atomic::Ordering};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FaultAction {
-    ArmSwapReply,
+    ArmSwapReply {
+        /// SHA-256 commitments to input secrets select one channel without exposing them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_hashes: Option<Vec<String>>,
+    },
     Status,
-    Release { generation: u64 },
+    Release {
+        generation: u64,
+    },
 }
 
 struct Gate {
@@ -65,12 +72,23 @@ impl MintFaults {
             }
         }
         match action {
-            FaultAction::ArmSwapReply => {
+            FaultAction::ArmSwapReply { input_hashes } => {
                 if self.active() {
                     return Err("a mint response barrier is already armed".into());
                 }
+                let inputs = input_hashes.map(selected_inputs).transpose()?;
                 self.generation = self.generation.checked_add(1).ok_or("barrier limit")?;
-                let (reached, release) = self.proxy.state.pause_next_swap_reply();
+                let (reached, release) = self.proxy.state.pause_matching_swap_reply(move |swap| {
+                    inputs.as_ref().is_none_or(|expected| {
+                        swap.inputs().len() == expected.len()
+                            && swap.inputs().iter().all(|proof| {
+                                expected.contains(&format!(
+                                    "{:x}",
+                                    Sha256::digest(proof.secret.as_bytes())
+                                ))
+                            })
+                    })
+                });
                 self.gate = Some(Gate {
                     reached,
                     release: Some(release),
@@ -106,4 +124,22 @@ impl MintFaults {
             "restores": self.proxy.state.restores.load(Ordering::SeqCst),
         }))
     }
+}
+
+fn selected_inputs(inputs: Vec<String>) -> Result<BTreeSet<String>, String> {
+    if inputs.is_empty() || inputs.len() > 128 {
+        return Err("mint barrier requires 1..=128 distinct input identifiers".into());
+    }
+    let mut selected = BTreeSet::new();
+    for input in inputs {
+        if input.len() != 64
+            || !input
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !selected.insert(input)
+        {
+            return Err("invalid or duplicate mint barrier input identifier".into());
+        }
+    }
+    Ok(selected)
 }

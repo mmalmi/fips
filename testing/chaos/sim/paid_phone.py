@@ -1,8 +1,9 @@
 """Paid phone acceptance with three fresh, guarded OpenWrt accounts.
 
 The operator selects the scenario's Wi-Fi and installs a verified isolated acceptance
-APK. This harness never installs apps, changes phone networks, or replays an
-uncertain funding/UI action. Private scenario/evidence paths are explicit inputs.
+APK. This harness never installs apps or replays an uncertain funding/UI action.
+The explicit renewal workload reconnects Wi-Fi under a device restoration timer.
+Private scenario/evidence paths are explicit inputs.
 """
 
 import argparse
@@ -410,10 +411,11 @@ class PaidPhoneRun(WifiRun):
         save(self.root / 'settled-balances.json', balances)
         report = self.mint.request({'type': 'report'})
         require(report['url'] == self.mint_url, 'mint identity changed')
+        save(self.root / 'settled-mint-report.json', report)
         checks = validate_settled(
             journals, json.loads((self.root / 'paid-journals.json').read_text()),
             balances, report,
-            self.expected_edges(),
+            self.expected_edges(), channel_counts=getattr(self, 'settlement_channel_counts', None),
         )
         self.phase(
             'all four accounts settled and all 512 test sats conserved',
@@ -551,6 +553,8 @@ def main():
                         help='verify paid foreground-service transit during and after forced Android Doze')
     parser.add_argument('--phone-outage', action='store_true',
                         help='cut one phone UDP link, verify peer loss, then recover original paid channels')
+    parser.add_argument('--phone-renewal', action='store_true',
+                        help='renew near expiry, hold the old mint reply and reconnect phone Wi-Fi')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
@@ -564,6 +568,8 @@ def main():
         parser.error('--forced-idle requires --transit')
     if args.phone_outage and not args.transit:
         parser.error('--phone-outage requires --transit')
+    if args.phone_renewal and not args.transit:
+        parser.error('--phone-renewal requires --transit')
     os.umask(0o077)
     seconds = 1500 if args.load else 1200
 
@@ -572,7 +578,10 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(seconds)
-    if args.transit:
+    if args.phone_renewal:
+        from .phone_renewal import PhoneRenewalRun
+        run = PhoneRenewalRun(args)
+    elif args.transit:
         from .paid_phone_transit import PhoneTransitRun
         run = PhoneTransitRun(args)
     elif args.load:

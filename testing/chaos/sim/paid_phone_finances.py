@@ -8,7 +8,8 @@ validate_settled(journals, before, balances, mint, expected_edges):
   mint: actual pre-collection report; expected_edges: four (buyer, provider) pairs.
 
 This fixture intentionally requires 128 issued sats per account and 32 per
-original channel. It does not reconstruct status or validate proof signatures.
+channel. Explicit channel counts allow retained predecessors and successors.
+It does not reconstruct status or validate proof signatures.
 It returns monetary summaries only, never signed payments or bearer proofs.
 """
 from .paid_settlement import amount, require, validate_report
@@ -57,13 +58,17 @@ def check_mint(report, collected):
     require(amount(report['collected_sat']) == collected, 'collector balance differs')
 
 
-def _snapshot(journals, mint, edges):
+def _snapshot(journals, mint, edges, channel_counts=None):
     participants = set(journals)
     require(len(participants) == 4 and len(edges) == len(set(edges)) == 4,
             'expected exactly four participants and four unique edges')
     require({buyer for buyer, _ in edges} == participants
             and all(provider in participants and buyer != provider for buyer, provider in edges),
             'expected one original purchase per participant')
+    counts = {name: 1 for name in participants} if channel_counts is None else channel_counts
+    require(type(counts) is dict and set(counts) == participants
+            and all(type(n) is int and 1 <= n <= 16 for n in counts.values()),
+            'invalid expected per-account channel counts')
     identities, owner_by_addr = {}, {}
     for name, state in journals.items():
         controller, buyer = state['controller'], state['buyer']
@@ -81,7 +86,8 @@ def _snapshot(journals, mint, edges):
     for name, state in journals.items():
         controller, buyer = state['controller'], state['buyer']
         funds = _mapping(controller['funding'], 'funding')
-        require(len(funds) == 1, 'fixture changed original per-account channel count')
+        require(len(funds) == counts[name], 'fixture changed expected per-account channel count')
+        outgoing[name] = set()
         for key, intent in funds.items():
             require(intent['id'] == key and intent['funded'] is not None,
                     'funding is unresolved or has changed identity')
@@ -106,16 +112,20 @@ def _snapshot(journals, mint, edges):
                     'funding intent/opening terms differ')
             channels[channel] = (name, provider, terms)
             operations.add(operation)
-            outgoing[name] = channel
-        require(set(buyer['channels']) == {outgoing[name]},
-                'buyer authority does not match original funding')
-        own = buyer['channels'][outgoing[name]]
-        require(own['terms'] == channels[outgoing[name]][2]
-                and _address(own['provider']) == identities[channels[outgoing[name]][1]],
-                'buyer account changed funding terms')
-        authorized = amount(own['authorized_sat'])
-        budget = amount(buyer['total_budget_sat'])
-        require(authorized <= 32 and authorized <= budget, 'buyer authorization exceeds budget')
+            outgoing[name].add(channel)
+        require(set(buyer['channels']) == outgoing[name],
+                'buyer authority does not match funded channels')
+        authorized = 0
+        for channel in outgoing[name]:
+            own = buyer['channels'][channel]
+            require(own['terms'] == channels[channel][2]
+                    and _address(own['provider']) == identities[channels[channel][1]],
+                    'buyer account changed funding terms')
+            signed = amount(own['authorized_sat'])
+            require(signed <= 32, 'buyer authorization exceeds channel capacity')
+            authorized += signed
+        require(authorized <= amount(buyer['total_budget_sat']),
+                'cumulative buyer authorization exceeds lifetime budget')
     require({(owner, provider) for owner, provider, _ in channels.values()} == set(edges),
             'actual channel graph differs from expected graph')
     sellers = {}
@@ -150,27 +160,27 @@ def validate_reopened(journals, before, mint_url, edges):
         buyer, old_buyer = state['buyer'], prior['buyer']
         require(buyer['total_budget_sat'] == old_buyer['total_budget_sat'],
                 'reopen changed lifetime spending authority')
-        key = outgoing[name]
-        require(old_buyer['channels'][key]['authorized_sat'] <= buyer['channels'][key]['authorized_sat'],
-                'reopen lost signed liability')
+        for key in outgoing[name]:
+            require(old_buyer['channels'][key]['authorized_sat'] <= buyer['channels'][key]['authorized_sat'],
+                    'reopen lost signed liability')
         for key, row in sellers[name].items():
             require(old_sellers[name][key]['usage']['paid_msat'] <= row['usage']['paid_msat'],
                     'reopen lost provider credit')
 
 
-def validate_settled(journals, before, balances, mint, expected_edges):
-    """Validate four terminal cooperative settlements and all 512 stopped sats."""
+def validate_settled(journals, before, balances, mint, expected_edges, *, channel_counts=None):
+    """Validate every terminal channel and all 512 stopped sats across four accounts."""
     try:
-        return _validate_settled(journals, before, balances, mint, list(map(tuple, expected_edges)))
+        return _validate_settled(journals, before, balances, mint, list(map(tuple, expected_edges)), channel_counts)
     except (KeyError, TypeError, IndexError) as error:
         raise RuntimeError('missing or malformed four-account financial evidence') from error
 
 
-def _validate_settled(journals, before, balances, mint, edges):
+def _validate_settled(journals, before, balances, mint, edges, channel_counts):
     require(set(journals) == set(before) == set(balances), 'account set changed')
     check_mint(mint, 0)
-    old_identity, old_channels, old_outgoing, old_sellers = _snapshot(before, mint['url'], edges)
-    identity, channels, outgoing, sellers = _snapshot(journals, mint['url'], edges)
+    old_identity, old_channels, old_outgoing, old_sellers = _snapshot(before, mint['url'], edges, channel_counts)
+    identity, channels, outgoing, sellers = _snapshot(journals, mint['url'], edges, channel_counts)
     require(identity == old_identity and channels == old_channels and outgoing == old_outgoing,
             'settlement changed channel ownership or terms')
     reports, summaries = {}, {}
@@ -181,54 +191,68 @@ def _validate_settled(journals, before, balances, mint, edges):
         require(controller['funding'] == old_controller['funding']
                 and controller['policy'] == old_controller['policy'],
                 'settlement changed funding evidence or authority policy')
-        require(not old_controller['buyer_settlements'] and not old_controller['seller_settlements'],
-                'pre-settlement fixture already has settlement work')
-        require(set(controller['buyer_settlements']) == {outgoing[name]},
+        for field in ('buyer_settlements', 'seller_settlements'):
+            previous = old_controller[field]
+            require(channel_counts is not None or not previous,
+                    'original-channel fixture already has settlement work')
+            for channel, closed in previous.items():
+                require(closed['released'] is True
+                        and (field != 'buyer_settlements' or closed['refunded'] is True)
+                        and controller[field].get(channel) == closed,
+                        'settlement changed a previously closed channel')
+        require(set(controller['buyer_settlements']) == outgoing[name],
                 'missing or extra buyer settlement')
         expected_sales = {channel for channel, (_, provider, _) in channels.items() if provider == name}
         require(set(controller['seller_settlements']) == expected_sales,
                 'missing or extra seller settlement')
-        channel = outgoing[name]
-        settlement = controller['buyer_settlements'][channel]
-        provider = channels[channel][1]
-        sale = journals[provider]['controller']['seller_settlements'][channel]
-        require(settlement.get('kind', 'cooperative') == 'cooperative'
-                and settlement['released'] is True and settlement['refunded'] is True
-                and sale['released'] is True,
-                'settlement is incomplete, unacknowledged, or not cooperative')
-        require(_address(settlement['provider']) == identity[provider]
-                and settlement['channel'] == sale['channel'] == channels[channel][2],
-                'settlement terms/parties changed')
-        report = validate_report(settlement['report'])
-        require(report['channel_id'] == channel and sale['report'] == settlement['report'],
-                'buyer and seller reports differ')
-        require(amount(settlement['wallet_refund_sat']) == report['refunded_sat'],
-                'wallet refund differs from settlement report')
-        require(isinstance(settlement['usage'], dict) and isinstance(sale['usage'], dict),
-                'settlement omitted sealed usage evidence')
-        for saved in (settlement, sale):
-            require(saved['payment']['channel_id'] == channel
-                    and amount(saved['payment']['balance']) == report['paid_sat'],
-                    'final signed payment differs from report')
-        authorized = amount(buyer['channels'][channel]['authorized_sat'])
-        previous = amount(old_buyer['channels'][channel]['authorized_sat'])
+        signed_total = 0
         total = amount(buyer['total_budget_sat'])
-        require(total == amount(old_buyer['total_budget_sat']) and previous <= authorized
-                and authorized == report['paid_sat'], 'lifetime buyer budget or signed amount changed')
-        require(amount(sellers[provider][channel]['usage']['paid_msat']) == authorized * 1000
-                and amount(old_sellers[provider][channel]['usage']['paid_msat']) <= authorized * 1000,
-                'provider credit differs from retained final signature')
-        reports[channel] = report
+        for channel in sorted(outgoing[name]):
+            settlement = controller['buyer_settlements'][channel]
+            provider = channels[channel][1]
+            sale = journals[provider]['controller']['seller_settlements'][channel]
+            require(settlement.get('kind', 'cooperative') == 'cooperative'
+                    and settlement['released'] is True and settlement['refunded'] is True
+                    and sale['released'] is True,
+                    'settlement is incomplete, unacknowledged, or not cooperative')
+            require(_address(settlement['provider']) == identity[provider]
+                    and settlement['channel'] == sale['channel'] == channels[channel][2],
+                    'settlement terms/parties changed')
+            report = validate_report(settlement['report'])
+            require(report['channel_id'] == channel and sale['report'] == settlement['report'],
+                    'buyer and seller reports differ')
+            require(amount(settlement['wallet_refund_sat']) == report['refunded_sat'],
+                    'wallet refund differs from settlement report')
+            require(isinstance(settlement['usage'], dict) and isinstance(sale['usage'], dict),
+                    'settlement omitted sealed usage evidence')
+            for saved in (settlement, sale):
+                require(saved['payment']['channel_id'] == channel
+                        and amount(saved['payment']['balance']) == report['paid_sat'],
+                        'final signed payment differs from report')
+            authorized = amount(buyer['channels'][channel]['authorized_sat'])
+            previous = amount(old_buyer['channels'][channel]['authorized_sat'])
+            total = amount(buyer['total_budget_sat'])
+            require(total == amount(old_buyer['total_budget_sat']) and previous <= authorized
+                    and authorized == report['paid_sat'], 'lifetime buyer budget or signed amount changed')
+            require(amount(sellers[provider][channel]['usage']['paid_msat']) == authorized * 1000
+                    and amount(old_sellers[provider][channel]['usage']['paid_msat']) <= authorized * 1000,
+                    'provider credit differs from retained final signature')
+            reports[channel] = report
+            signed_total += authorized
+        debit = 32 * len(outgoing[name])
+        refunded = sum(reports[channel]['refunded_sat'] for channel in outgoing[name])
+        require(signed_total <= total and debit - refunded <= amount(controller['policy']['max_wallet_spend_sat']),
+                'settlement exceeds original lifetime spending limits')
         summaries[name] = {
-            'buyer_budget_sat': total, 'authorized_sat': authorized, 'remaining_budget_sat': total-authorized,
-            'funding_budget': {'pending_reserved_sat': 0, 'wallet_debited_sat': 32,
-                               'wallet_refunded_sat': report['refunded_sat'], 'locked_sat': 0,
-                               'exposure_sat': 32-report['refunded_sat']},
+            'buyer_budget_sat': total, 'authorized_sat': signed_total, 'remaining_budget_sat': total-signed_total,
+            'funding_budget': {'pending_reserved_sat': 0, 'wallet_debited_sat': debit,
+                               'wallet_refunded_sat': refunded, 'locked_sat': 0,
+                               'exposure_sat': debit-refunded},
         }
     for name in journals:
-        refund = reports[outgoing[name]]['refunded_sat']
+        refund = sum(reports[channel]['refunded_sat'] for channel in outgoing[name])
         earned = sum(reports[channel]['paid_sat'] for channel in sellers[name])
-        expected = 128 - 32 + refund + earned
+        expected = 128 - 32 * len(outgoing[name]) + refund + earned
         actual = amount(balances[name])
         require(actual == expected, 'stopped wallet balance differs from verified debit/refund/earnings')
         summaries[name].update(wallet_balance_sat=actual, seller_received_sat=earned)

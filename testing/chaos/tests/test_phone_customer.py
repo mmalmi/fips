@@ -354,7 +354,7 @@ class PhoneCustomerTests(unittest.TestCase):
 
     def test_only_exact_candidate_account_files_can_be_read(self):
         for relative in ("buyer/buyer.json", "controller/controller.json", "seller/ledger.json",
-                         "exports/fixture_123.json"):
+                         "wallet/spilman-client.json", "exports/fixture_123.json"):
             self.assertEqual(self.phone.account_file(relative), self.account)
         for relative in ("../profile.json", "wallet/secrets.json", "exports/../secret.json",
                          "exports/" + "a" * 33 + ".json", "/etc/passwd"):

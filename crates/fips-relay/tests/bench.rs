@@ -1,5 +1,8 @@
 #![cfg(all(unix, feature = "testbench"))]
 
+#[path = "bench/selected_mint_reply.rs"]
+mod selected_mint_reply;
+
 use fips_relay::{
     service::{RelayService, ServiceConfig},
     testbench::{BenchConfig, BenchMint, BenchRequest, FaultAction},
@@ -95,14 +98,14 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
     drop(wallet);
     let armed = mint
         .handle(BenchRequest::Fault {
-            command: FaultAction::ArmSwapReply,
+            command: FaultAction::ArmSwapReply { input_hashes: None },
         })
         .await
         .unwrap();
     assert_eq!(armed["phase"], "armed");
     assert!(
         mint.handle(BenchRequest::Fault {
-            command: FaultAction::ArmSwapReply
+            command: FaultAction::ArmSwapReply { input_hashes: None }
         })
         .await
         .is_err()

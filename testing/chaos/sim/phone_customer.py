@@ -144,7 +144,8 @@ class PhoneCustomer:
 
     def account_file(self, relative):
         """Read an allowed journal relative to the candidate's client/state."""
-        if relative not in ("buyer/buyer.json", "controller/controller.json", "seller/ledger.json"):
+        if relative not in ("buyer/buyer.json", "controller/controller.json", "seller/ledger.json",
+                            "wallet/spilman-client.json"):
             if not re.fullmatch(r"exports/[A-Za-z0-9_-]{1,32}\.json", relative):
                 raise ValueError("unsupported candidate account file")
         self.check_device()

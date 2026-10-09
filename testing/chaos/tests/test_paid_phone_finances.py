@@ -66,7 +66,71 @@ def fixture():
     return after, before, balances, mint, copy.deepcopy(EDGES)
 
 
+def renewed_fixture():
+    after, before, balances, mint, edges = fixture()
+    owner, provider = edges[0]
+    old = 'channel-' + owner
+    # The predecessor is refunded before final settlement of its successor.
+    before[owner]['controller']['buyer_settlements'][old] = copy.deepcopy(
+        after[owner]['controller']['buyer_settlements'][old])
+    before[provider]['controller']['seller_settlements'][old] = copy.deepcopy(
+        after[provider]['controller']['seller_settlements'][old])
+    before[owner]['buyer']['channels'][old] = copy.deepcopy(after[owner]['buyer']['channels'][old])
+    next(row for row in before[provider]['seller']['ledger']['channels']
+         if row['terms']['id'] == old)['usage']['paid_msat'] = 2000
+    channel = old + '-successor'
+    for state, authorized in [(before, 1), (after, 3)]:
+        intent = copy.deepcopy(state[owner]['controller']['funding']['fund-' + owner])
+        intent['id'] += '-successor'
+        intent['funded']['terms']['id'] = channel
+        intent['funded']['opening']['channel_id'] = channel
+        intent['funded']['wallet_operation_id'] += '-successor'
+        state[owner]['controller']['funding'][intent['id']] = intent
+        state[owner]['buyer']['channels'][channel] = {
+            'terms': intent['funded']['terms'], 'provider': address(provider), 'authorized_sat': authorized}
+        state[provider]['seller']['ledger']['channels'].append({
+            'terms': intent['funded']['terms'], 'usage': {'paid_msat': authorized * 1000}})
+    refund = copy.deepcopy(after[owner]['controller']['buyer_settlements'][old])
+    refund['channel'] = after[owner]['buyer']['channels'][channel]['terms']
+    refund['payment'] = {'channel_id': channel, 'balance': 3}
+    refund['report'].update(channel_id=channel, paid_sat=3, refunded_sat=29)
+    refund['wallet_refund_sat'] = 29
+    after[owner]['controller']['buyer_settlements'][channel] = refund
+    after[provider]['controller']['seller_settlements'][channel] = {
+        key: copy.deepcopy(refund[key]) for key in ('channel', 'usage', 'payment', 'report', 'released')}
+    balances[owner] -= 3
+    balances[provider] += 3
+    return (after, before, balances, mint, edges), {name: 1 + (name == owner) for name in before}
+
+
 class PaidPhoneFinanceTests(unittest.TestCase):
+    def test_renewal_closure_counts_each_debit_refund_and_signature_once(self):
+        args, counts = renewed_fixture()
+        result = validate_settled(*args, channel_counts=counts)
+        self.assertEqual(len(result['settlements']), 5)
+        self.assertEqual(result['accounts']['phone']['authorized_sat'], 5)
+        self.assertEqual(result['accounts']['phone']['funding_budget']['wallet_debited_sat'], 64)
+        self.assertEqual(result['accounts']['phone']['wallet_balance_sat'], 123)
+        with self.assertRaises(RuntimeError):
+            validate_settled(*args)
+
+    def test_renewal_refuses_budget_reset_double_refund_and_changed_closed_history(self):
+        for kind in ('budget', 'refund', 'history', 'count'):
+            with self.subTest(kind=kind):
+                args, counts = renewed_fixture()
+                if kind == 'budget':
+                    for state in args[:2]:
+                        state['phone']['buyer']['total_budget_sat'] = 4
+                elif kind == 'refund':
+                    args[2]['phone'] += 30
+                    args[2]['n01'] -= 30
+                elif kind == 'history':
+                    args[1]['phone']['controller']['buyer_settlements']['channel-phone']['payment']['balance'] += 1
+                else:
+                    counts['phone'] = 3
+                with self.assertRaises(RuntimeError):
+                    validate_settled(*args, channel_counts=counts)
+
     def test_reopen_keeps_original_channels_and_lifetime_authority(self):
         _, before, _, mint, edges = fixture()
         current = copy.deepcopy(before)
