@@ -7,13 +7,16 @@ from .paid_settlement import amount, original_channels, require
 QUOTE_UNITS = 32 * 1024 * 1024
 
 
-def recovered_exposure(journal):
+def recovered_exposure(journal, previous=None):
     """Derive exact unbilled exposure from the stopped provider's durable ceiling."""
     require(journal['version'] == 2 and journal['window_msat'] == 4000,
             'unexpected durable-window policy')
     channels = journal['ledger']['channels']
     require(len(channels) == 2 and len(journal['ceilings']) == 2,
             'restart requires exactly two original provider channels')
+    if previous is None:
+        previous = dict.fromkeys(journal['ceilings'], 0)
+    require(set(previous) == set(journal['ceilings']), 'prior exposure membership differs')
     result = {}
     for channel in channels:
         terms, usage = channel['terms'], channel['usage']
@@ -22,7 +25,7 @@ def recovered_exposure(journal):
                 and terms['grace_msat'] == 8000, 'provider channel terms changed')
         ceiling = amount(journal['ceilings'][key])
         reserved, lost = amount(usage['reserved_msat']), amount(usage['lost_msat'])
-        require(lost == 0 and 0 <= ceiling - reserved <= 4000
+        require(lost == amount(previous[key]) and lost <= reserved and 0 <= ceiling - reserved <= 4000
                 and ceiling <= min(32000, amount(usage['paid_msat']) + 8000),
                 'stopped allowance exceeds the original exposure bound')
         result[key] = lost + ceiling - reserved

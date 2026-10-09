@@ -12,6 +12,7 @@ from .wifi_restart_load import main
 
 
 class BootMintOutageRun(BootRestartRun):
+    allows_repeated_restarts = False
     def __init__(self, args):
         super().__init__(args)
         require(isinstance(self.mint, RemoteMint), 'mint outage requires the owned Linux mint')

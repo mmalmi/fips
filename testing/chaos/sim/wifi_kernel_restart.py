@@ -117,17 +117,24 @@ class KernelRestartRun(RestartLoadRun):
     def restart_middle(self, *, wait_for_recovery=True):
         require(wait_for_recovery, 'kernel reset cannot overlap an active test stream')
         node = self.nodes['n02']
-        state = self.evidence['restart'] = {
+        state = {
             'before': self.middle_sample(), 'old_boot_id': boot_id(node),
             'account_identity': node.remote(['sha256sum', node.config, node.state + '/identity.key']).decode(),
         }
-        require(state['old_boot_id'] == self.evidence['initial_boot_id'], 'router already rebooted during setup')
+        resets = self.evidence.setdefault('restarts', [])
+        require(len(resets) < len(self.restart_rounds) and
+                (not resets or resets[-1].get('completed_at')), 'previous reset is unresolved or reset limit reached')
+        expected_boot = resets[-1]['new_boot_id'] if resets else self.evidence['initial_boot_id']
+        require(state['old_boot_id'] == expected_boot, 'router already rebooted outside the test boundary')
         for name in ('process.log', 'guard.log'):
-            (node.output / ('before-reset-' + name)).write_bytes(node.remote(['cat', node.temporary + '/' + name]))
+            prefix = 'before-reset-' if not resets else f'before-reset-{len(resets) + 1}-'
+            (node.output / (prefix + name)).write_bytes(node.remote(['cat', node.temporary + '/' + name]))
         self.monitor_nodes({name: peer for name, peer in self.nodes.items() if name != 'n02'})
         state['management_paused_at'] = time.monotonic()
         self.restart_attempted = True
         state['attempted_at'] = time.monotonic()
+        resets.append(state)
+        self.evidence['restart'] = state
         self.save()  # Record intent before the single irreversible dispatch.
         state['dispatch'] = reboot_profile(node, state['before'], state['old_boot_id'])
         self.save()

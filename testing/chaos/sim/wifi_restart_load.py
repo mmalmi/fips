@@ -26,23 +26,31 @@ from .wifi_restart_traffic import active_restart_stream, validate_overlap
 PACKETS, RATE, ROUNDS = 4000, 200, 6
 
 
-def validate_stream(row, source):
-    shape = {'stream_id': row['sender']['stream_id'], 'packet_count': PACKETS, 'payload_bytes': 1000}
+def validate_stream(row, source, packets=PACKETS):
+    shape = {'stream_id': row['sender']['stream_id'], 'packet_count': packets, 'payload_bytes': 1000}
     submitted(row['sender'], shape)
     fault = row.get('frame_loss')
     interrupted = row.get('active_restart')
     delivered = received(row['receiver'], shape, source, complete=fault is None and interrupted is None)
-    require(row['seconds'] >= (PACKETS - 1) / RATE,
+    require(row['seconds'] >= (packets - 1) / RATE,
             'finite load completed before its pacing duration')
     if interrupted is not None:
         require(fault is None, 'restart traffic must not also inject frame loss')
         validate_overlap(interrupted, shape, source, RATE)
     if fault is not None:
-        validate_delivery(fault, delivered, PACKETS)
+        validate_delivery(fault, delivered, packets)
 
 
 class RestartLoadRun(PaidWifiRun):
     stream = stream
+
+    @property
+    def packets(self):
+        return PACKETS
+
+    @property
+    def restart_rounds(self):
+        return (ROUNDS // 2,)
 
     def __init__(self, args):
         super().__init__(args)
@@ -54,10 +62,13 @@ class RestartLoadRun(PaidWifiRun):
         require(not (self.frame_loss and self.active_restart),
                 'active restart and frame loss are separate experiments')
         self.loss_filters = {}
-        self.evidence.update(workload={'rounds': ROUNDS, 'packets_per_direction_per_round': PACKETS,
+        self.evidence.update(workload={'rounds': ROUNDS, 'packets_per_direction_per_round': self.packets,
                                       'packets_per_second': RATE, 'payload_bytes': 1000},
                              crash_after_round=ROUNDS // 2, physical_power_loss=False,
                              streams=[], warmup=[], frame_loss_every=EVERY if self.frame_loss else None)
+        self.evidence['crash_before_rounds'] = list(self.restart_rounds)
+        if len(self.restart_rounds) > 1:
+            self.evidence.pop('crash_after_round')
         for name in ('wifi_restart_load.py', 'wifi_frame_loss.py', 'wifi_restart_traffic.py'):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
@@ -148,7 +159,7 @@ class RestartLoadRun(PaidWifiRun):
                 self.loss_filters = {name: FrameLoss(self.nodes[name], self.nodes['n02'].mac)
                                      for name in ('n01', 'n03')}
             for round_id in range(ROUNDS):
-                if round_id == ROUNDS // 2 and not getattr(self, 'active_restart', False):
+                if round_id in self.restart_rounds and not getattr(self, 'active_restart', False):
                     self.restart_middle()
                 impaired = self.frame_loss and round_id in (1, 4)
                 if impaired:
@@ -167,7 +178,7 @@ class RestartLoadRun(PaidWifiRun):
                     fault = self.loss_filters[destination] if impaired else None
                     loss_before = fault.observe() if fault else None
                     started = time.monotonic()
-                    probe = self.stream(PACKETS, RATE, source=source, destination=destination)
+                    probe = self.stream(self.packets, RATE, source=source, destination=destination)
                     row = {'round': round_id, 'source': source, 'destination': destination,
                            'seconds': time.monotonic() - started, 'before': before,
                            'after': self.middle_sample(), **probe,
@@ -177,7 +188,7 @@ class RestartLoadRun(PaidWifiRun):
                     require(all(row['before']['host_process'][key] == row['after']['host_process'][key]
                                 for key in ('host', 'pid', 'start_ticks')),
                             'middle relay restarted inside a measured load stream')
-                    validate_stream(row, self.nodes[source].npub)
+                    validate_stream(row, self.nodes[source].npub, self.packets)
                 current = eventually('automatic payments for the load cohort',
                                      lambda: self.checkpoint(advance=True), 30)
                 self.anchor = current
@@ -203,6 +214,9 @@ def main(run_class=RestartLoadRun):
                         help='drop every twentieth test frame in the second and fifth load cohorts')
     parser.add_argument('--active-restart', action='store_true',
                         help='crash and recover the middle process during one paced paid stream')
+    if getattr(run_class, 'allows_repeated_restarts', False):
+        parser.add_argument('--repeat-restarts', action='store_true',
+                            help='three unsynced boots with 2,000 packets per direction per round, on the same accounts')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)

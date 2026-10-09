@@ -17,7 +17,7 @@ def sampled_process(node, before_sample):
             or type(start) is not int or start <= 0):
         raise ValueError("crash requires a matching sampled candidate epoch")
     temporary = shlex.quote(checked_path(node.temporary))
-    binary = shlex.quote(checked_path(node.binary))
+    binary = shlex.quote(checked_path(getattr(node, 'process_binary', node.binary)))
     config = shlex.quote(checked_path(node.config))
     command = f"""set -efu
 target_pid={pid}

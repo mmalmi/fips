@@ -688,6 +688,21 @@ lease survives the reset. This mode uses test funds and pauses offered traffic.
 Include `tests.test_wifi_boot_restart` and `tests.test_wifi_measurements` in the
 focused checks; physical power cuts remain separate.
 
+Add `--repeat-restarts` to `sim.wifi_boot_restart` for three unsynced boots before
+rounds 2, 4 and 6. Each direction sends 2,000 packets per round at the original
+rate, leaving capacity for the lost durable windows within the same two channels.
+All six rounds must deliver completely and advance automatic payments. Every
+boot must follow the preceding completed recovery, reopen the same paid account
+through the installed service, and retain cumulative unbilled exposure plus at
+most one additional durable window per channel. Funding, capital and lifetime
+spending limits remain unchanged. Traffic pauses at each reset; this is separate
+from the mint-outage and active-traffic restart experiments.
+This continuity test currently exposes a limit of the fixed profile: two lost
+4,000-msat windows consume its entire 8,000-msat relationship grace, after which
+forwarding can stop despite remaining channel funds. The hardware trial rejects
+incomplete delivery and collects its test funds; three-boot continuity is not
+qualified. Renewing a channel does not erase the relationship's retained loss.
+
 Use `sim.wifi_boot_mint_outage` to repeat that paid boot with an unresponsive mint.
 After the first three paid cohorts, the owned Linux mint is suspended before
 reboot and stays suspended through the remaining traffic. Each router must fail

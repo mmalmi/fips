@@ -16,10 +16,23 @@ from .wifi_restart_load import main
 
 
 class BootRestartRun(KernelRestartRun):
+    allows_repeated_restarts = True
+
     def __init__(self, args):
+        require(not getattr(args, 'repeat_restarts', False) or self.allows_repeated_restarts,
+                'repeated boots are a separate experiment')
         super().__init__(args)
         for name in ('wifi_boot_restart.py', 'wifi_boot_service.py', 'wifi_measurements.py'):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
+
+    @property
+    def restart_rounds(self):
+        return (1, 3, 5) if getattr(self.args, 'repeat_restarts', False) else super().restart_rounds
+
+    @property
+    def packets(self):
+        # Leave room for three lost durable windows inside the original channel.
+        return super().packets // 2 if getattr(self.args, 'repeat_restarts', False) else super().packets
 
     def make_router(self, spec, index):
         if index == 1:
@@ -36,7 +49,7 @@ class BootRestartRun(KernelRestartRun):
         # Traffic is paused here. The saved pre-reset allowance predicts the loss
         # independently of the daemon that will reopen and update it at boot.
         self.boot_journal = self.state_json('n02', 'seller/ledger.json')
-        self.boot_loss = recovered_exposure(self.boot_journal)
+        self.boot_loss = recovered_exposure(self.boot_journal, self.expected_lost)
         super().restart_middle(wait_for_recovery=wait_for_recovery)
 
     def recovered_boot(self):

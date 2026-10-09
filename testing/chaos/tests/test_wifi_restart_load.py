@@ -208,6 +208,16 @@ class RestartLoadTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(RuntimeError):
                 recovered_exposure(changed)
 
+    def test_repeated_recovery_preserves_prior_loss_and_adds_only_the_new_window(self):
+        previous = {'a': 3000, 'b': 4000}
+        state = journal()
+        for row in state['ledger']['channels']:
+            row['usage']['lost_msat'] = previous[row['terms']['id']]
+        self.assertEqual(recovered_exposure(state, previous), {'a': 6000, 'b': 8000})
+        for earlier in (None, {'a': 0, 'b': 4000}, {'a': 3000}, {**previous, 'foreign': 0}):
+            with self.subTest(earlier=earlier), self.assertRaises(RuntimeError):
+                recovered_exposure(state, earlier)
+
     def test_recovery_cannot_reset_funding_or_turn_unbilled_exposure_into_usage(self):
         old = accounts(); current = copy.deepcopy(old)
         lost = {'channel-n01': 3000, 'channel-n03': 4000}

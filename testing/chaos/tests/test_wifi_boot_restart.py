@@ -10,9 +10,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 from sim.wifi_boot_restart import BootRestartRun
+from sim.wifi_kernel_restart import KernelRestartRun
 from sim.wifi_boot_service import restore_script
 from sim.wifi_boot_mint_outage import BootMintOutageRun
 from sim.wifi_remote import digest
+from sim.wifi_restart import sampled_process
 from tests.test_wifi_restart_load import journal
 
 
@@ -174,6 +176,44 @@ class AutomaticBootTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'paid identity'):
             self.run.resume_middle()
         self.node.stage_runtime.assert_not_called()
+
+    def test_next_reset_targets_the_installed_process_and_retains_the_observation_tool(self):
+        node = SimpleNamespace(npub='middle', temporary='/tmp/owned', binary='/tmp/owned/tool',
+                               process_binary='/usr/sbin/fips-relay', config='/etc/test/config.json')
+        _, _, command = sampled_process(node, {'npub': 'middle', 'host_process': {'pid': 42, 'start_ticks': 10}})
+        self.assertIn('= /usr/sbin/fips-relay', command)
+        self.assertNotIn('/tmp/owned/tool', command)
+        self.assertEqual(node.binary, '/tmp/owned/tool')
+
+    def test_repeated_boots_chain_completed_epochs_and_never_replay_an_unresolved_reset(self):
+        self.run.args = SimpleNamespace(repeat_restarts=True)
+        self.assertEqual(self.run.packets, 2000)
+        self.assertEqual(self.run.restart_rounds, (1, 3, 5))
+        self.run.evidence = {'initial_boot_id': 'boot-0'}
+        self.run.finish_restart = Mock(side_effect=lambda: self.run.evidence['restart'].update(completed_at=100))
+        def resumed():
+            self.run.evidence['restart']['new_boot_id'] = f"boot-{len(self.run.evidence['restarts'])}"
+        self.run.resume_middle = Mock(side_effect=resumed)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('sim.wifi_kernel_restart.boot_id', side_effect=['boot-0', 'boot-1', 'boot-2', 'boot-3']), \
+                patch('sim.wifi_kernel_restart.reboot_profile', return_value={'boot_change_required': True}) as reboot:
+            self.node.output = Path(directory)
+            for _ in range(3):
+                KernelRestartRun.restart_middle(self.run)
+            self.assertEqual([r['new_boot_id'] for r in self.run.evidence['restarts']], ['boot-1', 'boot-2', 'boot-3'])
+            previous = self.run.evidence['restart']
+            with self.assertRaisesRegex(RuntimeError, 'limit reached'):
+                KernelRestartRun.restart_middle(self.run)
+            self.assertIs(self.run.evidence['restart'], previous)
+            self.assertEqual(reboot.call_count, 3)
+            self.assertEqual(len(list(self.node.output.iterdir())), 6)
+        self.run.evidence['restarts'].pop()
+        self.run.evidence['restarts'][-1].pop('completed_at')
+        with patch('sim.wifi_kernel_restart.boot_id', return_value='boot-2'), \
+                patch('sim.wifi_kernel_restart.reboot_profile') as reboot:
+            with self.assertRaisesRegex(RuntimeError, 'unresolved'):
+                KernelRestartRun.restart_middle(self.run)
+            reboot.assert_not_called()
 
 
 class MintOutageTests(unittest.TestCase):
