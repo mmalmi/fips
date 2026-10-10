@@ -553,6 +553,8 @@ def main():
                         help='verify paid foreground-service transit during and after forced Android Doze')
     parser.add_argument('--phone-outage', action='store_true',
                         help='cut one phone UDP link, verify peer loss, then recover original paid channels')
+    parser.add_argument('--impaired-transit', action='store_true',
+                        help='drop every twentieth packet on one phone link during sustained transit')
     parser.add_argument('--phone-renewal', action='store_true',
                         help='renew near expiry, hold the old mint reply and reconnect phone Wi-Fi')
     parser.add_argument(
@@ -570,6 +572,8 @@ def main():
         parser.error('--phone-outage requires --transit')
     if args.phone_renewal and not args.transit:
         parser.error('--phone-renewal requires --transit')
+    if args.impaired_transit and not (args.transit and args.sustained_transit):
+        parser.error('--impaired-transit requires --transit --sustained-transit')
     os.umask(0o077)
     seconds = 1500 if args.load else 1200
 

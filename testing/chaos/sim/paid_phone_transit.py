@@ -31,6 +31,11 @@ class PhoneTransitRun(PaidPhoneRun):
         require(not getattr(args, 'phone_outage', False) or not any(getattr(args, flag, False)
                 for flag in ('screen_off', 'sustained_transit', 'forced_idle')),
                 'phone outage is a separate transit workload')
+        impaired = bool(getattr(args, 'impaired_transit', False))
+        require(not impaired or (getattr(args, 'sustained_transit', False)
+                and not any(getattr(args, flag, False) for flag in
+                            ('screen_off', 'forced_idle', 'phone_outage', 'phone_renewal'))),
+                'impaired transit requires its own sustained background workload')
         super().__init__(args)
         require(self.customer['interface'] == self.nodes['n01'].management,
                 'transit must use the existing management LAN')
@@ -38,6 +43,7 @@ class PhoneTransitRun(PaidPhoneRun):
         self.evidence.update(radio_mode='existing_lan_udp', customer_isolation_tested=False,
                              physical_phone_transit=True,
                              screen_off_requested=bool(getattr(args, 'screen_off', False)),
+                             impaired_transit_requested=impaired,
                              sustained_transit_requested=bool(getattr(args, 'sustained_transit', False)), windows=[])
         for name in ('paid_phone_transit.py', 'stream_probe.py'):
             self.evidence['harness_sha256'][name] = hashlib.sha256(
@@ -190,7 +196,14 @@ class PhoneTransitRun(PaidPhoneRun):
         self.stream('foreground')
         self.background = True
         self.phone.shell('input', 'keyevent', 'KEYCODE_HOME')
-        self.stream('background')
+        if self.evidence['impaired_transit_requested']:
+            before = self.journals('before-loss')
+            phone_outage.impaired_transit(self)
+            self.stream('background-after-loss')
+            validate_reopened(self.journals('after-loss'), before, self.mint_url, self.expected_edges())
+            self.phase('original paid channels retained through packet loss and fresh recovery traffic')
+        else:
+            self.stream('background')
         event = ('idle' if getattr(self.args, 'forced_idle', False) else
                  'outage' if getattr(self.args, 'phone_outage', False) else None)
         if event:

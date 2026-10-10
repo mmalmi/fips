@@ -355,19 +355,27 @@ channels, and passes 52 background observations and 804 management checks. All
 512 test sats return; the temporary app and router profiles are removed after
 independent account and device verification.
 
+`work/phone-impairment-r429` repeats that background window with the same binaries
+and one-in-twenty UDP packet loss in each direction on one phone link. All 18 MiB
+arrive despite 4,801 observed drops. Fresh recovery traffic then succeeds on the
+same channels and processes; all 512 test sats return, all 894 management checks
+pass, and the filter, temporary app and router profiles are removed. Cumulative
+signed and acknowledged payments advance during the loss window. This is one
+finite impaired acceptance trial, not a controlled optimization comparison.
+
 Version-three counter validation compares two live native snapshots around the
 background window. Costs cover only the phone and are divided by the 18 MiB
 delivered in that window, rather than summed across the route.
 
-| Measurement | r405 — 9 October | r428 — 11 October |
-| --- | ---: | ---: |
-| Attributed payment CPU | 2,553.75 ms; 141.88 ms / delivered MiB | 2,268.94 ms; 126.05 ms / delivered MiB |
-| Whole-process CPU | 9.713 s / delivered MiB | 10.933 s / delivered MiB |
-| Android process CPU tick delta | 174.96 s | 196.85 s |
-| Logical relay journal writes / syncs / commits | 98 / 196 / 98 | 98 / 196 / 98 |
-| Logical relay journal bytes | 256,849 | 255,754 |
-| Payment requests started / received | 28 / 84 | 28 / 84 |
-| Local payment stream bytes sent / received | 21,970 / 24,054 | 21,970 / 24,054 |
+| Measurement | r405 — 9 October | r428 — 11 October | r429 — 11 October, 5% loss |
+| --- | ---: | ---: | ---: |
+| Attributed payment CPU | 2,553.75 ms; 141.88 ms / delivered MiB | 2,268.94 ms; 126.05 ms / delivered MiB | 3,312.73 ms; 184.04 ms / delivered MiB |
+| Whole-process CPU | 9.713 s / delivered MiB | 10.933 s / delivered MiB | 10.050 s / delivered MiB |
+| Android process CPU tick delta | 174.96 s | 196.85 s | 180.84 s |
+| Logical relay journal writes / syncs / commits | 98 / 196 / 98 | 98 / 196 / 98 | 238 / 476 / 238 |
+| Logical relay journal bytes | 256,849 | 255,754 | 638,596 |
+| Payment requests started / received | 28 / 84 | 28 / 84 | 169 / 225 |
+| Local payment stream bytes sent / received | 21,970 / 24,054 | 21,970 / 24,054 | 62,118 / 63,958 |
 
 Whole-process CPU includes diagnostic work. Payment spans exclude scheduler scans
 and TCP/FIPS/core transport CPU; relay journal bytes exclude physical flash and

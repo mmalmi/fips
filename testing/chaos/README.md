@@ -1253,6 +1253,15 @@ identity, terms and lifetime budgets remain unchanged. This workload runs
 separately from other transit variants and tests one reconnect on the configured
 LAN, not arbitrary mobile mesh movement.
 
+Add `--impaired-transit` to `--transit --sustained-transit` for five minutes of
+paid background forwarding with one in twenty UDP packets dropped in each
+direction on the phone-to-middle-router link. The exact address/port rules use
+the same cleanup lease as the outage test. Require complete delivery and ACKs,
+observed matched/drop counters, unchanged processes and original channel terms,
+then fresh paid delivery after removing the filter. This mode runs separately
+from idle, screen-off, outage and renewal workloads. It tests packet loss on the
+existing LAN, not physical radio movement or Android network suspension.
+
 Add `--phone-restart` to split the same eight-packet workload into two cohorts,
 each with two packets in each direction. After the first cohort is delivered
 and paid, the harness records the app process identity, force-stops that exact

@@ -1,4 +1,4 @@
-"""Cut one paid phone UDP adjacency under the existing router cleanup lease."""
+"""Impair one paid phone UDP adjacency under the existing router cleanup lease."""
 
 import hashlib
 import ipaddress
@@ -22,22 +22,26 @@ def endpoint(value):
     return str(ip), int(port)
 
 
-class UdpCut:
-    def __init__(self, node, phone, router):
+class UdpLoss:
+    def __init__(self, node, phone, router, *, every=1):
         self.node = node
         self.phone, self.router = endpoint(phone), endpoint(router)
         require(self.phone[0] != self.router[0], 'phone and router addresses must differ')
+        require(type(every) is int and 1 <= every <= 1000, 'invalid packet-loss interval')
+        self.every = every
         self.attempted = False
 
     def rules(self):
         n = self.node
+        selection = f'counter numgen inc mod {self.every} 0 ' if self.every > 1 else ''
         rules = f'create table netdev {n.table} {{ comment "{n.table_owner}"; }}\n'
         for direction, source, target in (('ingress', self.phone, self.router),
                                           ('egress', self.router, self.phone)):
             rules += (f'add chain netdev {n.table} {direction} {{ type filter hook {direction} '
                       f'device "{n.management}" priority -500; policy accept; }}\n'
                       f'add rule netdev {n.table} {direction} ip saddr {source[0]} '
-                      f'ip daddr {target[0]} udp sport {source[1]} udp dport {target[1]} counter drop\n')
+                      f'ip daddr {target[0]} udp sport {source[1]} udp dport {target[1]} '
+                      f'{selection}counter drop\n')
         return rules
 
     def counters(self, table):
@@ -52,9 +56,30 @@ class UdpCut:
         result = {}
         for rule in rules:
             counters = [e['counter'] for e in rule['expr'] if 'counter' in e]
-            require(len(counters) == 1, 'UDP outage counter is missing or ambiguous')
-            result[rule['chain']] = {k: natural(counters[0][k]) for k in ('packets', 'bytes')}
+            require(len(counters) == (2 if self.every > 1 else 1),
+                    'UDP loss counter is missing or ambiguous')
+            result[rule['chain']] = {k: natural(counters[-1][k]) for k in ('packets', 'bytes')}
+            if self.every > 1:
+                result[rule['chain']]['matched_packets'] = natural(counters[0]['packets'])
         return result
+
+    def validate_loss(self, before, after):
+        require(self.every > 1, 'periodic loss requires a finite interval')
+        start, end = (self.counters(value['table']) for value in (before, after))
+        def handles(value):
+            return {row['rule']['chain']: natural(row['rule']['handle'])
+                    for row in value['table']['nftables'] if 'rule' in row}
+        require(handles(before) == handles(after), 'packet-loss rules were replaced')
+        delta = {}
+        for direction, values in end.items():
+            row = {key: value - start[direction][key] for key, value in values.items()}
+            require(all(value > 0 for value in row.values())
+                    and row['matched_packets'] >= 10 * self.every
+                    # Counter snapshots can straddle an in-flight packet.
+                    and abs(row['packets'] * self.every - row['matched_packets']) <= 2 * self.every,
+                    'packet-loss interval lacks matching observed drops')
+            delta[direction] = row
+        return delta
 
     def observe(self):
         table = json.loads(self.node.remote(['nft', '-j', 'list', 'table', 'netdev', self.node.table]))
@@ -101,8 +126,30 @@ def processes(run):
                if key in ('host', 'pid', 'start_ticks')} for name, node in run.nodes.items()}}
 
 
+def impaired_transit(run):
+    loss = UdpLoss(run.nodes['n02'], run.evidence['phone_udp_address'], run.endpoint('n02'), every=20)
+    row = {'passed': False, 'every': loss.every, 'before_processes': processes(run),
+           'physical_radio_change': False}
+    require(row['before_processes']['phone'] is not None, 'phone process is absent')
+    run.evidence['phone_impairment'] = row
+    run.evidence['harness_sha256']['phone_outage.py'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    run.save()
+    try:
+        row['filter_before'] = loss.enable()
+        run.save()
+        run.stream('background')
+        row['filter_after'] = loss.observe()
+        row['dropped'] = loss.validate_loss(row['filter_before'], row['filter_after'])
+        row['after_processes'] = processes(run)
+        require(row['before_processes'] == row['after_processes'], 'impaired transit restarted a relay')
+        row['passed'] = True
+    finally:
+        row['restored'] = loss.clear()
+        run.save()
+
+
 def exercise(run):
-    cut = UdpCut(run.nodes['n02'], run.evidence['phone_udp_address'], run.endpoint('n02'))
+    cut = UdpLoss(run.nodes['n02'], run.evidence['phone_udp_address'], run.endpoint('n02'))
     row = {'passed': False, 'before_processes': processes(run), 'physical_radio_change': False}
     require(row['before_processes']['phone'] is not None, 'phone process is absent')
     run.evidence['phone_outage'] = row
