@@ -150,17 +150,22 @@ impl Node {
             .map(|peer| peer.link_id())
     }
 
-    pub(super) async fn close_unowned_handshake_carrier(
+    pub(in crate::node) async fn close_unowned_carrier(
         &self,
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) {
+        let Some(transport) = self
+            .transports
+            .get(&transport_id)
+            .filter(|transport| transport.transport_type().connection_oriented)
+        else {
+            return;
+        };
         if self.handshake_carrier_is_owned(transport_id, remote_addr) {
             return;
         }
-        if let Some(transport) = self.transports.get(&transport_id) {
-            transport.close_connection(remote_addr).await;
-        }
+        transport.close_connection(remote_addr).await;
     }
 
     pub(in crate::node) fn handshake_carrier_is_owned(
@@ -188,7 +193,7 @@ impl Node {
             if let Some(winner) = self.active_link_for_carrier(transport_id, link.remote_addr()) {
                 self.restore_link_address(winner);
             }
-            self.close_unowned_handshake_carrier(transport_id, link.remote_addr())
+            self.close_unowned_carrier(transport_id, link.remote_addr())
                 .await;
             self.cleanup_bootstrap_transport_if_unused(transport_id);
         }

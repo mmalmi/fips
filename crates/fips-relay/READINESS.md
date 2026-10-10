@@ -9512,6 +9512,22 @@ native software results, not updated router/Android builds
 or general hostile-load acceptance; other pre-authentication record paths and
 physical resource exhaustion still require qualification.
 
+The follow-up `work/carrier-records-r422` reproduces the same slot leak with an
+unsolicited Msg2 and an unroutable encrypted record. Cleanup now runs at the shared
+receive boundary after control processing and packet rejection, including queue,
+replay and crypto failures. Drop records retain the source carrier and arrival
+time, so guessing an admitted peer's session index cannot retain a stranger's
+socket, and stale queued records cannot close a replacement carrier. Connectionless
+transports skip the ownership scan; established and pending owners remain protected.
+All 348 selected native dataplane, handshake, lifecycle, TCP and WebSocket checks
+pass, as do strict production/test lint and source-size checks. The six TCP cases
+cover both capacity reuse and retained-peer payload
+delivery, plus stale-carrier rejection; the WebSocket replay fixture also checks
+unsolicited replies and unroutable records. The long responsive-population matrix
+was not repeated. This extends software rejection coverage only; transport discovery
+preludes, sustained physical hostile load and current device builds still need
+separate qualification.
+
 - Quote discovery uses existing authenticated TCP/FIPS. A bounded complete-offer
   cache and shared in-flight requests avoid repeated downstream negotiations;
   the quote server adds an aggregate rate limit across identities. Forwarded

@@ -39,6 +39,7 @@ pub(crate) enum AdmissionDropReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AdmissionDrop {
     owner: OwnerId,
+    received_carrier: Option<(TransportPath, ActivityTick)>,
     counter: Option<u64>,
     send_token: Option<u64>,
     reason: AdmissionDropReason,
@@ -48,6 +49,7 @@ impl AdmissionDrop {
     fn inbound(packet: &SocketPacket) -> Self {
         Self {
             owner: packet.owner,
+            received_carrier: packet.source_path.clone().zip(packet.activity_tick),
             counter: Some(packet.counter),
             send_token: None,
             reason: admission_drop_reason(packet.lane()),
@@ -57,6 +59,7 @@ impl AdmissionDrop {
     fn outbound(packet: &OutboundPacket) -> Self {
         Self {
             owner: packet.owner,
+            received_carrier: None,
             counter: None,
             send_token: packet.send_token,
             reason: admission_drop_reason(packet.lane()),

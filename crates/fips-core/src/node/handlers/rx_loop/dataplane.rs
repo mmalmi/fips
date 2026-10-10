@@ -222,6 +222,22 @@ impl Node {
                 processed += 1;
             }
         }
+        for drop in turn.raw_ingress_drops() {
+            if drop.received_at_ms().is_some_and(|received_at| {
+                !self.packet_predates_carrier_rebind(drop.transport_id(), received_at)
+            }) {
+                self.close_unowned_carrier(drop.transport_id(), drop.remote_addr())
+                    .await;
+            }
+        }
+        for drop in turn.drops() {
+            if let Some((path, received_at)) = drop.received_carrier()
+                && !self.packet_predates_carrier_rebind(path.transport_id, received_at)
+            {
+                self.close_unowned_carrier(path.transport_id, &path.remote_addr)
+                    .await;
+            }
+        }
         for drop in turn.tun_outbound_drops() {
             if self.process_dataplane_tun_outbound_drop(drop) {
                 processed += 1;
@@ -286,6 +302,19 @@ impl Node {
         control: crate::dataplane::DataplaneFmpControlIngress,
     ) -> bool {
         let packet = control.into_packet();
+        if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
+            return false;
+        }
+        let transport_id = packet.transport_id;
+        let remote_addr = packet.remote_addr.clone();
+        let processed = self.process_current_fmp_control_ingress(packet).await;
+        // A complete frame has already passed the stream's first-frame timer.
+        // Rejected requests and unsolicited replies cannot retain a socket.
+        self.close_unowned_carrier(transport_id, &remote_addr).await;
+        processed
+    }
+
+    async fn process_current_fmp_control_ingress(&mut self, packet: ReceivedPacket) -> bool {
         if self.handle_local_key_hint(&packet).await {
             return true;
         }

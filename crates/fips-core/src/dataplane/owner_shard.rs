@@ -516,6 +516,7 @@ impl DataplaneOwnerShard {
                         source_wait.release(ingress_seq);
                         drops.push(PacketDrop {
                             owner: owner_id,
+                            received_carrier: None,
                             counter: None,
                             send_token,
                             reason: error.into(),

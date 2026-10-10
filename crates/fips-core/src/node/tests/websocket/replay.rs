@@ -1,5 +1,5 @@
 use super::*;
-use crate::node::wire::{Msg1Header, build_msg1};
+use crate::node::wire::{Msg1Header, build_msg1, build_msg2};
 use futures::{SinkExt, StreamExt};
 use spanning_tree::process_dataplane_packet;
 use tokio_tungstenite::tungstenite::Message;
@@ -64,6 +64,8 @@ async fn rejected_or_captured_msg1_on_a_fresh_carrier_cannot_displace_usable_key
     let invalid = build_msg1(SessionIndex::new(77), &[0; 106]);
     for replay in [
         invalid.clone(),
+        build_msg2(SessionIndex::new(77), SessionIndex::new(u32::MAX), &[0; 57]),
+        vec![0; 32],
         original.clone(),
         build_msg1(
             SessionIndex::new(header.sender_idx.as_u32().wrapping_add(1).max(1)),
@@ -104,10 +106,10 @@ async fn rejected_or_captured_msg1_on_a_fresh_carrier_cannot_displace_usable_key
             "rejected or captured Noise Msg1 must preserve the usable owner"
         );
         assert!(peer.pending_new_session().is_none());
-        if replay == invalid {
+        if Msg1Header::parse(&replay).is_none() || replay == invalid {
             let closed = tokio::time::timeout(Duration::from_secs(1), carrier.next())
                 .await
-                .expect("invalid Noise must release the WebSocket carrier");
+                .expect("rejected records must release the WebSocket carrier");
             assert!(matches!(
                 closed,
                 None | Some(Err(_)) | Some(Ok(Message::Close(_)))

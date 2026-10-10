@@ -328,6 +328,7 @@ pub(crate) struct DataplaneRawIngressDrop {
     protocol: PacketProtocol,
     transport_id: TransportId,
     remote_addr: TransportAddr,
+    received_at_ms: Option<u64>,
     payload_len: usize,
     fmp_receiver_idx: Option<u32>,
     reason: DataplaneRawIngressDropReason,
@@ -342,6 +343,7 @@ impl DataplaneRawIngressDrop {
             protocol: packet.protocol,
             transport_id: packet.transport_id,
             remote_addr: packet.remote_addr,
+            received_at_ms: packet.activity_tick.map(ActivityTick::get),
             payload_len: packet.payload.len(),
             fmp_receiver_idx: (packet.protocol == PacketProtocol::Fmp)
                 .then(|| FmpWireHeader::parse(packet.payload.as_slice()).ok())
@@ -361,6 +363,10 @@ impl DataplaneRawIngressDrop {
 
     pub(crate) fn remote_addr(&self) -> &TransportAddr {
         &self.remote_addr
+    }
+
+    pub(crate) fn received_at_ms(&self) -> Option<u64> {
+        self.received_at_ms
     }
 
     pub(crate) fn payload_len(&self) -> usize {

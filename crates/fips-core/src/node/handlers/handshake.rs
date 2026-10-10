@@ -206,16 +206,6 @@ impl Node {
             );
             return;
         }
-        let transport_id = packet.transport_id;
-        let remote_addr = packet.remote_addr.clone();
-        self.handle_current_msg1(packet).await;
-        // A complete rejected frame has already passed the transport's
-        // first-frame timeout. Only admitted or pending owners may retain it.
-        self.close_unowned_handshake_carrier(transport_id, &remote_addr)
-            .await;
-    }
-
-    async fn handle_current_msg1(&mut self, packet: ReceivedPacket) {
         debug!(
             transport_id = %packet.transport_id,
             remote_addr = %packet.remote_addr,

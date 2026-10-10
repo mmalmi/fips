@@ -405,6 +405,7 @@ pub(crate) enum PacketDropReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketDrop {
     owner: OwnerId,
+    received_carrier: Option<(TransportPath, ActivityTick)>,
     counter: Option<u64>,
     send_token: Option<u64>,
     reason: PacketDropReason,
@@ -417,6 +418,7 @@ impl PacketDrop {
     fn from_queued(queued: &QueuedPacket, reason: PacketDropReason) -> Self {
         Self {
             owner: queued.packet.owner,
+            received_carrier: queued.packet.source_path.clone().zip(queued.packet.activity_tick),
             counter: Some(queued.packet.counter),
             send_token: None,
             reason,
@@ -429,6 +431,7 @@ impl PacketDrop {
     fn from_queued_outbound(queued: &QueuedOutboundPacket, reason: PacketDropReason) -> Self {
         Self {
             owner: queued.packet.owner,
+            received_carrier: None,
             counter: None,
             send_token: queued.packet.send_token,
             reason,
@@ -445,6 +448,8 @@ impl PacketDrop {
     ) -> Self {
         Self {
             owner: completion.reservation.owner,
+            received_carrier: completion.reservation.source_path.clone()
+                .zip(completion.reservation.activity_tick),
             counter: Some(completion.reservation.counter),
             send_token: completion.reservation.send_token,
             reason,
@@ -467,6 +472,10 @@ impl PacketDrop {
 
     pub(crate) fn owner(&self) -> OwnerId {
         self.owner
+    }
+
+    pub(crate) fn received_carrier(&self) -> Option<(&TransportPath, u64)> {
+        self.received_carrier.as_ref().map(|(path, tick)| (path, tick.get()))
     }
 
     pub(crate) fn counter(&self) -> Option<u64> {
@@ -498,6 +507,7 @@ impl From<AdmissionDrop> for PacketDrop {
     fn from(drop: AdmissionDrop) -> Self {
         Self {
             owner: drop.owner,
+            received_carrier: drop.received_carrier,
             counter: drop.counter,
             send_token: drop.send_token,
             reason: PacketDropReason::Admission(drop.reason),
