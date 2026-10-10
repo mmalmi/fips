@@ -9528,6 +9528,43 @@ was not repeated. This extends software rejection coverage only; transport disco
 preludes, sustained physical hostile load and current device builds still need
 separate qualification.
 
+`work/carrier-hardware-r423` adds bounded three-router acceptance of the ordinary
+ARM64 runtime at `6a42ad2de`, with all 1,042 current Rust files matched to the build
+inventory. Only measurements are enabled; the relay has no simulation or testbench
+features. The middle router's separate TCP listener accepts and releases 484
+complete invalid Msg1, unsolicited Msg2 and unknown-index encrypted records while
+the original paid two-hop radio path carries exact TCP/FIPS streams. Four workers
+are paced below the existing firewall's 25-SYN/s limit. All records reach native
+receive processing, with no capacity rejection or first-frame timeout; the
+eight-slot pool ends empty. Observed connection-to-close latency is 8.69 ms median,
+17.85 ms maximum. No forwarding process or paid channel is replaced.
+
+The pressure and subsequent recovery windows each deliver and acknowledge 4 MiB
+per direction with matching payload digests, completing in 16.02–16.04 seconds.
+Each endpoint's cumulative authorization advances from 5 to 10 test sats, with
+matching provider credit and preserved funding/exposure bounds. All 384 test sats
+are collected, all wallets end empty, all 318 management checks pass, and the
+original configuration, accounts, radios and Internet access are restored.
+The three attempts' temporary profiles are archived and removed only after
+collection and independent restoration checks; their staged binaries are removed.
+Middle-process CPU is 11.23 seconds under pressure and 10.37 seconds afterward
+(1.404 and 1.297 CPU seconds per delivered MiB); sampled RSS stays between
+20,420 and 20,668 KiB. These observations include diagnostics and are not isolated
+payment-cost measurements or a performance limit.
+
+The two preliminary attempts remain recorded: an unreachable automatically chosen
+mint port stops before issuance, and a generator above the existing SYN limit
+times out opening a connection after 782 received records close successfully.
+The latter still delivers the full duplex payload and collects all 384 test sats;
+it does not pass the acceptance scenario. The final run uses the allowed test-mint
+port and paced generator, preserving firewall policy. A stale Zig cache is also
+replaced by a private build cache. All 51 focused Linux harness/guard checks pass,
+with the two carrier tests repeated after the pacing change. Reproduce with
+`sim.paid_wifi --carrier-pressure-port PORT` and the documented private inventories.
+This qualifies finite TCP rejection alongside paid radio traffic; transport
+discovery preludes, sustained hostile load, known-index physical cases and updated
+Android qualification remain separate.
+
 - Quote discovery uses existing authenticated TCP/FIPS. A bounded complete-offer
   cache and shared in-flight requests avoid repeated downstream negotiations;
   the quote server adds an aggregate rate limit across identities. Forwarded

@@ -227,13 +227,16 @@ class WifiRun:
         self.save()
         announced_and_observed = True
         for name, report in transports.items():
-            adapters = report["data"]["transports"]
-            if (len(adapters) != 1 or adapters[0]["type"] != "ethernet"
-                    or adapters[0]["name"] != self.nodes[name].interface):
-                raise RuntimeError("test node has a non-mesh transport shortcut")
-            if adapters[0]["stats"]["beacons_recv"] == 0 or adapters[0]["stats"]["beacons_sent"] == 0:
+            adapter = self.discovery_adapter(name, report["data"]["transports"])
+            if adapter["stats"]["beacons_recv"] == 0 or adapter["stats"]["beacons_sent"] == 0:
                 announced_and_observed = False
         return transports if announced_and_observed else None
+
+    def discovery_adapter(self, name, adapters):
+        if (len(adapters) != 1 or adapters[0]["type"] != "ethernet"
+                or adapters[0]["name"] != self.nodes[name].interface):
+            raise RuntimeError("test node has a non-mesh transport shortcut")
+        return adapters[0]
 
     def form_line(self):
         eventually("automatic radio triangle discovery", self.ready, 150)

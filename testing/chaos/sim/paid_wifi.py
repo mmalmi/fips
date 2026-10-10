@@ -252,13 +252,16 @@ class PaidWifiRun(WifiRun):
         current = eventually("original financial accounts before collection", self.finances)
         original_channels(self.nodes, current)
         if self.channel_anchor is not None:
-            retain_channels(self.channel_anchor, current)
+            self.retain_channels(self.channel_anchor, current)
         settle_and_collect(self, current, execute=self.account_execute,
                            stop=lambda name: self.nodes[name].stop(),
                            export_path=lambda name, relative: self.nodes[name].state + "/" + relative)
         collection = self.evidence["phases"][-1]["settlement_collection"]
         self.phase("all 384 test sats collected; every test wallet empty")
         return collection
+
+    def retain_channels(self, prior, current):
+        return retain_channels(prior, current)
 
     def finish(self):
         try:
@@ -275,6 +278,8 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--mint-binary", type=Path, required=True,
                         help="test-mint executable for this controller host")
+    parser.add_argument("--mint-host", type=Path,
+                        help="private inventory for a remote Linux test-mint host")
     parser.add_argument("--mint-address", required=True,
                         help="assigned private controller address, or 127.0.0.1 with SSH forwarding")
     parser.add_argument("--mint-ssh-forward", action="store_true",
@@ -283,6 +288,8 @@ def main():
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
     parser.add_argument("--streams", action="store_true",
                         help="exact paid TCP/FIPS streams before, during and after bounded frame loss")
+    parser.add_argument("--carrier-pressure-port", type=int,
+                        help="unused middle-router TCP port for bounded rejection during paid radio streams")
     parser.add_argument("--interrupted-promotion", action="store_true",
                         help="hold real full acceptance, withdraw the middle radio and recover one Watch")
     parser.add_argument("--promotion-provenance", type=Path,
@@ -303,6 +310,8 @@ def main():
                         help='select the elected root, observe its replacement and require the original tree after rejoin')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:
+        parser.error("carrier pressure requires an unprivileged TCP port")
     if args.outage_node is not None and not args.active_outage:
         parser.error("--outage-node requires --active-outage")
     if args.brief_outage and not args.active_outage:
@@ -316,7 +325,10 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    if args.streams:
+    if args.carrier_pressure_port is not None:
+        from .wifi_carrier_pressure import WifiCarrierPressureRun
+        WifiCarrierPressureRun(args).execute()
+    elif args.streams:
         from .wifi_stream import WifiStreamRun
         WifiStreamRun(args).execute()
     else:

@@ -450,6 +450,25 @@ settlement/collection and restoration checks. Resource snapshots include the
 whole relay process and diagnostic overhead; they are not a matched cadence or
 unloaded performance benchmark. Frame-loss and radio-departure modes are separate.
 
+Use `--carrier-pressure-port PORT` instead of `--streams` to test rejected TCP
+connections while the same paid radio line forwards exact TCP/FIPS streams.
+The port must be unused and unprivileged; only the temporary middle-router
+profile listens there, on its private management address, with eight inbound
+slots. Four workers send complete invalid Noise initiations, unsolicited replies
+and unknown-index encrypted records, at most 16 connections/s and 4,096 total.
+Each socket read waits at most two seconds for closure. Native receive/accept
+counters must match the records,
+without capacity rejection or first-frame timeouts, and the pool must end empty.
+Two 30-second windows each deliver and acknowledge 4 MiB per direction at
+256 KiB/s, during pressure and after it ends. Fees are 1 msat/KiB, with the
+existing 32 MiB quote bound. The original channels, automatic payment, test-fund
+collection, management checks and restoration remain mandatory. Process and RSS
+samples include diagnostic overhead; this finite test is not sustained DoS
+qualification. Run `python3 -m unittest tests.test_carrier_pressure` with the
+shared Wi-Fi/settlement checks before using hardware. An optional `--mint-host`
+JSON inventory selects the existing remote Linux test-mint adapter; set its `port`
+when the host firewall allows only a fixed test port.
+
 Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
 explicitly funded round-trip stream is still sending. The fixture waits for
 partial replies, removes leaf n03 from the radio mesh by default, observes actual peer
