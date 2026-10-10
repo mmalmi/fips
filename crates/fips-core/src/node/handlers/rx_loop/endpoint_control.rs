@@ -42,9 +42,8 @@ impl Node {
                 break;
             };
             match command {
-                NodeEndpointControlCommand::PeerSnapshot { .. }
-                | NodeEndpointControlCommand::TransportStatsSnapshot { .. } => {
-                    // These exact arms only read state and send a oneshot reply.
+                NodeEndpointControlCommand::PeerSnapshot { .. } => {
+                    // This exact arm only reads state and sends a oneshot reply.
                     // Never dispatch mutations or async discovery between handlers.
                     let request = Box::pin(self.handle_endpoint_control(command)).await;
                     debug_assert!(request.is_none());

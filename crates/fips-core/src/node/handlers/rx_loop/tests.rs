@@ -45,7 +45,7 @@ async fn endpoint_snapshot_interleave_preserves_fifo_mutation_barriers() {
         .unwrap();
     endpoint
         .control_tx
-        .send(Command::TransportStatsSnapshot {
+        .send(Command::PeerSnapshot {
             response_tx: second_tx,
         })
         .await
