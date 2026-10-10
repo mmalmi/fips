@@ -27,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and release completed bootstrap bookkeeping after the first promotion.
 - Count failed local handshake sends against the finite retry budget so an
   unreachable carrier cannot retry on every maintenance tick.
-- Process one bounded idle iOS control packet inline, as on Android, and avoid
-  heap allocation for ordinary control turns without changing packet ordering.
+- Process one bounded idle iOS control packet inline, as on Android, and skip
+  allocations for empty recovery queues without changing packet ordering.
+- Keep the receive loop on the heap for its lifetime so nested local roster
+  sends fit within the normal worker stack.
 - Release the matching core and endpoint libraries as 0.4.96. Identity remains
   0.3.3; protocol messages, routing semantics, and wire layouts are unchanged.
 

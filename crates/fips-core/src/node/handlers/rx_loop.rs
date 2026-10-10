@@ -114,7 +114,9 @@ impl Node {
     pub async fn run_rx_loop(&mut self) -> Result<(), NodeError> {
         let packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
         let lifetime = RxLoopEndpointLifetime(self);
-        lifetime.0.run_rx_loop_inner(packet_rx).await
+        // Allocate the receive loop once for its lifetime. Its nested control
+        // futures otherwise inflate every poll frame on the worker stack.
+        Box::pin(lifetime.0.run_rx_loop_inner(packet_rx)).await
     }
 
     async fn run_rx_loop_inner(&mut self, packet_rx: PacketRx) -> Result<(), NodeError> {
@@ -625,7 +627,7 @@ impl Node {
             )
             .await;
         let drained_packets = Self::dataplane_packet_activity(&turn);
-        let control_drained = self.process_dataplane_control_ingress(&mut turn).await;
+        let control_drained = Box::pin(self.process_dataplane_control_ingress(&mut turn)).await;
         RxLoopDataDrainStats::new(
             drained_packets,
             turn.tun_source_drained(),
@@ -811,10 +813,14 @@ impl Node {
         control_query_budget: usize,
     ) -> usize {
         let had_activity = turn.has_activity();
-        let control_drained = self
-            .process_dataplane_control_ingress(turn)
-            .await
-            .saturating_add(self.drain_deferred_dataplane_control_turns().await);
+        let mut control_drained = Box::pin(self.process_dataplane_control_ingress(turn)).await;
+        // Deferred control can nest a second ingress turn. Keep that future off
+        // the ordinary turn's stack, and allocate only when it has work to do.
+        if !self.deferred_dataplane_control_turns.is_empty() || self.pending_root_traffic.is_some()
+        {
+            control_drained = control_drained
+                .saturating_add(Box::pin(self.drain_deferred_dataplane_control_turns()).await);
+        }
         if control_drained > 0 && self.dataplane.has_deferred_raw_ingress() {
             self.dataplane.readiness_notify().notify_one();
         }
