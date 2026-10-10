@@ -3300,6 +3300,18 @@ All 437 standard SDK tests pass across source-identical Linux runs, with one
 pre-existing storage soak ignored; the single full run reached its time limit,
 so this is combined test coverage rather than a successful full command.
 
+SDK `837fca1fb423` extends the existing completed-receive test with oversized
+valid UTF-8 JSON and malformed receipt metadata. The configured 4 MiB native
+reader rejects both before decoding, preserves the original coins and receipt,
+and makes no additional mint swap attempt. Restoring the receipt permits the
+same completed payment to recover its display activity without adding balance.
+Removing the native read policy makes the new assertion fail, even though the
+later SDK receipt lookup remains bounded. Native Linux r430 passes all 438
+workspace tests in one complete all-features run, with one opt-in storage soak
+ignored. Strict all-target, all-feature lint and formatting pass. Production code
+and dependencies are unchanged. Evidence is retained in
+`work/receive-replay-bounds-r430`.
+
 The saved-relay funding/export test passes on native x86-64 Linux with core
 0.4.88 and private TCP checkout `6fe9fe951ca8`. It verifies that import retry
 preserves the balance and buyer authorization before export, recovery and
