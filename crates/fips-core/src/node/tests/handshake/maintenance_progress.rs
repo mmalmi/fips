@@ -32,6 +32,14 @@ async fn stalled_handshake_resend() {
         packet_tx,
     );
     transport.start_async().await.unwrap();
+    let remote = TransportAddr::from_string("127.0.0.1:51820");
+    // Retain an actual Connecting carrier. A synthetic Noise candidate with
+    // no carrier is now correctly retired before resend maintenance.
+    transport.connect_async(&remote).await.unwrap();
+    let (_connecting_socket, _) = tokio::time::timeout(Duration::from_secs(3), proxy.accept())
+        .await
+        .unwrap()
+        .unwrap();
     node.transports
         .insert(transport_id, TransportHandle::Tor(transport));
     node.packet_rx = Some(packet_rx);
@@ -46,7 +54,7 @@ async fn stalled_handshake_resend() {
     let index = node.index_allocator.allocate().unwrap();
     connection.set_our_index(index);
     connection.set_transport_id(transport_id);
-    connection.set_source_addr(TransportAddr::from_string("127.0.0.1:51820"));
+    connection.set_source_addr(remote);
     connection.set_handshake_msg1(build_msg1(index, &msg1), now_ms);
     node.peers.insert_connection(link_id, connection);
 

@@ -33,6 +33,47 @@ fn remember(state: &mut BloomState, peers: &[NodeAddr], filters: &HashMap<NodeAd
     state.clear_pending_updates();
 }
 
+#[test]
+fn prepared_fanout_matches_individual_filters_without_caching_mutable_inputs() {
+    let (mut state, mut peers, mut filters) = fixture(300);
+    peers.push(addr(99_999)); // Recipient without an inbound contribution.
+    for revision in 0..5 {
+        match revision {
+            1 => {
+                filters.remove(&peers[1]);
+            }
+            2 => {
+                filters.insert(peers[2], BloomFilter::with_params(512, 5).unwrap());
+            }
+            3 => {
+                filters.insert(peers[3], BloomFilter::from_bytes(vec![2; 1024], 3).unwrap());
+            }
+            4 => {
+                state.add_leaf_dependent(addr(50_000));
+            }
+            _ => {}
+        }
+        let prepared = state.prepare_outgoing_filters(&filters);
+        for peer in &peers {
+            assert_eq!(
+                prepared.for_peer(peer),
+                state.compute_outgoing_filter(peer, &filters)
+            );
+        }
+    }
+    // A shared bit contributed by three peers must survive any one exclusion.
+    let repeated = HashMap::from_iter(
+        (0..3).map(|i| (addr(i), BloomFilter::from_bytes(vec![1; 1024], 5).unwrap())),
+    );
+    let prepared = state.prepare_outgoing_filters(&repeated);
+    for peer in repeated.keys() {
+        assert_eq!(
+            prepared.for_peer(peer),
+            state.compute_outgoing_filter(peer, &repeated)
+        );
+    }
+}
+
 fn assert_changes(
     state: &mut BloomState,
     peers: &[NodeAddr],

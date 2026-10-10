@@ -84,6 +84,54 @@ impl PacketTx {
         Ok(())
     }
 
+    /// Reliable readers wait for control capacity instead of silently losing
+    /// an already received record. Bulk retains nonblocking overload behavior.
+    /// Waiting owns no queue credit and is safe to cancel with the connection.
+    pub(crate) async fn send_stream_packet(
+        &self,
+        packet: ReceivedPacket,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
+        if !packet.is_transport_priority() {
+            return self.send(packet);
+        }
+        // A notification is not a reservation: a hot reader could otherwise
+        // repeatedly take released credits before a woken reader is polled.
+        // FIFO stream admission keeps that reader's turn across the capacity
+        // wait. Native datagrams and bulk retain their nonblocking paths.
+        let _turn = self.priority_stream_turn.lock().await;
+        let available = self.priority_space.notified();
+        tokio::pin!(available);
+        loop {
+            // Register before checking: multiple readers can otherwise miss a
+            // release between finding no capacity and first polling Notified.
+            available.as_mut().enable();
+            if self.priority.is_closed() {
+                return Err(tokio::sync::mpsc::error::SendError(packet));
+            }
+            if reserve_packet_prefix(
+                &self.priority_reserved_packets,
+                TRANSPORT_PRIORITY_PACKET_CAPACITY,
+                1,
+            ) == 1
+            {
+                // No await between reserving and handing ownership to credits.
+                return self
+                    .send_reserved_item(PacketQueueTx::Priority, PacketQueueItem::One(packet))
+                    .map_err(|item| match item {
+                        PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
+                        PacketQueueItem::Batch(_) => unreachable!("stream sends one packet"),
+                    });
+            }
+            tokio::select! {
+                _ = available.as_mut() => {},
+                _ = self.priority.closed() => {
+                    return Err(tokio::sync::mpsc::error::SendError(packet));
+                }
+            }
+            available.set(self.priority_space.notified());
+        }
+    }
+
     fn send_packet_items(&self, tx: PacketQueueTx, mut packets: PacketBatch) -> Result<(), ()> {
         let packet_count = packets.packets.len();
         if packet_count == 0 {
@@ -460,6 +508,8 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
             buffer_pool: PacketBufferPool::new(),
             priority_queued_packets: Arc::clone(&priority_queued_packets),
             priority_reserved_packets: Arc::clone(&priority_reserved_packets),
+            priority_space: Arc::new(tokio::sync::Notify::new()),
+            priority_stream_turn: Arc::new(tokio::sync::Mutex::new(())),
             queued_packets: Arc::clone(&queued_packets),
             bulk_reserved_packets: Arc::clone(&bulk_reserved_packets),
             bulk_packet_capacity: buffer.max(1),

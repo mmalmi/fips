@@ -168,8 +168,18 @@ impl NostrDiscovery {
     }
 
     #[cfg(test)]
-    pub(crate) fn push_mesh_signal_for_test(&self, signal: MeshTraversalSignal) {
-        let _ = self.mesh_signal_tx.try_send(signal);
+    pub(crate) fn push_mesh_signal_for_test(&self, signal: MeshTraversalSignal) -> bool {
+        self.mesh_signal_tx.try_send(signal).is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn cache_mesh_answer_for_test(
+        &self,
+        offer: &TraversalOffer,
+        answer: &TraversalAnswer,
+    ) {
+        self.cache_mesh_traversal_answer(offer, &offer.sender_npub, answer)
+            .await;
     }
 
     #[cfg(test)]

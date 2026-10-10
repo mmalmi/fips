@@ -522,8 +522,8 @@ async fn mesh_offer_retries_until_answer_arrives() {
     assert_eq!(received.payload, answer);
 }
 
-#[tokio::test]
-async fn duplicate_mesh_offer_replays_cached_answer() {
+async fn cached_mesh_offer_fixture()
+-> (Arc<NostrDiscovery>, TraversalOffer, TraversalAnswer, String) {
     let discovery = Arc::new(NostrDiscovery::new_for_test());
     let sender_npub = nostr::Keys::generate()
         .public_key()
@@ -562,13 +562,18 @@ async fn duplicate_mesh_offer_replays_cached_answer() {
         .cache_mesh_traversal_answer(&offer, &sender_npub, &answer)
         .await;
 
-    discovery
-        .receive_mesh_traversal_offer(offer, sender_npub.clone())
-        .await;
+    (discovery, offer, answer, sender_npub)
+}
 
-    let signals = discovery.drain_mesh_signals().await;
-    assert_eq!(signals.len(), 1);
-    match &signals[0] {
+#[tokio::test]
+async fn duplicate_mesh_offer_replays_cached_answer() {
+    let (discovery, offer, answer, sender_npub) = cached_mesh_offer_fixture().await;
+
+    let signal = discovery
+        .receive_mesh_traversal_offer(offer, sender_npub.clone())
+        .await
+        .expect("cached response returned to inline caller");
+    match &signal {
         MeshTraversalSignal::Answer {
             peer_npub,
             answer: replayed,
@@ -578,6 +583,49 @@ async fn duplicate_mesh_offer_replays_cached_answer() {
         }
         MeshTraversalSignal::Offer { .. } => panic!("expected cached answer"),
     }
+}
+
+#[tokio::test]
+async fn cached_offer_replay_does_not_wait_for_its_own_full_signal_queue() {
+    let (discovery, offer, answer, sender_npub) = cached_mesh_offer_fixture().await;
+    let mut queued = 0;
+    while discovery
+        .mesh_signal_tx
+        .try_send(MeshTraversalSignal::Answer {
+            peer_npub: sender_npub.clone(),
+            answer: answer.clone(),
+        })
+        .is_ok()
+    {
+        queued += 1;
+    }
+    assert!(queued > 0);
+    assert_eq!(discovery.mesh_signal_tx.capacity(), 0);
+    // The authenticated Node ingress calls this inline. Its own discovery
+    // turn is the queue reader, so there is deliberately no concurrent drain.
+    let result = tokio::time::timeout(
+        Duration::from_millis(50),
+        discovery.receive_mesh_traversal_offer(offer.clone(), sender_npub.clone()),
+    )
+    .await;
+    let replayed = result
+        .expect("cached replay must return to its queue reader")
+        .expect("cached response returned without queueing");
+    assert!(
+        matches!(&replayed, MeshTraversalSignal::Answer { peer_npub, answer: replayed }
+        if peer_npub == &sender_npub && replayed == &answer)
+    );
+    assert_eq!(discovery.mesh_signal_tx.capacity(), 0);
+    assert!(discovery.child_tasks.lock().await.is_empty());
+    assert_eq!(discovery.drain_mesh_signals().await.len(), queued);
+    let replayed = discovery
+        .receive_mesh_traversal_offer(offer, sender_npub.clone())
+        .await
+        .expect("cached answer survives queue pressure");
+    assert!(
+        matches!(&replayed, MeshTraversalSignal::Answer { peer_npub, answer: replayed }
+        if peer_npub == &sender_npub && replayed == &answer)
+    );
 }
 
 #[tokio::test]
@@ -605,9 +653,12 @@ async fn sender_mismatch_does_not_poison_mesh_replay_cache() {
         stun_server: None,
     };
 
-    discovery
-        .receive_mesh_traversal_offer(offer, actual_sender)
-        .await;
+    assert!(
+        discovery
+            .receive_mesh_traversal_offer(offer, actual_sender)
+            .await
+            .is_none()
+    );
 
     assert!(
         discovery.seen_sessions.lock().await.is_empty(),
@@ -635,9 +686,12 @@ async fn stale_offer_does_not_poison_mesh_replay_cache() {
         stun_server: None,
     };
 
-    discovery
-        .receive_mesh_traversal_offer(offer, sender_npub)
-        .await;
+    assert!(
+        discovery
+            .receive_mesh_traversal_offer(offer, sender_npub)
+            .await
+            .is_none()
+    );
 
     assert!(
         discovery.seen_sessions.lock().await.is_empty(),

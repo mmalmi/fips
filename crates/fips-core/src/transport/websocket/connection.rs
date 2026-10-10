@@ -88,6 +88,7 @@ async fn read<S>(
 where
     S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
+    let mut ready_frames = 0;
     loop {
         let reply = match stream.next().await {
             Some(Ok(Message::Binary(data))) => {
@@ -136,9 +137,13 @@ where
                         PacketBuffer::new(data.to_vec()),
                         now_ms(),
                     );
-                    runtime.packet_tx.send(packet).map_err(|_| {
-                        TransportError::RecvFailed("node packet channel closed".into())
-                    })?;
+                    runtime
+                        .packet_tx
+                        .send_stream_packet(packet)
+                        .await
+                        .map_err(|_| {
+                            TransportError::RecvFailed("node packet channel closed".into())
+                        })?;
                     runtime
                         .stats
                         .frames_received
@@ -171,6 +176,14 @@ where
             replies.try_send(reply).map_err(|_| {
                 TransportError::SendFailed("WebSocket control reply queue unavailable".into())
             })?;
+        }
+        // One socket read can leave hundreds of complete frames buffered.
+        // Bulk admission and control admission with available space don't
+        // yield. Give the node and other connections a turn even then.
+        ready_frames += 1;
+        if ready_frames == 32 {
+            ready_frames = 0;
+            tokio::task::yield_now().await;
         }
     }
 }

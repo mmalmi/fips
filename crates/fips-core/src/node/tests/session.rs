@@ -27,6 +27,7 @@ mod graph_fallback;
 mod handshake_retention;
 mod handshake_timeout;
 mod idle_control;
+mod mesh_signal_replay;
 mod mtu_exceeded;
 mod mtu_notification;
 mod multihop_pmtud;

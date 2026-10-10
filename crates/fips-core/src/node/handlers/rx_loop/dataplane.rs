@@ -154,6 +154,7 @@ impl Node {
             if self.process_dataplane_local_session_ingress(ingress).await {
                 processed += 1;
             }
+            self.drain_endpoint_snapshots().await;
         }
         processed = processed.saturating_add(
             self.process_dataplane_authenticated_ingress(turn.take_fsp_authenticated_ingress())

@@ -17,6 +17,167 @@ use super::{
 use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
+#[tokio::test]
+async fn endpoint_snapshot_interleave_preserves_fifo_mutation_barriers() {
+    use crate::node::NodeEndpointControlCommand as Command;
+    use tokio::sync::oneshot;
+    let mut node = crate::node::Node::new(crate::config::Config::new()).unwrap();
+    let endpoint = node.attach_endpoint_data_io(16).unwrap();
+    let identity = crate::PeerIdentity::from_pubkey(crate::Identity::generate().pubkey());
+    let (first_tx, mut first) = oneshot::channel();
+    let (mutation_tx, mutation) = oneshot::channel();
+    let (second_tx, mut second) = oneshot::channel();
+    let (last_tx, mut last) = oneshot::channel();
+    endpoint
+        .control_tx
+        .send(Command::PeerSnapshot {
+            response_tx: first_tx,
+        })
+        .await
+        .unwrap();
+    endpoint
+        .control_tx
+        .send(Command::RegisterIdentity {
+            identity,
+            response_tx: mutation_tx,
+        })
+        .await
+        .unwrap();
+    endpoint
+        .control_tx
+        .send(Command::PeerSnapshot {
+            response_tx: second_tx,
+        })
+        .await
+        .unwrap();
+    endpoint
+        .control_tx
+        .send(Command::PeerSnapshot {
+            response_tx: last_tx,
+        })
+        .await
+        .unwrap();
+    // Even a cancelled mutation response must remain a FIFO barrier.
+    drop(mutation);
+    node.drain_endpoint_snapshots().await;
+    assert!(first.try_recv().is_ok());
+    assert!(second.try_recv().is_err());
+    assert!(last.try_recv().is_err());
+    assert!(matches!(
+        node.pending_endpoint_control,
+        Some(Command::RegisterIdentity { .. })
+    ));
+    node.drain_endpoint_snapshots().await;
+    assert!(
+        second.try_recv().is_err(),
+        "never read beyond a stashed mutation"
+    );
+    let command = super::next_endpoint_control(
+        &mut node.pending_endpoint_control,
+        &mut node.endpoint_control_rx,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(command, Command::RegisterIdentity { .. }));
+    node.handle_endpoint_control(command).await;
+    node.drain_endpoint_snapshots().await;
+    assert!(second.try_recv().is_ok());
+    assert!(last.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn endpoint_snapshot_interleave_is_bounded_and_keeps_adjacent_mutations() {
+    use crate::node::NodeEndpointControlCommand as Command;
+    use tokio::sync::oneshot;
+    let mut node = crate::node::Node::new(crate::config::Config::new()).unwrap();
+    let endpoint = node.attach_endpoint_data_io(16).unwrap();
+    let mut replies = Vec::new();
+    for _ in 0..5 {
+        let (response_tx, response_rx) = oneshot::channel();
+        endpoint
+            .control_tx
+            .send(Command::PeerSnapshot { response_tx })
+            .await
+            .unwrap();
+        replies.push(response_rx);
+    }
+    node.drain_endpoint_snapshots().await;
+    for reply in &mut replies[..4] {
+        assert!(reply.try_recv().is_ok());
+    }
+    assert!(replies[4].try_recv().is_err());
+    node.drain_endpoint_snapshots().await;
+    assert!(replies[4].try_recv().is_ok());
+    let mut mutations = Vec::new();
+    for _ in 0..2 {
+        let (response_tx, response_rx) = oneshot::channel();
+        let identity = crate::PeerIdentity::from_pubkey(crate::Identity::generate().pubkey());
+        endpoint
+            .control_tx
+            .send(Command::RegisterIdentity {
+                identity,
+                response_tx,
+            })
+            .await
+            .unwrap();
+        mutations.push(response_rx);
+    }
+    for mut response in mutations {
+        node.drain_endpoint_snapshots().await;
+        assert!(response.try_recv().is_err());
+        // A higher-priority ready select branch must leave the stash untouched.
+        tokio::select! { biased;
+            _ = std::future::ready(()) => {},
+            _ = super::next_endpoint_control(&mut node.pending_endpoint_control, &mut node.endpoint_control_rx) => panic!("unexpected selection"),
+        }
+        assert!(node.pending_endpoint_control.is_some());
+        let command = super::next_endpoint_control(
+            &mut node.pending_endpoint_control,
+            &mut node.endpoint_control_rx,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(command, Command::RegisterIdentity { .. }));
+        node.handle_endpoint_control(command).await;
+        assert!(response.try_recv().is_ok());
+    }
+}
+
+#[tokio::test]
+async fn endpoint_control_receiver_closes_on_rx_loop_return_or_cancellation() {
+    use crate::node::NodeEndpointControlCommand as Command;
+    for cancel in [false, true] {
+        let mut config = crate::config::Config::new();
+        config.node.control.enabled = false;
+        let mut node = crate::node::Node::new(config).unwrap();
+        let endpoint = node.attach_endpoint_data_io(16).unwrap();
+        assert!(node.run_rx_loop().await.is_err(), "not started");
+        assert!(
+            !endpoint.control_tx.is_closed(),
+            "NotStarted does not consume control"
+        );
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+        node.pending_endpoint_control = Some(Command::PeerSnapshot { response_tx });
+        let (packet_tx, packet_rx) = crate::transport::packet_channel(16);
+        node.packet_rx = Some(packet_rx);
+        if cancel {
+            let mut running = Box::pin(node.run_rx_loop());
+            assert!(futures::poll!(&mut running).is_pending());
+            drop(running);
+        } else {
+            drop(packet_tx);
+            node.run_rx_loop().await.unwrap();
+        }
+        assert!(endpoint.control_tx.is_closed());
+        assert!(node.endpoint_control_rx.is_none());
+        assert!(node.pending_endpoint_control.is_none());
+        assert!(!matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn fast_maintenance_loses_no_more_than_its_total_budget() {
     let started = tokio::time::Instant::now();

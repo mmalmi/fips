@@ -96,10 +96,11 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     .await
     .map_err(|_| "timed out starting ephemeral FIPS endpoint".to_string())?
     .map_err(|error| format!("could not start ephemeral FIPS endpoint: {error}"))?;
-    let probe_result = match timeout_at(deadline, probe_target(&endpoint, target)).await {
+    let mut phase = "webrtc_authentication";
+    let probe_result = match timeout_at(deadline, probe_target(&endpoint, target, &mut phase)).await {
         Ok(result) => result,
         Err(_) => Err(format!(
-            "target {target_npub} did not complete WebRTC/FMP/FSP echo within {}s",
+            "target {target_npub} did not complete WebRTC/FMP/FSP echo within {}s; phase={phase}",
             args.timeout_seconds
         )),
     };
@@ -164,8 +165,13 @@ fn probe_config(
     config
 }
 
-async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<Duration, String> {
+async fn probe_target(
+    endpoint: &FipsEndpoint,
+    target: PeerIdentity,
+    phase: &mut &'static str,
+) -> Result<Duration, String> {
     wait_for_authenticated_webrtc(endpoint, target).await?;
+    *phase = "fsp_echo";
 
     let nonce = *uuid::Uuid::new_v4().as_bytes();
     let identifier = u16::from_be_bytes([nonce[0], nonce[1]]);

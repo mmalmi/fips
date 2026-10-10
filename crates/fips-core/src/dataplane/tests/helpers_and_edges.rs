@@ -3,6 +3,36 @@
     use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
     use ring::aead::UnboundKey;
 
+    async fn pump_live_node_outbound_firsts(
+        live_node: &mut DataplaneLiveNode,
+        outbound_firsts: DataplaneLiveOutboundFirsts,
+        endpoint_tx: &EndpointEventSender,
+        transports: &HashMap<TransportId, TransportHandle>,
+        crypto_limit: usize,
+        transport_send_batch_packets: usize,
+    ) -> DataplaneLiveNodeTurn
+    {
+        let mut raw_source = VecDeque::<DataplaneRawIngress>::new();
+        live_node
+            .pump_turn_with_firsts_and_transport_batch(
+                None,
+                &mut raw_source,
+                0,
+                outbound_firsts,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: None,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: None,
+                    tun_limit: 0,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_batch_packets,
+                },
+            )
+            .await
+    }
+
     fn mover() -> Dataplane {
         Dataplane::new(AdmissionConfig::new(4, 8))
     }

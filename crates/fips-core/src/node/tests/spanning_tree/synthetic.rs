@@ -207,9 +207,14 @@ async fn repair_missing_edge_filters(
         for (sender, receiver) in missing {
             let sender_addr = *nodes[sender].node.node_addr();
             let receiver_addr = *nodes[receiver].node.node_addr();
+            let inputs = nodes[sender].node.peer_inbound_filters();
+            let filters = nodes[sender]
+                .node
+                .bloom_state
+                .prepare_outgoing_filters(&inputs);
             let encoded = nodes[sender]
                 .node
-                .build_filter_announce(&receiver_addr)
+                .build_filter_announce(&receiver_addr, &filters)
                 .encode()
                 .expect("synthetic FilterAnnounce should encode");
             nodes[receiver]

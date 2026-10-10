@@ -206,6 +206,16 @@ impl Node {
             );
             return;
         }
+        let transport_id = packet.transport_id;
+        let remote_addr = packet.remote_addr.clone();
+        self.handle_current_msg1(packet).await;
+        // A complete rejected frame has already passed the transport's
+        // first-frame timeout. Only admitted or pending owners may retain it.
+        self.close_unowned_handshake_carrier(transport_id, &remote_addr)
+            .await;
+    }
+
+    async fn handle_current_msg1(&mut self, packet: ReceivedPacket) {
         debug!(
             transport_id = %packet.transport_id,
             remote_addr = %packet.remote_addr,
@@ -815,8 +825,6 @@ impl Node {
             )
             .is_err()
         {
-            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
-                .await;
             return;
         }
 
@@ -834,8 +842,6 @@ impl Node {
                 )
                 .await
         {
-            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
-                .await;
             return;
         }
         if let Some(old_link_id) = superseded_candidate {
@@ -873,11 +879,15 @@ impl Node {
         // cross-connection exception, including its temporary extra link;
         // fresh strangers and replacements still need available capacity.
         let crossed_dial = self.has_unpaired_outbound_handshake(&peer_node_addr);
+        // Path selection already budgets candidates per identity. Enforce the
+        // same bound for authenticated inbound paths; retries on an existing
+        // path were handled above without consuming another reservation.
+        if !crossed_dial && self.peer_candidate_slots(&peer_node_addr) == 0 {
+            return;
+        }
         if (replacing_neighbor || !crossed_dial)
             && (self.outbound_handshake_slots() == 0 || self.outbound_link_slots() == 0)
         {
-            self.close_unowned_handshake_carrier(packet.transport_id, &packet.remote_addr)
-                .await;
             self.resend_crossed_rotation_request(&peer_node_addr).await;
             return;
         }

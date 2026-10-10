@@ -15,7 +15,7 @@ fn recent_discovery_requests_own_reverse_path_dedup_capacity_and_expiry() {
                 first_peer,
                 first_target,
                 100,
-                RecentDiscoveryRequestLimits::new(1, 1, 1),
+                RecentDiscoveryRequestLimits::new(1, 1),
             )
             .accepted()
     );
@@ -32,7 +32,7 @@ fn recent_discovery_requests_own_reverse_path_dedup_capacity_and_expiry() {
                 second_peer,
                 second_target,
                 101,
-                RecentDiscoveryRequestLimits::new(1, 1, 1),
+                RecentDiscoveryRequestLimits::new(1, 1),
             )
             .deduplicated()
     );
@@ -46,7 +46,7 @@ fn recent_discovery_requests_own_reverse_path_dedup_capacity_and_expiry() {
         second_peer,
         second_target,
         102,
-        RecentDiscoveryRequestLimits::new(1, 1, 1),
+        RecentDiscoveryRequestLimits::new(1, 1),
     );
     assert!(admission.accepted());
     assert!(admission.evicted());
@@ -96,39 +96,22 @@ fn flooding_peer_pays_for_its_own_reverse_path_admission() {
                 light,
                 target,
                 1,
-                RecentDiscoveryRequestLimits::new(4, 2, 1),
+                RecentDiscoveryRequestLimits::new(4, 2),
             )
             .accepted()
     );
     assert!(
         requests
-            .record_request(
-                1,
-                heavy,
-                target,
-                2,
-                RecentDiscoveryRequestLimits::new(4, 2, 1),
-            )
+            .record_request(1, heavy, target, 2, RecentDiscoveryRequestLimits::new(4, 2),)
             .accepted()
     );
     assert!(
         requests
-            .record_request(
-                2,
-                heavy,
-                target,
-                3,
-                RecentDiscoveryRequestLimits::new(4, 2, 1),
-            )
+            .record_request(2, heavy, target, 3, RecentDiscoveryRequestLimits::new(4, 2),)
             .accepted()
     );
-    let admission = requests.record_request(
-        3,
-        heavy,
-        target,
-        4,
-        RecentDiscoveryRequestLimits::new(4, 2, 1),
-    );
+    let admission =
+        requests.record_request(3, heavy, target, 4, RecentDiscoveryRequestLimits::new(4, 2));
 
     assert!(admission.accepted() && admission.evicted());
     assert!(

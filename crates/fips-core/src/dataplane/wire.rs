@@ -105,9 +105,10 @@ impl FmpWireHeader {
 
 fn fmp_discovery_control_payload_shape(payload_len: usize) -> bool {
     const COORD_ADDR_SIZE: usize = 16;
-    // Includes message type and the coordinate-count field, but no entries.
-    const LOOKUP_REQUEST_FIXED_SIZE: usize = 46;
-    const LOOKUP_RESPONSE_FIXED_SIZE: usize = 93;
+    // Includes the existing encrypted timestamp, message type and coordinate
+    // count, but no coordinate entries. This does not change the wire format.
+    const LOOKUP_REQUEST_FIXED_SIZE: usize = 4 + 46;
+    const LOOKUP_RESPONSE_FIXED_SIZE: usize = 4 + 93;
 
     [LOOKUP_REQUEST_FIXED_SIZE, LOOKUP_RESPONSE_FIXED_SIZE]
         .into_iter()

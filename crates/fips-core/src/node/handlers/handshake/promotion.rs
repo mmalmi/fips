@@ -491,6 +491,13 @@ impl Node {
                 current_time_ms,
             );
             self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
+            // The first adjacency has authenticated. Any retained retry now
+            // upgrades that fallback; it must not inherit the completed
+            // connection attempt's handshake-suppression deadline. Existing
+            // active-peer promotions and liveness updates retain their pacing.
+            if let Some(retry) = self.retry_pending.get_mut(&peer_node_addr) {
+                retry.retry_after_ms = retry.retry_after_ms.min(current_time_ms);
+            }
             self.set_discovery_fallback_transit_allowed(
                 peer_node_addr,
                 discovery_fallback_transit_allowed,

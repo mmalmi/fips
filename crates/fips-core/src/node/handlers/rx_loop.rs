@@ -18,12 +18,14 @@ use tracing::{debug, info, warn};
 mod budget;
 mod dataplane;
 mod drain;
+mod endpoint_control;
 
 #[cfg(test)]
 mod tests;
 
 use budget::*;
 use drain::*;
+use endpoint_control::{RxLoopEndpointLifetime, next_endpoint_control};
 
 pub(in crate::node) struct RxLoopDataplaneIo<'a> {
     packet_rx: &'a mut PacketRx,
@@ -111,7 +113,11 @@ impl Node {
     /// until the channel is closed (typically when stop() is called).
     pub async fn run_rx_loop(&mut self) -> Result<(), NodeError> {
         let packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
+        let lifetime = RxLoopEndpointLifetime(self);
+        lifetime.0.run_rx_loop_inner(packet_rx).await
+    }
 
+    async fn run_rx_loop_inner(&mut self, packet_rx: PacketRx) -> Result<(), NodeError> {
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
         // the channel from closing.
@@ -133,16 +139,6 @@ impl Node {
             }
         };
 
-        // Take the endpoint control receiver, or create a dummy channel
-        // when the embedded endpoint API is not in use.
-        let (mut endpoint_control_rx, _endpoint_control_guard) =
-            match self.endpoint_control_rx.take() {
-                Some(rx) => (rx, None),
-                None => {
-                    let (tx, rx) = tokio::sync::mpsc::channel(1);
-                    (rx, Some(tx))
-                }
-            };
         let (endpoint_data_rx, _endpoint_data_guard) = match self.endpoint_data_rx.take() {
             Some(rx) => (rx, None),
             None => {
@@ -223,6 +219,11 @@ impl Node {
         let mut lookup_not_before_ms = 0;
 
         loop {
+            let lookup_deadline = self
+                .discovery_work_deadline_ms()
+                .map(|due| due.max(lookup_not_before_ms));
+            let report_deadline = self.dataplane.fmp_report_deadline();
+            let routing_deadline = self.pending_routing_announce_deadline_ms();
             tokio::select! {
                 biased;
                 // Timer-driven liveness is a reserved-progress branch. It
@@ -289,8 +290,40 @@ impl Node {
                         tick.reset();
                     }
                 }
+                Some(message) = control_query_rx.recv() => {
+                    self.drain_control_queries(
+                        &mut control_query_rx,
+                        Some(message),
+                        ENDPOINT_DRAIN_BUDGET,
+                    ).await;
+                }
+                Some(completion) = network_rebind_completion_rx.recv() => {
+                    network_rebind_in_progress = false;
+                    self.complete_network_rebind(completion).await;
+                }
+                // Endpoint control carries management/lifecycle commands.
+                // Endpoint payload batches stay on the data lane; this branch
+                // keeps control work from waiting behind hot raw receive.
+                // Endpoint data batches intentionally remain below packet_rx.
+                Some(command) = next_endpoint_control(
+                    &mut self.pending_endpoint_control, &mut self.endpoint_control_rx,
+                ) => {
+                    if let Some(request) = self.handle_endpoint_control(command).await {
+                        if network_rebind_in_progress {
+                            request.reject(NodeError::TransportError(
+                                "network transport rebind already in progress".to_string(),
+                            ));
+                        } else {
+                            network_rebind_in_progress = true;
+                            self.spawn_network_rebind_preparation(
+                                request,
+                                network_rebind_completion_tx.clone(),
+                            );
+                        }
+                    }
+                }
                 _ = wait_for_optional_epoch_deadline(
-                    self.discovery_work_deadline_ms().map(|due| due.max(lookup_not_before_ms)),
+                    lookup_deadline,
                 ) => {
                     let (completed, drained) = self.run_rx_loop_lookup_turn(
                         &mut dataplane_runtime.io(),
@@ -312,38 +345,8 @@ impl Node {
                         warn!("Pending lookup send timed out; continuing packet processing");
                     }
                 }
-                Some(message) = control_query_rx.recv() => {
-                    self.drain_control_queries(
-                        &mut control_query_rx,
-                        Some(message),
-                        ENDPOINT_DRAIN_BUDGET,
-                    ).await;
-                }
-                Some(completion) = network_rebind_completion_rx.recv() => {
-                    network_rebind_in_progress = false;
-                    self.complete_network_rebind(completion).await;
-                }
-                // Endpoint control carries management/lifecycle commands.
-                // Endpoint payload batches stay on the data lane; this branch
-                // keeps control work from waiting behind hot raw receive.
-                // Endpoint data batches intentionally remain below packet_rx.
-                Some(command) = endpoint_control_rx.recv() => {
-                    if let Some(request) = self.handle_endpoint_control(command).await {
-                        if network_rebind_in_progress {
-                            request.reject(NodeError::TransportError(
-                                "network transport rebind already in progress".to_string(),
-                            ));
-                        } else {
-                            network_rebind_in_progress = true;
-                            self.spawn_network_rebind_preparation(
-                                request,
-                                network_rebind_completion_tx.clone(),
-                            );
-                        }
-                    }
-                }
                 _ = wait_for_optional_deadline(
-                    self.dataplane.fmp_report_deadline(),
+                    report_deadline,
                     mmp_report_not_before,
                 ) => {
                     let (completed, drained) = self.run_rx_loop_link_report_turn(
@@ -363,7 +366,7 @@ impl Node {
                         warn!("Link MMP report send timed out; continuing packet processing");
                     }
                 }
-                _ = wait_for_optional_epoch_deadline(self.pending_routing_announce_deadline_ms()) => {
+                _ = wait_for_optional_epoch_deadline(routing_deadline) => {
                     let (completed, drained) = self.run_rx_loop_routing_announce_turn(
                         &mut dataplane_runtime.io(),
                     ).await;

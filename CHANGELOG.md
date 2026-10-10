@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.96] - 2026-10-09
+
+### Fixed
+
+- Prepare peer-excluding Bloom filters once per immutable fanout input view,
+  avoiding repeated full-neighbor aggregation while preserving the exact wire
+  bytes, successful-send accounting, retries, and cancellation behavior.
+- Yield during buffered WebSocket receive bursts so priority consumers can run.
+  Apply bounded, FIFO backpressure to reliable control frames without enlarging
+  queues or changing nonblocking UDP and bulk-data admission.
+- Reuse expired discovery cooldown slots under target churn without evicting
+  active ingress/origin/target intervals or bypassing authenticated-peer budgets.
+- Bound protected discovery reply reservations to each connected peer's share
+  so unanswered traffic cannot reserve quiet peers' slots; retain admitted paths.
+- Release the matching core and endpoint libraries as 0.4.96. Identity remains
+  0.3.3; protocol messages, routing semantics, and wire layouts are unchanged.
+
 ## [0.4.95] - 2026-10-08
 
 ### Fixed

@@ -217,6 +217,32 @@ async fn delayed_anchor(nodes: &mut [TestNode], network: &SimNetwork) {
     );
 }
 
+async fn receive_frame_until(nodes: &mut [TestNode], received: impl Fn(&[TestNode]) -> bool) {
+    // A normal ingress turn may only enqueue native crypto or consume an
+    // unrelated readiness notification. Observe the actual received frame,
+    // without scheduling sender maintenance or retrying the cancelled send.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            process_available_packets(nodes).await;
+            if received(nodes) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the delivered cancelled frame must complete native receive processing");
+}
+
+fn refreshed_receivers(nodes: &[TestNode], root: &NodeAddr, sequences: &[u64]) -> usize {
+    [1, 2]
+        .into_iter()
+        .filter(|leaf| {
+            nodes[*leaf].node.get_peer(root).unwrap().filter_sequence() > sequences[*leaf - 1]
+        })
+        .count()
+}
+
 async fn unchanged(nodes: &mut [TestNode]) {
     anchor_filter(nodes, 1, &[0]).await;
     let root = *nodes[0].node.node_addr();
@@ -358,21 +384,19 @@ async fn cancellation(nodes: &mut [TestNode], network: &SimNetwork) {
                 .refresh_due(peer, Node::now_ms(), 1_000)
         );
     }
-    process_available_packets(nodes).await;
+    receive_frame_until(nodes, |nodes| {
+        refreshed_receivers(nodes, &ids[0], &sequences) > 0
+    })
+    .await;
     assert_eq!(
-        [1, 2]
-            .into_iter()
-            .filter(|leaf| {
-                nodes[*leaf]
-                    .node
-                    .get_peer(&ids[0])
-                    .unwrap()
-                    .filter_sequence()
-                    > sequences[*leaf - 1]
-            })
-            .count(),
+        refreshed_receivers(nodes, &ids[0], &sequences),
         1,
         "only selected recipient saw the cancelled flight"
+    );
+    assert_eq!(
+        nodes[0].node.stats().bloom.sent,
+        sent,
+        "receive is not a retry"
     );
 
     nodes[0].node.check_bloom_state().await;
@@ -457,7 +481,18 @@ async fn fast_cancellation(nodes: &mut [TestNode], network: &SimNetwork, tree_fi
         .node
         .assert_canceled_routing_turn_drains_data(network, &source, tree_first)
         .await;
-    process_available_packets(nodes).await;
+    receive_frame_until(nodes, |nodes| {
+        if tree_first {
+            nodes[1..]
+                .iter()
+                .map(|node| node.node.stats().tree.received)
+                .sum::<u64>()
+                > tree_received
+        } else {
+            refreshed_receivers(nodes, &ids[0], &sequences) > 0
+        }
+    })
+    .await;
     if tree_first {
         assert_eq!(
             nodes[1..]
@@ -469,19 +504,14 @@ async fn fast_cancellation(nodes: &mut [TestNode], network: &SimNetwork, tree_fi
         );
     } else {
         assert_eq!(
-            [1, 2]
-                .into_iter()
-                .filter(|leaf| {
-                    nodes[*leaf]
-                        .node
-                        .get_peer(&ids[0])
-                        .unwrap()
-                        .filter_sequence()
-                        > sequences[*leaf - 1]
-                })
-                .count(),
+            refreshed_receivers(nodes, &ids[0], &sequences),
             1,
             "the selected canceled frame is genuine; the other peer was unvisited"
+        );
+        assert_eq!(
+            nodes[0].node.stats().bloom.sent,
+            sent,
+            "receive is not a retry"
         );
         let retry = nodes[0]
             .node

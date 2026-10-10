@@ -17,7 +17,6 @@ use crate::{NodeAddr, NodeError, PeerIdentity};
 use tracing::{debug, info, trace, warn};
 
 pub(in crate::node) const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
-pub(in crate::node) const MIN_RECENT_DISCOVERY_REQUESTS_PER_PEER: usize = 64;
 const MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS: usize = 16;
 
 pub(in crate::node) enum LookupForwardOutcome {
@@ -103,7 +102,6 @@ impl Node {
             crate::node::RecentDiscoveryRequestLimits::new(
                 MAX_RECENT_DISCOVERY_REQUESTS,
                 self.peers.len(),
-                MIN_RECENT_DISCOVERY_REQUESTS_PER_PEER,
             ),
         );
         if admission.deduplicated() {

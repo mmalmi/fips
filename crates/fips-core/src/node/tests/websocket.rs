@@ -11,6 +11,7 @@ use std::fs;
 use std::time::Duration;
 
 mod replay;
+mod pending_close;
 
 async fn make_websocket_node(config: WebSocketConfig) -> TestNode {
     let mut node = make_node();

@@ -16,7 +16,7 @@
 
 use crate::NodeAddr;
 use crate::time::{Instant, instant_now};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 // ============================================================================
@@ -174,7 +174,7 @@ const DEFAULT_FORWARD_MIN_INTERVAL: Duration = Duration::from_secs(2);
 const FORWARD_MAX_AGE: Duration = Duration::from_secs(60);
 
 /// Sweep stale limiter state at most this often. A time gate keeps admission
-/// O(1) between sweeps instead of walking the target map after every forward.
+/// bounded between sweeps instead of walking the target map after every forward.
 const FORWARD_CLEANUP_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Hard bounds for attacker-controlled forwarding state.
@@ -222,6 +222,8 @@ enum DiscoveryForwardDecision {
 /// every admitted request.
 pub struct DiscoveryForwardRateLimiter {
     last_forwarded: HashMap<(NodeAddr, NodeAddr, NodeAddr), Instant>,
+    /// One entry per scope; find reusable cooldowns without scanning a full map.
+    forwarded_by_time: BTreeSet<(Instant, (NodeAddr, NodeAddr, NodeAddr))>,
     ingress_buckets: HashMap<NodeAddr, DiscoveryForwardBucket>,
     min_interval: Duration,
     max_age: Duration,
@@ -245,6 +247,7 @@ impl DiscoveryForwardRateLimiter {
         let now = instant_now();
         Self {
             last_forwarded: HashMap::new(),
+            forwarded_by_time: BTreeSet::new(),
             ingress_buckets: HashMap::new(),
             min_interval,
             max_age: FORWARD_MAX_AGE,
@@ -309,10 +312,19 @@ impl DiscoveryForwardRateLimiter {
             return DiscoveryForwardDecision::TargetInterval;
         }
 
-        if !self.last_forwarded.contains_key(&key) && self.last_forwarded.len() >= self.max_targets
+        let reclaim = if !self.last_forwarded.contains_key(&key)
+            && self.last_forwarded.len() >= self.max_targets
         {
-            return DiscoveryForwardDecision::TargetCapacity;
-        }
+            let Some(&(last, oldest)) = self.forwarded_by_time.first() else {
+                return DiscoveryForwardDecision::TargetCapacity;
+            };
+            if now.saturating_duration_since(last) < self.min_interval {
+                return DiscoveryForwardDecision::TargetCapacity;
+            }
+            Some((last, oldest))
+        } else {
+            None
+        };
 
         let ingress_rate = self.ingress_rate;
         let ingress_burst = self.ingress_burst;
@@ -327,7 +339,16 @@ impl DiscoveryForwardRateLimiter {
         }
         bucket.tokens -= 1.0;
 
-        self.last_forwarded.insert(key, now);
+        // A cooldown may be reused before idle cleanup, but a rejected ingress
+        // must not evict even expired state. Preserve live per-scope intervals.
+        if let Some((last, oldest)) = reclaim {
+            self.last_forwarded.remove(&oldest);
+            self.forwarded_by_time.remove(&(last, oldest));
+        }
+        if let Some(last) = self.last_forwarded.insert(key, now) {
+            self.forwarded_by_time.remove(&(last, key));
+        }
+        self.forwarded_by_time.insert((now, key));
         DiscoveryForwardDecision::Forward
     }
 
@@ -341,7 +362,13 @@ impl DiscoveryForwardRateLimiter {
         target: &NodeAddr,
     ) -> Option<Instant> {
         let now = instant_now();
-        let &last = self.last_forwarded.get(&(*from, *origin, *target))?;
+        let last = if let Some(&last) = self.last_forwarded.get(&(*from, *origin, *target)) {
+            last
+        } else if self.last_forwarded.len() >= self.max_targets {
+            self.forwarded_by_time.first()?.0
+        } else {
+            return None;
+        };
         let due = last.checked_add(self.min_interval)?;
         if now >= due {
             return None;
@@ -391,8 +418,13 @@ impl DiscoveryForwardRateLimiter {
     /// Remove stale entries. This full-map work is only reached through the
     /// time-amortized gate above in production.
     fn cleanup(&mut self, now: Instant) {
-        self.last_forwarded
-            .retain(|_, last| now.saturating_duration_since(*last) < self.max_age);
+        self.last_forwarded.retain(|key, last| {
+            let keep = now.saturating_duration_since(*last) < self.max_age;
+            if !keep {
+                self.forwarded_by_time.remove(&(*last, *key));
+            }
+            keep
+        });
         self.ingress_buckets.retain(|_, bucket| {
             now.saturating_duration_since(bucket.updated) < self.ingress_max_age
         });
@@ -413,6 +445,7 @@ impl DiscoveryForwardRateLimiter {
     fn with_test_params(now: Instant, params: DiscoveryForwardTestParams) -> Self {
         Self {
             last_forwarded: HashMap::new(),
+            forwarded_by_time: BTreeSet::new(),
             ingress_buckets: HashMap::new(),
             min_interval: params.min_interval,
             max_age: params.max_age,
@@ -652,6 +685,7 @@ mod tests {
         assert!(backoff.is_empty());
     }
 
+    mod capacity;
     mod deferred;
     mod origins;
 
@@ -756,7 +790,7 @@ mod tests {
         let mut limiter = DiscoveryForwardRateLimiter::with_test_params(
             now,
             DiscoveryForwardTestParams {
-                min_interval: Duration::ZERO,
+                min_interval: DEFAULT_FORWARD_MIN_INTERVAL,
                 max_age: Duration::from_secs(60),
                 max_targets: 8,
                 max_ingress_peers: 8,

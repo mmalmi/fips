@@ -577,79 +577,83 @@ impl Node {
             .drain_node_mesh_signals(Self::NOSTR_NODE_EVENT_DRAIN_BUDGET)
             .await
         {
-            let (peer_npub, msg_type, payload) = match &signal {
-                MeshTraversalSignal::Offer { peer_npub, offer } => {
-                    let payload = match serde_json::to_vec(&offer) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            debug!(
-                                peer = %peer_npub,
-                                error = %error,
-                                "Failed to encode mesh traversal offer"
-                            );
-                            continue;
-                        }
-                    };
-                    (
-                        peer_npub.clone(),
-                        SessionMessageType::TraversalOffer.to_byte(),
-                        payload,
-                    )
-                }
-                MeshTraversalSignal::Answer { peer_npub, answer } => {
-                    let payload = match serde_json::to_vec(&answer) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            debug!(
-                                peer = %peer_npub,
-                                error = %error,
-                                "Failed to encode mesh traversal answer"
-                            );
-                            continue;
-                        }
-                    };
-                    (
-                        peer_npub.clone(),
-                        SessionMessageType::TraversalAnswer.to_byte(),
-                        payload,
-                    )
-                }
-            };
+            self.send_nostr_mesh_signal(signal).await;
+        }
+    }
 
-            let peer_identity = match PeerIdentity::from_npub(&peer_npub) {
-                Ok(identity) => identity,
-                Err(error) => {
-                    debug!(
-                        peer = %peer_npub,
-                        error = %error,
-                        "Cannot send mesh traversal signal to invalid peer npub"
-                    );
-                    continue;
-                }
-            };
-            let peer_addr = *peer_identity.node_addr();
-            match self
-                .mesh_signal_session_action(peer_addr, peer_identity.pubkey_full())
-                .await
-            {
-                MeshSignalSessionAction::Send => {}
-                MeshSignalSessionAction::Defer => {
-                    self.pending_mesh_signals
-                        .entry(peer_addr)
-                        .or_default()
-                        .push(super::PendingMeshSignal { msg_type, payload });
-                    continue;
-                }
-                MeshSignalSessionAction::Drop => continue,
+    pub(in crate::node) async fn send_nostr_mesh_signal(&mut self, signal: MeshTraversalSignal) {
+        let (peer_npub, msg_type, payload) = match &signal {
+            MeshTraversalSignal::Offer { peer_npub, offer } => {
+                let payload = match serde_json::to_vec(&offer) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        debug!(
+                            peer = %peer_npub,
+                            error = %error,
+                            "Failed to encode mesh traversal offer"
+                        );
+                        return;
+                    }
+                };
+                (
+                    peer_npub.clone(),
+                    SessionMessageType::TraversalOffer.to_byte(),
+                    payload,
+                )
             }
+            MeshTraversalSignal::Answer { peer_npub, answer } => {
+                let payload = match serde_json::to_vec(&answer) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        debug!(
+                            peer = %peer_npub,
+                            error = %error,
+                            "Failed to encode mesh traversal answer"
+                        );
+                        return;
+                    }
+                };
+                (
+                    peer_npub.clone(),
+                    SessionMessageType::TraversalAnswer.to_byte(),
+                    payload,
+                )
+            }
+        };
 
-            if let Err(error) = self.send_session_msg(&peer_addr, msg_type, &payload).await {
+        let peer_identity = match PeerIdentity::from_npub(&peer_npub) {
+            Ok(identity) => identity,
+            Err(error) => {
                 debug!(
-                    peer = %self.peer_display_name(&peer_addr),
+                    peer = %peer_npub,
                     error = %error,
-                    "Failed to send mesh traversal signal"
+                    "Cannot send mesh traversal signal to invalid peer npub"
                 );
+                return;
             }
+        };
+        let peer_addr = *peer_identity.node_addr();
+        match self
+            .mesh_signal_session_action(peer_addr, peer_identity.pubkey_full())
+            .await
+        {
+            MeshSignalSessionAction::Send => {}
+            MeshSignalSessionAction::Defer => {
+                self.pending_mesh_signals
+                    .entry(peer_addr)
+                    .or_default()
+                    .push(super::PendingMeshSignal { msg_type, payload });
+                return;
+            }
+            MeshSignalSessionAction::Drop => return,
+        }
+
+        if let Err(error) = self.send_session_msg(&peer_addr, msg_type, &payload).await {
+            debug!(
+                peer = %self.peer_display_name(&peer_addr),
+                error = %error,
+                "Failed to send mesh traversal signal"
+            );
         }
     }
 
