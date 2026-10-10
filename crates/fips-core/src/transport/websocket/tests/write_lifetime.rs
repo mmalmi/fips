@@ -192,16 +192,23 @@ async fn assert_closed(
 }
 
 #[tokio::test(start_paused = true)]
-async fn initial_hint_write_obeys_its_exchange_deadline() {
-    let mut transport = transport(0).await;
-    let (addr, mut peer, mut worker) = stalled(&transport, true).await;
-    tokio::time::advance(Duration::from_millis(151)).await;
-    let result = tokio::time::timeout(Duration::from_millis(10), worker.as_mut())
-        .await
-        .expect("stalled initial key-hint write must expire");
-    assert!(matches!(result, Err(TransportError::Timeout)));
-    assert_closed(&transport, &addr, &mut peer).await;
-    transport.stop_async().await.unwrap();
+async fn startup_write_obeys_hint_and_first_record_deadlines() {
+    for hint in [false, true] {
+        let mut transport = transport(0).await;
+        let (addr, mut peer, mut worker) = stalled(&transport, hint).await;
+        let budget = if hint {
+            transport.config.key_hint_timeout_ms()
+        } else {
+            transport.config.connect_timeout_ms()
+        };
+        tokio::time::advance(Duration::from_millis(budget + 1)).await;
+        let result = tokio::time::timeout(Duration::from_millis(10), worker.as_mut())
+            .await
+            .expect("stalled initial WebSocket write must expire");
+        assert!(matches!(result, Err(TransportError::Timeout)));
+        assert_closed(&transport, &addr, &mut peer).await;
+        transport.stop_async().await.unwrap();
+    }
 }
 
 #[tokio::test(start_paused = true)]

@@ -9565,6 +9565,30 @@ This qualifies finite TCP rejection alongside paid radio traffic; transport
 discovery preludes, sustained hostile load, known-index physical cases and updated
 Android qualification remain separate.
 
+WebSocket startup also bounds the period before Node receives its first FIPS
+record. Previously, pings, pongs or repeated key-hint traffic could retain a
+connection indefinitely without starting Noise authentication when idle expiry
+was disabled, or keep renewing the ordinary idle deadline. After HTTP upgrade,
+the existing `connect_timeout_ms` supplies a separate fixed first-record budget.
+Only a validated physical FIPS record completes that wait; control traffic cannot
+extend it. Node then owns authentication, pending-handshake expiry and rejection
+cleanup. The independent outbound hint deadline and established idle policy
+remain in force. This uses the existing connection timer and introduces no wire
+messages or configuration fields.
+
+`work/websocket-prelude-r424` reproduces the old retained slot, then passes all
+67 selected native WebSocket, carrier, bootstrap-upgrade and local-rendezvous
+checks in 15.28 seconds. The real-socket regression covers ping, pong, repeated
+hint requests and unsolicited hint replies, requiring both permits to return and
+a fresh connection to succeed. A valid first record retains its connection beyond
+the deadline; the real Noise test also delivers an endpoint payload afterward.
+The existing blocked-write test now covers both startup deadlines with idle expiry
+disabled. Strict library/test lint, formatting and source-size checks pass; the
+final source and dependency inventory is unchanged. A test-only payload-buffer
+comparison was corrected after its first compile failure. The long responsive
+population matrix was not repeated. This is native qualification; the new deadline
+still needs current-device and longer WAN acceptance.
+
 - Quote discovery uses existing authenticated TCP/FIPS. A bounded complete-offer
   cache and shared in-flight requests avoid repeated downstream negotiations;
   the quote server adds an aggregate rate limit across identities. Forwarded

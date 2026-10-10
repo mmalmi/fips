@@ -91,8 +91,8 @@ where
     loop {
         let reply = match stream.next().await {
             Some(Ok(Message::Binary(data))) => {
-                deadlines.received();
                 if let Some(hint) = LocalKeyHint::decode(&data) {
+                    deadlines.received(false);
                     match hint {
                         LocalKeyHint::Request { nonce } => Some(Message::Binary(
                             LocalKeyHint::Response {
@@ -129,6 +129,7 @@ where
                             "invalid WebSocket FIPS physical record".into(),
                         ));
                     }
+                    deadlines.received(true);
                     let len = data.len();
                     let packet = ReceivedPacket::with_timestamp(
                         runtime.transport_id,
@@ -151,11 +152,11 @@ where
                 }
             }
             Some(Ok(Message::Ping(payload))) => {
-                deadlines.received();
+                deadlines.received(false);
                 Some(Message::Pong(payload))
             }
             Some(Ok(Message::Pong(_))) => {
-                deadlines.received();
+                deadlines.received(false);
                 None
             }
             Some(Ok(Message::Close(_))) | None => return Ok(()),
@@ -185,6 +186,7 @@ struct Deadlines {
 
 struct Activity {
     hint: Option<Instant>,
+    first_record: Option<Instant>,
     received: Instant,
 }
 
@@ -198,6 +200,7 @@ impl Deadlines {
                 hint: request_key_hint
                     .then(|| now.checked_add(Duration::from_millis(config.key_hint_timeout_ms())))
                     .flatten(),
+                first_record: now.checked_add(Duration::from_millis(config.connect_timeout_ms())),
                 received: now,
             }),
         }
@@ -209,8 +212,14 @@ impl Deadlines {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    fn received(&self) {
-        self.activity().received = Instant::now();
+    fn received(&self, is_fips_record: bool) {
+        let mut activity = self.activity();
+        activity.received = Instant::now();
+        if is_fips_record {
+            // Keepalives and untrusted key hints cannot extend initial admission.
+            // Node owns authentication and rejection once it receives a record.
+            activity.first_record = None;
+        }
     }
 
     fn complete_hint(&self) {
@@ -224,6 +233,7 @@ impl Deadlines {
                 activity
                     .hint
                     .into_iter()
+                    .chain(activity.first_record)
                     .chain(
                         self.idle_after
                             .and_then(|idle| activity.received.checked_add(idle)),

@@ -7,8 +7,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const REQUEST_PREFIX: &[u8] = b"GET /fips HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n";
 
 async fn listener(connect_timeout_ms: u64) -> WebSocketTransport {
+    listener_with_packets(connect_timeout_ms).await.0
+}
+
+async fn listener_with_packets(
+    connect_timeout_ms: u64,
+) -> (WebSocketTransport, crate::transport::PacketRx) {
     let identity = Identity::generate();
-    let (packet_tx, _packet_rx) = packet_channel(8);
+    let (packet_tx, packet_rx) = packet_channel(8);
     let mut transport = WebSocketTransport::new(
         TransportId::new(1),
         None,
@@ -25,7 +31,7 @@ async fn listener(connect_timeout_ms: u64) -> WebSocketTransport {
         &identity,
     );
     transport.start_async().await.unwrap();
-    transport
+    (transport, packet_rx)
 }
 
 fn slots(transport: &WebSocketTransport) -> (usize, usize) {
@@ -152,6 +158,88 @@ async fn stop(transport: &mut WebSocketTransport) {
         .await
         .expect("transport stop must join owned workers within the test deadline")
         .unwrap();
+}
+
+#[tokio::test]
+async fn prelude_frames_cannot_retain_an_inbound_slot_without_a_fips_record() {
+    for message in [
+        Message::Ping(Bytes::from_static(b"still here")),
+        Message::Pong(Bytes::from_static(b"still here")),
+        Message::Binary(LocalKeyHint::Request { nonce: 97 }.encode().into()),
+        Message::Binary(
+            LocalKeyHint::Response {
+                nonce: 97,
+                pubkey: [9; 32],
+            }
+            .encode()
+            .into(),
+        ),
+    ] {
+        let mut server = listener(150).await;
+        let mut client = fresh_connection(&server).await.unwrap();
+        let driver = tokio::spawn(async move {
+            loop {
+                if client.send(message.clone()).await.is_err() {
+                    break;
+                }
+                tokio::select! {
+                    received = client.next() => {
+                        if matches!(received, None | Some(Err(_) | Ok(Message::Close(_)))) {
+                            break;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        let expired = wait_slots(&server, (1, 1), Duration::from_millis(650)).await;
+        let before_cleanup = server.stats();
+        driver.abort();
+        let _ = driver.await;
+        assert!(wait_slots(&server, (1, 1), Duration::from_secs(1)).await);
+        let fresh = fresh_connection(&server).await;
+        let admitted = fresh.is_some();
+        stop(&mut server).await;
+        drop(fresh);
+        assert!(
+            expired,
+            "discovery/keepalive traffic retained an unauthenticated slot"
+        );
+        assert_eq!(before_cleanup.connections_opened, 1);
+        assert_eq!(before_cleanup.connections_closed, 1);
+        assert_eq!(before_cleanup.frames_received, 0);
+        assert!(
+            admitted,
+            "a fresh client must reuse the expired connection slot"
+        );
+    }
+}
+
+#[tokio::test]
+async fn first_fips_record_releases_the_startup_deadline_with_idle_expiry_disabled() {
+    let (mut server, mut packets) = listener_with_packets(150).await;
+    let mut client = fresh_connection(&server).await.unwrap();
+    let record = build_msg1(
+        SessionIndex::new(41),
+        &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+    );
+    for delay in [0, 350] {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        client
+            .send(Message::Binary(record.clone().into()))
+            .await
+            .unwrap();
+        let packet = tokio::time::timeout(Duration::from_secs(1), packets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.data.as_slice(), record);
+    }
+    assert_eq!(slots(&server), (0, 0));
+    assert_eq!(server.stats().frames_received, 2);
+    stop(&mut server).await;
+    assert!(websocket_closed(&mut client).await);
 }
 
 #[tokio::test]

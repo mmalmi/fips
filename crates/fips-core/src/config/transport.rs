@@ -684,7 +684,9 @@ pub struct WebSocketConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inbound_connections: Option<usize>,
 
-    /// Outbound TCP/TLS/WebSocket connect and inbound HTTP upgrade timeout.
+    /// Budget for TCP/TLS/WebSocket connect and inbound HTTP upgrade. After
+    /// upgrade, the same budget bounds the wait for the first FIPS record;
+    /// key hints and WebSocket keepalives cannot extend that initial wait.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
 

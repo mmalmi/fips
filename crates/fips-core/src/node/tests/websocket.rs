@@ -115,12 +115,16 @@ async fn peer_acl_rejection_closes_the_websocket_carrier() {
 async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
     let server = make_websocket_node(WebSocketConfig {
         bind_addr: Some("127.0.0.1:0".into()),
+        connect_timeout_ms: Some(500),
+        idle_timeout_secs: Some(0),
         ..Default::default()
     })
     .await;
     let seed_url = server.addr.to_string();
     let client = make_websocket_node(WebSocketConfig {
         seed_urls: vec![seed_url],
+        connect_timeout_ms: Some(500),
+        idle_timeout_secs: Some(0),
         reconnect_initial_ms: Some(10),
         reconnect_max_ms: Some(50),
         ..Default::default()
@@ -160,6 +164,32 @@ async fn url_only_seed_hint_completes_noise_ik_and_datagram_exchange() {
             .get_peer(&server_addr)
             .and_then(|peer| peer.transport_id()),
         Some(nodes[1].transport_id)
+    );
+    // The first-record deadline bounds discovery, not an authenticated link's
+    // lifetime. Exercise real endpoint delivery after that deadline has passed.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    populate_all_coord_caches(&mut nodes);
+    let mut endpoint = nodes[0].node.attach_endpoint_data_io(8).unwrap();
+    let identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        identity,
+        b"after initial WebSocket deadline".to_vec(),
+    )
+    .await
+    .unwrap();
+    let event = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint.event_rx,
+        Duration::from_secs(2),
+        "authenticated WebSocket after discovery deadline",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(event)
+            .payload
+            .as_slice(),
+        b"after initial WebSocket deadline"
     );
     cleanup_nodes(&mut nodes).await;
 }

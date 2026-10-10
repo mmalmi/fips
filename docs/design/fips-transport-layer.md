@@ -174,6 +174,14 @@ workers, including incomplete upgrades and established connections, before
 clearing runtime state. Cancelling shutdown retains that join ownership for a
 subsequent shutdown call.
 
+After a successful WebSocket upgrade, a separate budget of the same
+`connect_timeout_ms` length bounds the wait for the first complete FIPS record.
+Pings, pongs and key-hint traffic cannot extend this deadline, even when ordinary
+idle expiry is disabled. The first validated physical record ends this initial
+wait; Node then owns Noise authentication and rejected-record cleanup. Established
+connections continue to use the configured idle policy. The outbound key-hint
+exchange also retains its own, independently enforced deadline.
+
 The initial key-hint write and established frame loop share connection cleanup.
 A failed write releases its pool entry before returning to the dialer. Cleanup
 removes the address and status together only if that connection still owns the
