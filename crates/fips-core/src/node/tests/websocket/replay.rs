@@ -1,11 +1,11 @@
 use super::*;
 use crate::node::wire::{Msg1Header, build_msg1};
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use spanning_tree::process_dataplane_packet;
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
-async fn captured_msg1_on_a_fresh_carrier_cannot_displace_usable_keys() {
+async fn rejected_or_captured_msg1_on_a_fresh_carrier_cannot_displace_usable_keys() {
     let server = make_websocket_node(WebSocketConfig {
         bind_addr: Some("127.0.0.1:0".into()),
         ..Default::default()
@@ -61,11 +61,15 @@ async fn captured_msg1_on_a_fresh_carrier_cannot_displace_usable_keys() {
 
     // Neither a byte-for-byte retransmission nor an altered unauthenticated
     // sender index proves that the holder of captured Msg1 knows its keys.
-    for sender_index in [
-        header.sender_idx,
-        SessionIndex::new(header.sender_idx.as_u32().wrapping_add(1).max(1)),
+    let invalid = build_msg1(SessionIndex::new(77), &[0; 106]);
+    for replay in [
+        invalid.clone(),
+        original.clone(),
+        build_msg1(
+            SessionIndex::new(header.sender_idx.as_u32().wrapping_add(1).max(1)),
+            header.noise_msg1(&original),
+        ),
     ] {
-        let replay = build_msg1(sender_index, header.noise_msg1(&original));
         let (mut carrier, _) = tokio_tungstenite::connect_async(nodes[0].addr.to_string())
             .await
             .unwrap();
@@ -97,10 +101,20 @@ async fn captured_msg1_on_a_fresh_carrier_cannot_displace_usable_keys() {
                 peer.current_addr().cloned()
             ),
             retained,
-            "captured Noise Msg1 with sender index {sender_index} must preserve the usable owner"
+            "rejected or captured Noise Msg1 must preserve the usable owner"
         );
         assert!(peer.pending_new_session().is_none());
-        carrier.close(None).await.unwrap();
+        if replay == invalid {
+            let closed = tokio::time::timeout(Duration::from_secs(1), carrier.next())
+                .await
+                .expect("invalid Noise must release the WebSocket carrier");
+            assert!(matches!(
+                closed,
+                None | Some(Err(_)) | Some(Ok(Message::Close(_)))
+            ));
+        } else {
+            let _ = carrier.close(None).await;
+        }
     }
 
     populate_all_coord_caches(&mut nodes);
