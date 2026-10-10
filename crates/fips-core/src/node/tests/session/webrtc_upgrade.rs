@@ -10,6 +10,7 @@ const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
 mod terminal_candidate;
+mod retried_bootstrap;
 
 #[test]
 fn authenticated_webrtc_upgrade_survives_exhausted_stranger_admission() {
