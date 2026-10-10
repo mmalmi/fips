@@ -6,6 +6,41 @@ from .paid_settlement import require
 SDK_FIELDS = ('admissions', 'openings', 'open_requests', 'funding', 'pending_funding')
 
 
+class PendingQuote:
+    """The first purchase must use the provider's original durable offer."""
+
+    def __init__(self, requested, journal, buyer):
+        require(len(requested) == 1, 'first funding needs exactly one requested quote')
+        self.identifier, self.offer = next(iter(requested.items()))
+        require(self.identifier == self.offer['id'] and self.offer['buyer'] == buyer
+                and journal['version'] == 2
+                and journal['binding']['local'] == bytes(self.offer['provider']).hex(),
+                'first quote changed its identity or provider binding')
+        self.binding = journal['binding']
+        self.entry = journal['pending'].get(self.identifier)
+        require(self.entry is not None and self.entry['offer'] == self.offer
+                and self.entry['downstream'] is None
+                and self.entry['local_fee_msat_per_kib'] == self.offer['price']['msat'] > 0,
+                'first purchase lacks its exact durable provider quote')
+
+    def retained(self, journal):
+        require(journal['version'] == 2 and journal['binding'] == self.binding
+                and journal['pending'].get(self.identifier) == self.entry,
+                'restart lost or changed the original provider quote')
+
+    def accepted(self, buyer, provider, channel):
+        require(len(buyer['outgoing']) == len(provider['incoming']) == 1,
+                'first quote recovery introduced another contract')
+        outgoing = next(iter(buyer['outgoing'].values()))
+        incoming = next(iter(provider['incoming'].values()))
+        purchase = outgoing['purchase']
+        require(outgoing['offer'] == incoming['offer'] == self.offer
+                and outgoing['accepted'] and not outgoing['retired'] and incoming['phase'] == 'Active'
+                and purchase['channel'] == incoming['channel'] and purchase['channel']['id'] == channel
+                and purchase['contract'] == incoming['contract'],
+                'recovered contract does not match the original quote and channel')
+
+
 class PendingFunding:
     def __init__(self, request, intent, original, pending):
         self.request, self.intent = request, intent

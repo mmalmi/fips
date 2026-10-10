@@ -855,7 +855,10 @@ the original purchase must then recover and activate without another buy request
 or funding reservation. Only afterward is the reverse route purchased. Both
 1,280-packet streams must deliver and pay, and the two channels must settle and
 return all 384 test sats. First-purchase and renewal cases share the same durable
-funding checks in `sim.funding_checks`.
+funding checks in `sim.funding_checks`. The first-purchase case also requires the
+exact requested offer in the provider's durable quote journal before interruption
+and while stopped. The recovered buyer/provider contracts must use that original
+offer and channel, including unchanged pricing, expiry and allowance.
 
 ```sh
 python3 -B -m sim.wifi_settlement \

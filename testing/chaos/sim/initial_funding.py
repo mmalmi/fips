@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import signal
 import time
 
-from .funding_checks import PendingFunding
+from .funding_checks import PendingFunding, PendingQuote
 from .paid_finances import payments_credited
 from .paid_relay import PaidRelayRun, eventually
 from .paid_settlement import SettlementFixture, original_channels, require, settle_and_collect
@@ -45,6 +45,9 @@ class InitialFunding:
                         and not self.pending['n02']['funding'] and not self.pending['n03']['funding'],
                         'first purchase reserved more than one channel')
                 self.request, self.intent = next(iter(self.pending['n01']['funding'].items()))
+                journal = run.state_json('n02', 'quotes/offers.json')
+                self.quote = PendingQuote(self.pending['n01']['requested'], journal,
+                                          self.pending['n01']['local'])
                 require(self.intent['funded'] is None and all(not row['outgoing'] and not row['renewals']
                         and not row['buyer_settlements'] and not row['seller_settlements']
                         for row in self.pending.values()), 'unacknowledged funding gained route authority')
@@ -71,6 +74,7 @@ class InitialFunding:
                     **run.interruption_metadata(), 'finances_with_reply_held': finances,
                     'pending_controller_sha256': {name: fingerprint(state) for name, state in self.pending.items()},
                     'pending_sdk_sha256': fingerprint(self.operation.pending),
+                    'pending_quote_sha256': fingerprint(self.quote.entry),
                 }
                 run.save()
                 run.interrupt_participants()
@@ -93,6 +97,7 @@ class InitialFunding:
             require(all(state[key] == self.pending[name][key] for key in CONTROLLER_FIELDS),
                     'restart lost the original first-purchase authority')
         self.operation.unchanged(self.sdk())
+        self.quote.retained(run.state_json('n02', 'quotes/offers.json'))
         for name in ('n02', 'n03', 'n01'):
             run.launch(name)
         eventually('first-purchase recovery line', run.recovery_ready, 90)
@@ -110,6 +115,7 @@ class InitialFunding:
                     and not state['renewals'], 'first-purchase recovery created another funding intent')
         channel = self.operation.recovered(current['funding'][self.request], self.sdk(),
                                            buyer=current['local'], mint=run.mint_url)
+        self.quote.accepted(current, run.state_json('n02', 'controller/controller.json'), channel)
         restored = run.mint.request({'type': 'fault', 'command': {'action': 'status'}})
         require(restored['restores'] > run.evidence[run.interruption_key]['mint_held']['restores'],
                 'first purchase did not restore the committed mint result')
@@ -120,6 +126,7 @@ class InitialFunding:
         run.evidence['automatic_initial_funding_recovery'] = {
             'channel_id': channel, 'funding_stage': self.operation.stage,
             'original_request_survived': True, 'one_channel_only': True,
+            'original_quote_survived': True, 'accepted_quote_sha256': fingerprint(self.quote.entry),
             'mint_restored': restored, 'recovered_finances': finances,
         }
         run.save()

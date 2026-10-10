@@ -3,7 +3,7 @@
 import copy
 import unittest
 
-from sim.funding_checks import PendingFunding
+from sim.funding_checks import PendingFunding, PendingQuote
 
 
 def operation(*, preparing=False, renewal=False):
@@ -90,6 +90,62 @@ class PendingFundingTests(unittest.TestCase):
                 recovered[field]['duplicate'] = 'unexpected'
                 with self.assertRaisesRegex(RuntimeError, 'duplicated SDK funding'):
                     held.recovered(current, recovered, buyer='buyer', mint='mint')
+
+
+def quote_fixture():
+    offer = dict(id='quote', buyer=[1] * 16, provider=[2] * 16,
+                 price={'msat': 1, 'bytes': 1024}, expires_unix=1000, max_units=32768)
+    journal = dict(version=2, binding={'local': bytes(offer['provider']).hex()}, pending={
+        'quote': dict(offer=copy.deepcopy(offer), downstream=None, local_fee_msat_per_kib=1)})
+    purchase = dict(channel={'id': 'channel'}, contract={'id': 'contract'})
+    buyer = {'outgoing': {'contract': dict(offer=copy.deepcopy(offer), purchase=purchase,
+                                          accepted=True, retired=False)}}
+    provider = {'incoming': {'contract': dict(offer=copy.deepcopy(offer), phase='Active',
+                                              **copy.deepcopy(purchase))}}
+    return offer, journal, buyer, provider
+
+
+class PendingQuoteTests(unittest.TestCase):
+    def test_missing_or_altered_quote_cannot_be_reported_as_retained(self):
+        for change in ('missing', 'price', 'expiry', 'binding', 'fee'):
+            offer, journal, _, _ = quote_fixture()
+            held = PendingQuote({'quote': offer}, journal, offer['buyer'])
+            held.retained(copy.deepcopy(journal))
+            changed = copy.deepcopy(journal)
+            if change == 'missing':
+                changed['pending'].clear()
+            elif change == 'price':
+                changed['pending']['quote']['offer']['price']['msat'] += 1
+            elif change == 'expiry':
+                changed['pending']['quote']['offer']['expires_unix'] += 1
+            elif change == 'binding':
+                changed['binding']['local'] = '00' * 16
+            else:
+                changed['pending']['quote']['local_fee_msat_per_kib'] += 1
+            with self.subTest(change=change):
+                with self.assertRaises(RuntimeError):
+                    PendingQuote({'quote': offer}, changed, offer['buyer'])
+                with self.assertRaises(RuntimeError):
+                    held.retained(changed)
+
+    def test_recovered_acceptance_uses_the_original_quote_and_channel(self):
+        for change in ('quote', 'channel', 'contract', 'phase', 'duplicate'):
+            offer, journal, buyer, provider = quote_fixture()
+            held = PendingQuote({'quote': offer}, journal, offer['buyer'])
+            held.accepted(buyer, provider, 'channel')
+            outgoing, incoming = buyer['outgoing']['contract'], provider['incoming']['contract']
+            if change == 'quote':
+                outgoing['offer']['id'] = incoming['offer']['id'] = 'replacement'
+            elif change == 'channel':
+                outgoing['purchase']['channel']['id'] = incoming['channel']['id'] = 'replacement'
+            elif change == 'contract':
+                incoming['contract']['id'] = 'replacement'
+            elif change == 'phase':
+                incoming['phase'] = 'Stopped'
+            else:
+                buyer['outgoing']['extra'] = copy.deepcopy(outgoing)
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                held.accepted(buyer, provider, 'channel')
 
 
 if __name__ == '__main__':
