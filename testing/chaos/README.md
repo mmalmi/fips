@@ -469,6 +469,18 @@ shared Wi-Fi/settlement checks before using hardware. An optional `--mint-host`
 JSON inventory selects the existing remote Linux test-mint adapter; set its `port`
 when the host firewall allows only a fixed test port.
 
+Add `--carrier-pressure-transport websocket` to use the same paid scenario for
+discovery-only WebSocket connections. The controller needs Python `websockets`
+15.x; it is not a router dependency. Each client first verifies a nonce-bound key
+hint, then sends pings, pongs, repeated hint requests or unsolicited hint replies
+every 50 ms. The listener uses a five-second first-record deadline with idle and
+ping timers disabled. A client must observe closure between 4.5 and seven seconds;
+early resets and its own timeout fail the test. At least 24 connections must close,
+native open/close counters must agree, and no FIPS data frames, capacity rejection
+or occupied slots may remain. The shared duplex, accounting and restoration checks
+apply unchanged. This tests startup expiry alongside radio forwarding, not paid
+forwarding over the WebSocket listener itself.
+
 Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
 explicitly funded round-trip stream is still sending. The fixture waits for
 partial replies, removes leaf n03 from the radio mesh by default, observes actual peer

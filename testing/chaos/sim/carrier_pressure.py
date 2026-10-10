@@ -31,6 +31,8 @@ def rejected(address, record, timeout=2):
 class CarrierPressure:
     """Four bounded workers; timeout or early worker exhaustion fails the run."""
 
+    records = RECORDS
+
     def __init__(self, address):
         self.address = address
         self.stop = threading.Event()
@@ -41,13 +43,16 @@ class CarrierPressure:
     def start(self):
         self.jobs = [self.pool.submit(self.worker, rows) for rows in self.rows]
 
+    def probe(self, record):
+        return {'close_seconds': rejected(self.address, record)}
+
     def worker(self, rows):
-        records = list(RECORDS.items())
+        records = list(self.records.items())
         for index in range(1024):
             if self.stop.is_set():
                 return
             kind, wire = records[index % len(records)]
-            rows.append({'kind': kind, 'close_seconds': rejected(self.address, wire)})
+            rows.append({'kind': kind, **self.probe(wire)})
             # At most 16 new connections/s across four workers, below the stock
             # OpenWrt SYN limit. This checks FIPS rejection, not firewall load.
             self.stop.wait(0.25)

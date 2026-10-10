@@ -9586,8 +9586,26 @@ The existing blocked-write test now covers both startup deadlines with idle expi
 disabled. Strict library/test lint, formatting and source-size checks pass; the
 final source and dependency inventory is unchanged. A test-only payload-buffer
 comparison was corrected after its first compile failure. The long responsive
-population matrix was not repeated. This is native qualification; the new deadline
-still needs current-device and longer WAN acceptance.
+population matrix was not repeated. Longer WAN and updated Android acceptance
+remain separate from these native checks and the router case below.
+
+`work/websocket-hardware-r425` verifies that deadline on three OpenWrt routers
+using an ordinary ARM64 build matching all 1,042 current Rust files, with only
+measurement features enabled. Four clients exercise ping, pong, repeated hint
+requests and unsolicited hint replies on an isolated middle-router listener.
+All 24 connections first complete a nonce-bound hint exchange, then expire in
+4.999–5.044 seconds despite continuing prelude traffic. Native open/close counts
+agree, with no capacity rejection, invalid/data frames or remaining occupied slots.
+Paid two-hop radio streams deliver and acknowledge 4 MiB per direction both during
+pressure and afterward: 16 MiB total, with verified payload hashes. Each endpoint's
+cumulative payment advances from 5 to 10 test sats using its original channel;
+all 384 test sats are collected. All 318 management checks and original-state
+restoration pass. The shared harness adds an optional WebSocket client instead
+of duplicating radio/accounting setup; all 53 focused Linux harness/guard checks
+pass. Middle-router process CPU is 11.85 seconds during pressure and 11.37 afterward,
+with peak sampled RSS 20,772 KiB; these include diagnostics and are not an isolated
+performance comparison. This qualifies finite discovery-only expiry alongside
+paid radio forwarding, not paid WebSocket forwarding or sustained hostile load.
 
 - Quote discovery uses existing authenticated TCP/FIPS. A bounded complete-offer
   cache and shared in-flight requests avoid repeated downstream negotiations;
