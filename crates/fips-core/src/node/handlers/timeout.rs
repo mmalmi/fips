@@ -135,7 +135,8 @@ impl Node {
     /// Check for timed-out handshake connections and clean them up.
     ///
     /// Called periodically by the RX event loop. Removes connections that have
-    /// been idle longer than the configured handshake timeout or are in Failed state.
+    /// been idle longer than the configured handshake timeout, failed, or lost
+    /// their connection-oriented carrier. An open or connecting carrier stays owned.
     pub(in crate::node) async fn check_timeouts(&mut self) {
         if self.peers.connection_is_empty() {
             return;
@@ -144,26 +145,41 @@ impl Node {
         let now_ms = Self::now_ms();
         let timeout_ms = self.config.node.rate_limit.handshake_timeout_secs * 1000;
 
-        let stale: Vec<LinkId> = self
+        let stale: Vec<_> = self
             .peers
             .connection_iter()
-            .filter(|(_, conn)| {
-                conn.is_timed_out(now_ms, timeout_ms)
+            .filter_map(|(link_id, conn)| {
+                let terminal_carrier = conn.transport_id().zip(conn.source_addr()).and_then(
+                    |(transport_id, remote)| {
+                        let transport = self.transports.get(&transport_id)?;
+                        (transport.transport_type().connection_oriented
+                            && matches!(
+                                transport.connection_state(remote),
+                                crate::transport::ConnectionState::None
+                                    | crate::transport::ConnectionState::Failed(_)
+                            ))
+                        .then(|| (transport_id, remote.clone()))
+                    },
+                );
+                (terminal_carrier.is_some()
+                    || conn.is_timed_out(now_ms, timeout_ms)
                     || conn.is_failed()
                     || conn.expected_identity().is_some_and(|identity| {
                         self.neighbor_rotation_deadline(identity.node_addr())
                             .is_some_and(|deadline| now_ms >= deadline)
-                    })
+                    }))
+                .then_some((*link_id, terminal_carrier))
             })
-            .map(|(link_id, _)| *link_id)
             .collect();
 
-        for link_id in stale {
+        for (link_id, terminal_carrier) in stale {
             // Log and schedule retry before cleanup (need connection state)
             if let Some(conn) = self.peers.get_connection(&link_id) {
                 let direction = conn.direction();
                 let idle_ms = conn.idle_time(now_ms);
-                if conn.is_failed() {
+                if terminal_carrier.is_some() {
+                    debug!(%link_id, %direction, "Closed carrier handshake candidate cleaned up");
+                } else if conn.is_failed() {
                     debug!(
                         link_id = %link_id,
                         direction = %direction,
@@ -183,10 +199,11 @@ impl Node {
                     && let Some(identity) = conn.expected_identity()
                 {
                     let node_addr = *identity.node_addr();
-                    if self
-                        .peers
-                        .get(&node_addr)
-                        .is_some_and(|peer| peer.is_healthy())
+                    if terminal_carrier.is_none()
+                        && self
+                            .peers
+                            .get(&node_addr)
+                            .is_some_and(|peer| peer.is_healthy())
                     {
                         debug!(
                             peer = %self.peer_display_name(&node_addr),
@@ -198,7 +215,11 @@ impl Node {
                     }
                 }
             }
-            self.cleanup_stale_connection(link_id, now_ms).await;
+            // The old carrier is already terminal. Retire only logical Noise
+            // ownership; a successor may be installed by transport callbacks
+            // before this turn finishes and must not receive an address-wide close.
+            self.retire_connection_candidate(link_id, terminal_carrier)
+                .await;
         }
     }
 
