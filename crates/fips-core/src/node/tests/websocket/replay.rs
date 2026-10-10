@@ -105,13 +105,19 @@ async fn rejected_or_captured_msg1_on_a_fresh_carrier_cannot_displace_usable_key
         );
         assert!(peer.pending_new_session().is_none());
         if replay == invalid {
-            let closed = tokio::time::timeout(Duration::from_secs(1), carrier.next())
-                .await
-                .expect("invalid Noise must release the WebSocket carrier");
-            assert!(matches!(
-                closed,
-                None | Some(Err(_)) | Some(Ok(Message::Close(_)))
-            ));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    match carrier.next().await {
+                        None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                        // The transport's first keepalive can already be queued
+                        // before the invalid Noise record closes this carrier.
+                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                        unexpected => panic!("invalid Noise received data: {unexpected:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("invalid Noise must release the WebSocket carrier");
         } else {
             let _ = carrier.close(None).await;
         }
