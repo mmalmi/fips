@@ -305,12 +305,17 @@ fn reciprocal_transfer_closes_old_tcp_carrier_before_reusing_slot() {
             assert_eq!(resources(&node), (1, 1, 2, 2));
             assert_eq!(stats.snapshot().pool_outbound, 1);
             tokio::time::timeout(Duration::from_secs(2), async {
-                while Node::now_ms().saturating_sub(attempt_start) < 1_050 {
+                // The TCP connection can start after its reserved attempt.
+                // Wait for both admission clocks before submitting the peer.
+                while !node
+                    .node
+                    .can_receive_neighbor_rotation(ready.node_addr(), Node::now_ms())
+                {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
             })
             .await
-            .unwrap();
+            .expect("the unanswered TCP attempt must become eligible for transfer");
 
             let mut handshake = HandshakeState::new_initiator(
                 ready.identity.keypair(),

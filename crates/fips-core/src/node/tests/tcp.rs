@@ -15,20 +15,25 @@ use spanning_tree::{
 };
 use std::time::Duration;
 
+mod rejected;
+
 /// Create a test node with a live TCP transport on loopback.
 ///
 /// Parallel to `make_test_node()` in spanning_tree.rs but uses
 /// TcpTransport instead of UDP. Binds to 127.0.0.1:0 for an
 /// ephemeral port.
 async fn make_test_node_tcp() -> TestNode {
-    let mut node = make_node();
-    let transport_id = TransportId::new(1);
-
     let config = TcpConfig {
         bind_addr: Some("127.0.0.1:0".to_string()),
         mtu: Some(1400),
         ..Default::default()
     };
+    make_test_node_tcp_with_config(config).await
+}
+
+async fn make_test_node_tcp_with_config(config: TcpConfig) -> TestNode {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
 
     let (packet_tx, packet_rx) = packet_channel(256);
     let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);

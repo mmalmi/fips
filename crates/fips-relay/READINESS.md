@@ -9488,6 +9488,30 @@ optimal monetary routes or malicious-relay resistance:
 
 ## Boundaries and threats
 
+Rejected initial Noise handshakes now release unowned transport connections.
+Previously, a complete but invalid Msg1 passed TCP's first-frame timeout and
+remained open after rejection, allowing a stranger to retain an inbound slot.
+The shared handler now applies the existing ownership-aware cleanup after every
+current-carrier Msg1 outcome; admitted peers and pending handshakes retain their
+connections, and stale packets from an earlier carrier incarnation remain ignored.
+The native TCP regression reproduces the old leak, then verifies repeated slot
+reclamation, admission of a fresh peer and payload delivery on the original peer.
+The existing WebSocket replay case also checks invalid-Noise connection closure.
+
+`work/carrier-rejection-r421` records 259 distinct passing admission, handshake,
+carrier, TCP and WebSocket checks; the explicit CPU benchmark remains ignored.
+The first batch hit its 600-second limit after 104 passes; only unfinished cases
+were resumed on the identical binary. Two fixture issues were corrected: a
+maintenance resend needs a connecting carrier to survive timeout cleanup, and
+TCP transfer must wait for connection maturity as well as slot reservation age.
+The maintenance failure also reproduced on the unchanged baseline. All 20 final
+socket and corrected-fixture checks pass with unchanged production code from the
+broader run. Strict production/test lint, formatting and source-size checks pass;
+test lint also removes an unnecessary fixed-size buffer allocation. These are
+native software results, not updated router/Android builds
+or general hostile-load acceptance; other pre-authentication record paths and
+physical resource exhaustion still require qualification.
+
 - Quote discovery uses existing authenticated TCP/FIPS. A bounded complete-offer
   cache and shared in-flight requests avoid repeated downstream negotiations;
   the quote server adds an aggregate rate limit across identities. Forwarded
