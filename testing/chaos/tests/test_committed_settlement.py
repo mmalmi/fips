@@ -102,6 +102,23 @@ class CommittedSettlementTests(unittest.TestCase):
             run.recover_settlement(channel, pending)
         self.assertEqual(run.events, ['settle', 'cut', 'launch:n02'])
 
+    def test_provider_recovery_does_not_resubmit_the_committed_swap(self):
+        for counter in ('swaps', 'swap_attempts'):
+            with self.subTest(counter=counter):
+                run = Run()
+                channel, pending = run.interrupt()
+                original_launch = run.launch
+
+                def resubmitting_launch(name):
+                    original_launch(name)
+                    if name == 'n02':
+                        run.barrier[counter] += 1
+
+                run.launch = resubmitting_launch
+                with self.assertRaisesRegex(RuntimeError, 'committed mint response'):
+                    run.recover_settlement(channel, pending)
+                self.assertEqual(run.events, ['settle', 'cut', 'launch:n02'])
+
 
 if __name__ == '__main__':
     unittest.main()

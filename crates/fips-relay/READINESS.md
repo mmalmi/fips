@@ -17,7 +17,7 @@ pre-existing service accounts.
 | Payment cadence and overhead | Adaptive payments and independent checkpoints pass native and three-router cadence matrices; see [cadence results](CADENCE-RESULTS.md). Funded handover forwards and pays across an old mint close held through buyer restart; see [renewal handover](#funded-renewal-handover). Current physical r371 crosses six expiry renewals during five minutes of impaired saved-SAE radio traffic, then delivers all recovery packets and collects all 384 test sats. Complete logs show zero source-queue drops, as in the earlier quarter-CPU ARM run. Current r398 adds two consecutive five-minute windows with all 168,000 packets delivered, six expiry renewals and full test-fund collection. | Physical wallet-transition boundaries beyond the committed funding/settlement replies below; extend root-loss, route recovery and resource-pressure acceptance beyond the finite ARM trials. Extend repeated-boot coverage beyond the three unsynced boots passed in r403; finite allowance can still run out. Cover slow storage and remaining CPU/storage/wire attribution. |
 | Shared forwarding and route policy | Ordinary ARM64/router and native gateway binaries pass the mesh-only mint workflow in r197: empty-wallet funding, paid delivery, original settlement recovered across one-way radio return loss, refunds and stopped-wallet exports; all 16 test sats are collected and 444 management checks pass. Android r418 includes adaptive crash windows and automatic Wi-Fi socket rebinding; ten lifecycle checks, the paid native customer suite, strict target lint and APK packaging pass. Its physical r405 transit test with the matching r400 router binaries delivers all 19 MiB over the same phone process and four original channels, including five minutes with the activity hidden; unpaid traffic is refused, all 512 test sats return and 813 management checks pass. Independent device, financial and artifact checks pass; the temporary app and router profiles are removed. Current r416 adds 48.71 seconds of forced-Doze continuity with observed foreground-service network allowance, four MiB delivered across all windows, the same original channels and full collection. Current r417 adds actual phone UDP peer loss and automatic recovery. The r418 physical Wi-Fi reconnect automatically changes the phone UDP socket, observed 9.18 seconds after Wi-Fi was disabled. Both cases deliver three MiB, advance payments and credit on all four original channels, and collect all test funds. Native r419 also qualifies the customer service’s expiry renewal during socket rebinding while the predecessor’s committed mint reply is held, preserving the two-channel capital limit and all 512 test sats. Physical r420 repeats this overlap on the Pixel with unchanged lifetime authority: Wi-Fi rebinding takes 6.75 seconds, fresh successor traffic pays, six channels settle and all 512 test sats return. Current r376 adds physical radio/WSS forwarding with self-signed TLS, automatic reconnect on the original paid channels and full collection. Current r382 verifies elected-root radio loss, replacement and rejoin during paid traffic, retaining the original processes and channels. Earlier screen-off, renewal, radio-rejoin, mixed-link and reduced-CPU evidence remains recorded below. | Physical power-loss qualification; general low-resource liveness beyond finite quarter-CPU fixture passes; broader/intermittent mint-failure and native repurchase checks; Android natural deep idle, higher-rate/impaired transit, longer renewable transit and suspension; remaining physical/mixed-link qualification, longer sustained and impaired workloads, longer and WAN WebSocket/TLS workloads, and acceptance before enabling additional core adapters. |
 | Permissionless mobile neighbors | Authenticated adjacent admission, controlled open 802.11s joining, automatic bridging with full neighbor rosters and bidirectional service during finite software encounters. | Moving-radio/channel handover, sustained crowding and hostile physical load; bounded admission does not establish Sybil fairness. |
-| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, current r372 ordinary ARM64 middle-router process recovery during an original paid radio stream, retaining both channels and exact bounded unbilled exposure on persistent accounts; and r377 physical process loss after a committed mint close, with provider recovery while its buyer remains offline, automatic original refund/release and full collection; r380 adds committed successor-funding recovery on all three physical routers, preserving the original wallet operation and carrying paid traffic before and after restart; r381 recovers the very first committed purchase without another buy request, then delivers paid traffic and collects every test sat. Current r392 retains the original paid accounts across an unsynced router kernel reset, delivers all 48,000 payloads and collects all test funds. Current r395 adds automatic recovery through the installed OpenWrt init/UCI service, retaining the original channels and limits with all 48,000 packets delivered and all test funds collected. Current r396 repeats that recovery during a 207.51-second mint outage, with complete paid delivery and collection after the original mint resumes. Current r403 retains both original channels across three unsynced boots, delivers all 24,000 packets and collects all 384 test sats with adaptive durable windows. Physical router storage acceptance covers signer snapshot failures, full wallet filesystems, full-account startup refusal and actual SQLite-write rollback, preserving test funds and recovering the original paid channels. The bounded SQLite probe succeeds with the identical write after freeing space; all wallet proof records and storage charges survive. Current r426 verifies the original durable quote and first purchase across all three router process restarts, with all 2,560 paid payloads delivered and all test funds returned. | Router recovery during successor funding and settlement with the current build. Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
+| Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, current r372 ordinary ARM64 middle-router process recovery during an original paid radio stream, retaining both channels and exact bounded unbilled exposure on persistent accounts; and r377 physical process loss after a committed mint close, with provider recovery while its buyer remains offline, automatic original refund/release and full collection; r380 adds committed successor-funding recovery on all three physical routers, preserving the original wallet operation and carrying paid traffic before and after restart; r381 recovers the very first committed purchase without another buy request, then delivers paid traffic and collects every test sat. Current r392 retains the original paid accounts across an unsynced router kernel reset, delivers all 48,000 payloads and collects all test funds. Current r395 adds automatic recovery through the installed OpenWrt init/UCI service, retaining the original channels and limits with all 48,000 packets delivered and all test funds collected. Current r396 repeats that recovery during a 207.51-second mint outage, with complete paid delivery and collection after the original mint resumes. Current r403 retains both original channels across three unsynced boots, delivers all 24,000 packets and collects all 384 test sats with adaptive durable windows. Physical router storage acceptance covers signer snapshot failures, full wallet filesystems, full-account startup refusal and actual SQLite-write rollback, preserving test funds and recovering the original paid channels. The bounded SQLite probe succeeds with the identical write after freeing space; all wallet proof records and storage charges survive. Current r426 verifies the original durable quote and first purchase across all three router process restarts, with all 2,560 paid payloads delivered and all test funds returned. Current r427 also qualifies successor funding and committed settlement on that build: all 7,680 renewal payloads arrive, settlement restores without another swap attempt, and both runs recover all test funds. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit; independent refunds and renewals complete while another mint close is held, with wallet imports still serialized. See [wallet progress](#independent-wallet-progress) and [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Payment SDK/CDK corrections still require the accepted source graph; registry TCP 0.2.4 is qualified. Each deployment needs matching native tools and current target acceptance. |
 | Threats and integration | [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional [TollGate adapter](TOLLGATE.md) remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
@@ -1112,62 +1112,46 @@ financial limits change. This is finite private-LAN/self-signed TLS acceptance.
 It does not measure active-stream delivery during the cut, WAN performance,
 public certificate deployment, moving radios or physical power loss.
 
-Current physical settlement interruption passes in
-`work/settlement-physical-r377`, using the same ordinary ARM64 runtime and
-persistent router accounts. The existing test mint commits the original channel
-close, then withholds its reply. Three ownership-checked relay processes are
-killed. The provider restarts first and restores that committed mint result while
-the buyer remains stopped; its restore counter advances without another mint
-swap or swap attempt. The buyer then restarts and automatically records the same
-4-sat payment, 28-sat refund and release, without another settlement request.
-Original identities, funding records and operation sequence numbers survive.
+Current physical settlement recovery passes in `work/settlement-recovery-r427`,
+using the ordinary ARM64 build matching all 1,042 current Rust files. After paid
+radio delivery, the mint commits the original channel close and withholds its
+reply. All three owned relay processes are killed. The provider restarts first
+and restores that committed result while its buyer remains offline. Its restore
+counter advances without another swap or swap attempt. The buyer then restarts
+and automatically records the original 4-sat payment, 28-sat refund and release,
+without another settlement request. Identities, funding records and operation
+sequence numbers survive. Both original channels finally settle, all 384 test
+sats return and all 234 management checks pass. Independent closure verifies
+source/artifact custody, restored networking, stopped processes and mint, archived
+accounts and removal of the closed profiles.
 
-Both original channels finally settle; all 384 test sats are collected and every
-wallet ends empty. All 231 management checks pass. Independent closure verifies
-the committed boundary, exact process epochs and restart order, original
-settlement reports, wallet distribution, source/artifact custody, stopped mint
-and relays, restored network state and three account archives. Closed router
-profiles are removed afterward, retaining the storage reserve.
+`sim.wifi_settlement` shares the guest power-loss scenario's checks through
+`sim.committed_settlement`. The shared observer now rejects a repeated committed
+swap or even another swap attempt during provider-only recovery. A regression
+fails against the old observer for both counters; all 35 focused Linux funding,
+settlement and guard checks pass after the correction. Earlier acceptance remains
+in `work/settlement-physical-r377`. This covers process loss after a committed close
+with surviving router kernels and mint, without changing production behavior.
 
-The reproducible `sim.wifi_settlement` scenario reuses the guest power-loss
-scenario's settlement assertions through `sim.committed_settlement`, plus the
-existing guarded crash, financial observation and collection helpers. Twenty-eight
-focused settlement checks pass; a broader focused run passes 31 checks and skips
-nine Linux-only cases locally. The unchanged guard implementations retain their
-earlier Linux qualification, and the actual physical interruption passes above.
-This covers process loss after a committed close with surviving router kernels
-and mint.
-
-Current physical successor-funding interruption also passes in
-`work/renewal-interruption-physical-r380`, on the same ordinary ARM64 runtime.
-The mint commits one replacement channel's opening swap and withholds its reply.
-Both original paid routes keep delivering before all three relays are killed.
+Current successor-funding recovery passes in `work/renewal-recovery-r427` on the
+ordinary ARM64 build matching all 1,042 current Rust files. The mint commits one
+replacement channel's opening swap and withholds its reply while both original
+routes keep forwarding paid traffic. All three relay processes are then killed.
 Restart reuses the saved controller request, wallet operation and channel ID;
-exactly one successor activates, and the predecessor automatically refunds
-29 of its original 32 test sats. The successor carries paid traffic afterward.
-All six 1,280-packet streams deliver fully: 7,680,000 payload bytes across both
-directions before funding, while its reply is held and after recovery.
-The original channels retain their liabilities and the expected 4,000 msat
-unbilled crash exposure each. Three channels settle; the wallets contain
-123/137/124 test sats before all 384 are collected, then all wallets are empty.
-All 294 management checks pass.
+exactly one successor activates, and the predecessor refunds 29 of its original
+32 test sats after a 3-sat payment. The successor carries paid traffic afterward.
+All six 1,280-packet streams deliver fully: 7,680,000 payload bytes before funding,
+while its reply is held and after recovery. Both original channels retain their
+liabilities and exactly 4,000 msat of unbilled crash exposure each. Three channels
+settle, all 384 test sats return, and all 303 management checks pass. Independent
+closure verifies source/artifact custody, restored networking, stopped processes
+and mint, archived accounts and removal of the closed test profiles.
 
-`sim.wifi_funding` shares the existing guest renewal assertions through
-`sim.renewal_interruption`; both physical recovery scenarios share guarded
-process controls through `sim.wifi_account_recovery`. No production protocol or
-financial policy changes. All 39 focused Linux crash and settlement checks pass.
-The guarded exit poll now uses whole-second sleeps because the target OpenWrt
-BusyBox rejects fractional sleeps; the existing transient-observation check
-reproduces that failure with the old code and passes with the fix. Adapter checks
-also confirm that physical recovery requires the exact two-hop line.
-
-The earlier r378 fractional-sleep failure and r379 controller disk-full failure
-remain rejected. Both retain their original failure evidence; their test funds
-are recovered and closed router profiles removed. The fresh repeat requires
-4 GiB free on its controller. Independent final checks verify restored networking,
-stopped processes and mint, source/artifact custody, archived accounts and removal
-of the closed profiles. This remains process-restart acceptance with surviving
-router kernels and mint.
+The unchanged `sim.wifi_funding` workload shares the guest renewal assertions in
+`sim.renewal_interruption` and guarded process controls in `sim.wifi_account_recovery`.
+Earlier r380 acceptance and the recovered r378/r379 failures remain recorded in
+`work/renewal-interruption-physical-r380` and the corresponding earlier work
+folders. This qualifies process recovery with surviving router kernels and mint.
 
 Current first-purchase interruption passes in `work/quote-recovery-hardware-r426`,
 using the ordinary ARM64 build matching all 1,042 current Rust files. Before a paid

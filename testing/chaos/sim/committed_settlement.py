@@ -85,8 +85,10 @@ class CommittedSettlement:
                 and report['paid_sat'] == pending['n01']['buyer_settlements'][channel]['payment']['balance'],
                 'provider recovery changed the original settlement')
         restored = self.mint.request({'type': 'fault', 'command': {'action': 'status'}})
-        require(restored['restores'] > self.evidence[self.interruption_key]['mint_held']['restores'],
-                'provider did not restore the committed mint response')
+        held = self.evidence[self.interruption_key]['mint_held']
+        require(restored['restores'] > held['restores']
+                and all(restored[key] == held[key] for key in ('swaps', 'swap_attempts')),
+                'provider did not restore the committed mint response without resubmitting it')
         for node in ('n01', 'n03'):
             self.launch(node)
         eventually('recovered participant line', self.recovery_ready, 90)

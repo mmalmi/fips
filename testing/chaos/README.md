@@ -833,7 +833,8 @@ not new funding or settlement while the mint is unavailable.
 measurement-enabled relay, remote test mint and guarded persistent profiles.
 After bidirectional paid delivery, it holds a committed settlement reply at the
 mint and kills the three owned relay processes. The provider starts first and
-must restore the original mint result while its buyer remains stopped. The buyer
+must restore the original mint result while its buyer remains stopped. Mint
+restore counters must advance without another swap or swap attempt. The buyer
 then restarts and must finish its original refund and release automatically,
 without another settlement request or new funding. The shared settlement checks
 finally collect all 384 test sats and restore the original router state.
