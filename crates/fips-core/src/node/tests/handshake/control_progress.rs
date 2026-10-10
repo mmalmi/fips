@@ -281,7 +281,7 @@ async fn exercise(session: bool, completion_delay_ms: u64, sustained: bool, look
                 }
                 tokio::task::yield_now().await;
                 network.set_node_send_completion_delay(server_address.as_str().unwrap(), 0);
-                let mut received = vec![0_u8; CLIENTS];
+                let mut received = [0_u8; CLIENTS];
                 while received.iter().any(|count| *count != 2) {
                     let event = endpoints[0].event_rx.recv().await.unwrap();
                     for delivery in event.messages {
