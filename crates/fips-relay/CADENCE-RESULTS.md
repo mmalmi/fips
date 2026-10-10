@@ -347,26 +347,35 @@ return, and all 813 management checks pass. Independent closure verifies restore
 devices and unchanged original accounts; the temporary app and router profiles
 are removed after all four completed accounts are archived.
 
+The current-runtime repeat in `work/phone-current-r428` uses `7a4616b5a`, the
+qualified r428 APK and matching r425 router binaries. All 1,042 crate Rust files
+match both artifacts; the accepted dependency graph is unchanged. The same
+workload delivers all 19 MiB, keeps the same phone process and four original
+channels, and passes 52 background observations and 804 management checks. All
+512 test sats return; the temporary app and router profiles are removed after
+independent account and device verification.
+
 Version-three counter validation compares two live native snapshots around the
 background window. Costs cover only the phone and are divided by the 18 MiB
 delivered in that window, rather than summed across the route.
 
-| Measurement | Background-window result |
-| --- | ---: |
-| Attributed payment CPU | 2,553.75 ms; 141.88 ms / delivered MiB |
-| Whole-process CPU | 9.713 s / delivered MiB |
-| Android process CPU tick delta | 174.96 s |
-| Logical relay journal writes / syncs / commits | 98 / 196 / 98 |
-| Logical relay journal bytes | 256,849 |
-| Payment requests started / received | 28 / 84 |
-| Local payment stream bytes sent / received | 21,970 / 24,054 |
+| Measurement | r405 — 9 October | r428 — 11 October |
+| --- | ---: | ---: |
+| Attributed payment CPU | 2,553.75 ms; 141.88 ms / delivered MiB | 2,268.94 ms; 126.05 ms / delivered MiB |
+| Whole-process CPU | 9.713 s / delivered MiB | 10.933 s / delivered MiB |
+| Android process CPU tick delta | 174.96 s | 196.85 s |
+| Logical relay journal writes / syncs / commits | 98 / 196 / 98 | 98 / 196 / 98 |
+| Logical relay journal bytes | 256,849 | 255,754 |
+| Payment requests started / received | 28 / 84 | 28 / 84 |
+| Local payment stream bytes sent / received | 21,970 / 24,054 | 21,970 / 24,054 |
 
 Whole-process CPU includes diagnostic work. Payment spans exclude scheduler scans
 and TCP/FIPS/core transport CPU; relay journal bytes exclude physical flash and
-wallet SQLite attribution. This single low-rate trial establishes neither an
-optimization comparison nor optimal cadence, throughput or battery cost. Natural
-deep idle, renewal, network suspension, movement, phone 802.11s and long-run
-impaired traffic remain separate acceptance work. The 500-ms default is unchanged.
+wallet SQLite attribution. These low-rate acceptance repeats are not a controlled
+optimization comparison and do not establish optimal cadence, throughput or
+battery cost. Natural deep idle, renewal, network suspension, movement, phone
+802.11s and long-run impaired traffic remain separate acceptance work. The 500-ms
+default is unchanged.
 
 ### Phone CPU profile and allocation experiment
 
