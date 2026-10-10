@@ -10,8 +10,8 @@ use spanning_tree::{
 use std::fs;
 use std::time::Duration;
 
-mod replay;
 mod pending_close;
+mod replay;
 
 async fn make_websocket_node(config: WebSocketConfig) -> TestNode {
     let mut node = make_node();

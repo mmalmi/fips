@@ -9,8 +9,8 @@ use crate::transport::{ConnectionState, TransportHandle, packet_channel};
 const WEBSOCKET_TRANSPORT_NUMBER: u32 = 1;
 const WEBRTC_TRANSPORT_NUMBER: u32 = 2;
 
-mod terminal_candidate;
 mod retried_bootstrap;
+mod terminal_candidate;
 
 #[test]
 fn outbound_creation_keeps_node_preparation_on_immediate_poll() {

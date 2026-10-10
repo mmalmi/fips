@@ -97,7 +97,8 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     .map_err(|_| "timed out starting ephemeral FIPS endpoint".to_string())?
     .map_err(|error| format!("could not start ephemeral FIPS endpoint: {error}"))?;
     let mut phase = "webrtc_authentication";
-    let probe_result = match timeout_at(deadline, probe_target(&endpoint, target, &mut phase)).await {
+    let probe_result = match timeout_at(deadline, probe_target(&endpoint, target, &mut phase)).await
+    {
         Ok(result) => result,
         Err(_) => Err(format!(
             "target {target_npub} did not complete WebRTC/FMP/FSP echo within {}s; phase={phase}",

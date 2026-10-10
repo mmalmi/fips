@@ -811,7 +811,8 @@ impl Node {
         control_query_budget: usize,
     ) -> usize {
         let had_activity = turn.has_activity();
-        let control_drained = self.process_dataplane_control_ingress(turn)
+        let control_drained = self
+            .process_dataplane_control_ingress(turn)
             .await
             .saturating_add(self.drain_deferred_dataplane_control_turns().await);
         if control_drained > 0 && self.dataplane.has_deferred_raw_ingress() {
