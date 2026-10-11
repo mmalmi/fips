@@ -83,6 +83,13 @@ fn retired_debt_can_make_a_credit_shortage_permanent() {
     next.capacity_sat = 1;
     next.grace_msat = 10;
     open(&seller, &next, 1_000);
+    // Retired debt reduces the initial durable window; publish packet demand
+    // before testing the permanent credit ceiling.
+    assert_eq!(
+        seller.decide(&request(1, &[2; 985])),
+        ForwardingDecision::Retry
+    );
+    assert!(seller.checkpoint_if_due().unwrap());
     let token = seller.admit(&request(1, &[2; 985])).unwrap();
     seller.complete(token, ForwardingOutcome::Submitted);
     let before = seller.channel_usage(&next.id).unwrap();
