@@ -33,8 +33,13 @@ class CarrierPressure:
 
     records = RECORDS
 
-    def __init__(self, address):
+    def __init__(self, address, receiver_index=None):
         self.address = address
+        if receiver_index is not None:
+            self.records = {**RECORDS, **{
+                kind: struct.pack('<BBHIQ', 0, 0, 0, receiver_index, counter) + bytes(16)
+                for kind, counter in (('known_replay', 0), ('known_bad_ciphertext', 1_000_000))
+            }}
         self.stop = threading.Event()
         self.rows = [[] for _ in range(4)]
         self.pool = ThreadPoolExecutor(max_workers=4)

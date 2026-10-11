@@ -331,7 +331,9 @@ def main():
     signal.alarm(900)
     if args.carrier_pressure_port is not None:
         from .wifi_carrier_pressure import WifiCarrierPressureRun
-        WifiCarrierPressureRun(args).execute()
+        from .wifi_carrier_owner import WifiCarrierOwnerRun
+        pressure_run = WifiCarrierOwnerRun if args.carrier_pressure_transport == 'tcp' else WifiCarrierPressureRun
+        pressure_run(args).execute()
     elif args.streams:
         from .wifi_stream import WifiStreamRun
         WifiStreamRun(args).execute()

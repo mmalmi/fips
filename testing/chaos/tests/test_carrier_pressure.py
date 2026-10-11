@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.carrier_pressure import RECORDS, rejected
 from sim.wifi_carrier_pressure import WifiCarrierPressureRun
+from sim.wifi_carrier_owner import WifiCarrierOwnerRun
 
 try:
     from websockets.exceptions import ConnectionClosed
@@ -72,6 +73,51 @@ class CarrierPressureTests(unittest.TestCase):
                           [mesh, {**carrier, 'stats': {opened: 1, closed: 0}}]):
                 with self.subTest(extra=extra), self.assertRaises(RuntimeError):
                     run.discovery_adapter('n02', extra)
+
+    def test_known_tcp_owner_cannot_hide_another_radio_or_carrier_route(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        run = object.__new__(WifiCarrierOwnerRun)
+        run.owner = SimpleNamespace(npub='owner')
+        run.owner_started = True
+        run.nodes = {name: SimpleNamespace(npub=name) for name in ('n01', 'n02', 'n03')}
+        run.monitor = SimpleNamespace(check=lambda: None)
+        run.evidence, run.save = {}, lambda: None
+        peer = lambda name, transport='ethernet': dict(npub=name, transport=transport, connected=True)
+        baseline = {'n01': {'peers': [peer('n02')]},
+                    'n02': {'peers': [peer('n01'), peer('n03'), peer('owner', 'tcp')]},
+                    'n03': {'peers': [peer('n02')]}}
+        statuses = deepcopy(baseline)
+        run.ctl = lambda name, _kind: statuses[name]
+        self.assertTrue(run.ready(line=True))
+        self.assertEqual(len(run.evidence['last_peer_observation']['n02']), 3)
+        for node, extra in (('n02', peer('stranger', 'tcp')), ('n01', peer('n03'))):
+            statuses = deepcopy(baseline)
+            statuses[node]['peers'].append(extra)
+            self.assertFalse(run.ready(line=True))
+        for owner in ([], [peer('owner', 'udp')], [dict(peer('owner', 'tcp'), connected=False)]):
+            statuses = deepcopy(baseline)
+            statuses['n02']['peers'] = statuses['n02']['peers'][:2] + owner
+            with self.assertRaisesRegex(RuntimeError, 'original TCP owner'):
+                run.ready(line=True)
+
+    def test_owner_window_requires_fresh_authenticated_liveness_without_replacement(self):
+        from unittest.mock import Mock, patch
+        before = dict(npub='owner', link_id=1, authenticated_at_ms=10,
+                      our_session_index='12345678', last_seen_ms=100)
+        for changes, accepted in (({'last_seen_ms': 200}, True), ({}, False),
+                                  ({'last_seen_ms': 200, 'our_session_index': '87654321'}, False)):
+            with self.subTest(changes=changes):
+                run = object.__new__(WifiCarrierOwnerRun)
+                run.owner_started, run.evidence, run.save = True, {'owner_windows': []}, Mock()
+                run.owner_session = Mock(side_effect=[before, {**before, **changes}])
+                with patch.object(WifiCarrierPressureRun, 'window'):
+                    if accepted:
+                        run.window('pressure')
+                        run.save.assert_called_once()
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            run.window('pressure')
 
     @unittest.skipUnless(serve, 'WebSocket bench requires websockets 15.x')
     def test_responsive_preludes_expire_but_early_close_or_retained_slot_fails(self):

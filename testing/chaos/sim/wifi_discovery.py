@@ -134,6 +134,9 @@ class WifiRun:
     def participants(self):
         return self.nodes
 
+    def mesh_peers(self, name, peers):
+        return peers
+
     def ready(self, *, line=False, isolated=False, outage_node="n03"):
         if isolated and outage_node not in ("n01", "n02", "n03"):
             raise ValueError("outage node must be n01, n02 or n03")
@@ -142,15 +145,16 @@ class WifiRun:
         self.evidence["last_peer_observation"] = {name: state["peers"] for name, state in statuses.items()}
         self.save()
         for name, status in statuses.items():
+            candidates = self.mesh_peers(name, status["peers"])
             i = int(name[-1])
             wanted = {other.npub for key, other in self.nodes.items()
                       if key != name and (not (line or isolated) or abs(int(key[-1]) - i) == 1)
                       and not (isolated and outage_node in (name, key))}
             # Require actual removal, not just a stale disconnected peer; native
             # route lookup may retain that direct destination until eviction.
-            if (line or isolated) and any(p["npub"] not in wanted for p in status["peers"]):
+            if (line or isolated) and any(p["npub"] not in wanted for p in candidates):
                 return False
-            peers = [p for p in status["peers"] if p["connected"]]
+            peers = [p for p in candidates if p["connected"]]
             if {p["npub"] for p in peers} != wanted or any(p["transport"] != "ethernet" for p in peers):
                 return False
         return statuses

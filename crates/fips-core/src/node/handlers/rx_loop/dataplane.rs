@@ -169,7 +169,7 @@ impl Node {
         let fmp_crypto_failures: Vec<_> = turn
             .drops()
             .iter()
-            .filter_map(Self::dataplane_fmp_crypto_failure)
+            .filter_map(|drop| self.dataplane_fmp_crypto_failure(drop))
             .collect();
         for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
             if self
@@ -256,11 +256,22 @@ impl Node {
     }
 
     fn dataplane_fmp_crypto_failure(
+        &self,
         drop: &crate::dataplane::PacketDrop,
     ) -> Option<(NodeAddr, u64, u64)> {
         if drop.owner().protocol() != crate::dataplane::PacketProtocol::Fmp
             || drop.reason() != crate::dataplane::PacketDropReason::CryptoFailed
             || drop.crypto_failure() != Some(crate::dataplane::CryptoFailureKind::Open)
+        {
+            return None;
+        }
+        let (path, received_at) = drop.received_carrier()?;
+        let peer = self.peers.get(&drop.owner().node_addr())?;
+        // A receiver index is public routing information. Failed authentication
+        // on somebody else's carrier cannot establish that this peer needs rekeying.
+        if peer.transport_id() != Some(path.transport_id)
+            || peer.current_addr() != Some(&path.remote_addr)
+            || self.packet_predates_carrier_rebind(path.transport_id, received_at)
         {
             return None;
         }

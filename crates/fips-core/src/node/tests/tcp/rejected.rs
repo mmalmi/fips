@@ -2,6 +2,7 @@
 use super::*;
 use crate::node::wire::{build_msg1, build_msg2};
 use spanning_tree::process_dataplane_packet;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -108,6 +109,12 @@ async fn assert_rejected_record(mut invalid: Vec<u8>, use_owned_index: bool) {
         .link_id();
 
     if use_owned_index {
+        // Exercise recovery accounting after the fresh-session drain grace.
+        nodes[0]
+            .node
+            .get_peer_mut(identity.node_addr())
+            .unwrap()
+            .set_session_established_at_for_test(Instant::now() - Duration::from_secs(31));
         let index = nodes[0]
             .node
             .get_peer(identity.node_addr())
@@ -131,6 +138,17 @@ async fn assert_rejected_record(mut invalid: Vec<u8>, use_owned_index: bool) {
             .link_id(),
         original
     );
+    let failures = nodes[0]
+        .node
+        .get_peer(identity.node_addr())
+        .unwrap()
+        .consecutive_decrypt_failures();
+    if use_owned_index && invalid[8..16] != [0; 8] {
+        assert_eq!(
+            failures, 1,
+            "owned bad ciphertext must still reach recovery accounting"
+        );
+    }
 
     // Each complete frame defeats a first-frame timer. Node rejection must
     // reclaim the only spare inbound slot even while the sender stays silent.
@@ -142,6 +160,15 @@ async fn assert_rejected_record(mut invalid: Vec<u8>, use_owned_index: bool) {
             .await
             .expect("rejected record must not pin an inbound TCP slot indefinitely");
         assert!(matches!(closed, Ok(0)) || closed.is_err());
+        assert_eq!(
+            nodes[0]
+                .node
+                .get_peer(identity.node_addr())
+                .unwrap()
+                .consecutive_decrypt_failures(),
+            failures,
+            "a stranger knowing the session index cannot change its owner's recovery state"
+        );
     }
 
     nodes.push(make_test_node_tcp().await);
