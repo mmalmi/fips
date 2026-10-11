@@ -369,6 +369,27 @@ ended empty, all 600 management checks passed, and original router settings were
 restored. The combined Linux harness suite passes 164 checks; that software
 coverage does not turn the failed hardware cycle into acceptance.
 
+#### Connected paths with degraded delivery
+
+Use `--loss-failover` instead of `--active-failover` to retain both wireless
+paths while dropping every second experimental frame from the cheaper provider
+at the destination. Only that directed test edge is impaired. The original
+watch, tariffs, channel limits, finite traffic allowance and selector defaults
+stay the same. The source samples native quality during each impaired burst,
+because a switch may finish before an after-burst observation.
+
+Acceptance additionally requires fresh loss above the configured threshold on
+the unchanged cheaper full agreement, working paid delivery through the
+alternative, and return to the cheaper provider after filter removal. Native
+peer authentication times and link IDs must remain unchanged at the observation
+points. Failed or uncertain fault installation is reconciled and cleared before
+financial collection. The current physical result and its limits are recorded
+in [relay readiness](../../crates/fips-relay/READINESS.md).
+
+This remains a finite functional test. The filter affects native control frames
+as well as data; it does not isolate control loss, continuously measure link
+availability, or establish lossless handover, throughput or mobile convergence.
+
 ### Paid Wi-Fi recovery
 
 `sim.paid_wifi` reuses the same inventory, guard and radio lifecycle. It needs a

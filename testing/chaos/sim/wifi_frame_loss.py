@@ -43,9 +43,12 @@ def clear_filters(filters):
 
 
 class FrameLoss:
-    def __init__(self, node, source_mac):
+    def __init__(self, node, source_mac, *, every=EVERY):
         if not isinstance(source_mac, str) or not re.fullmatch(MAC, source_mac):
             raise ValueError('frame loss requires one exact adjacent mesh address')
+        if type(every) is not int or not 2 <= every <= 1000:
+            raise ValueError("frame-loss period must be an integer in 2..1000")
+        self.every = every
         self.node, self.source_mac = node, source_mac
         self.comment = node.table_owner + '-loss'
 
@@ -79,7 +82,7 @@ class FrameLoss:
         require(not self.observe()['enabled'], 'frame loss is already armed')
         table = self.node.table
         rules = (f'create chain netdev {table} {CHAIN}\n'
-                 f'add rule netdev {table} {CHAIN} numgen inc mod {EVERY} 0 counter drop\n'
+                 f'add rule netdev {table} {CHAIN} numgen inc mod {self.every} 0 counter drop\n'
                  f'add rule netdev {table} ingress ether type 0x{ETHERTYPE:x} '
                  f'ether saddr {self.source_mac} jump {CHAIN} comment "{self.comment}"\n')
         self.owned('nft -f -', rules.encode())

@@ -343,14 +343,15 @@ test "$age" -le 35
         self.guarded(f"sh {t}/guard.sh stop; test ! -f {t}/candidate-stop-failed; "
                      f"test ! -f {t}/candidate-forced-stop", timeout=CLEANUP_TIMEOUT_SECONDS)
 
-    def install_filter(self, excluded_mac):
-        if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", excluded_mac):
+    def install_filter(self, excluded_mac=None):
+        if excluded_mac is not None and not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", excluded_mac):
             raise ValueError("invalid excluded mesh address")
         # Collision refusal and creation are one nft transaction; existing rules are untouched.
         rules = (f'create table netdev {self.table} {{ comment "{self.table_owner}"; }}\n'
                  f'add chain netdev {self.table} ingress {{ type filter hook ingress '
-                 f'device "{self.interface}" priority -500; policy accept; }}\n'
-                 f'add rule netdev {self.table} ingress ether type 0x{ETHERTYPE:x} '
+                 f'device "{self.interface}" priority -500; policy accept; }}\n')
+        if excluded_mac is not None:
+            rules += (f'add rule netdev {self.table} ingress ether type 0x{ETHERTYPE:x} '
                  f'ether saddr {excluded_mac} counter drop\n')
         return self.install_owned_table(self.table, "table-created", rules)
 

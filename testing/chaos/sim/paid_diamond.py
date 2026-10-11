@@ -240,6 +240,9 @@ class PaidDiamondRun(DiamondRun):
         transitional_adjacency(states, {name: p.npub for name, p in self.accounts.nodes.items()},
                                self.udp_addresses)
 
+    def send_batch(self, shape, rate):
+        return probes.send(self, "source", "n03", shape, rate)
+
     def drive_route(self, provider, baseline, phase, *, radio=None):
         destination = self.nodes["n03"]
         target = self.nodes[provider]
@@ -269,7 +272,7 @@ class PaidDiamondRun(DiamondRun):
                     self, "source", "n03", shape, workload.rate, radio, cut,
                     verify_route=lambda: self.confirm_pre_cut_route(initial))
             else:
-                sent = probes.send(self, "source", "n03", shape, workload.rate)
+                sent = self.send_batch(shape, workload.rate)
             record["send_finished_at"] = time.monotonic()
             record["sender"] = sent
             self.save()
@@ -317,6 +320,30 @@ class PaidDiamondRun(DiamondRun):
                            export_path=lambda name, relative: self.accounts.nodes[name].state + "/" + relative)
         self.phase("all 128 test sats collected; four test wallets empty")
 
+    def provider_transition(self, before_cut):
+        first = self.nodes["n01"]
+        try:
+            if self.active_failover:
+                self.drive_route("n02", before_cut, "wireless_failover", radio=first)
+            else:
+                first.mesh_down()
+                self.phase("cheaper provider left Wi-Fi; source UDP adjacency must remain")
+            states = eventually("only the cheaper provider wireless edge disappears",
+                                lambda: self.topology(radio_down="n01"), 100)
+            self.phase("provider radio loss observed with client adjacency intact", topology=states)
+            if self.active_failover:
+                self.evidence["active_failover"]["eviction_observed_at"] = time.monotonic()
+            else:
+                self.drive_route("n02", before_cut, "wireless_failover")
+            self.financial_checkpoint(2)
+            before_rejoin = self.ctl("source", "status")
+        finally:
+            if not self.active_failover or self.evidence.get("active_failover", {}).get("cut_attempted", False):
+                first.mesh_up()
+        eventually("original provider radio rejoins", self.topology, 150)
+        self.verify_open_profiles()
+        return before_rejoin
+
     def exercise(self):
         self.form_diamond()
         self.phase("native identities and process epochs bound", processes=self.process_snapshots())
@@ -330,28 +357,7 @@ class PaidDiamondRun(DiamondRun):
                      max_rate_msat_per_kib=PRICE_CEILING)
             self.drive_route("n01", baseline, "initial_cheaper_provider")
             self.financial_checkpoint(1)
-            before_cut = self.ctl("source", "status")
-            first = self.nodes["n01"]
-            try:
-                if self.active_failover:
-                    self.drive_route("n02", before_cut, "wireless_failover", radio=first)
-                else:
-                    first.mesh_down()
-                    self.phase("cheaper provider left Wi-Fi; source UDP adjacency must remain")
-                states = eventually("only the cheaper provider wireless edge disappears",
-                                    lambda: self.topology(radio_down="n01"), 100)
-                self.phase("provider radio loss observed with client adjacency intact", topology=states)
-                if self.active_failover:
-                    self.evidence["active_failover"]["eviction_observed_at"] = time.monotonic()
-                else:
-                    self.drive_route("n02", before_cut, "wireless_failover")
-                self.financial_checkpoint(2)
-                before_rejoin = self.ctl("source", "status")
-            finally:
-                if not self.active_failover or self.evidence.get("active_failover", {}).get("cut_attempted", False):
-                    first.mesh_up()
-            eventually("original provider radio rejoins", self.topology, 150)
-            self.verify_open_profiles()
+            before_rejoin = self.provider_transition(self.ctl("source", "status"))
             self.drive_route("n01", before_rejoin, "recovered_cheaper_provider")
             self.financial_checkpoint(2)
             self.verify_shortcuts(names=("n01", "n02"))
@@ -386,7 +392,10 @@ def parser():
     result.add_argument("--mint-host", type=Path,
                         help="explicit isolated ARM64 Linux mint host specification")
     result.add_argument("--mint-address", help="private LAN IPv4 of --mint-host")
-    result.add_argument("--active-failover", action="store_true",
+    fault = result.add_mutually_exclusive_group()
+    fault.add_argument("--loss-failover", action="store_true",
+                       help="degrade the cheaper wireless path while retaining both connected providers")
+    fault.add_argument("--active-failover", action="store_true",
                         help="cut the selected provider during paid traffic and drive recovery before eviction")
     return result
 
@@ -400,7 +409,11 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    PaidDiamondRun(args).execute()
+    if args.loss_failover:
+        from .paid_quality_diamond import QualityDiamondRun
+        QualityDiamondRun(args).execute()
+    else:
+        PaidDiamondRun(args).execute()
 
 
 if __name__ == "__main__":
