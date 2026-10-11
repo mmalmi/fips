@@ -183,6 +183,7 @@ async fn run(root_index: usize, scenario: Scenario, seed: u64) {
         payment_servers,
         mut interrupted_acceptance,
         admissions: _,
+        ..
     } = assembly;
     let mint_url = mint_proxy.as_ref().map_or(mint.url(), |proxy| &proxy.url);
     tokio::time::timeout(Duration::from_secs(15), async {

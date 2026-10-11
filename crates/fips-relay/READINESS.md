@@ -12080,7 +12080,7 @@ same-channel replacement and reload, exhausted quota, stale/paused completion,
 exact retained-offer identity, native binding and eventual retirement after a
 full agreement replaces the trial.
 
-Both promotion variants pass in the complete 20-test priced-path suite. The live
+The earlier promotion variants passed the complete 20-test priced-path suite. The live
 run recovers after 12.61 seconds of observation with 29 of 31 packets delivered;
 the controller-and-selector reload run takes 17.13 seconds with 29 of 40 delivered.
 Each retains 3,334 consumed trial
@@ -12094,6 +12094,31 @@ guarantees. Verification also includes 247 relay library tests, a repeat of all
 formatting and source-size checks. Source and dependency fingerprints remain
 unchanged during the final complete suite; physical-router acceptance remains
 separate.
+The r443 source-restart case replaces that controller-only reload variant. It
+stops the source's controller, quote/payment servers and native endpoint, then
+verifies that their old networking and accounting owners have been released. The
+same startup helpers recreate the native endpoint, TCP/FIPS controls, buyer,
+seller, wallet-backed payment receiver, selector and controller from the original
+configuration and saved records. The fixture issues no additional Watch or
+explicit purchase command.
+
+Both promotion variants pass. The restarted source retains all 3,810 consumed
+trial units and rejects the retired agreement before reconnecting. Fresh traffic
+recovers automatically after 16.25 seconds of observation, delivering 30 of 39
+submitted packets and advancing provider credit to 2,000 msat. Two channels settle
+for three sats paid and 125 refunded; all 259 test sats are collected. The live
+companion also collects all 259 test sats. These are finite simulation results;
+the restart discards the source's live objects but keeps the test process, mint
+and other peers alive. It does not simulate kernel/page-cache loss or establish a
+radio recovery latency bound.
+
+The existing permissionless merge/split test also passes with the shared startup
+helpers and both root placements, retaining eight original channels and collecting
+all 1,536 test sats in each run. Strict lint for the complete priced-path target,
+formatting and the source-size gate pass. Production routing and payment code are
+unchanged; the stronger restart variant replaces the weaker test rather than
+adding another long scenario.
+
 Run both variants with
 `cargo test -p fips-relay --features measurements --test priced_paths
 mobility::pending::promotion:: -- --test-threads=1 --nocapture`, using the development overrides in
