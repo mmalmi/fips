@@ -15,7 +15,7 @@ from .phone_restart import process
 from .wifi_measurements import process_identity, resource_fields
 
 
-NATIVE_COMMANDS = ('show_status', 'show_routing', 'show_transports', 'show_sessions')
+NATIVE_COMMANDS = ('show_status', 'show_routing', 'show_transports', 'show_sessions', 'show_peers')
 
 
 def decode_record(data):

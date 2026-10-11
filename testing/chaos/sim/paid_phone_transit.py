@@ -37,6 +37,8 @@ class PhoneTransitRun(PaidPhoneRun):
                             ('screen_off', 'forced_idle', 'phone_outage', 'phone_renewal'))),
                 'impaired transit requires its own sustained background workload')
         super().__init__(args)
+        if getattr(args, 'impaired_transit', None) == 'corrupt':
+            self.nodes['n02'].diagnostic_log_filter = 'warn,fips_core::node::handlers::encrypted=debug'
         require(self.customer['interface'] == self.nodes['n01'].management,
                 'transit must use the existing management LAN')
         self.addresses = self.scenario['router_addresses']
@@ -140,7 +142,7 @@ class PhoneTransitRun(PaidPhoneRun):
                 'routing foreground service is absent')
         return {'wakefulness': awake[1], 'activities': components, 'foreground_service': True}
 
-    def stream(self, mode, *, unpaid=False):
+    def stream(self, mode, *, unpaid=False, observe=None):
         count, duration = (1024, 4) if unpaid else (512 * 1024, 30)
         minimum = 300 if (not unpaid and mode == 'background'
                           and getattr(self.args, 'sustained_transit', False)) else 0
@@ -153,11 +155,11 @@ class PhoneTransitRun(PaidPhoneRun):
         self.save()
         if minimum:
             row['payment_before'] = control(self.phone, 'status')
-        def observe():
+        def sample():
             require(self.topology() is not None, 'transit topology changed during transfer')
-            return {'line_verified': True, **self.screen(mode)}
+            return {'line_verified': True, **self.screen(mode), **(observe() if observe else {})}
         duplex(self, row, label=('unpaid-' if unpaid else '') + mode,
-               count=count, duration=duration, rate=32 * 1024, observe=observe, expect_denial=unpaid)
+               count=count, duration=duration, rate=32 * 1024, observe=sample, expect_denial=unpaid)
         row['after'] = resources(self.phone)
         if minimum:
             row['payment_after'] = control(self.phone, 'status')
@@ -201,7 +203,7 @@ class PhoneTransitRun(PaidPhoneRun):
             phone_outage.impaired_transit(self)
             self.stream('background-after-loss')
             validate_reopened(self.journals('after-loss'), before, self.mint_url, self.expected_edges())
-            self.phase('original paid channels retained through packet loss and fresh recovery traffic')
+            self.phase('original paid channels retained through UDP impairment and fresh recovery traffic')
         else:
             self.stream('background')
         event = ('idle' if getattr(self.args, 'forced_idle', False) else

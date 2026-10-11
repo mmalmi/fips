@@ -553,8 +553,8 @@ def main():
                         help='verify paid foreground-service transit during and after forced Android Doze')
     parser.add_argument('--phone-outage', action='store_true',
                         help='cut one phone UDP link, verify peer loss, then recover original paid channels')
-    parser.add_argument('--impaired-transit', action='store_true',
-                        help='drop every twentieth packet on one phone link during sustained transit')
+    parser.add_argument('--impaired-transit', nargs='?', const='drop', choices=('drop', 'corrupt'),
+                        help='drop isolated packets or corrupt eight-frame bursts on one phone UDP link')
     parser.add_argument('--phone-renewal', action='store_true',
                         help='renew near expiry, hold the old mint reply and reconnect phone Wi-Fi')
     parser.add_argument(
