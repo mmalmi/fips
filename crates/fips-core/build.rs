@@ -46,7 +46,9 @@ fn main() {
     if let Some(head_path) = git_output(&["rev-parse", "--git-path", "HEAD"]) {
         println!("cargo:rerun-if-changed={head_path}");
     } else {
-        println!("cargo:rerun-if-changed=.git/HEAD");
+        // Source archives have no Git metadata. Watching a missing path would
+        // rerun this script and rebuild dependents on every Cargo invocation.
+        println!("cargo:rerun-if-changed=build.rs");
     }
     if let Some(head_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"])
         && let Some(head_ref_path) = git_output(&["rev-parse", "--git-path", &head_ref])
