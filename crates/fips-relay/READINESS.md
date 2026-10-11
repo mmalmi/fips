@@ -6141,6 +6141,20 @@ current-device acceptance remain separate requirements.
 
 ### Wallet read bounds
 
+Native CDK `f5c260e5` extends the existing configured proof-read limit to ordinary
+`get_proofs` lists. Mint, currency and state select the candidate rows in SQL;
+the existing aggregate budget rejects oversized payloads before driver projection.
+Spending-condition filtering follows that bounded read. Corrupt selected records
+fail with stored evidence intact instead of silently disappearing. The SDK already
+configures this policy on database opens; no new setting or wire message is needed.
+The two regressions fail on the preceding implementation and pass with the fix.
+All 275 SQLite and eight SQL-common library tests, focused formatting and strict
+lint pass on Linux in a narrowed build-only workspace with its recorded lockfile
+(`work/proof-list-bounds-r438`). The default unconfigured CDK behavior remains
+unchanged. This bounds returned proof payloads, not SQL-engine memory or scan time.
+The r435 binaries used by physical r437 precede this database change; matching
+device-build and complete FIPS source-graph qualification remain outstanding.
+
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
 currency, in indexed pages of at most 128 records and 4 MiB of stored payload. Oversized pages
 shrink; a single oversized or corrupt selected record fails with evidence intact.
