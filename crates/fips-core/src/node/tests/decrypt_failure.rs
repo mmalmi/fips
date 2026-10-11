@@ -9,6 +9,141 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+#[tokio::test]
+async fn bad_udp_ciphertext_cannot_rekey_a_live_peer() {
+    use spanning_tree::*;
+
+    let mut nodes = vec![make_test_node().await, make_test_node().await];
+    initiate_handshake(&mut nodes, 1, 0).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    let identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    let peer = nodes[0].node.get_peer_mut(identity.node_addr()).unwrap();
+    peer.set_session_established_at_for_test(Instant::now() - Duration::from_secs(31));
+    let original = (peer.link_id(), peer.our_index(), peer.session_generation());
+    let mut invalid = vec![0; 32];
+    invalid[4..8].copy_from_slice(&peer.our_index().unwrap().as_u32().to_le_bytes());
+    // The socket supplies the exact legitimate source address, modeling what
+    // an address-spoofed datagram exposes to FIPS without requiring raw sockets.
+    for counter in 1_000_000_u64..1_000_008 {
+        invalid[8..16].copy_from_slice(&counter.to_le_bytes());
+        nodes[1].node.transports[&nodes[1].transport_id]
+            .send(&nodes[0].addr, &invalid)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let packet = nodes[0].packet_rx.recv().await.unwrap();
+                let selected = packet.data.as_slice() == invalid;
+                process_dataplane_packet(&mut nodes[0], packet).await;
+                if selected {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let peer = nodes[0].node.get_peer(identity.node_addr()).unwrap();
+    assert!(
+        !peer.rekey_in_progress(),
+        "bad ciphertext must not rekey a live UDP peer"
+    );
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(
+        (peer.link_id(), peer.our_index(), peer.session_generation()),
+        original
+    );
+
+    // Queue a valid heartbeat and bad ciphertext in one control turn. Even
+    // previously expired liveness must be refreshed before recovery decisions.
+    let mut turn = crate::dataplane::DataplaneLiveNodeTurn::default();
+    for counter in 2_000_000_u64..2_000_008 {
+        invalid[8..16].copy_from_slice(&counter.to_le_bytes());
+        let packet = crate::transport::ReceivedPacket::with_timestamp(
+            nodes[0].transport_id,
+            nodes[1].addr.clone(),
+            crate::transport::PacketBuffer::new(invalid.clone()),
+            Node::now_ms(),
+        );
+        turn.absorb(collect_dataplane_ready_turn(&mut nodes[0].node, Some(packet)).await);
+    }
+    let receiver = *nodes[0].node.node_addr();
+    nodes[1]
+        .node
+        .send_dataplane_fmp_link_plaintext(
+            &receiver,
+            &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
+            false,
+        )
+        .await
+        .unwrap();
+    let heartbeat = tokio::time::timeout(Duration::from_secs(1), nodes[0].packet_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    turn.absorb(collect_dataplane_ready_turn(&mut nodes[0].node, Some(heartbeat)).await);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while turn.drops().len() < 8 || turn.fmp_link_ingress().is_empty() {
+            let ready = nodes[0].node.dataplane.readiness_notify();
+            turn.absorb(collect_dataplane_ready_turn(&mut nodes[0].node, None).await);
+            if turn.drops().len() < 8 || turn.fmp_link_ingress().is_empty() {
+                ready.notified().await;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(turn.drops().len(), 8);
+    nodes[0]
+        .node
+        .get_peer_mut(identity.node_addr())
+        .unwrap()
+        .touch(Node::now_ms().saturating_sub(31_000));
+    seed_dataplane_fmp_rx_for_test(
+        &mut nodes[0].node,
+        *identity.node_addr(),
+        Duration::from_secs(31),
+    );
+    nodes[0]
+        .node
+        .process_dataplane_control_ingress(&mut turn)
+        .await;
+    let peer = nodes[0].node.get_peer(identity.node_addr()).unwrap();
+    assert!(
+        !peer.rekey_in_progress(),
+        "authenticated work must precede same-turn failures"
+    );
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(
+        (peer.link_id(), peer.our_index(), peer.session_generation()),
+        original
+    );
+
+    populate_all_coord_caches(&mut nodes);
+    let mut endpoint = nodes[1].node.attach_endpoint_data_io(8).unwrap();
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        identity,
+        b"live UDP owner".to_vec(),
+    )
+    .await
+    .unwrap();
+    let event = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint.event_rx,
+        Duration::from_secs(2),
+        "live UDP owner delivery",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(event)
+            .payload
+            .as_slice(),
+        b"live UDP owner"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
 async fn make_started_udp_transport(id: u32) -> TransportHandle {
     let (packet_tx, _packet_rx) = packet_channel(64);
     let transport_id = TransportId::new(id);
@@ -236,57 +371,24 @@ async fn test_dataplane_decrypt_failures_suppressed_during_post_auth_fresh_sessi
 }
 
 #[tokio::test]
-async fn test_dataplane_decrypt_failures_count_after_post_auth_grace() {
-    const THRESHOLD: u32 = 4;
-
-    let mut node = make_node();
-    let transport_id = TransportId::new(1);
-    let link_id = LinkId::new(1);
-
-    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
-    let node_addr = *identity.node_addr();
-
-    node.add_connection(conn).unwrap();
-    node.promote_connection(link_id, identity, 2_000).unwrap();
-    node.get_peer_mut(&node_addr)
-        .expect("promoted peer")
-        .set_session_established_at_for_test(Instant::now() - Duration::from_secs(11));
-
-    for counter in 1..=THRESHOLD {
-        node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter as u64, 1)
-            .await;
+async fn dataplane_decrypt_failures_recover_after_configured_liveness_timeout() {
+    for replay_highest in [0, 1] {
+        let mut node = make_node();
+        node.config.node.link_dead_timeout_secs = 5;
+        let transport_id = TransportId::new(1);
+        let link_id = LinkId::new(1);
+        let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+        let node_addr = *identity.node_addr();
+        node.add_connection(conn).unwrap();
+        node.promote_connection(link_id, identity, 2_000).unwrap();
+        seed_dataplane_fmp_rx_for_test(&mut node, node_addr, Duration::from_secs(6));
+        for counter in 1..=4 {
+            node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter, replay_highest)
+                .await;
+        }
+        assert!(
+            node.get_peer(&node_addr).is_none(),
+            "expired liveness must still permit recovery for an unauthenticating peer"
+        );
     }
-
-    assert!(
-        node.get_peer(&node_addr).is_none(),
-        "dataplane failures must trigger recovery/removal after the post-auth stale drain grace"
-    );
-}
-
-#[tokio::test]
-async fn test_dataplane_decrypt_failures_count_after_fresh_session_grace() {
-    const THRESHOLD: u32 = 4;
-
-    let mut node = make_node();
-    let transport_id = TransportId::new(1);
-    let link_id = LinkId::new(1);
-
-    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
-    let node_addr = *identity.node_addr();
-
-    node.add_connection(conn).unwrap();
-    node.promote_connection(link_id, identity, 2_000).unwrap();
-    node.get_peer_mut(&node_addr)
-        .expect("promoted peer")
-        .set_session_established_at_for_test(Instant::now() - Duration::from_secs(31));
-
-    for counter in 1..=THRESHOLD {
-        node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter as u64, 0)
-            .await;
-    }
-
-    assert!(
-        node.get_peer(&node_addr).is_none(),
-        "fresh-session grace must be bounded so true key mismatch still recovers"
-    );
 }

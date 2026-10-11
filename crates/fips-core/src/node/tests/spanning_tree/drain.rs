@@ -85,6 +85,17 @@ pub(in crate::node::tests) async fn process_dataplane_packet_once(
 }
 
 async fn process_dataplane_ready_turn(node: &mut Node, packet: Option<ReceivedPacket>) -> usize {
+    let mut turn = collect_dataplane_ready_turn(node, packet).await;
+    let had_activity = turn.has_activity();
+    let processed = finish_synthetic_dataplane_turn(node, &mut turn).await;
+    usize::from(had_activity || processed > 0)
+}
+
+/// Collect real receive/crypto work without running its control handlers yet.
+pub(in crate::node::tests) async fn collect_dataplane_ready_turn(
+    node: &mut Node,
+    packet: Option<ReceivedPacket>,
+) -> crate::dataplane::DataplaneLiveNodeTurn {
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
@@ -98,7 +109,7 @@ async fn process_dataplane_ready_turn(node: &mut Node, packet: Option<ReceivedPa
         &mut tun_rx,
         &endpoint_tx,
     );
-    let mut turn = if let Some(packet) = packet {
+    if let Some(packet) = packet {
         Box::pin(node.drain_dataplane_turn_with_firsts(
             &mut io,
             crate::dataplane::DataplaneLiveTurnFirsts {
@@ -110,10 +121,7 @@ async fn process_dataplane_ready_turn(node: &mut Node, packet: Option<ReceivedPa
         .await
     } else {
         Box::pin(node.drain_dataplane_completion_turn(&mut io, 64)).await
-    };
-    let had_activity = turn.has_activity();
-    let processed = finish_synthetic_dataplane_turn(node, &mut turn).await;
-    usize::from(had_activity || processed > 0)
+    }
 }
 
 async fn process_dataplane_turn(

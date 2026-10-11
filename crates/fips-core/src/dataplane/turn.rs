@@ -955,7 +955,7 @@ impl DataplaneLiveNodeTurn {
             || self.transport_dropped > 0
     }
 
-    fn absorb(&mut self, mut other: Self) {
+    pub(crate) fn absorb(&mut self, mut other: Self) {
         self.summary.absorb(other.summary);
         self.fmp_control_ingress.append(&mut other.fmp_control_ingress);
         self.fmp_ingress_receipts.append(&mut other.fmp_ingress_receipts);

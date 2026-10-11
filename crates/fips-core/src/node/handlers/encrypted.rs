@@ -4,19 +4,12 @@
 //! the shared decrypt-failure recovery policy.
 
 use crate::node::Node;
+use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
-/// Start link-session recovery after this many consecutive FMP AEAD failures.
+/// Start link-session recovery after this many consecutive FMP AEAD failures
+/// once the existing authenticated link-liveness window has expired.
 const DECRYPT_FAILURE_THRESHOLD: u32 = 4;
-/// Newly established sessions can briefly receive stale encrypted packets from
-/// the peer's previous link session after restart, rekey, roaming, or NAT
-/// traversal handoff. Until one packet authenticates on the new replay window,
-/// treat those first failures as stale drain noise.
-const DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS: u64 = 30;
-/// After the first authenticated packet on a fresh session, a smaller stale
-/// ciphertext tail can still arrive from packets already queued against the old
-/// epoch/index. Do not let that tail immediately start another recovery rekey.
-const DECRYPT_FAILURE_POST_AUTH_GRACE_SECS: u64 = 10;
 
 enum DecryptFailureAction {
     None,
@@ -140,20 +133,22 @@ impl Node {
         let Some(peer) = self.peers.get(source_node_addr) else {
             return false;
         };
-        let session_age = peer.session_established_at().elapsed();
-        let grace_secs = if fmp_replay_highest == 0 {
-            DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS
-        } else {
-            DECRYPT_FAILURE_POST_AUTH_GRACE_SECS
-        };
-        if session_age.as_secs() < grace_secs {
+        // A matching source address does not authenticate a failed datagram.
+        // Reuse heartbeat liveness, including completed dataplane receive work,
+        // so forged packets cannot rekey a healthy peer between control turns.
+        let quiet_for = self.direct_path_liveness_quiet_for(
+            source_node_addr,
+            peer,
+            Instant::now(),
+            Self::now_ms(),
+        );
+        if quiet_for < Duration::from_secs(self.config.node.link_dead_timeout_secs) {
             trace!(
                 peer = %self.peer_display_name(source_node_addr),
                 counter = fmp_counter,
                 replay_highest = fmp_replay_highest,
-                session_age_ms = session_age.as_millis(),
-                grace_secs,
-                "Ignoring likely stale FMP AEAD failure during fresh-session drain window"
+                quiet_ms = quiet_for.as_millis(),
+                "Ignoring unauthenticated FMP failure while the link remains live"
             );
             return true;
         }

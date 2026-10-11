@@ -492,7 +492,7 @@ impl Node {
         ))
     }
 
-    fn direct_path_liveness_quiet_for(
+    pub(in crate::node) fn direct_path_liveness_quiet_for(
         &self,
         node_addr: &NodeAddr,
         peer: &ActivePeer,

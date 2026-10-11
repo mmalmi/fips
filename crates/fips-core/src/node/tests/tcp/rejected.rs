@@ -122,6 +122,18 @@ async fn assert_rejected_record(mut invalid: Vec<u8>, use_owned_index: bool) {
             .our_index()
             .unwrap();
         invalid[4..8].copy_from_slice(&index.as_u32().to_le_bytes());
+        // Keep this carrier-ownership check outside heartbeat liveness as well
+        // as startup grace, so a second protection cannot mask the regression.
+        nodes[0]
+            .node
+            .get_peer_mut(identity.node_addr())
+            .unwrap()
+            .touch(Node::now_ms().saturating_sub(31_000));
+        seed_dataplane_fmp_rx_for_test(
+            &mut nodes[0].node,
+            *identity.node_addr(),
+            Duration::from_secs(31),
+        );
     }
 
     // A rejected frame on an already owned carrier must not revoke that owner.
@@ -171,6 +183,13 @@ async fn assert_rejected_record(mut invalid: Vec<u8>, use_owned_index: bool) {
         );
     }
 
+    // Resume the live owner's clock before ordinary topology maintenance.
+    nodes[0]
+        .node
+        .get_peer_mut(identity.node_addr())
+        .unwrap()
+        .touch(Node::now_ms());
+    seed_dataplane_fmp_rx_for_test(&mut nodes[0].node, *identity.node_addr(), Duration::ZERO);
     nodes.push(make_test_node_tcp().await);
     initiate_handshake(&mut nodes, 2, 0).await;
     assert!(drain_all_packets(&mut nodes, false).await > 0);

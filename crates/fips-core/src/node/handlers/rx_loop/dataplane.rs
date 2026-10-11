@@ -166,19 +166,6 @@ impl Node {
         let mut processed = 0usize;
         self.collect_deferred_session_forward_terminals(turn);
         processed = processed.saturating_add(self.finish_completed_session_forwards().await);
-        let fmp_crypto_failures: Vec<_> = turn
-            .drops()
-            .iter()
-            .filter_map(|drop| self.dataplane_fmp_crypto_failure(drop))
-            .collect();
-        for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
-            if self
-                .handle_dataplane_fmp_decrypt_failure(&source_addr, counter, authenticated_highest)
-                .await
-            {
-                processed += 1;
-            }
-        }
         for receipt in turn.take_fmp_ingress_receipts() {
             if self.record_dataplane_fmp_ingress_receipt(&receipt) {
                 processed += 1;
@@ -219,6 +206,21 @@ impl Node {
         );
         for control in turn.take_fmp_control_ingress() {
             if self.process_dataplane_fmp_control_ingress(control).await {
+                processed += 1;
+            }
+        }
+        // Authenticated work in this turn refreshes liveness before failed
+        // ciphertext can request recovery of an otherwise healthy link.
+        let fmp_crypto_failures: Vec<_> = turn
+            .drops()
+            .iter()
+            .filter_map(|drop| self.dataplane_fmp_crypto_failure(drop))
+            .collect();
+        for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
+            if self
+                .handle_dataplane_fmp_decrypt_failure(&source_addr, counter, authenticated_highest)
+                .await
+            {
                 processed += 1;
             }
         }
