@@ -351,8 +351,8 @@ the journal or supply invented zero fees. Legacy reconciliation and migration ar
 outside this greenfield milestone. Fresh test profiles must explicitly configure
 the two new policy fields. Settlement peers need the same updated report format.
 
-This source requires the unreleased local cashu-service, CDK, Spilman and TCP/FIPS changes;
-the published dependency pins cannot build the funding adapter yet. Use the
+This source requires the unreleased local cashu-service, CDK and Spilman changes;
+the published payment dependency pins cannot build the funding adapter yet. Use the
 cashu-service development override example, adding the local `cashu-service`
 crate path to `[patch.crates-io]`. Keep machine-specific overrides outside the
 repository and record exact revisions. Dependency release/version updates remain
@@ -365,14 +365,16 @@ still have more history. This bounds receipt enumeration without truncating the
 independent checks that protect coin and receipt ownership. Use matched SDK/CDK
 sources; the published versions do not provide this storage contract.
 
-The TCP stack and endpoint override must include `set_connection_reservation`.
-Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace pins
-their versions in `Cargo.toml`. Use a matching development checkout whose
-endpoint requires this workspace's FIPS core version. The published TCP
-packages do not yet include the reservation API, so a matching development
-checkout is still required. Shared Rust/TypeScript admission vectors and live
-interoperability checks cover this local policy; the wire encoding is unchanged.
-Publishing the remaining development APIs is a distribution requirement,
+The accepted dependency graph uses published `nvpn-fips-tcp` 0.2.4 with
+`nvpn-fips-tcp-endpoint` 0.2.23. The TCP reservation API is included in the
+qualified registry archive; a development TCP override is no longer required.
+Retain the accepted endpoint source override and keep its workspace-core version
+matched, including the workspace's `nvpn-fips-core` patch, so forwarding policy
+uses one core implementation.
+The [registry integration checks](READINESS.md#scope-and-outstanding-acceptance)
+cover that graph. Shared Rust/TypeScript admission vectors and live
+interoperability checks cover the admission policy; the wire encoding is unchanged.
+Publishing the remaining payment development APIs is a distribution requirement,
 separate from these matching-graph development tests.
 
 ### Portable development source bundle
@@ -414,8 +416,12 @@ The current development graph also patches the eight CDK packages `cashu`, `cdk`
 `cdk-axum`, `cdk-common`, `cdk-http-client`, `cdk-signatory`, `cdk-sql-common` and
 `cdk-sqlite` from their corresponding `crates/<package>` directories; Spilman's
 `cdk-spilman` from `crates/cdk-spilman`; `bitreq` from `bitreq`; and
-`nvpn-fips-tcp`/`nvpn-fips-tcp-endpoint` from `rust/fips-tcp`/`rust/fips-tcp-endpoint`.
-Each repository gets one dependency entry with its exact audited revision. The
+`nvpn-fips-tcp-endpoint` from `rust/fips-tcp-endpoint`.
+Earlier portable bundles also carried TCP and endpoint source siblings. The
+current qualified TCP sibling is the unmodified 0.2.4 registry archive; preserve
+that source identity when reproducing the accepted graph, whether vendored or
+resolved from the registry. Keep endpoint 0.2.23 matched to the workspace core.
+Each local repository gets one dependency entry with its exact audited revision. The
 generated manifest records those revisions and the tested lock digest without
 copying the private input paths or specification.
 

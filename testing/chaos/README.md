@@ -1262,6 +1262,16 @@ then fresh paid delivery after removing the filter. This mode runs separately
 from idle, screen-off, outage and renewal workloads. It tests packet loss on the
 existing LAN, not physical radio movement or Android network suspension.
 
+Use `--impaired-transit corrupt` for the same workload with eight consecutive
+established FMP frames corrupted out of every 100 matches in each direction.
+The filter flips a ciphertext bit and disables the IPv4 UDP checksum so native
+AEAD verification sees the damage. Scoped router logs must show an eight-frame
+failure burst without triggering recovery. Both mature peers must retain their
+keys through that first burst; the five-minute window allows normal scheduled
+key rotation but requires unchanged peer identity, link and authentication time.
+Filter counters, full stream delivery, payment progress and cleanup remain
+required. This modifies real peer packets; it does not send spoofed IP packets.
+
 Add `--phone-restart` to split the same eight-packet workload into two cohorts,
 each with two packets in each direction. After the first cohort is delivered
 and paid, the harness records the app process identity, force-stops that exact
