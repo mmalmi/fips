@@ -147,6 +147,56 @@ class PaidWifiTests(unittest.TestCase):
                 CrowdedWifiRun(SimpleNamespace(crowded_rejoin=count, crowded_pressure=True))
             setup.assert_not_called()
 
+    def test_identity_groups_stop_before_starting_fresh_candidates(self):
+        events = []
+        def profile(name):
+            peer = Mock(npub=name)
+            peer.stop.side_effect = lambda: events.append(('stop', name))
+            peer.start.side_effect = lambda: events.append(('start', name))
+            peer.monetary_journals.return_value = {}
+            peer.native.return_value = dict(status='ok', data=dict(transports=[
+                dict(type='udp', stats=dict(packets_sent=1))]))
+            return peer
+        run = SimpleNamespace(nodes={name: Mock(npub=name) for name in ('n01', 'n02', 'n03')},
+                              idle=profile('idle'), evidence={'admission_pressure': {'waves': []}},
+                              provider_udp='192.168.1.2:5000', save=Mock())
+        for node in run.nodes.values():
+            node.add_profile.side_effect = profile
+        pressure = AdmissionPressure(run, waves=4)
+        pressure.original = dict.fromkeys(pressure.peers, {})
+        self.assertEqual(len(pressure.peers), 29)
+        with patch('sim.wifi_admission_pressure.configure_stopped'):
+            for wave in range(4):
+                if wave == 1:
+                    old = pressure.peers['pressure-1']
+                    stop = old.stop.side_effect
+                    old.stop.side_effect = RuntimeError('stop failed')
+                    events.clear()
+                    with self.assertRaisesRegex(RuntimeError, 'stop failed'):
+                        pressure.next_wave()
+                    self.assertFalse(events, 'no new group may start before every old candidate stops')
+                    self.assertEqual(pressure.wave, 0)
+                    old.stop.side_effect = stop
+                events.clear()
+                pressure.next_wave()
+                self.assertEqual(len(pressure.active), 8)
+                if wave:
+                    self.assertEqual([kind for kind, _ in events], ['stop'] * 7 + ['start'] * 7)
+                else:
+                    self.assertEqual([kind for kind, _ in events], ['start'] * 7)
+        run.idle.stop.assert_not_called()
+        run.nodes['n02'].add_profile.assert_not_called()
+        identities = [name for wave in run.evidence['admission_pressure']['waves']
+                      for name in wave['identities'].values() if name != 'idle']
+        self.assertEqual(len(set(identities)), 28)
+        for wave in run.evidence['admission_pressure']['waves']:
+            self.assertEqual(set(wave['initial_candidates']), set(wave['identities']) - {'idle'})
+            self.assertTrue(all(row['udp_packets_sent'] == 1
+                                for row in wave['initial_candidates'].values()))
+        for count in (0, 5, True):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                AdmissionPressure(run, waves=count)
+
     def test_join_pressure_rejects_process_changes_and_exceeded_trial_ceilings(self):
         first = dict(native=dict(status=dict(data=dict(peer_count=2, connection_count=2))),
                      host_process=dict(pid=10, start_ticks=100, peak_rss_kib=12_000))
@@ -167,9 +217,9 @@ class PaidWifiTests(unittest.TestCase):
     def test_candidate_view_is_recorded_without_claiming_provider_admission(self):
         pressure = object.__new__(AdmissionPressure)
         pressure.run = SimpleNamespace(nodes={'n02': SimpleNamespace(npub='provider')})
-        peer = Mock()
-        pressure.peers = {'idle': peer}
-        status = dict(purchases=[], history=[], locked_sat=0, remaining_budget_sat=64,
+        peer = Mock(npub='candidate')
+        pressure.active = {'idle': peer}
+        status = dict(npub='candidate', purchases=[], history=[], locked_sat=0, remaining_budget_sat=64,
                       funding_budget={}, watched_routes=[],
                       peers=[dict(npub='provider', connected=False, transport='udp')])
         peer.control.return_value = status

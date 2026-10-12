@@ -314,8 +314,8 @@ def main():
                         help='select the elected root, observe its replacement and require the original tree after rejoin')
     parser.add_argument('--crowded-rejoin', nargs='?', type=int, choices=(1, 2, 3), const=1, default=0,
                         help='repeat crowded radio recovery one to three times, retaining useful peers and paid channels')
-    parser.add_argument('--crowded-pressure', action='store_true',
-                        help='after one crowded rejoin, keep eight unfunded candidates retrying during two minutes of paid traffic')
+    parser.add_argument('--crowded-pressure', nargs='?', type=int, choices=(1, 2, 3, 4), const=1, default=0,
+                        help='after one crowded rejoin, retry admission with one to four fresh identity groups')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:

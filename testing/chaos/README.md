@@ -577,6 +577,16 @@ payload hashes independently of the strict paid probes. Failed probes retain
 partial delivery counts and service observations; cleanup preserves the first
 failure while still restoring the radio and stopping the sender.
 
+Use `--crowded-pressure 4` for four successive groups of seven fresh identities
+plus the original idle candidate. Each group stops before the next starts, keeping
+at most eight candidates running. All 29 distinct accounts remain unfunded and
+retain their financial journals. This mode runs five minutes of paid traffic;
+every fresh candidate must send join traffic across three observations, including
+an actual startup counter reading before its retry backoff grows. The
+same original payment channels, capital limits and cleanup guard remain in use.
+Its 120,000-byte quote at 256 msat/KiB has the same 30-sat maximum charge as
+the single-group quote, allowing for the longer stream and charged FSP overhead.
+
 Add `--crowded-pressure` to one `--crowded-rejoin` for eight unfunded identities
 retrying the middle router over management-bound UDP while the original radio
 route carries 120 40-byte paid packets in each direction at one per second.

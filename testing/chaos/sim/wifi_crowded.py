@@ -31,8 +31,11 @@ class CrowdedWifiRun(PaidWifiRun):
         self.pressure = None
         if getattr(args, 'crowded_pressure', False):
             from .wifi_admission_pressure import AdmissionPressure
-            self.pressure = AdmissionPressure(self)
-            self.quote_max_units = 60_000
+            self.pressure = AdmissionPressure(self, waves=int(args.crowded_pressure))
+            # Longer churn includes charged FSP overhead. Keep the maximum
+            # quote charge at 30 sats inside the original 32-sat channels.
+            self.quote_max_units, self.pressure_fee = (
+                (60_000, 512) if self.pressure.wave_count == 1 else (120_000, 256))
         self.addresses = {}
         self.provider_udp = None
         self.evidence.update(acceptance_kind='paid_crowded_radio_rejoin',
@@ -69,7 +72,7 @@ class CrowdedWifiRun(PaidWifiRun):
             config.update(max_peers=2, neighbor_rotation=dict(idle_secs=2, interval_secs=2))
             config['transports']['udp'] = self.udp_config('n02')
         if self.pressure:
-            config['terms'].update(fee_msat_per_kib=512, quote_max_units=self.quote_max_units)
+            config['terms'].update(fee_msat_per_kib=self.pressure_fee, quote_max_units=self.quote_max_units)
         return config
 
     def before_launch(self):
