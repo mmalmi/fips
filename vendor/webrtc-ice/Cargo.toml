@@ -31,11 +31,6 @@ repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n
 name = "webrtc_ice"
 path = "src/lib.rs"
 
-[[example]]
-name = "ping_pong"
-path = "examples/ping_pong.rs"
-bench = false
-
 [dependencies.arc-swap]
 version = "1"
 
@@ -115,15 +110,8 @@ version = "0.1"
 [dev-dependencies.chrono]
 version = "0.4.28"
 
-[dev-dependencies.clap]
-version = "3"
-
 [dev-dependencies.env_logger]
 version = "0.11.3"
-
-[dev-dependencies.hyper]
-version = "0.14.27"
-features = ["full"]
 
 [dev-dependencies.ipnet]
 version = "2"

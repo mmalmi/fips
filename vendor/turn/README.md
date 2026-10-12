@@ -3,7 +3,8 @@
 This package preserves the upstream 0.17.1 protocol implementation. Its package
 dependencies explicitly select the Nostr VPN native socket policy extension so
 registry installations receive the same socket and DNS hooks as local builds.
-The upstream source and licenses are retained below and alongside this file.
+The upstream library source and licenses are retained below and alongside this file.
+Unused upstream command-line demos are omitted from this library fork.
 
 <h1 align="center">
  <a href="https://webrtc.rs"><img src="./doc/webrtc.rs.png" alt="WebRTC.rs"></a>

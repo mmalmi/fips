@@ -34,16 +34,6 @@ metrics = []
 name = "turn"
 path = "src/lib.rs"
 
-[[example]]
-name = "turn_client_udp"
-path = "examples/turn_client_udp.rs"
-bench = false
-
-[[example]]
-name = "turn_server_udp"
-path = "examples/turn_server_udp.rs"
-bench = false
-
 [[bench]]
 name = "bench"
 path = "benches/bench.rs"
@@ -107,9 +97,6 @@ features = [
     "vnet",
 ]
 default-features = false
-
-[dev-dependencies.clap]
-version = "3"
 
 [dev-dependencies.criterion]
 version = "0.5"
