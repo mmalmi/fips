@@ -53,8 +53,10 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -130,6 +132,7 @@ pub struct TorTransport {
     name: Option<String>,
     /// Configuration.
     config: TorConfig,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     /// Current state.
     state: TransportState,
     /// Connection pool: addr -> per-connection state.
@@ -154,6 +157,14 @@ pub struct TorTransport {
 }
 
 impl TorTransport {
+    pub(crate) fn with_host_network(
+        mut self,
+        policy: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Self {
+        self.host_network = policy;
+        self
+    }
+
     /// Create a new Tor transport.
     pub fn new(
         transport_id: TransportId,
@@ -165,6 +176,7 @@ impl TorTransport {
             transport_id,
             name,
             config,
+            host_network: None,
             state: TransportState::Configured,
             pool: ConnectionPool::default(),
             connecting: ConnectingPool::default(),
@@ -278,12 +290,15 @@ impl TorTransport {
         }
 
         // Connect to Tor control port
-        let mut client = TorControlClient::connect(&control_addr)
-            .await
-            .map_err(|e| {
-                self.stats.record_control_error();
-                TransportError::StartFailed(format!("Tor control port: {}", e))
-            })?;
+        let mut client = TorControlClient::connect_with_host_network(
+            &control_addr,
+            self.host_network.as_deref(),
+        )
+        .await
+        .map_err(|e| {
+            self.stats.record_control_error();
+            TransportError::StartFailed(format!("Tor control port: {}", e))
+        })?;
 
         // Authenticate
         let auth = ControlAuth::from_config(self.config.control_auth(), self.config.cookie_path())
@@ -335,12 +350,15 @@ impl TorTransport {
 
         // Bind local listener (must match HiddenServicePort target in torrc)
         let bind_addr = dir_config.bind_addr();
-        let listener = TcpListener::bind(bind_addr).await.map_err(|e| {
-            TransportError::StartFailed(format!(
-                "failed to bind directory-mode listener on {}: {}",
-                bind_addr, e
-            ))
-        })?;
+        let listener =
+            crate::host_network::listen_tcp_host(self.host_network.as_deref(), bind_addr)
+                .await
+                .map_err(|e| {
+                    TransportError::StartFailed(format!(
+                        "failed to bind directory-mode listener on {}: {}",
+                        bind_addr, e
+                    ))
+                })?;
         let local_addr = listener
             .local_addr()
             .map_err(|e| TransportError::StartFailed(format!("failed to get local addr: {}", e)))?;
@@ -390,7 +408,12 @@ impl TorTransport {
             return;
         }
 
-        let client = match TorControlClient::connect(&control_addr).await {
+        let client = match TorControlClient::connect_with_host_network(
+            &control_addr,
+            self.host_network.as_deref(),
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 warn!(
@@ -615,26 +638,13 @@ impl TorTransport {
         let isolation_key = addr.to_string();
         let connect_start = Instant::now();
         let socks_result = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-            match &tor_addr {
-                TorAddr::Onion(host, port) | TorAddr::ClearnetHostname(host, port) => {
-                    Socks5Stream::connect_with_password(
-                        proxy_addr,
-                        (host.as_str(), *port),
-                        "fips",
-                        &isolation_key,
-                    )
-                    .await
-                }
-                TorAddr::Clearnet(socket_addr) => {
-                    Socks5Stream::connect_with_password(
-                        proxy_addr,
-                        *socket_addr,
-                        "fips",
-                        &isolation_key,
-                    )
-                    .await
-                }
-            }
+            connect_socks(
+                self.host_network.as_deref(),
+                proxy_addr,
+                &tor_addr,
+                &isolation_key,
+            )
+            .await
         })
         .await;
 
@@ -778,30 +788,18 @@ impl TorTransport {
             return Ok(());
         }
 
+        let host_network = self.host_network.clone();
         let task = tokio::spawn(async move {
             // SOCKS5 CONNECT through proxy with timeout.
             // Uses username/password auth for stream isolation (see connect()).
             let socks_result = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-                match &tor_addr {
-                    TorAddr::Onion(host, port) | TorAddr::ClearnetHostname(host, port) => {
-                        Socks5Stream::connect_with_password(
-                            proxy_addr.as_str(),
-                            (host.as_str(), *port),
-                            "fips",
-                            &isolation_key,
-                        )
-                        .await
-                    }
-                    TorAddr::Clearnet(socket_addr) => {
-                        Socks5Stream::connect_with_password(
-                            proxy_addr.as_str(),
-                            *socket_addr,
-                            "fips",
-                            &isolation_key,
-                        )
-                        .await
-                    }
-                }
+                connect_socks(
+                    host_network.as_deref(),
+                    &proxy_addr,
+                    &tor_addr,
+                    &isolation_key,
+                )
+                .await
             })
             .await;
 
@@ -993,6 +991,30 @@ impl TorTransport {
                 direction = ?conn.direction,
                 "Tor connection closed"
             );
+        }
+    }
+}
+
+async fn connect_socks(
+    host_network: Option<&dyn crate::host_network::HostNetwork>,
+    proxy_addr: &str,
+    target: &TorAddr,
+    isolation_key: &str,
+) -> Result<Socks5Stream<TcpStream>, tokio_socks::Error> {
+    let socket = crate::host_network::connect_tcp_host(host_network, proxy_addr).await?;
+    match target {
+        TorAddr::Onion(host, port) | TorAddr::ClearnetHostname(host, port) => {
+            Socks5Stream::connect_with_password_and_socket(
+                socket,
+                (host.as_str(), *port),
+                "fips",
+                isolation_key,
+            )
+            .await
+        }
+        TorAddr::Clearnet(address) => {
+            Socks5Stream::connect_with_password_and_socket(socket, *address, "fips", isolation_key)
+                .await
         }
     }
 }

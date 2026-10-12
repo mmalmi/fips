@@ -2839,6 +2839,7 @@ dependencies = [
 name = "nvpn-fips-core"
 version = "0.4.98"
 dependencies = [
+ "async-wsocket",
  "base64",
  "bluer",
  "bytes",

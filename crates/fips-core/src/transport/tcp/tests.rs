@@ -71,7 +71,7 @@ async fn connect_to_any_addr_tries_later_candidates() {
     let bad_addr = unused_loopback_addr(good_addr.port()).await;
     let accept = tokio::spawn(async move { listener.accept().await });
 
-    let stream = connect_to_any_addr(&[bad_addr, good_addr], 1_000)
+    let stream = connect_to_any_addr(&[bad_addr, good_addr], 1_000, None)
         .await
         .expect("second TCP candidate should connect");
     drop(stream);

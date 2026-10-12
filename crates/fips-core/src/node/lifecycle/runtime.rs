@@ -67,8 +67,12 @@ impl Node {
         }
 
         if self.config.node.discovery.nostr.enabled {
-            match NostrDiscovery::start(&self.identity, self.config.node.discovery.nostr.clone())
-                .await
+            match NostrDiscovery::start_with_host_network(
+                &self.identity,
+                self.config.node.discovery.nostr.clone(),
+                self.host_network.clone(),
+            )
+            .await
             {
                 Ok(runtime) => {
                     if let Err(err) = self.refresh_overlay_advert(&runtime).await {
@@ -97,11 +101,12 @@ impl Node {
                 .find_map(|h| h.local_addr().map(|addr| addr.port()))
                 .unwrap_or(0);
             let scope = self.lan_discovery_scope();
-            match crate::discovery::lan::LanDiscovery::start(
+            match crate::discovery::lan::LanDiscovery::start_with_host_network(
                 &self.identity,
                 scope,
                 advertised_udp_port,
                 self.config.node.discovery.lan.clone(),
+                self.host_network.clone(),
             )
             .await
             {

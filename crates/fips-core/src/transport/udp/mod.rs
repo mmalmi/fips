@@ -18,7 +18,7 @@ mod stats;
     target_os = "macos"
 ))]
 pub(crate) mod underlay;
-use super::resolve_socket_addr;
+use super::resolve::resolve_socket_addr_with_network;
 use crate::config::UdpConfig;
 use crate::discovery::is_punch_packet;
 use socket::{AsyncUdpSocket, UdpRawSocket};
@@ -339,6 +339,7 @@ pub struct UdpTransport {
     name: Option<String>,
     /// Configuration.
     config: UdpConfig,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     /// Restrict an IPv6 wildcard socket when it has an explicit same-port
     /// IPv4 companion. Legacy single IPv6 transports retain dual-stack mode.
     ipv6_only: bool,
@@ -400,6 +401,7 @@ impl UdpTransport {
             transport_id,
             name,
             config,
+            host_network: None,
             ipv6_only: false,
             state: TransportState::Configured,
             socket: None,
@@ -416,6 +418,14 @@ impl UdpTransport {
             },
             dns_cache: StdMutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn with_host_network(
+        mut self,
+        network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Self {
+        self.host_network = network;
+        self
     }
 
     pub(crate) fn with_ipv6_only(mut self, ipv6_only: bool) -> Self {
@@ -525,7 +535,7 @@ impl UdpTransport {
         }
 
         // Cache miss or expired — resolve via DNS
-        let resolved = resolve_socket_addr(addr).await?;
+        let resolved = resolve_socket_addr_with_network(addr, self.host_network.as_deref()).await?;
 
         // Store in cache
         {
@@ -646,6 +656,8 @@ impl UdpTransport {
         raw_socket: UdpRawSocket,
         origin: UdpSocketOrigin,
     ) -> Result<(), TransportError> {
+        let protection = raw_socket.protect_host_network(self.host_network.as_deref());
+        self.require_start(protection)?;
         let actual_recv = self.require_start(raw_socket.recv_buffer_size())?;
         let actual_send = self.require_start(raw_socket.send_buffer_size())?;
         self.local_addr = Some(raw_socket.local_addr());

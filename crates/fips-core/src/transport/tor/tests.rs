@@ -1,5 +1,43 @@
 use super::*;
 use crate::transport::{Transport, packet_channel};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug)]
+struct CarrierPolicy {
+    address: SocketAddr,
+    denied: bool,
+    protected: AtomicUsize,
+}
+
+impl crate::host_network::HostNetwork for CarrierPolicy {
+    fn protect_socket(&self, socket: &socket2::SockRef<'_>) -> std::io::Result<()> {
+        assert_eq!(socket.local_addr()?.as_socket().unwrap().port(), 0);
+        self.protected.fetch_add(1, Ordering::SeqCst);
+        if self.denied {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        address: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Vec<SocketAddr>>> + Send + Sync + 'a>,
+    > {
+        Box::pin(async move {
+            assert_eq!(
+                address, "proxy.invalid:9050",
+                "destination DNS must stay at the proxy"
+            );
+            Ok(vec![self.address])
+        })
+    }
+}
 
 fn make_config() -> TorConfig {
     TorConfig {
@@ -272,11 +310,17 @@ async fn test_send_recv_via_socks5() {
     // Set up the Tor transport pointing at the mock proxy
     let (tor_tx, _tor_rx) = packet_channel(32);
     let tor_config = TorConfig {
-        socks5_addr: Some(proxy_addr.to_string()),
+        socks5_addr: Some("proxy.invalid:9050".to_string()),
         mtu: Some(220),
         ..Default::default()
     };
-    let mut tor = TorTransport::new(TransportId::new(200), None, tor_config, tor_tx);
+    let policy = Arc::new(CarrierPolicy {
+        address: proxy_addr,
+        denied: false,
+        protected: AtomicUsize::new(0),
+    });
+    let mut tor = TorTransport::new(TransportId::new(200), None, tor_config, tor_tx)
+        .with_host_network(Some(policy.clone()));
     tor.start_async().await.unwrap();
 
     // Establish the test connection with the original FMP handshake-shaped
@@ -306,6 +350,8 @@ async fn test_send_recv_via_socks5() {
         received_frames.push(received.data.as_slice().to_vec());
     }
     assert_eq!(received_frames, [direct, following]);
+
+    assert_eq!(policy.protected.load(Ordering::SeqCst), 1);
 
     // Clean up
     tor.stop_async().await.unwrap();
@@ -790,4 +836,43 @@ async fn test_socks5_mode_rejects_directory_service_config() {
     assert!(result.is_err());
     let err = format!("{}", result.unwrap_err());
     assert!(err.contains("directory"));
+}
+
+#[tokio::test]
+async fn denied_host_policy_blocks_tor_control_and_both_dial_paths_before_contact() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let policy = Arc::new(CarrierPolicy {
+        address: listener.local_addr().unwrap(),
+        denied: true,
+        protected: AtomicUsize::new(0),
+    });
+    let (tx, _rx) = packet_channel(1);
+    let mut tor = TorTransport::new(
+        TransportId::new(202),
+        None,
+        TorConfig {
+            socks5_addr: Some("proxy.invalid:9050".to_owned()),
+            ..Default::default()
+        },
+        tx,
+    )
+    .with_host_network(Some(policy.clone()));
+    tor.start_async().await.unwrap();
+    let target = TransportAddr::from_string("peer.invalid:2121");
+    assert!(tor.connect(&target).await.is_err());
+    tor.connect_async(&target).await.unwrap();
+    let entry = lock_pool(&tor.connecting).remove(&target).unwrap();
+    assert!(entry.task.await.unwrap().is_err());
+    assert!(
+        TorControlClient::connect_with_host_network("proxy.invalid:9050", Some(&*policy))
+            .await
+            .is_err()
+    );
+    assert_eq!(policy.protected.load(Ordering::SeqCst), 3);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+    tor.stop_async().await.unwrap();
 }

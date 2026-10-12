@@ -224,6 +224,26 @@ impl WebRtcTransport {
         identity: &crate::Identity,
         nostr_config: &NostrDiscoveryConfig,
     ) -> Result<Self, TransportError> {
+        Self::new_with_host_network(
+            transport_id,
+            name,
+            config,
+            packet_tx,
+            identity,
+            nostr_config,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_host_network(
+        transport_id: TransportId,
+        name: Option<String>,
+        config: WebRtcConfig,
+        packet_tx: PacketTx,
+        identity: &crate::Identity,
+        nostr_config: &NostrDiscoveryConfig,
+        host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Result<Self, TransportError> {
         let local_pubkey_hex = canonical_webrtc_pubkey_hex(identity.pubkey_full());
         let stun_servers = config.stun_servers(&nostr_config.stun_servers);
         validate_webrtc_candidate_socket_budget(config.max_connections(), &stun_servers)
@@ -236,11 +256,15 @@ impl WebRtcTransport {
         // The WebRTC crate allocates one multicast listener per ICE agent in
         // QueryOnly mode. Keep every peer connection fully disabled and resolve
         // browser `.local` candidates through one bounded transport owner.
-        let candidate_policy = CandidateAddressPolicy::system();
+        let candidate_policy =
+            CandidateAddressPolicy::system().with_host_network(host_network.clone());
         #[cfg(test)]
         let api = candidate_policy.build_api()?;
-        let mdns_resolver =
-            SharedMdnsResolver::new(config.resolve_mdns_candidates(), config.max_connections())?;
+        let mdns_resolver = SharedMdnsResolver::new_with_host_network(
+            config.resolve_mdns_candidates(),
+            config.max_connections(),
+            host_network,
+        )?;
 
         Ok(Self {
             transport_id,

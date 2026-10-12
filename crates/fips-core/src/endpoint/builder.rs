@@ -6,6 +6,7 @@ pub struct FipsEndpointBuilder {
     forwarding_policy: Option<Arc<dyn crate::node::ForwardingPolicy>>,
     originated_session_observer: Option<Arc<dyn crate::node::OriginatedSessionObserver>>,
     config: Config,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
     local_rendezvous: bool,
@@ -50,6 +51,7 @@ impl Default for FipsEndpointBuilder {
             forwarding_policy: None,
             originated_session_observer: None,
             config: Config::new(),
+            host_network: None,
             identity_nsec: None,
             discovery_scope: None,
             local_rendezvous: false,
@@ -79,6 +81,12 @@ impl FipsEndpointBuilder {
         observer: Arc<dyn crate::node::OriginatedSessionObserver>,
     ) -> Self {
         self.originated_session_observer = Some(observer);
+        self
+    }
+
+    /// Supply the host routing and resolver policy for carrier connections.
+    pub fn host_network(mut self, network: Arc<dyn crate::host_network::HostNetwork>) -> Self {
+        self.host_network = Some(network);
         self
     }
 
@@ -234,6 +242,7 @@ impl FipsEndpointBuilder {
             .map(|value| value.0.clone());
 
         let mut node = Node::new(config)?;
+        node.set_host_network(self.host_network.clone());
         node.set_forwarding_policy(self.forwarding_policy);
         node.set_originated_session_observer(self.originated_session_observer);
         node.set_local_instance_roles(self.local_instance_roles);
@@ -277,6 +286,7 @@ impl FipsEndpointBuilder {
         let inbound_service_tx = endpoint_data_io.service_event_tx;
 
         Ok(FipsEndpoint {
+            host_network: self.host_network,
             identity,
             npub,
             node_addr,

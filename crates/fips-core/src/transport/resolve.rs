@@ -14,7 +14,14 @@ use std::net::SocketAddr;
 pub(crate) async fn resolve_socket_addr(
     addr: &TransportAddr,
 ) -> Result<SocketAddr, TransportError> {
-    resolve_socket_addrs(addr)
+    resolve_socket_addr_with_network(addr, None).await
+}
+
+pub(crate) async fn resolve_socket_addr_with_network(
+    addr: &TransportAddr,
+    network: Option<&dyn crate::host_network::HostNetwork>,
+) -> Result<SocketAddr, TransportError> {
+    resolve_socket_addrs_with_network(addr, network)
         .await?
         .into_iter()
         .next()
@@ -32,8 +39,9 @@ pub(crate) async fn resolve_socket_addr(
 /// address order, and callers that establish connections should try more than
 /// one address so dual-stack hosts still work when one address family is
 /// temporarily broken.
-pub(crate) async fn resolve_socket_addrs(
+pub(crate) async fn resolve_socket_addrs_with_network(
     addr: &TransportAddr,
+    network: Option<&dyn crate::host_network::HostNetwork>,
 ) -> Result<Vec<SocketAddr>, TransportError> {
     let s = addr
         .as_str()
@@ -45,12 +53,11 @@ pub(crate) async fn resolve_socket_addrs(
     }
 
     // Slow path: DNS resolution
-    let addrs = tokio::net::lookup_host(s)
+    let addrs = crate::host_network::resolve(network, s)
         .await
         .map_err(|e| {
             TransportError::InvalidAddress(format!("DNS resolution failed for {}: {}", s, e))
-        })?
-        .collect::<Vec<_>>();
+        })?;
     if addrs.is_empty() {
         return Err(TransportError::InvalidAddress(format!(
             "DNS resolution returned no addresses for {}",

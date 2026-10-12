@@ -7,6 +7,7 @@ pub(crate) struct UdpNetworkRebindProbe {
     recv_buf_size: usize,
     send_buf_size: usize,
     ipv6_only: bool,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
 }
 
 impl UdpNetworkRebindProbe {
@@ -42,7 +43,7 @@ impl UdpNetworkRebindProbe {
             self.bind_interface.as_deref(),
             self.ipv6_only,
         )
-        .map(drop)
+        .and_then(|socket| socket.protect_host_network(self.host_network.as_deref()))
     }
 }
 
@@ -93,6 +94,7 @@ impl UdpTransport {
             recv_buf_size: self.config.recv_buf_size(),
             send_buf_size: self.config.send_buf_size(),
             ipv6_only: self.ipv6_only,
+            host_network: self.host_network.clone(),
         }))
     }
 }

@@ -146,7 +146,10 @@ impl NostrDiscovery {
             return None;
         }
         let bind_interface = self.bind_interface.read().await.clone();
-        let socket = match bind_traversal_udp_socket(bind_interface.as_deref()) {
+        let socket = match bind_traversal_udp_socket(
+            bind_interface.as_deref(),
+            self.host_network.as_deref(),
+        ) {
             Ok(s) => s,
             Err(err) => {
                 debug!(error = %err, "public-udp-addr: ephemeral bind failed");
@@ -158,6 +161,7 @@ impl NostrDiscovery {
             &self.config.stun_servers,
             false,
             ADVERT_STUN_TIMEOUT,
+            self.host_network.as_deref(),
         )
         .await
         {

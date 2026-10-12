@@ -470,7 +470,7 @@ async fn stun_observation_uses_first_success_without_waiting_for_dead_first_serv
 
     let started = std::time::Instant::now();
     let (mapped, stun_server) =
-        perform_stun_any(&client, &servers, std::time::Duration::from_secs(2))
+        perform_stun_any(&client, &servers, std::time::Duration::from_secs(2), None)
             .await
             .expect("second STUN server should answer");
 

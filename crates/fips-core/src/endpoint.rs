@@ -234,6 +234,7 @@ fn endpoint_data_payloads_from_vecs(
 
 /// A running embedded FIPS endpoint.
 pub struct FipsEndpoint {
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     identity: PeerIdentity,
     npub: String,
     node_addr: NodeAddr,
@@ -269,6 +270,11 @@ pub struct FipsEndpoint {
 }
 
 impl FipsEndpoint {
+    /// Carrier policy shared with application-owned control connections.
+    pub fn host_network(&self) -> Option<Arc<dyn crate::host_network::HostNetwork>> {
+        self.host_network.clone()
+    }
+
     /// Create a builder for an embedded endpoint.
     pub fn builder() -> FipsEndpointBuilder {
         FipsEndpointBuilder::default()

@@ -29,9 +29,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
-use tokio_tungstenite::{
-    WebSocketStream, accept_hdr_async_with_config, connect_async_tls_with_config,
-};
+use tokio_tungstenite::{WebSocketStream, accept_hdr_async_with_config};
 use tracing::{debug, info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +113,7 @@ impl Drop for ConnectionStatsGuard {
 struct Runtime {
     transport_id: TransportId,
     config: WebSocketConfig,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     local_pubkey: [u8; 32],
     packet_tx: PacketTx,
     pool: ConnectionPool,
@@ -209,6 +208,7 @@ impl WebSocketTransport {
         let runtime = Runtime {
             transport_id,
             config: config.clone(),
+            host_network: None,
             local_pubkey: identity.pubkey().serialize(),
             packet_tx,
             pool: Arc::new(StdMutex::new(HashMap::new())),
@@ -230,6 +230,14 @@ impl WebSocketTransport {
             runtime,
             draining_tasks: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_host_network(
+        mut self,
+        network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Self {
+        self.runtime.host_network = network;
+        self
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -291,9 +299,10 @@ impl WebSocketTransport {
             let bind_addr = bind_addr
                 .parse::<SocketAddr>()
                 .map_err(|error| TransportError::StartFailed(error.to_string()))?;
-            let listener = TcpListener::bind(bind_addr)
-                .await
-                .map_err(|error| TransportError::bind_failed(bind_addr, error))?;
+            let listener =
+                crate::host_network::listen_tcp(self.runtime.host_network.as_deref(), bind_addr)
+                    .await
+                    .map_err(|error| TransportError::bind_failed(bind_addr, error))?;
             self.local_addr = Some(
                 listener
                     .local_addr()

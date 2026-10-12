@@ -79,6 +79,7 @@ impl NostrDiscovery {
             bind_interface: RwLock::new(config.bind_interface.clone()),
             relay_config: RwLock::new(AdvertRelayConfig::from(&config)),
             config,
+            host_network: None,
             advert_cache: RwLock::new(HashMap::new()),
             peer_trust_scores: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),

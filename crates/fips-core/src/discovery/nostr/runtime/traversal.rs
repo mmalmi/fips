@@ -139,13 +139,15 @@ impl NostrDiscovery {
         let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
 
         let bind_interface = self.bind_interface.read().await.clone();
-        let base_socket = bind_traversal_udp_socket(bind_interface.as_deref())?;
+        let base_socket =
+            bind_traversal_udp_socket(bind_interface.as_deref(), self.host_network.as_deref())?;
 
         let observation = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,
             self.config.share_local_candidates,
             TRAVERSAL_STUN_TIMEOUT,
+            self.host_network.as_deref(),
         )
         .await?;
         debug!(
@@ -518,12 +520,14 @@ impl NostrDiscovery {
             "traversal: mesh offer received"
         );
         let bind_interface = self.bind_interface.read().await.clone();
-        let base_socket = bind_traversal_udp_socket(bind_interface.as_deref())?;
+        let base_socket =
+            bind_traversal_udp_socket(bind_interface.as_deref(), self.host_network.as_deref())?;
         let observation = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,
             self.config.share_local_candidates,
             TRAVERSAL_STUN_TIMEOUT,
+            self.host_network.as_deref(),
         )
         .await?;
         let accepted = observation.has_usable_address();

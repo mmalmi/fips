@@ -2,6 +2,8 @@
 
 mod recent_peers_file;
 
+pub use fips_core::host_network::HostNetwork;
+
 pub use fips_core::node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
 pub use fips_core::node::{OriginatedSessionObserver, OriginatedSessionRequest};
 

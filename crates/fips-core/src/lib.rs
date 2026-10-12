@@ -12,6 +12,7 @@ pub mod endpoint;
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub mod gateway;
 pub mod host_firewall;
+pub mod host_network;
 pub mod identity {
     pub use fips_identity::*;
 }

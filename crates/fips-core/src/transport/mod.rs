@@ -32,7 +32,7 @@ mod tests;
 pub use handle::TransportHandle;
 pub(crate) use packet_channel::PacketFastIngressSink;
 pub use packet_channel::{PacketBuffer, PacketRx, PacketTx, ReceivedPacket, packet_channel};
-pub(crate) use resolve::{resolve_socket_addr, resolve_socket_addrs};
+pub(crate) use resolve::resolve_socket_addr;
 
 use secp256k1::XOnlyPublicKey;
 use std::fmt;

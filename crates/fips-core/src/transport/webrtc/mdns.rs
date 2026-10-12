@@ -21,6 +21,7 @@ pub(super) struct SharedMdnsResolver(Option<Arc<SharedMdnsResolverInner>>);
 
 struct SharedMdnsResolverInner {
     daemon: StdMutex<Option<ServiceDaemon>>,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     request_lock: Mutex<()>,
     waiter_permits: Arc<Semaphore>,
     max_waiters: usize,
@@ -45,13 +46,23 @@ pub(super) struct MdnsResolverSnapshot {
 }
 
 impl SharedMdnsResolver {
+    #[cfg(test)]
     pub(super) fn new(enabled: bool, max_connections: usize) -> Result<Self, TransportError> {
+        Self::new_with_host_network(enabled, max_connections, None)
+    }
+
+    pub(super) fn new_with_host_network(
+        enabled: bool,
+        max_connections: usize,
+        host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Result<Self, TransportError> {
         if !enabled {
             return Ok(Self(None));
         }
         let max_waiters = max_connections.clamp(1, MAX_MDNS_WAITERS);
         Ok(Self(Some(Arc::new(SharedMdnsResolverInner {
             daemon: StdMutex::new(None),
+            host_network,
             request_lock: Mutex::new(()),
             waiter_permits: Arc::new(Semaphore::new(max_waiters)),
             max_waiters,
@@ -179,11 +190,13 @@ impl SharedMdnsResolverInner {
         }
         let mut daemon = self.daemon.lock().expect("WebRTC mDNS daemon");
         if daemon.is_none() {
-            *daemon = Some(ServiceDaemon::new().map_err(|error| {
-                TransportError::StartFailed(format!(
-                    "failed to start shared WebRTC mDNS resolver: {error}"
-                ))
-            })?);
+            *daemon = Some(
+                crate::host_network::mdns_daemon(self.host_network.as_ref()).map_err(|error| {
+                    TransportError::StartFailed(format!(
+                        "failed to start shared WebRTC mDNS resolver: {error}"
+                    ))
+                })?,
+            );
         }
         Ok(daemon.as_ref().expect("initialized mDNS daemon").clone())
     }

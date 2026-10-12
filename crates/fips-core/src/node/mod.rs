@@ -193,6 +193,7 @@ pub struct Node {
     // === Configuration ===
     /// Loaded configuration.
     config: Config,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     /// Operator listener owned until shutdown has joined its socket cleanup.
     control_task: Option<tokio::task::JoinHandle<()>>,
 

@@ -413,7 +413,8 @@ impl Node {
         if udp_remote_addr_invalid(remote_addr.ip()) {
             return None;
         }
-        let evidence = UdpRouteEvidence::capture(remote_addr, provenance);
+        let evidence =
+            UdpRouteEvidence::capture(remote_addr, provenance, self.host_network.as_deref());
         self.transports
             .iter()
             .filter(|(id, handle)| {

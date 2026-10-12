@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-use tokio::net::{UdpSocket, lookup_host};
+use tokio::net::UdpSocket;
 use tracing::debug;
 
 use super::types::{BootstrapError, TraversalAddress, TraversalAddressObservation};
@@ -28,10 +28,11 @@ pub(super) async fn observe_traversal_addresses(
     stun_servers: &[String],
     share_local_candidates: bool,
     per_server_timeout: Duration,
+    network: Option<&dyn crate::host_network::HostNetwork>,
 ) -> Result<TraversalAddressObservation, BootstrapError> {
     let local_port = socket.local_addr()?.port();
     let local_addresses = if share_local_candidates {
-        local_addresses_from_port(local_port)
+        local_addresses_from_port(local_port, network)
             .into_iter()
             .map(|ip| TraversalAddress {
                 protocol: "udp".to_string(),
@@ -43,7 +44,7 @@ pub(super) async fn observe_traversal_addresses(
         Vec::new()
     };
 
-    match perform_stun_any(socket, stun_servers, per_server_timeout).await {
+    match perform_stun_any(socket, stun_servers, per_server_timeout, network).await {
         Ok((mapped, stun_server)) => {
             debug!(
                 stun_server = %stun_server,
@@ -76,6 +77,7 @@ pub(super) async fn perform_stun_any(
     socket: &std::net::UdpSocket,
     stun_servers: &[String],
     response_timeout: Duration,
+    network: Option<&dyn crate::host_network::HostNetwork>,
 ) -> Result<(Option<SocketAddr>, String), BootstrapError> {
     if stun_servers.is_empty() {
         return Err(BootstrapError::Stun(
@@ -95,7 +97,7 @@ pub(super) async fn perform_stun_any(
                 continue;
             }
         };
-        let targets = match resolve_udp_targets(&endpoint.host, endpoint.port).await {
+        let targets = match resolve_udp_targets(&endpoint.host, endpoint.port, network).await {
             Ok(addrs) => compatible_stun_targets(local_addr, addrs),
             Err(err) => {
                 last_error = Some(err);
@@ -177,7 +179,11 @@ pub(super) fn compatible_stun_targets(
         .collect()
 }
 
-async fn resolve_udp_targets(host: &str, port: u16) -> Result<Vec<SocketAddr>, BootstrapError> {
+async fn resolve_udp_targets(
+    host: &str,
+    port: u16,
+    network: Option<&dyn crate::host_network::HostNetwork>,
+) -> Result<Vec<SocketAddr>, BootstrapError> {
     let normalized_host = host
         .strip_prefix('[')
         .and_then(|trimmed| trimmed.strip_suffix(']'))
@@ -186,8 +192,7 @@ async fn resolve_udp_targets(host: &str, port: u16) -> Result<Vec<SocketAddr>, B
     if let Ok(ip) = normalized_host.parse::<IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
-    let results = lookup_host((normalized_host, port)).await?;
-    Ok(results.collect())
+    Ok(crate::host_network::resolve(network, &format!("{normalized_host}:{port}")).await?)
 }
 
 pub(super) fn parse_stun_url(input: &str) -> Result<StunEndpoint, BootstrapError> {
@@ -316,16 +321,26 @@ fn parse_xor_mapped_address(value: &[u8], txn_id: &[u8; 12]) -> Option<SocketAdd
     }
 }
 
-fn local_addresses_from_port(port: u16) -> Vec<String> {
+fn local_addresses_from_port(
+    port: u16,
+    network: Option<&dyn crate::host_network::HostNetwork>,
+) -> Vec<String> {
     let mut addresses = Vec::new();
     let interface_ips = private_interface_ips();
     push_private_interface_ips(&mut addresses, &interface_ips);
-    push_local_probe(&mut addresses, "0.0.0.0:0", "8.8.8.8:80", &interface_ips);
+    push_local_probe(
+        &mut addresses,
+        "0.0.0.0:0",
+        "8.8.8.8:80",
+        &interface_ips,
+        network,
+    );
     push_local_probe(
         &mut addresses,
         "[::]:0",
         "[2001:4860:4860::8888]:80",
         &interface_ips,
+        network,
     );
     push_bound_addr(&mut addresses, ("0.0.0.0", port));
     push_bound_addr(&mut addresses, ("::", port));
@@ -416,8 +431,14 @@ fn push_local_probe(
     bind_addr: &str,
     connect_addr: &str,
     interface_ips: &[IpAddr],
+    network: Option<&dyn crate::host_network::HostNetwork>,
 ) {
     if let Ok(socket) = std::net::UdpSocket::bind(bind_addr)
+        && network.is_none_or(|network| {
+            network
+                .protect_socket(&socket2::SockRef::from(&socket))
+                .is_ok()
+        })
         && socket.connect(connect_addr).is_ok()
         && let Ok(local_addr) = socket.local_addr()
     {
@@ -626,6 +647,7 @@ mod tests {
             &caller,
             &[server_addr.to_string()],
             std::time::Duration::from_millis(300),
+            None,
         )
         .await;
         forger.join().unwrap();
@@ -654,6 +676,7 @@ mod tests {
             &caller,
             &[server_addr.to_string()],
             std::time::Duration::from_secs(2),
+            None,
         )
         .await
         .unwrap();

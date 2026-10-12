@@ -52,6 +52,13 @@ impl Node {
         )
     }
 
+    pub(crate) fn set_host_network(
+        &mut self,
+        network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) {
+        self.host_network = network;
+    }
+
     /// Create a new node from configuration.
     pub fn new(config: Config) -> Result<Self, NodeError> {
         config.validate()?;
@@ -113,6 +120,7 @@ impl Node {
             startup_epoch,
             started_at: std::time::Instant::now(),
             config,
+            host_network: None,
             state: NodeState::Created,
             is_leaf_only,
             tree_state,
@@ -274,6 +282,7 @@ impl Node {
             startup_epoch,
             started_at: std::time::Instant::now(),
             config,
+            host_network: None,
             state: NodeState::Created,
             is_leaf_only: false,
             tree_state,
@@ -437,7 +446,8 @@ impl Node {
                 && wildcard_udp_binding(&udp_config, true)
                     .is_some_and(|binding| ipv4_bindings.contains(&binding));
             let udp = UdpTransport::new(transport_id, name, udp_config, packet_tx.clone())
-                .with_ipv6_only(ipv6_only);
+                .with_ipv6_only(ipv6_only)
+                .with_host_network(self.host_network.clone());
             transports.push(TransportHandle::Udp(udp));
         }
 
@@ -499,7 +509,8 @@ impl Node {
 
         for (name, tcp_config) in tcp_instances {
             let transport_id = self.allocate_transport_id();
-            let tcp = TcpTransport::new(transport_id, name, tcp_config, packet_tx.clone());
+            let tcp = TcpTransport::new(transport_id, name, tcp_config, packet_tx.clone())
+                .with_host_network(self.host_network.clone());
             transports.push(TransportHandle::Tcp(tcp));
         }
 
@@ -518,7 +529,8 @@ impl Node {
                 websocket_config,
                 packet_tx.clone(),
                 &self.identity,
-            );
+            )
+            .with_host_network(self.host_network.clone());
             transports.push(TransportHandle::WebSocket(Box::new(websocket)));
         }
 
@@ -533,7 +545,8 @@ impl Node {
 
         for (name, tor_config) in tor_instances {
             let transport_id = self.allocate_transport_id();
-            let tor = TorTransport::new(transport_id, name, tor_config, packet_tx.clone());
+            let tor = TorTransport::new(transport_id, name, tor_config, packet_tx.clone())
+                .with_host_network(self.host_network.clone());
             transports.push(TransportHandle::Tor(tor));
         }
 
@@ -549,13 +562,14 @@ impl Node {
         {
             for (name, webrtc_config) in webrtc_instances {
                 let transport_id = self.allocate_transport_id();
-                match WebRtcTransport::new(
+                match WebRtcTransport::new_with_host_network(
                     transport_id,
                     name,
                     webrtc_config,
                     packet_tx.clone(),
                     &self.identity,
                     &self.config.node.discovery.nostr,
+                    self.host_network.clone(),
                 ) {
                     Ok(webrtc) => transports.push(TransportHandle::WebRtc(Box::new(webrtc))),
                     Err(err) => {

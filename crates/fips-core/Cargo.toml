@@ -50,6 +50,7 @@ webrtc = { package = "nvpn-webrtc", version = "=0.17.1", path = "../../vendor/we
 
 nostr = { version = "0.44", features = ["std"] }
 nostr-sdk = "0.44"
+async-wsocket = { version = "0.13", features = ["socks"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

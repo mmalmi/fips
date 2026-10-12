@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tracing::debug;
@@ -138,21 +137,33 @@ impl TorControlClient {
     /// permission-based access control and are not reachable from containers
     /// unless explicitly mounted. The Debian default is `/run/tor/control`.
     pub async fn connect(addr: &str) -> Result<Self, TorControlError> {
+        Self::connect_with_host_network(addr, None).await
+    }
+
+    pub(crate) async fn connect_with_host_network(
+        addr: &str,
+        host_network: Option<&dyn crate::host_network::HostNetwork>,
+    ) -> Result<Self, TorControlError> {
         #[cfg(unix)]
         if is_unix_socket_path(addr) {
             return Self::connect_unix(addr).await;
         }
-        Self::connect_tcp(addr).await
+        Self::connect_tcp(addr, host_network).await
     }
 
     /// Connect via TCP to a control port at `host:port`.
-    async fn connect_tcp(addr: &str) -> Result<Self, TorControlError> {
-        let stream = TcpStream::connect(addr).await.map_err(|e| {
-            TorControlError::ConnectionFailed(format!(
-                "failed to connect to control port {}: {}",
-                addr, e
-            ))
-        })?;
+    async fn connect_tcp(
+        addr: &str,
+        host_network: Option<&dyn crate::host_network::HostNetwork>,
+    ) -> Result<Self, TorControlError> {
+        let stream = crate::host_network::connect_tcp_host(host_network, addr)
+            .await
+            .map_err(|e| {
+                TorControlError::ConnectionFailed(format!(
+                    "failed to connect to control port {}: {}",
+                    addr, e
+                ))
+            })?;
 
         let (read_half, write_half) = stream.into_split();
 

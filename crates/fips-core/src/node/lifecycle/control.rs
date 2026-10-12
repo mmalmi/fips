@@ -152,7 +152,8 @@ impl Node {
             traversal.transport_name.clone(),
             inherited_config,
             packet_tx,
-        );
+        )
+        .with_host_network(self.host_network.clone());
 
         transport
             .adopt_socket_async(traversal.socket)

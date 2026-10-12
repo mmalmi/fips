@@ -42,6 +42,17 @@ mod platform {
     }
 
     impl UdpRawSocket {
+        pub fn protect_host_network(
+            &self,
+            network: Option<&dyn crate::host_network::HostNetwork>,
+        ) -> Result<(), TransportError> {
+            if let Some(network) = network {
+                network.protect_socket(&socket2::SockRef::from(&self.inner))
+                    .map_err(|error| TransportError::StartFailed(format!("protect UDP socket: {error}")))?;
+            }
+            Ok(())
+        }
+
         /// Create, bind, and configure a UDP socket.
         ///
         /// Sets non-blocking mode and configures buffer sizes. The socket

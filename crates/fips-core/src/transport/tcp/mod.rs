@@ -29,7 +29,7 @@ mod tasks;
 use stream::{DEFAULT_FRAME_COMPLETION_TIMEOUT, validate_stream_record};
 use tasks::{AcceptConfig, TcpReceiveContext, accept_loop, tcp_receive_loop};
 
-use super::resolve_socket_addrs;
+use super::resolve::resolve_socket_addrs_with_network;
 use super::stream_io::{
     StreamConnectionIo, StreamPool, StreamWriteError, lock_pool, try_lock_pool,
 };
@@ -120,6 +120,7 @@ pub struct TcpTransport {
     name: Option<String>,
     /// Configuration.
     config: TcpConfig,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     /// Current state.
     state: TransportState,
     /// Connection pool: addr -> established connections.
@@ -148,6 +149,7 @@ impl TcpTransport {
             transport_id,
             name,
             config,
+            host_network: None,
             state: TransportState::Configured,
             pool: ConnectionPool::default(),
             connecting: ConnectingPool::default(),
@@ -156,6 +158,14 @@ impl TcpTransport {
             local_addr: None,
             stats: Arc::new(TcpStats::new()),
         }
+    }
+
+    pub(crate) fn with_host_network(
+        mut self,
+        network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Self {
+        self.host_network = network;
+        self
     }
 
     /// Get the instance name (if configured as a named instance).
@@ -199,7 +209,7 @@ impl TcpTransport {
                 .parse()
                 .map_err(|e| TransportError::StartFailed(format!("invalid bind address: {}", e)))?;
 
-            let listener = TcpListener::bind(addr)
+            let listener = crate::host_network::listen_tcp(self.host_network.as_deref(), addr)
                 .await
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
 
@@ -404,10 +414,17 @@ impl TcpTransport {
         &self,
         addr: &TransportAddr,
     ) -> Result<Arc<StreamConnectionIo<OwnedWriteHalf>>, TransportError> {
-        let socket_addrs = resolve_socket_addrs(addr).await?;
+        let socket_addrs =
+            resolve_socket_addrs_with_network(addr, self.host_network.as_deref()).await?;
         let timeout_ms = self.config.connect_timeout_ms();
 
-        let stream = match connect_to_any_addr(&socket_addrs, timeout_ms).await {
+        let stream = match connect_to_any_addr(
+            &socket_addrs,
+            timeout_ms,
+            self.host_network.as_deref(),
+        )
+        .await
+        {
             Ok(stream) => stream,
             Err(error @ TransportError::Timeout) => {
                 self.stats.record_connect_timeout();
@@ -551,7 +568,8 @@ impl TcpTransport {
             }
         }
 
-        let socket_addrs = resolve_socket_addrs(addr).await?;
+        let socket_addrs =
+            resolve_socket_addrs_with_network(addr, self.host_network.as_deref()).await?;
         let timeout_ms = self.config.connect_timeout_ms();
         let config = self.config.clone();
         let transport_id = self.transport_id;
@@ -579,28 +597,31 @@ impl TcpTransport {
             return Ok(());
         }
 
+        let host_network = self.host_network.clone();
         let task = tokio::spawn(async move {
-            let stream = match connect_to_any_addr(&socket_addrs, timeout_ms).await {
-                Ok(stream) => stream,
-                Err(error @ TransportError::ConnectionRefused) => {
-                    debug!(
-                        transport_id = %transport_id,
-                        remote_addr = %remote_addr,
-                        error = %error,
-                        "Background TCP connect refused"
-                    );
-                    return Err(error);
-                }
-                Err(error @ TransportError::Timeout) => {
-                    debug!(
-                        transport_id = %transport_id,
-                        remote_addr = %remote_addr,
-                        "Background TCP connect timed out"
-                    );
-                    return Err(error);
-                }
-                Err(error) => return Err(error),
-            };
+            let stream =
+                match connect_to_any_addr(&socket_addrs, timeout_ms, host_network.as_deref()).await
+                {
+                    Ok(stream) => stream,
+                    Err(error @ TransportError::ConnectionRefused) => {
+                        debug!(
+                            transport_id = %transport_id,
+                            remote_addr = %remote_addr,
+                            error = %error,
+                            "Background TCP connect refused"
+                        );
+                        return Err(error);
+                    }
+                    Err(error @ TransportError::Timeout) => {
+                        debug!(
+                            transport_id = %transport_id,
+                            remote_addr = %remote_addr,
+                            "Background TCP connect timed out"
+                        );
+                        return Err(error);
+                    }
+                    Err(error) => return Err(error),
+                };
 
             // Configure socket options via socket2
             let std_stream = stream
@@ -809,12 +830,13 @@ impl Transport for TcpTransport {
 async fn connect_to_any_addr(
     socket_addrs: &[SocketAddr],
     timeout_ms: u64,
+    host_network: Option<&dyn crate::host_network::HostNetwork>,
 ) -> Result<TcpStream, TransportError> {
     let mut last_error = None;
     for socket_addr in socket_addrs {
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            TcpStream::connect(socket_addr),
+            crate::host_network::connect_tcp(host_network, *socket_addr),
         )
         .await
         {

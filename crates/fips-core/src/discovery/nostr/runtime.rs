@@ -52,12 +52,18 @@ pub(in crate::discovery::nostr) use verified_event::VerifiedEvent;
 
 const ADVERT_CACHE_STALE_GRACE_MULTIPLIER: u64 = 2;
 
-fn bind_traversal_udp_socket(bind_interface: Option<&str>) -> std::io::Result<std::net::UdpSocket> {
+fn bind_traversal_udp_socket(
+    bind_interface: Option<&str>,
+    network: Option<&dyn crate::host_network::HostNetwork>,
+) -> std::io::Result<std::net::UdpSocket> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use socket2::{Domain, Protocol, Socket, Type};
 
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        if let Some(network) = network {
+            network.protect_socket(&socket2::SockRef::from(&socket))?;
+        }
         let _ = socket.set_reuse_address(true);
         let _ = socket.set_reuse_port(true);
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
@@ -75,6 +81,9 @@ fn bind_traversal_udp_socket(bind_interface: Option<&str>) -> std::io::Result<st
     {
         let _ = bind_interface;
         let socket = std::net::UdpSocket::bind(("0.0.0.0", 0))?;
+        if let Some(network) = network {
+            network.protect_socket(&socket2::SockRef::from(&socket))?;
+        }
         socket.set_nonblocking(true)?;
         Ok(socket)
     }
@@ -277,6 +286,7 @@ pub struct NostrDiscovery {
     pubkey: PublicKey,
     npub: String,
     config: NostrDiscoveryConfig,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
     bind_interface: RwLock<Option<String>>,
     relay_config: RwLock<AdvertRelayConfig>,
     advert_cache: RwLock<HashMap<NostrPeerKey, CachedOverlayAdvert>>,
@@ -354,16 +364,28 @@ impl NostrDiscovery {
         identity: &crate::Identity,
         config: NostrDiscoveryConfig,
     ) -> Result<Arc<Self>, BootstrapError> {
+        Self::start_with_host_network(identity, config, None).await
+    }
+
+    pub(crate) async fn start_with_host_network(
+        identity: &crate::Identity,
+        config: NostrDiscoveryConfig,
+        host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Result<Arc<Self>, BootstrapError> {
         if !config.enabled {
             return Err(BootstrapError::Disabled);
         }
 
         let keys = nostr::Keys::parse(&hex::encode(identity.keypair().secret_bytes()))
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
-        let client = Client::builder()
+        let mut client = Client::builder()
             .signer(keys.clone())
-            .opts(ClientOptions::new().autoconnect(false))
-            .build();
+            .opts(ClientOptions::new().autoconnect(false));
+        if let Some(network) = host_network.as_ref() {
+            client = client
+                .websocket_transport(crate::host_network::NostrHostTransport(network.clone()));
+        }
+        let client = client.build();
 
         let relay_union =
             AdvertRelayConfig::from(&config).active_relays(config.uses_relay_peerfinding());
@@ -399,6 +421,7 @@ impl NostrDiscovery {
             bind_interface: RwLock::new(config.bind_interface.clone()),
             relay_config: RwLock::new(AdvertRelayConfig::from(&config)),
             config,
+            host_network,
             advert_cache: RwLock::new(HashMap::new()),
             peer_trust_scores: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),

@@ -113,8 +113,8 @@ async fn run_dial(
 ) -> Result<(), TransportError> {
     let outcome = async {
         let url = addr.as_str().ok_or_else(|| TransportError::InvalidAddress(addr.to_string()))?;
-        let connect = connect_async_tls_with_config(
-            url, Some(runtime.websocket_config()), false,
+        let connect = crate::host_network::connect_websocket(
+            runtime.host_network.as_deref(), url, Some(runtime.websocket_config()),
             tls::connector(runtime.config.tls_verification())?,
         );
         let (websocket, _) = tokio::select! {

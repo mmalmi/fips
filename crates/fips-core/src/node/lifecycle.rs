@@ -105,7 +105,11 @@ struct UdpRouteEvidence {
 }
 
 impl UdpRouteEvidence {
-    fn capture(remote_addr: SocketAddr, provenance: PeerAddressProvenance) -> Self {
+    fn capture(
+        remote_addr: SocketAddr,
+        provenance: PeerAddressProvenance,
+        network: Option<&dyn crate::host_network::HostNetwork>,
+    ) -> Self {
         let needs_local_scope = provenance == PeerAddressProvenance::Learned
             && udp_remote_addr_requires_local_scope(remote_addr.ip());
         Self {
@@ -113,7 +117,7 @@ impl UdpRouteEvidence {
                 .then(local_interface_networks)
                 .unwrap_or_default(),
             route_probe_local_ip: needs_local_scope
-                .then(|| udp_route_probe_local_ip(remote_addr))
+                .then(|| udp_route_probe_local_ip(remote_addr, network))
                 .flatten(),
         }
     }
@@ -251,13 +255,21 @@ fn ipv4_is_cgnat(ip: Ipv4Addr) -> bool {
     ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64
 }
 
-fn udp_route_probe_local_ip(remote_addr: SocketAddr) -> Option<IpAddr> {
+fn udp_route_probe_local_ip(
+    remote_addr: SocketAddr,
+    network: Option<&dyn crate::host_network::HostNetwork>,
+) -> Option<IpAddr> {
     let bind_addr = if remote_addr.is_ipv4() {
         "0.0.0.0:0"
     } else {
         "[::]:0"
     };
     let socket = std::net::UdpSocket::bind(bind_addr).ok()?;
+    if let Some(network) = network {
+        network
+            .protect_socket(&socket2::SockRef::from(&socket))
+            .ok()?;
+    }
     socket.connect(remote_addr).ok()?;
     Some(socket.local_addr().ok()?.ip())
 }

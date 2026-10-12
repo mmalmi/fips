@@ -162,6 +162,16 @@ impl LanDiscovery {
         advertised_port: u16,
         config: LanDiscoveryConfig,
     ) -> Result<Arc<Self>, LanDiscoveryError> {
+        Self::start_with_host_network(identity, scope, advertised_port, config, None).await
+    }
+
+    pub(crate) async fn start_with_host_network(
+        identity: &Identity,
+        scope: Option<String>,
+        advertised_port: u16,
+        config: LanDiscoveryConfig,
+        host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Result<Arc<Self>, LanDiscoveryError> {
         if !config.enabled {
             return Err(LanDiscoveryError::Disabled);
         }
@@ -208,7 +218,8 @@ impl LanDiscovery {
 
         let instance_fullname = service_info.get_fullname().to_string();
         let service_type = config.service_type.clone();
-        let (daemon, browse_rx) = start_scan_daemon(&service_info, &service_type)?;
+        let (daemon, browse_rx) =
+            start_scan_daemon(&service_info, &service_type, host_network.as_ref())?;
 
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let own_npub = npub.clone();
@@ -343,13 +354,14 @@ impl LanDiscovery {
                 }
                 #[cfg(test)]
                 event_pump_browse_paused.store(false, Ordering::Release);
-                (daemon, browse_rx) = match start_scan_daemon(&service_info, &service_type) {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        warn!(%error, "lan: restart mDNS browse failed");
-                        break 'lifecycle;
-                    }
-                };
+                (daemon, browse_rx) =
+                    match start_scan_daemon(&service_info, &service_type, host_network.as_ref()) {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            warn!(%error, "lan: restart mDNS browse failed");
+                            break 'lifecycle;
+                        }
+                    };
                 daemon_running = true;
                 #[cfg(test)]
                 event_pump_daemon_active.store(true, Ordering::Release);
@@ -410,8 +422,10 @@ impl LanDiscovery {
 fn start_scan_daemon(
     service_info: &ServiceInfo,
     service_type: &str,
+    host_network: Option<&Arc<dyn crate::host_network::HostNetwork>>,
 ) -> Result<(ServiceDaemon, mdns_sd::Receiver<ServiceEvent>), LanDiscoveryError> {
-    let daemon = ServiceDaemon::new().map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
+    let daemon = crate::host_network::mdns_daemon(host_network)
+        .map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;
     daemon
         .set_ip_check_interval(IP_CHECK_INTERVAL_SECS)
         .map_err(|e| LanDiscoveryError::Daemon(e.to_string()))?;

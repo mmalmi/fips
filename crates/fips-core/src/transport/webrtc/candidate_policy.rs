@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub(super) struct CandidateAddressPolicy {
     source: CandidateAddressSource,
     profile: CandidateNetworkProfile,
+    host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
 }
 
 #[derive(Clone)]
@@ -53,6 +54,7 @@ impl CandidateAddressPolicy {
         Self {
             source: CandidateAddressSource::System,
             profile: CandidateNetworkProfile::Production,
+            host_network: None,
         }
     }
 
@@ -61,6 +63,7 @@ impl CandidateAddressPolicy {
         Self {
             source: CandidateAddressSource::Fixed(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
             profile: CandidateNetworkProfile::LoopbackUdp4,
+            host_network: None,
         }
     }
 
@@ -82,6 +85,7 @@ impl CandidateAddressPolicy {
                     .collect(),
             ),
             profile: CandidateNetworkProfile::Production,
+            host_network: None,
         }
     }
 
@@ -105,11 +109,28 @@ impl CandidateAddressPolicy {
                     .collect(),
             ),
             profile: CandidateNetworkProfile::Production,
+            host_network: None,
         }
     }
 
+    pub(super) fn with_host_network(
+        mut self,
+        network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    ) -> Self {
+        self.host_network = network;
+        self
+    }
+
     pub(super) fn build_api(&self) -> Result<Arc<::webrtc::api::API>, TransportError> {
-        self.build_api_inner(None)
+        let network = self
+            .host_network
+            .as_ref()
+            .map(|network| crate::host_network::native_network(network.clone()))
+            .transpose()
+            .map_err(|error| {
+                TransportError::StartFailed(format!("protect WebRTC network: {error}"))
+            })?;
+        self.build_api_inner(network)
     }
 
     #[cfg(test)]
