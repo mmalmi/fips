@@ -412,6 +412,7 @@ class PaidPhoneRun(WifiRun):
             journals, json.loads((self.root / 'paid-journals.json').read_text()),
             balances, report,
             self.expected_edges(), channel_counts=getattr(self, 'settlement_channel_counts', None),
+            expiry_reports=getattr(self, 'expiry_reports', None),
         )
         self.phase(
             'all four accounts settled and all 512 test sats conserved',

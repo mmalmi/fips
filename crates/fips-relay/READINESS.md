@@ -6007,7 +6007,21 @@ checks pass, and original services and accounts are restored. Settled test
 profiles are archived and removed; financial evidence is retained. This
 interrupts relay processes, not device power.
 
-Current Pixel qualification, other missing/conflicting records and physical
+The current Android build also passes all seven package checks and ten lifecycle
+tests, with 1,045 Rust files matching the qualified router source. In
+`work/phone-expiry-r490`, the phone forwards two MiB across foreground and
+background TCP/FIPS windows over the existing LAN's UDP links, then is
+force-stopped through its route and seller-channel deadlines. It restores both
+seller reports while its buyers remain stopped. Reconnecting the original
+parties automatically refunds every buyer, including the phone's expired route
+while its underlying channel remains valid. No replacement funding or manual
+settlement starts recovery. All 512 test sats are collected, all 765 management
+checks pass, and original device accounts and Wi-Fi are unchanged. Closed test
+profiles are archived and removed, including the temporary Android installation.
+The shared fixture checks pass 106 tests; package evidence is retained in
+`work/android-expiry-recovery-r489`.
+
+Other missing/conflicting records, natural Android deep idle and physical
 power-loss cases remain open; this does not establish production readiness.
 
 ### Missing withdrawal journals

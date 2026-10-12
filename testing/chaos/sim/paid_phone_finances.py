@@ -168,19 +168,24 @@ def validate_reopened(journals, before, mint_url, edges):
                     'reopen lost provider credit')
 
 
-def validate_settled(journals, before, balances, mint, expected_edges, *, channel_counts=None):
+def validate_settled(journals, before, balances, mint, expected_edges, *, channel_counts=None,
+                     expiry_reports=None):
     """Validate every terminal channel and all 512 stopped sats across four accounts."""
     try:
-        return _validate_settled(journals, before, balances, mint, list(map(tuple, expected_edges)), channel_counts)
+        return _validate_settled(journals, before, balances, mint,
+                                 list(map(tuple, expected_edges)), channel_counts, expiry_reports)
     except (KeyError, TypeError, IndexError) as error:
         raise RuntimeError('missing or malformed four-account financial evidence') from error
 
 
-def _validate_settled(journals, before, balances, mint, edges, channel_counts):
+def _validate_settled(journals, before, balances, mint, edges, channel_counts, expiry_reports):
     require(set(journals) == set(before) == set(balances), 'account set changed')
     check_mint(mint, 0)
     old_identity, old_channels, old_outgoing, old_sellers = _snapshot(before, mint['url'], edges, channel_counts)
     identity, channels, outgoing, sellers = _snapshot(journals, mint['url'], edges, channel_counts)
+    expiry_reports = {} if expiry_reports is None else expiry_reports
+    require(isinstance(expiry_reports, dict) and set(expiry_reports) <= set(channels),
+            'expiry evidence names an unknown channel')
     require(identity == old_identity and channels == old_channels and outgoing == old_outgoing,
             'settlement changed channel ownership or terms')
     reports, summaries = {}, {}
@@ -226,6 +231,11 @@ def _validate_settled(journals, before, balances, mint, edges, channel_counts):
             require(isinstance(settlement['usage'], dict) and isinstance(sale['usage'], dict),
                     'settlement omitted sealed usage evidence')
             for saved in (settlement, sale):
+                if saved is sale and channel in expiry_reports:
+                    require(saved['payment'] is None and saved['report'] == expiry_reports[channel]
+                            and amount(saved['report']['signed_sat']) == report['paid_sat'],
+                            'provider expiry report or original signed balance changed')
+                    continue
                 require(saved['payment']['channel_id'] == channel
                         and amount(saved['payment']['balance']) == report['paid_sat'],
                         'final signed payment differs from report')

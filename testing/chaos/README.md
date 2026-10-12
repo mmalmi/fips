@@ -1313,6 +1313,17 @@ purchase or a process restart. The same channel terms and lifetime budgets must
 survive. This mode runs separately from idle, screen-off and sustained transit;
 it tests a link outage, not physical movement or address changes.
 
+Use `--transit --phone-expiry` to force-stop the paid phone after foreground and
+background transit. Wait for its route quote and the channels it sold to expire,
+then restart the phone while its own buyers remain stopped. Require both of the
+phone's seller reports before reconnecting the original parties. Its buyers
+recover those same reports, while the phone automatically settles its expired
+route before the underlying channel expires. No settlement request or new funding
+is issued by the fixture during recovery. Final collection verifies
+all four accounts and 512 test sats. Only the restarted phone's UDP discovery
+address changes; immutable profiles, funding and lifetime budgets stay intact.
+This mode runs separately from renewal, outage and sustained-load variants.
+
 Use `--phone-renewal` with `--transit` to reconnect Android Wi-Fi during
 automatic expiry renewal. The provider issues 180-second quotes; the phone and
 reverse endpoint renew with the existing 80%/30-second policy. The isolated mint

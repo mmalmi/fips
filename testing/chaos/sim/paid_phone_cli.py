@@ -38,13 +38,15 @@ def main():
     parser.add_argument('--phone-renewal', nargs='?', const='reconnect',
                         choices=('reconnect', 'sustained'),
                         help='renew during a held close and reconnect, or ten minutes of background traffic')
+    parser.add_argument('--phone-expiry', action='store_true',
+                        help='restart the phone after expiry and recover its buyer and seller channels')
     parser.add_argument(
         '--open-mesh', action='store_true',
         help='use the existing guarded temporary open radio profile',
     )
     args = parser.parse_args()
     for name in ('screen_off', 'sustained_transit', 'compare_transit_rates',
-                 'forced_idle', 'phone_outage', 'phone_renewal'):
+                 'forced_idle', 'phone_outage', 'phone_renewal', 'phone_expiry'):
         if getattr(args, name) and not args.transit:
             parser.error('--' + name.replace('_', '-') + ' requires --transit')
     if args.impaired_transit and not (args.transit and args.sustained_transit):
@@ -57,7 +59,10 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(seconds)
-    if args.phone_renewal == 'sustained':
+    if args.phone_expiry:
+        from .phone_expiry import PhoneExpiryRun
+        run = PhoneExpiryRun(args)
+    elif args.phone_renewal == 'sustained':
         from .phone_renewal_load import PhoneRenewalLoadRun
         run = PhoneRenewalLoadRun(args)
     elif args.phone_renewal:

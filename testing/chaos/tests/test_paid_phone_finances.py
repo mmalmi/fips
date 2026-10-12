@@ -159,6 +159,24 @@ class PaidPhoneFinanceTests(unittest.TestCase):
         self.assertEqual(result['accounts']['n02']['seller_received_sat'], 7)
         self.assertNotIn('payment', repr(result))
 
+    def test_expiry_requires_the_independently_observed_report_and_signed_balance(self):
+        args = fixture()
+        channel = 'channel-phone'
+        sale = args[0]['n01']['controller']['seller_settlements'][channel]
+        sale['report']['signed_sat'] = sale['report']['paid_sat']
+        sale['payment'] = None
+        reports = {channel: copy.deepcopy(sale['report'])}
+        self.assertEqual(validate_settled(*args, expiry_reports=reports)['total_wallet_sat'], 512)
+        with self.assertRaises(RuntimeError):
+            validate_settled(*args)
+        for changed in ({'unknown': reports[channel]}, {channel: {**reports[channel], 'paid_sat': 1}},
+                        {channel: {**reports[channel], 'signed_sat': 1}}):
+            with self.subTest(reports=changed), self.assertRaises(RuntimeError):
+                validate_settled(*args, expiry_reports=changed)
+        sale['report']['signed_sat'] = 1
+        with self.assertRaises(RuntimeError):
+            validate_settled(*args, expiry_reports={channel: copy.deepcopy(sale['report'])})
+
     def test_normalized_ledger_and_distinct_original_budgets(self):
         args = fixture()
         for snapshots in args[:2]:
