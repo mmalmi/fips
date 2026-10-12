@@ -1,6 +1,7 @@
 //! SIGKILL at both wallet/controller handoffs, followed by ordinary recovery.
 use super::wallet_crash::{arm, kill, kill_at};
 use super::*;
+use cdk_common::database::WalletDatabase;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -88,6 +89,45 @@ pub(super) async fn settle(
         payout > signed,
         "exercise an imported payout with a fee reserve"
     );
+
+    // A saved coin with the original secret but a conflicting value must not
+    // finish the interrupted payout or discard its retained financial evidence.
+    let db =
+        cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&seller_wallet))
+            .await
+            .unwrap();
+    let original = &seller_paid[payout_proofs.keys().next().unwrap()];
+    let mut conflicting = original.clone();
+    conflicting.proof.amount = (original.proof.amount.to_u64() + 1).into();
+    db.update_proofs(vec![conflicting.clone()], vec![])
+        .await
+        .unwrap();
+    children[1] = start(&paths[1]).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            assert_eq!(read(1)["seller_settlements"][id], interrupted_sale);
+            assert!(children[1].try_wait().unwrap().is_none());
+            if let Ok(status) = request(&configs[1], &AdminRequest::Status).await
+                && status["last_error"].as_str().is_some_and(|error| {
+                    error.contains("proof mint, unit or amount differs from import")
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("seller recovery must reject conflicting payout custody");
+    stop(&mut children[1]).await;
+    let mut retained = seller_paid.clone();
+    retained.insert(original.y.to_string(), conflicting);
+    assert_eq!(proofs(&seller_wallet, mint_url).await, retained);
+    assert_eq!(read(1)["seller_settlements"][id], interrupted_sale);
+    db.update_proofs(vec![original.clone()], vec![])
+        .await
+        .unwrap();
+    drop(db);
 
     children[1] = start(&paths[1]).await;
     let recovered_sale = tokio::time::timeout(Duration::from_secs(30), async {

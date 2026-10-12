@@ -6021,6 +6021,25 @@ profiles are archived and removed, including the temporary Android installation.
 The shared fixture checks pass 106 tests; package evidence is retained in
 `work/android-expiry-recovery-r489`.
 
+The expanded SDK payout fixture passes all eight combinations of missing spent
+records or conflicting mint, currency or value with bounded and unbounded wallet
+storage. Each rejection preserves the retained coin rows, activity and capacity
+accounting and submits no new mint swap. Restoring the originals permits replay
+without another credit; the final buyer and seller balances conserve all 64 test
+sats in each storage-policy case.
+
+The existing native relay crash fixture also passes with a conflicting payout
+amount inserted after wallet import and before the controller report. Restarted
+seller recovery reports the conflict and leaves settlement unfinished while its
+buyer remains stopped. After restoring the original coin, ordinary startup
+recovers payout, refund and release; original funding, financial limits and the
+subsequent expiry/history checks remain intact. Evidence is retained in
+`work/payout-conflict-r491` and `work/payout-conflict-relay-r492`. These extend
+existing fixtures without changing payment code, protocol messages or signed
+proof reconstruction. All 440 SDK workspace tests pass (one existing opt-in soak
+excluded), along with strict SDK/relay lint, formatting and the source-size gate.
+The exact tested sources and terminal process checks are retained with the results.
+
 Other missing/conflicting records, natural Android deep idle and physical
 power-loss cases remain open; this does not establish production readiness.
 

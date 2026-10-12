@@ -211,6 +211,9 @@ original wallet coin records are required even without a storage limit. The mint
 spent status alone does not prove that this wallet received the payout. Missing
 those records leaves settlement unfinished; restoring the originals permits retry
 without crediting spent coins again.
+Conflicting mint, currency or value also prevents completion and preserves the
+retained records. Restore the original evidence before retrying. Signed proof
+reconstruction retains its existing repair of signatures and spending authorization.
 When capacity accounting is enabled, import also requires the original wallet
 allowance. Authenticated receiver retirement removes the corresponding wallet
 admission only after the original payout handoff.
