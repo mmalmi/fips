@@ -6628,6 +6628,16 @@ before a later read fails. See [history ownership](HISTORY.md).
 
 ## Recovery record read bounds
 
+SDK `6d872627` also rejects encoded payment tokens and imported proof
+JSON over 4 MiB before decoding, creating a wallet/mint entry or making a network
+request. Payout verification shares that guard; existing channel refund and
+payout-retirement evidence already has the same ceiling. The boundary regression
+checks UTF-8 bytes, untouched wallet state and exactly fitting proof input.
+`work/wallet-input-bounds-r448` records the original failing regression and the
+439 passing SDK workspace tests (one existing opt-in soak excluded), formatting
+and strict lint. This is SDK API acceptance; the physical results above retain their separately recorded
+runtime builds. See [the input contract](HISTORY.md).
+
 SDK `f6c77c8` and CDK `1da778a6` enforce existing recovery-record limits before
 payloads cross the SQL driver boundary. Byte counting and conditional payload
 selection share one statement snapshot. Malformed stored values return errors,

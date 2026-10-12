@@ -518,6 +518,15 @@ older custody redo logs are rejected without decoding their payload. These
 individual read limits do not reserve total storage or bound other wallet queries; see the
 [accepted scope and checks](READINESS.md#recovery-record-read-bounds).
 
+The wallet service also checks encoded payment tokens and imported proof JSON
+against a 4-MiB UTF-8 byte limit before decoding. The file-backed convenience
+entry points reject oversized inputs before opening or creating the wallet;
+service calls reject before mint registration or network activity. Payout
+verification uses the same guard. Inputs are never truncated, and an exactly
+fitting representation still reaches normal parsing. Existing completed channel
+refund and payout-retirement evidence already has that byte ceiling. This bounds
+input decoding, not total process memory or the complete database.
+
 Before submitting new swap, mint or melt-change outputs, the native wallet requires
 durable issuing keys and keyset metadata. A failed optional cache write cannot
 substitute for that requirement. Send confirmation, receive, reclaim and preparatory
