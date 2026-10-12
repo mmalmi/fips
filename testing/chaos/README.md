@@ -886,6 +886,13 @@ then restarts and must finish its original refund and release automatically,
 without another settlement request or new funding. The shared settlement checks
 finally collect all 384 test sats and restore the original router state.
 
+The opposite buyer stays stopped until the provider closes its channel at service
+expiry. With a 180-second channel lifetime, service expires after 90 seconds.
+The fixture observes the completed report without a cooperative payment before
+restarting that buyer. Recovery must return the same report, refund the original
+buyer and release the channel automatically, without new funding or another
+payment. The final journals must retain that original report and signed balance.
+
 Use `sim.wifi_funding` with the same arguments to interrupt renewal instead.
 It withholds one committed successor-funding reply while both original routes
 continue carrying paid traffic, then kills and restarts all three relay

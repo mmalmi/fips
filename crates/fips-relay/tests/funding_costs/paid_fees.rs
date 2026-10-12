@@ -21,8 +21,8 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             network,
             &url,
             setup::LineConfig {
-                lifetime: 60,
-                quote_lifetime: 30,
+                lifetime: 120,
+                quote_lifetime: 100,
                 funding_limits: &[40, 40, 40],
             },
             |index, config| {
@@ -151,7 +151,19 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         let reverse_id = reverse_funding.values().next().unwrap()["funded"]["terms"]["id"]
             .as_str()
             .unwrap();
-        let expired = tokio::time::timeout(Duration::from_secs(40), async {
+        let reverse_routes = reverse_buyer["outgoing"].as_object().unwrap();
+        assert_eq!(reverse_routes.len(), 1);
+        let quote_expiry = reverse_routes.values().next().unwrap()["offer"]["expires_unix"]
+            .as_u64()
+            .unwrap();
+        assert!(
+            reverse_buyer["buyer_settlements"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+        stop(&mut children[2]).await;
+        let expired = tokio::time::timeout(Duration::from_secs(80), async {
             loop {
                 let sale = read(1)["seller_settlements"][reverse_id].clone();
                 if sale["report"].is_object() {
@@ -163,6 +175,31 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
         .await
         .expect("provider must finish the reverse sale at service expiry without its buyer");
         assert!(expired["payment"].is_null());
+        children[2] = start(&paths[2]).await;
+        ready(&configs, &paths, &npubs, &mut children).await;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let buyer = read(2);
+                let purchase = &buyer["buyer_settlements"][reverse_id];
+                if purchase["refunded"] == true && purchase["released"] == true {
+                    assert_eq!(purchase["report"], expired["report"]);
+                    assert_eq!(buyer["funding"], reverse_buyer["funding"]);
+                    assert_eq!(buyer["next_funding"], reverse_buyer["next_funding"]);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("expired service must recover automatically while its quote remains valid");
+        assert!(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                < quote_expiry,
+            "recovery must not wait for quote expiry"
+        );
         let reverse = match request(&configs[2], &AdminRequest::Settle).await {
             Ok(report) => report,
             Err(error) => {

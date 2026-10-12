@@ -32,73 +32,88 @@ fn watch(store: &mut Store, old: &Outgoing, paused: bool, selected: bool) -> Wat
 
 #[test]
 fn expiry_detaches_exact_pending_watches_without_erasing_financial_history() {
-    for (paused, selected) in [(false, false), (true, false), (false, true), (true, true)] {
-        let root = tempfile::tempdir().unwrap();
-        let (mut store, old) = fixture(&root.path().join("controller"));
-        let expected = watch(&mut store, &old, paused, selected);
-        let offer = expected.pending.as_ref().unwrap();
-        let funding = serde_json::to_value(&store.journal.funding).unwrap();
-        let outgoing = serde_json::to_value(&store.journal.outgoing).unwrap();
-        let capital = Controller::capital(&store.journal).unwrap();
-        let before = serde_json::to_value(&store.journal).unwrap();
-        assert!(
-            !store
-                .withdraw_expired_purchases(offer.expires_unix - 1, |_| Ok(()))
-                .unwrap()
-        );
-        assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
+    for quote_outlives_channel in [false, true] {
+        for (paused, selected) in [(false, false), (true, false), (false, true), (true, true)] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut store, mut old) = fixture(&root.path().join("controller"));
+            let expiry = old.purchase.contract.expires_unix;
+            if quote_outlives_channel {
+                old.offer.expires_unix += 300;
+                store
+                    .change(|j| {
+                        j.requested.insert(old.offer.id.clone(), old.offer.clone());
+                        j.outgoing
+                            .insert(old.purchase.contract.id.clone(), old.clone());
+                        Controller::validate_journal(j, &j.policy, j.local)
+                    })
+                    .unwrap();
+            }
+            let expected = watch(&mut store, &old, paused, selected);
+            let offer = expected.pending.as_ref().unwrap();
+            let funding = serde_json::to_value(&store.journal.funding).unwrap();
+            let outgoing = serde_json::to_value(&store.journal.outgoing).unwrap();
+            let capital = Controller::capital(&store.journal).unwrap();
+            let before = serde_json::to_value(&store.journal).unwrap();
+            assert!(
+                !store
+                    .withdraw_expired_purchases(expiry - 1, |_| Ok(()))
+                    .unwrap()
+            );
+            assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
 
-        assert!(
-            store
-                .withdraw_expired_purchases(offer.expires_unix, |j| {
-                    assert!(j.watched_routes[&expected.destination].pending.is_none());
-                    assert!(j.recovery_only.contains(&offer.id));
-                    Ok(())
-                })
-                .unwrap(),
-            "the expired pending Watch must not require native peer eviction"
-        );
-        let mut detached = expected.clone();
-        detached.pending = None;
-        assert!(store.journal.watched_routes[&expected.destination] == detached);
-        assert_eq!(
-            serde_json::to_value(&store.journal.funding).unwrap(),
-            funding
-        );
-        assert_eq!(
-            serde_json::to_value(&store.journal.outgoing).unwrap(),
-            outgoing
-        );
-        assert_eq!(Controller::capital(&store.journal).unwrap(), capital);
-        assert!(
-            !Controller::finish_acceptance(&mut store.journal, &old.purchase.contract.id).unwrap()
-        );
-        let mut late = old.clone();
-        late.offer = offer.clone();
-        assert!(Controller::record_purchase(&mut store.journal, late).is_err());
-        assert!(
-            Controller::complete_watched_purchase(
-                &mut store.journal,
-                &expected.destination,
-                expected.clone(),
-                &old.purchase,
-            )
-            .is_err()
-        );
-        let mut store = reload(store);
-        assert!(store.journal.watched_routes[&expected.destination] == detached);
-        let persisted = serde_json::to_value(&store.journal).unwrap();
-        assert!(
-            !store
-                .withdraw_expired_purchases(offer.expires_unix - 1, |_| Ok(()))
-                .unwrap()
-        );
-        assert!(
-            !store
-                .withdraw_expired_purchases(offer.expires_unix, |_| Ok(()))
-                .unwrap()
-        );
-        assert_eq!(serde_json::to_value(&store.journal).unwrap(), persisted);
+            assert!(
+                store
+                    .withdraw_expired_purchases(expiry, |j| {
+                        assert!(j.watched_routes[&expected.destination].pending.is_none());
+                        assert!(j.recovery_only.contains(&offer.id));
+                        Ok(())
+                    })
+                    .unwrap(),
+                "expired service must withdraw its purchase even while the quote remains valid"
+            );
+            let mut detached = expected.clone();
+            detached.pending = None;
+            assert!(store.journal.watched_routes[&expected.destination] == detached);
+            assert_eq!(
+                serde_json::to_value(&store.journal.funding).unwrap(),
+                funding
+            );
+            assert_eq!(
+                serde_json::to_value(&store.journal.outgoing).unwrap(),
+                outgoing
+            );
+            assert_eq!(Controller::capital(&store.journal).unwrap(), capital);
+            assert!(
+                !Controller::finish_acceptance(&mut store.journal, &old.purchase.contract.id)
+                    .unwrap()
+            );
+            let mut late = old.clone();
+            late.offer = offer.clone();
+            assert!(Controller::record_purchase(&mut store.journal, late).is_err());
+            assert!(
+                Controller::complete_watched_purchase(
+                    &mut store.journal,
+                    &expected.destination,
+                    expected.clone(),
+                    &old.purchase,
+                )
+                .is_err()
+            );
+            let mut store = reload(store);
+            assert!(store.journal.watched_routes[&expected.destination] == detached);
+            let persisted = serde_json::to_value(&store.journal).unwrap();
+            assert!(
+                !store
+                    .withdraw_expired_purchases(expiry - 1, |_| Ok(()))
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .withdraw_expired_purchases(expiry, |_| Ok(()))
+                    .unwrap()
+            );
+            assert_eq!(serde_json::to_value(&store.journal).unwrap(), persisted);
+        }
     }
 }
 

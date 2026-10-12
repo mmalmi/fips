@@ -5970,9 +5970,45 @@ in `work/receiver-custody-r482` and `work/expired-report-replay-r485`.
 
 The [settlement recovery contract](HISTORY.md#completed-seller-channels-and-report-release)
 describes these changes. No schema or protocol message changes are required.
-These fixes have not yet been qualified on the physical routers or Pixel. Other
-missing/conflicting records and physical power-loss cases remain open; this does
-not establish production readiness.
+
+The first ordinary-router run in `work/payout-expiry-hardware-r486` recovered the
+committed mint reply without another swap and completed the original buyer's
+refund automatically. The opposite buyer stayed stopped while its provider
+settled at service expiry. After restart, that buyer did not start settlement
+within 60 seconds; explicit settlement then returned the saved report and
+recovered all 384 test sats. All 426 management checks and final restoration
+passed, and the isolated profiles were archived and removed. The acceptance run
+remains failed. Its quote was valid for 1,200 seconds while funded service lasted
+90 seconds; automatic withdrawal checked only the quote deadline.
+
+Withdrawal now also observes the accepted service deadline. A live purchase of
+the same offer, live incoming ownership, changed Watch terms or an unfinished
+route change or renewal still prevents withdrawal. Existing recovery then settles
+the original channel without changing funding or lifetime budgets. The extended
+source-expiry regression fails against the old implementation and passes with the
+fix; the existing fee-bearing process test now keeps the opposite buyer stopped
+through provider expiry and requires automatic refund before quote expiry.
+
+The candidate passes all 346 relay unit tests, both process recovery tests,
+formatting, strict lint, the source-size gate and the ordinary ARM64 build.
+The canonical router fixture also delays that buyer until automatic provider
+expiry. Its supporting 29 fixture tests pass. Exact source inputs, logs and the
+ordinary package are retained in `work/service-expiry-recovery-r487`; the fixture
+checks are in `work/payout-expiry-hardware-r486`. The accepted failing reproduction
+and passing tests both freshly compiled the changed source.
+
+The ordinary build then passes the canonical fixture on all three routers in
+`work/service-expiry-hardware-r488`. Paid traffic and automatic payments work in
+both directions. The provider recovers the committed mint reply without another
+swap; the restarted buyers automatically recover both the interrupted settlement
+and the independently completed expiry report. Original funding, signed balances
+and reports remain unchanged. All 384 test sats are collected, all 345 management
+checks pass, and original services and accounts are restored. Settled test
+profiles are archived and removed; financial evidence is retained. This
+interrupts relay processes, not device power.
+
+Current Pixel qualification, other missing/conflicting records and physical
+power-loss cases remain open; this does not establish production readiness.
 
 ### Missing withdrawal journals
 

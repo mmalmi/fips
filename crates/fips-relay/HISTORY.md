@@ -65,6 +65,12 @@ This withdraws routing permission, not financial liability: original funding IDs
 pending wallet operations, channel terms, debits and lifetime limits remain.
 An eventual successful acceptance is retained without restoring that permission.
 
+Upkeep also withdraws a purchase when its accepted service expires, even if the
+quote remains valid for longer. A still-usable purchase of the same offer, a live
+incoming route or an unfinished route change or renewal prevents this withdrawal.
+Expired service therefore enters the existing settlement workflow without waiting
+for quote expiry. Funding and lifetime spending evidence remain unchanged.
+
 The controller persists this disposition before closing local quote authority.
 Quote installation shares the same lock, and startup repairs an interrupted
 cross-journal close. A failed close still removes the affected in-memory packet
