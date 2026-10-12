@@ -1,6 +1,7 @@
 //! A new authenticated buyer must not inherit a disconnected buyer's money.
 use super::*;
 use cashu_service::{create_topup_quote, load_wallet_overview};
+use cdk_common::database::WalletDatabase;
 use fips_core::config::NeighborRotationConfig;
 use fips_relay::service::ServiceConfig;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,87 @@ async fn buy(bench: &MixedBench, source: usize, destination: usize) -> Value {
 
 fn channel(purchase: &Value) -> &str {
     purchase["channel"]["id"].as_str().unwrap()
+}
+
+#[path = "../../process_support/wallet_capacity.rs"]
+mod wallet_capacity;
+
+async fn buy_after_capacity_recovers(bench: &MixedBench, incumbent: &Value) -> Value {
+    let db = wallet_capacity::fill_wallet_capacity(&bench.configs[1]).await;
+    let full = db.storage_capacity().await.unwrap().unwrap();
+    let error = request(
+        &bench.configs[2],
+        &AdminRequest::Buy {
+            destination: bench.npubs[0].clone(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("provider rejected purchase"), "{error}");
+    let pending = journal(&bench.configs[2], "controller/controller.json");
+    assert_eq!(pending["funding"].as_object().unwrap().len(), 1);
+    let funded = &pending["funding"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["funded"];
+    assert!(
+        funded.is_object(),
+        "refusal must follow the original funding"
+    );
+    let status = request(&bench.configs[2], &AdminRequest::Status)
+        .await
+        .unwrap();
+    assert_eq!(status["funding_budget"]["wallet_debited_sat"], 32);
+    assert_eq!(status["funding_budget"]["locked_sat"], 32);
+    assert!(status["purchases"].as_array().unwrap().is_empty());
+    bench.expect_denied(2, 0).await;
+
+    let previous = bench.relay_usage_msat(channel(incumbent)).1;
+    bench.deliver_sized(0, 2, 512).await;
+    bench.wait_paid_beyond(channel(incumbent), previous).await;
+    assert_eq!(
+        journal(&bench.configs[1], "seller/ledger.json")["ledger"]["channels"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "a full wallet cannot admit another payout obligation"
+    );
+    assert_eq!(db.storage_capacity().await.unwrap().unwrap(), full);
+    assert_eq!(
+        journal(&bench.configs[2], "controller/controller.json")["funding"],
+        pending["funding"]
+    );
+
+    db.kv_remove("capacity-test", "", "ballast").await.unwrap();
+    let purchase = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let status = request(&bench.configs[2], &AdminRequest::Status)
+                .await
+                .unwrap();
+            if let Some(purchase) = status["purchases"].as_array().unwrap().first() {
+                assert_eq!(status["funding_budget"]["wallet_debited_sat"], 32);
+                assert_eq!(status["funding_budget"]["locked_sat"], 32);
+                break purchase.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("original purchase must recover without another buy request");
+    assert_eq!(purchase["channel"], funded["terms"]);
+    let recovered = journal(&bench.configs[2], "controller/controller.json");
+    assert_eq!(recovered["funding"], pending["funding"]);
+    assert_eq!(recovered["next_funding"], pending["next_funding"]);
+    let capacity = db.storage_capacity().await.unwrap().unwrap();
+    assert_eq!(capacity.maximum_bytes, full.maximum_bytes);
+    assert!(capacity.charged_bytes < capacity.maximum_bytes);
+    eprintln!(
+        "new paying identity: full wallet refused admission while incumbent paid; original funding recovered after freeing only test ballast"
+    );
+    purchase
 }
 
 struct Retired {
@@ -135,7 +217,10 @@ async fn exercise(bench: &mut MixedBench, root: &Path, network: &PaymentNetwork)
     );
 
     bench.set_stage("new-identity-paid");
-    let newcomers = [buy(bench, 0, 2).await, buy(bench, 2, 0).await];
+    let incumbent = buy(bench, 0, 2).await;
+    bench.set_stage("new-identity-wallet-capacity");
+    let newcomer = buy_after_capacity_recovers(bench, &incumbent).await;
+    let newcomers = [incumbent, newcomer];
     assert_eq!(channel(&newcomers[0]), channel(&original[0]));
     assert_ne!(channel(&newcomers[1]), old_channel);
     for (source, destination, purchase) in [(0, 2, &newcomers[0]), (2, 0, &newcomers[1])] {
@@ -281,6 +366,7 @@ async fn new_paying_identity_joins_while_disconnected_buyer_retains_unsettled_fu
             cfg.terms.controller.max_locked_sat = 64;
             cfg.terms.controller.max_wallet_spend_sat = 128;
             cfg.terms.controller.renewal = None;
+            cfg.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024);
         })
         .await;
     let bench = Arc::new(tokio::sync::Mutex::new(bench));

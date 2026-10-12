@@ -11786,6 +11786,23 @@ conserved, every buyer's balance reconciles with its spending, and the provider
 has earned funds. The final scenario passes in 15.33 seconds; strict service
 lint, formatting and source-size checks pass. No runtime change is needed.
 
+`work/newcomer-wallet-capacity-r509` strengthens that same scenario with a fixed
+16-MiB native-wallet limit. After the incumbent buys its route to the newcomer,
+test ballast occupies every unreserved byte of the provider wallet. The newcomer
+funds exactly one 32-sat channel, but the provider refuses its purchase and its
+traffic remains denied. The incumbent still delivers fresh traffic and advances
+payment while the wallet remains full; the provider retains only its two admitted
+payout obligations and the disconnected buyer's records stay unchanged.
+
+Removing only the test ballast lets ordinary recovery accept the original
+purchase without another Buy request. The channel, wallet-operation ID, funding
+sequence, debit and configured storage limit remain unchanged. Both paid
+directions then advance and all four wallets reconcile to 512 test sats. The
+extended newcomer case and existing shared-wallet settlement case pass with the
+same extracted capacity helper, strict lint, formatting and source-size checks.
+This changes tests only. It covers finite logical-capacity refusal/recovery, not
+physical disk exhaustion or sustained total-database growth.
+
 Run `cargo test -p fips-relay --features measurements --test service
 mixed_transport::newcomer:: -- --nocapture` with the development dependencies in
 [FUNDING-COSTS.md](FUNDING-COSTS.md). This is a finite software admission and
