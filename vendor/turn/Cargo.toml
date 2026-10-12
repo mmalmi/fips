@@ -64,7 +64,7 @@ version = "0.9"
 version = "0.17.14"
 
 [dependencies.stun]
-version = "0.17.0"
+version = "=0.17.1"
 
 [dependencies.thiserror]
 version = "1"

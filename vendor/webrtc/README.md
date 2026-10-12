@@ -1,3 +1,7 @@
+The upstream WebRTC components are pinned to the tested 0.17.1 family because
+public configuration structs changed in the 0.17.2 patch release. Update this
+family together and verify packaged consumers before changing these pins.
+
 # Nostr VPN webrtc package
 
 This package preserves the upstream 0.17.1 protocol implementation. Its package

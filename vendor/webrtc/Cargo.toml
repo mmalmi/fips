@@ -49,11 +49,11 @@ version = "0.1"
 version = "1"
 
 [dependencies.data]
-version = "0.17.1"
+version = "=0.17.1"
 package = "webrtc-data"
 
 [dependencies.dtls]
-version = "0.17.1"
+version = "=0.17.1"
 
 [dependencies.hex]
 version = "0.4"
@@ -64,7 +64,7 @@ path = "../webrtc-ice"
 version = "=0.17.1"
 
 [dependencies.interceptor]
-version = "0.17.1"
+version = "=0.17.1"
 
 [dependencies.lazy_static]
 version = "1.4"
@@ -73,11 +73,11 @@ version = "1.4"
 version = "0.4"
 
 [dependencies.mdns]
-version = "0.17.1"
+version = "=0.17.1"
 package = "webrtc-mdns"
 
 [dependencies.media]
-version = "0.17.1"
+version = "=0.17.1"
 package = "webrtc-media"
 
 [dependencies.pem]
@@ -104,17 +104,17 @@ version = "1.9.5"
 version = "0.17.14"
 
 [dependencies.rtcp]
-version = "0.17.1"
+version = "=0.17.1"
 
 [dependencies.rtp]
-version = "0.17.1"
+version = "=0.17.1"
 
 [dependencies.sctp]
-version = "0.17.1"
+version = "=0.17.1"
 package = "webrtc-sctp"
 
 [dependencies.sdp]
-version = "0.17.1"
+version = "=0.17.1"
 
 [dependencies.serde]
 version = "1"
@@ -131,11 +131,11 @@ version = "0.2"
 features = ["serde"]
 
 [dependencies.srtp]
-version = "0.17.1"
+version = "=0.17.1"
 package = "webrtc-srtp"
 
 [dependencies.stun]
-version = "0.17.0"
+version = "=0.17.1"
 
 [dependencies.thiserror]
 version = "1"
