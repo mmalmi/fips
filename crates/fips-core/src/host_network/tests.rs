@@ -217,7 +217,25 @@ async fn udp_carrier_uses_host_dns_and_reprotects_rebuilt_sockets() {
 async fn protected_websocket_preserves_original_host_and_path() {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        Callback, ErrorResponse, Request, Response,
+    };
+
+    struct OriginalRequest;
+    impl Callback for OriginalRequest {
+        fn on_request(
+            self,
+            request: &Request,
+            response: Response,
+        ) -> std::result::Result<Response, ErrorResponse> {
+            assert_eq!(
+                request.uri().path_and_query().unwrap().as_str(),
+                "/carrier?scope=fixture"
+            );
+            assert_eq!(request.headers()["host"], "carrier.invalid:1234");
+            Ok(response)
+        }
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let policy = FixtureNetwork {
@@ -228,15 +246,7 @@ async fn protected_websocket_preserves_original_host_and_path() {
     };
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let mut websocket =
-            tokio_tungstenite::accept_hdr_async(stream, |request: &Request, response: Response| {
-                assert_eq!(
-                    request.uri().path_and_query().unwrap().as_str(),
-                    "/carrier?scope=fixture"
-                );
-                assert_eq!(request.headers()["host"], "carrier.invalid:1234");
-                Ok(response)
-            })
+        let mut websocket = tokio_tungstenite::accept_hdr_async(stream, OriginalRequest)
             .await
             .unwrap();
         let message = websocket.next().await.unwrap().unwrap();
