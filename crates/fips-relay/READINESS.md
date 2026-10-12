@@ -2176,9 +2176,28 @@ Twenty-seven focused Linux checks pass. Independent closure reads the stopped
 ext4 images to verify the original funding operations, signed amounts, refunds,
 provider release records and exact wallet distribution; both guests, tunnels and
 mints are absent. Only the existing harness and documentation change. This
-finite guest case leaves physical flash power loss, prolonged saturation and
-combined slow-storage funding/settlement interruptions unqualified. Reproduce it
-with the existing guest command plus `--write-iops 20`.
+finite guest case leaves physical flash power loss and prolonged storage
+saturation unqualified. Reproduce it with the existing guest command plus
+`--write-iops 20`.
+
+The unchanged harness and binaries in `work/guest-slow-transitions-r508` also
+pass both committed-reply boundaries with that disk limit on both boots.
+`--cut-at settlement` recovers the provider while its buyer remains offline;
+the buyer then recovers its original refund automatically. Mint swap attempts
+stay at six while restore requests advance from three to four. All 2,560
+pre-settlement packets arrive; no traffic is offered on the closed channel.
+`--cut-at renewal_funding` reaches the channel-opening stage: the original
+channels carry paid traffic while the committed funding reply is held, then
+kernel recovery retains the exact pending channel and wallet-operation IDs.
+Exactly one successor completes, pays for fresh traffic and refunds its
+predecessor, without increasing the original spending or capital limits. All
+7,680 measured packets across the initial, held-reply and recovery windows
+arrive. Both cases settle their complete two-/three-channel fixtures, collect
+all 384 test sats each and leave empty node wallets. Independent reads of the
+stopped ext4 images verify funding, signatures, refunds, provider releases and
+per-wallet balances; guest, tunnel and mint processes are absent. This adds
+finite slow-write qualification for these two transitions, not physical flash
+power loss or interruption at every wallet preparation stage.
 
 The same guest harness on `5293eb6bb` also passes a cut after the host mint
 commits a settlement swap, before the relay receives the response. It uses the
