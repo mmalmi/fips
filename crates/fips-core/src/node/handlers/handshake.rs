@@ -126,19 +126,19 @@ impl Node {
         false
     }
 
-    /// Returns true if an inbound msg1 should pass the transport's
-    /// `accept_connections` gate.
-    pub(in crate::node) fn should_admit_msg1(
+    /// Classify an inbound msg1 while applying the transport's admission gate.
+    pub(in crate::node) fn admitted_msg1_class(
         &self,
         transport_id: crate::transport::TransportId,
         remote_addr: &crate::transport::TransportAddr,
-    ) -> bool {
+    ) -> Option<Msg1Class> {
         if self.is_established_link_msg1(transport_id, remote_addr) {
-            return true;
+            return Some(Msg1Class::EstablishedLink);
         }
         self.transports
             .get(&transport_id)
             .is_none_or(|t| t.accept_connections())
+            .then_some(Msg1Class::Stranger)
     }
 
     /// Snapshot which authenticated identity owns an address waiver.
@@ -212,14 +212,29 @@ impl Node {
             bytes = packet.data.len(),
             "Received msg1"
         );
-        // Classify before crypto so established-link maintenance does not
-        // compete with stranger traffic for rate capacity.
-        let established = self.is_established_link_msg1(packet.transport_id, &packet.remote_addr);
-        let class = if established {
-            Msg1Class::EstablishedLink
-        } else {
-            Msg1Class::Stranger
+        // Reject malformed records before they can consume authentication capacity.
+        let header = match Msg1Header::parse(packet.data.as_slice()) {
+            Some(h) => h,
+            None => {
+                debug!("Invalid msg1 header");
+                return;
+            }
         };
+
+        // Classify once before metering: existing links retain their maintenance
+        // allowance, while a refusing listener cannot spend stranger capacity.
+        let class = match self.admitted_msg1_class(packet.transport_id, &packet.remote_addr) {
+            Some(class) => class,
+            None => {
+                debug!(
+                    transport_id = %packet.transport_id,
+                    remote_addr = %packet.remote_addr,
+                    "Msg1 rejected by accept-connections gate"
+                );
+                return;
+            }
+        };
+        let established = class == Msg1Class::EstablishedLink;
         let _pending_slot = match self.msg1_rate_limiter.start_handshake(class) {
             Ok(slot) => slot,
             Err(reason) => {
@@ -234,32 +249,10 @@ impl Node {
             }
         };
 
-        // accept_connections gate. Rekey/restart msg1 on an existing link
-        // is always admitted; the gate only filters truly-fresh connections
-        // from strangers. Without this carve-out, the dual-init tie-breaker
-        // deadlocks when the larger-NodeAddr side has accept_connections=false.
-        if !established && !self.should_admit_msg1(packet.transport_id, &packet.remote_addr) {
-            debug!(
-                transport_id = %packet.transport_id,
-                remote_addr = %packet.remote_addr,
-                "Msg1 rejected by accept-connections gate"
-            );
-            return;
-        }
-
         // Record why this source passed a refusing transport before any await
         // or registry mutation. After DH, the learned static identity must
         // confirm this address attribution.
         let waiver = self.msg1_waiver(established, packet.transport_id, &packet.remote_addr);
-
-        // Parse header
-        let header = match Msg1Header::parse(packet.data.as_slice()) {
-            Some(h) => h,
-            None => {
-                debug!("Invalid msg1 header");
-                return;
-            }
-        };
 
         // Check for existing connection from this address.
         //

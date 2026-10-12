@@ -34,16 +34,19 @@ async fn test_duplicate_msg2_dropped() {
     assert_eq!(node.peer_count(), 0);
 }
 
-/// `should_admit_msg1` admits when no transport is registered for the id.
+/// `admitted_msg1_class` admits when no transport is registered for the id.
 /// (No gate to apply — the caller's other checks decide the outcome.)
 #[test]
 fn test_should_admit_msg1_no_transport() {
     let node = make_node();
     let addr = TransportAddr::from_string("10.0.0.2:2121");
-    assert!(node.should_admit_msg1(TransportId::new(1), &addr));
+    assert!(
+        node.admitted_msg1_class(TransportId::new(1), &addr)
+            .is_some()
+    );
 }
 
-/// `should_admit_msg1` rejects a fresh msg1 (no address-index entry) when
+/// `admitted_msg1_class` rejects a fresh msg1 (no address-index entry) when
 /// the transport has accept_connections=false. Behavior unchanged from
 /// before the carve-out.
 #[tokio::test]
@@ -65,10 +68,10 @@ async fn test_should_admit_msg1_rejects_fresh_when_accept_off() {
         .insert(transport_id, TransportHandle::Tcp(tcp));
 
     let addr = TransportAddr::from_string("10.0.0.2:2121");
-    assert!(!node.should_admit_msg1(transport_id, &addr));
+    assert!(node.admitted_msg1_class(transport_id, &addr).is_none());
 }
 
-/// ISSUE-2026-0004 regression test: `should_admit_msg1` admits rekey/restart
+/// ISSUE-2026-0004 regression test: `admitted_msg1_class` admits rekey/restart
 /// msg1 from a peer with an existing link even when the transport has
 /// accept_connections=false. Without this, the dual-init tie-breaker
 /// deadlocks (the larger-NodeAddr side drops the winner's rekey msg1).
@@ -97,7 +100,7 @@ async fn test_should_admit_msg1_admits_rekey_when_accept_off() {
     node.links
         .insert_addr((transport_id, addr.clone()), link_id);
 
-    assert!(node.should_admit_msg1(transport_id, &addr));
+    assert!(node.admitted_msg1_class(transport_id, &addr).is_some());
 }
 
 /// Same regression coverage as the TCP test above, but exercising the
@@ -127,7 +130,7 @@ async fn test_should_admit_msg1_admits_rekey_when_udp_accept_off() {
 
     // Fresh msg1 (no address-index entry) is rejected by the gate when
     // the transport refuses inbound.
-    assert!(!node.should_admit_msg1(transport_id, &addr));
+    assert!(node.admitted_msg1_class(transport_id, &addr).is_none());
 
     // Pre-populate address dispatch as if a session were established. The
     // rekey carve-out admits the msg1 even though the transport still
@@ -136,7 +139,7 @@ async fn test_should_admit_msg1_admits_rekey_when_udp_accept_off() {
     node.links
         .insert_addr((transport_id, addr.clone()), link_id);
 
-    assert!(node.should_admit_msg1(transport_id, &addr));
+    assert!(node.admitted_msg1_class(transport_id, &addr).is_some());
 }
 
 /// Regression test for the udp.outbound_only rekey loop observed in
@@ -195,13 +198,17 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
     node.peers.insert(peer_node_addr, peer);
 
     // Sanity: legacy carve-out still works for the hostname-form lookup.
-    assert!(node.should_admit_msg1(transport_id, &hostname_addr));
+    assert!(
+        node.admitted_msg1_class(transport_id, &hostname_addr)
+            .is_some()
+    );
 
     // The bug: incoming rekey msg1 arrives with numeric source addr.
     // Without the additional carve-out, this is rejected (address-index
     // miss → accept_connections() false → drop).
     assert!(
-        node.should_admit_msg1(transport_id, &numeric_addr),
+        node.admitted_msg1_class(transport_id, &numeric_addr)
+            .is_some(),
         "rekey msg1 from established peer must be admitted even when \
          address dispatch is keyed by a different addr-form (hostname vs \
          numeric); the carve-out must consult peer current_addr"
@@ -211,7 +218,8 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
     // (no peer there, no address-index entry, falls to accept_connections).
     let stranger_addr = TransportAddr::from_string("198.51.100.1:2121");
     assert!(
-        !node.should_admit_msg1(transport_id, &stranger_addr),
+        node.admitted_msg1_class(transport_id, &stranger_addr)
+            .is_none(),
         "fresh msg1 from unknown source must still be rejected"
     );
 }
@@ -447,4 +455,106 @@ async fn msg1_reject_path_does_not_release_another_pending_guard() {
     );
     drop(held);
     assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
+}
+
+#[tokio::test]
+async fn cheap_msg1_rejections_preserve_fresh_admission_capacity() {
+    use crate::config::UdpConfig;
+    use crate::node::tests::spanning_tree::process_dataplane_packet_once;
+    use crate::node::wire::{Msg2Header, build_msg1};
+    use crate::noise::HandshakeState;
+    use crate::transport::{PacketBuffer, udp::UdpTransport};
+
+    for rejection in ["listener", "malformed", "authentication"] {
+        let mut config = Config::new();
+        config.node.rate_limit.handshake_burst = 1;
+        config.node.rate_limit.handshake_rate = 0.0;
+        let refusing = TransportId::new(1);
+        let accepting = TransportId::new(2);
+        let (mut node, source, mut far_rx, _far_end) =
+            node_refusing_inbound(refusing, config).await;
+        let (tx, _rx) = packet_channel(64);
+        let mut transport = UdpTransport::new(
+            accepting,
+            None,
+            UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_owned()),
+                ..Default::default()
+            },
+            tx,
+        );
+        transport.start_async().await.unwrap();
+        node.transports
+            .insert(accepting, TransportHandle::Udp(transport));
+        let initiator = make_node();
+        let mut rejected = genuine_msg1(&initiator, &node, 81).as_slice().to_vec();
+        if rejection == "malformed" {
+            rejected.truncate(4); // Valid phase prefix, incomplete Msg1 header.
+        } else if rejection == "authentication" {
+            *rejected.last_mut().unwrap() ^= 1;
+        }
+        process_dataplane_packet_once(
+            &mut node,
+            ReceivedPacket::with_timestamp(
+                if rejection == "listener" {
+                    refusing
+                } else {
+                    accepting
+                },
+                source.clone(),
+                PacketBuffer::new(rejected),
+                Node::now_ms(),
+            ),
+        )
+        .await;
+        assert_eq!(
+            (
+                node.peer_count(),
+                node.connection_count(),
+                node.link_count()
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
+        assert_no_packet(&mut far_rx, "rejected msg1 must not create a response").await;
+
+        let mut handshake = HandshakeState::new_initiator(
+            initiator.identity.keypair(),
+            node.identity.pubkey_full(),
+        );
+        handshake.set_local_epoch(initiator.startup_epoch);
+        let wire = build_msg1(SessionIndex::new(82), &handshake.write_message_1().unwrap());
+        process_dataplane_packet_once(
+            &mut node,
+            ReceivedPacket::with_timestamp(
+                accepting,
+                source,
+                PacketBuffer::new(wire),
+                Node::now_ms(),
+            ),
+        )
+        .await;
+        if rejection == "authentication" {
+            // Crypto failures still consume the only token; no refund lets an
+            // attacker turn invalid authentication into unlimited DH work.
+            assert_no_packet(
+                &mut far_rx,
+                "authentication failures must remain rate limited",
+            )
+            .await;
+            assert_eq!(node.peer_count(), 0);
+        } else {
+            let response = tokio::time::timeout(Duration::from_secs(1), far_rx.recv())
+                .await
+                .expect("cheap rejection must leave the fresh peer a handshake token")
+                .unwrap();
+            let header = Msg2Header::parse(response.data.as_slice()).unwrap();
+            handshake
+                .read_message_2(header.noise_msg2(response.data.as_slice()))
+                .unwrap();
+            assert!(node.get_peer(initiator.node_addr()).is_some());
+            assert_eq!(node.peer_count(), 1);
+        }
+        assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
+    }
 }

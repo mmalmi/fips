@@ -20,7 +20,7 @@ pre-existing service accounts.
 | Financial recovery | Actual process interruption during funding and after wallet payout/refund completion, automatic renewal across refund completion, provider outage and repeated buyer restart, provider and interrupted-funding buyer restarts during mint outages, guest kernel/page-cache loss with ext4 journal recovery during paid traffic, after a committed settlement swap and during successor funding with retained provider quotes, unused-channel refund after original expiry, used/shared-channel expiry with each counterparty offline in turn, provider recovery after missing collection and buyer refund, exact cancellation across a mint key change, committed-send recovery, lost settlement replies across departure/rejoin, full-filesystem failure/recovery on disposable macOS HFS+ and Linux tmpfs volumes, refusal/retry of missing wallet files, missing/conflicting refund completion evidence or original funding-retry debit records, current r372 ordinary ARM64 middle-router process recovery during an original paid radio stream, retaining both channels and exact bounded unbilled exposure on persistent accounts; and r377 physical process loss after a committed mint close, with provider recovery while its buyer remains offline, automatic original refund/release and full collection; r380 adds committed successor-funding recovery on all three physical routers, preserving the original wallet operation and carrying paid traffic before and after restart; r381 recovers the very first committed purchase without another buy request, then delivers paid traffic and collects every test sat. Current r392 retains the original paid accounts across an unsynced router kernel reset, delivers all 48,000 payloads and collects all test funds. Current r395 adds automatic recovery through the installed OpenWrt init/UCI service, retaining the original channels and limits with all 48,000 packets delivered and all test funds collected. Current r396 repeats that recovery during a 207.51-second mint outage, with complete paid delivery and collection after the original mint resumes. Current r403 retains both original channels across three unsynced boots, delivers all 24,000 packets and collects all 384 test sats with adaptive durable windows. Physical router storage acceptance covers signer snapshot failures, full wallet filesystems, full-account startup refusal and actual SQLite-write rollback, preserving test funds and recovering the original paid channels. The bounded SQLite probe succeeds with the identical write after freeing space; all wallet proof records and storage charges survive. Current r426 verifies the original durable quote and first purchase across all three router process restarts, with all 2,560 paid payloads delivered and all test funds returned. Current r427 also qualifies successor funding and committed settlement on that build: all 7,680 renewal payloads arrive, settlement restores without another swap attempt, and both runs recover all test funds. | Other missing or conflicting original native wallet records; broader combinations of interrupted transitions; physical power-loss and further router-filesystem failure checks. |
 | Long-running history | Acknowledged export prefixes with native coin-history handoff, route/channel retirement, lifetime rollups, paged proof custody with whole-capture capacity reservations, receipts and unfinished operations, capped journal and individual service operation reads, request-journal recovery reservations, individual send-record limits, bounded wallet inventory/output planning, mint metadata projections and wallet counts, and client-file completion reservations retain unresolved ownership; fresh services can configure a fixed native wallet limit. Four outstanding channels settle under that limit; independent refunds and renewals complete while another mint close is held, with wallet imports still serialized. See [wallet progress](#independent-wallet-progress) and [history](HISTORY.md). | Remaining wallet workflows/stores and queries, other concurrent wallet workflows, aggregate resource pressure and physical recovery capacity. |
 | Reproducible build and operation | Exact committed dependencies can be exported, relocated, built offline and exercised with test money; fresh-profile setup and recovery procedures exist. | Payment SDK/CDK corrections still require the accepted source graph; registry TCP 0.2.4 is qualified. Each deployment needs matching native tools and current target acceptance. |
-| Threats and integration | Finite rejected-carrier trials include current physical r497: all 24 MiB of paid radio traffic arrive during UDP ingress up to 8,695 packets/s and subsequent recovery, with original channels and full test-fund collection. [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional [TollGate adapter](TOLLGATE.md) remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
+| Threats and integration | Finite rejected-carrier trials include current physical r499: all 24 MiB of paid radio traffic arrive during UDP ingress up to 8,536 packets/s and subsequent recovery, with original channels and full test-fund collection. [Threat boundaries](#boundaries-and-threats), explicit mint trust, spending authority and resource limits are documented; the optional [TollGate adapter](TOLLGATE.md) remains a local design proposal. | Review the complete supported deployment and stable peer API; any deployment claiming TollGate compatibility needs client/adapter/server acceptance, which remains untested. |
 
 Measurement version 3 adds exclusive payment CPU attribution: each payer/provider
 future poll ends its span before yielding, blocking workers inherit its operation,
@@ -9865,34 +9865,58 @@ it does not qualify spoofed radio traffic, sustained flooding, arbitrary mobile
 handover or untraced performance. The intervening r436 trial was interrupted
 before funding and closed with zero test sats issued.
 
-`work/udp-pressure-r497` extends the same paid-radio harness with finite UDP
-rejection pressure on the current ordinary r487 router runtime. It mixes invalid
+The native regression in `work/admission-gate-r498` reproduces avoidable
+new-peer starvation: a handshake refused by one listener consumes the shared
+stranger token before listener policy runs, so a valid newcomer on another
+listener receives no response. Header validation and listener admission now
+precede token acquisition. Admission returns the existing rate class in the same
+peer lookup, preserving established-link maintenance without repeating that
+lookup for every packet.
+
+The regression dispatches actual FMP control records and authenticates a genuine
+Noise response after both a refusing-listener case and a malformed-header case.
+A failed Noise authentication still consumes the token and prevents the next
+attempt when the allowance is exhausted. Rejected records leave no peers,
+connections, links or pending slots. No protocol messages, per-source state,
+extra rate capacity or pending-handshake slots are introduced. This removes
+avoidable capacity loss; well-formed authentication floods at accepting listeners
+can still exhaust new-peer capacity, so it does not establish admission fairness
+under arbitrary hostile identities.
+
+All 191 selected native admission, handshake, TCP, WebSocket and rate-limit
+checks pass, along with strict lint, formatting and source-size gates. The ordinary
+ARM64 package contains the same runtime fix, measurements, default core features
+and no SDK simulation features.
+
+`work/udp-pressure-r497` introduced the finite UDP-pressure hardware mode;
+`work/admission-hardware-r499` repeats it on the r498 package. It mixes invalid
 Noise initiations, unsolicited replies and unknown-index records from 64 source
 ports on one controller address. Target rates are 2,000 and 10,000 packets/s;
-actual rates are 1,701 and 8,695 over 31.83 and 32.26 seconds. FIPS receives all
-54,140 and 280,500 submitted records, with zero reported UDP kernel drops or
-receive errors. No addresses are added or spoofed; the saved SAE radio profile
-and production-default warning logs remain in use.
+actual rates are 1,702 and 8,536 over 31.94 and 32.32 seconds. Native counters
+confirm 54,339 of 54,340 submitted records in the first window and all 275,900
+in the second, with zero reported UDP kernel drops or receive errors. The one
+unconfirmed pressure packet is not assigned a cause. No addresses are added or
+spoofed; saved SAE radio and production-default warning logs remain in use.
 
-Both pressure windows and the quiet recovery window deliver and acknowledge
-4 MiB per direction with exact hashes: 24 MiB total. Transfer completion takes
-16.02–16.05 seconds. The original process retains two observed peers and no
-sampled pending connections. Sampled RSS high-water remains below 23 MiB.
-Whole-process CPU is 15.11, 23.24 and 10.92 seconds across the three windows;
-these single, ordered observations include diagnostics and are not isolated
-payment overhead or a causal performance comparison. Original channels and
-capital bounds remain intact, automatic credit advances, all 384 test sats are
-collected and all 369 management checks pass.
+Both pressure windows and quiet recovery deliver and acknowledge 4 MiB per
+direction with exact hashes: 24 MiB total, completing in 16.02–17.03 seconds.
+The original process retains two observed peers and no sampled pending
+connections; sampled RSS high-water stays below 23 MiB. Whole-process CPU is
+15.22, 23.30 and 10.61 seconds across the three windows. These single, ordered
+observations include diagnostics and are not isolated payment overhead or a
+causal performance comparison. Original channels and capital bounds remain
+intact, automatic credit advances, all 384 test sats are collected and all 378
+management checks pass.
 
-The extended harness passes 185 Linux checks; the optional WebSocket check is
-skipped there and passes on macOS. Independent closure verifies the saved
-network and original accounts before archiving/removing the three stopped test
-profiles and staged runtimes. No production runtime change is needed. This
-qualifies finite rejected UDP ingress alongside paid radio traffic, not
-multi-address or authenticated identity churn, admission fairness for a new
-honest peer under attack, prolonged saturation, or paid forwarding over the
-attacked UDP listener. Reproduce with `--carrier-pressure-transport udp` and
-an unused `--carrier-pressure-port` in the existing `sim.paid_wifi` harness.
+The unchanged harness retains its 185 passing Linux checks; the optional
+WebSocket check is skipped there and passes on macOS. Independent closure
+verifies the saved network and original accounts before archiving/removing the
+three stopped test profiles and staged runtimes. This qualifies finite rejected
+UDP ingress alongside paid radio traffic. Multi-address or authenticated identity
+churn, admission fairness under an authentication flood, prolonged saturation,
+and paid forwarding over the attacked UDP listener remain outside this result.
+Reproduce with `--carrier-pressure-transport udp` and an unused
+`--carrier-pressure-port` in the existing `sim.paid_wifi` harness.
 
 `work/carrier-hardware-r423` adds bounded three-router acceptance of the ordinary
 ARM64 runtime at `6a42ad2de`, with all 1,042 current Rust files matched to the build

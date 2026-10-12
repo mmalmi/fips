@@ -123,7 +123,7 @@ pub(super) fn assert_ready(nodes: &[TestNode], ids: &[PeerIdentity]) {
         let transport = node.transports.get(&transport_id).unwrap();
         assert!(transport.is_operational() && transport.auto_connect());
         assert!(transport.accept_connections());
-        assert!(node.should_admit_msg1(transport_id, address));
+        assert!(node.admitted_msg1_class(transport_id, address).is_some());
         for context in [
             PeerAclContext::OutboundConnect,
             PeerAclContext::OutboundHandshake,
