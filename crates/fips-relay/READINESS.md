@@ -11728,6 +11728,31 @@ This covers finite, paced join requests from two management addresses alongside
 paid radio traffic. Admission of paying newcomers, high-rate identity floods,
 physical mobility and long-term resource bounds remain outside this result.
 
+The separate `work/paying-newcomer-r504` service test covers a fresh paying
+identity after a funded neighbor disconnects. Real relay processes use UDP on
+one hop and an identity-free WebSocket seed address on the other, with a two-peer
+cap. The newcomer is authenticated without a configured identity roster for
+that link. Joining alone spends no wallet funds and its unpaid forwarding is
+denied. After explicit purchases, fresh payloads arrive in both directions and
+ordinary cumulative payments advance.
+
+The disconnected buyer's 32-sat channel remains unsettled and its buyer and
+controller records stay unchanged. The incumbent buyer reuses its existing
+channel for the new destination, while the newcomer funds a distinct 32-sat
+channel. The provider retains the incumbent link and process, owns exactly three
+incoming channels, and respects the configured capital and spending bounds.
+Reconnecting the original buyer allows final settlement: all 512 test sats are
+conserved, every buyer's balance reconciles with its spending, and the provider
+has earned funds. The final scenario passes in 15.33 seconds; strict service
+lint, formatting and source-size checks pass. No runtime change is needed.
+
+Run `cargo test -p fips-relay --features measurements --test service
+mixed_transport::newcomer:: -- --nocapture` with the development dependencies in
+[FUNDING-COSTS.md](FUNDING-COSTS.md). This is a finite software admission and
+financial-ownership check after an orderly disconnect. It does not establish
+admission fairness under sustained competition, physical mobility, or power-loss
+recovery. Application probes retain the existing fixture's bounded retries.
+
 The crowded fixture can reuse the bounded brief-contact observer with
 `FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records
 pending lookup changes alongside coordinates, session epochs, watches and

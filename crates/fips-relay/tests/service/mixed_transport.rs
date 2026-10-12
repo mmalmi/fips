@@ -28,6 +28,8 @@ mod accept_barrier;
 mod admission_wait;
 #[path = "mixed_transport/lifecycle.rs"]
 mod lifecycle;
+#[path = "mixed_transport/newcomer.rs"]
+mod newcomer;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
