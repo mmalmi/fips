@@ -24,6 +24,9 @@ mod rotation_prepared;
 #[path = "rotation_starvation.rs"]
 mod rotation_starvation;
 
+#[path = "rotation_churn.rs"]
+mod rotation_churn;
+
 #[path = "rotation_overlap.rs"]
 mod rotation_overlap;
 

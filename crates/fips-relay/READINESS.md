@@ -9888,6 +9888,21 @@ checks pass, along with strict lint, formatting and source-size gates. The ordin
 ARM64 package contains the same runtime fix, measurements, default core features
 and no SDK simulation features.
 
+The native `rotation_churn` regression in `work/authenticated-churn-r500`
+completes 32 consecutive authenticated replacements of an idle neighbor, using
+both reused and fresh UDP source ports. Real bidirectional application traffic
+keeps the other peer useful; its original link, receiver index, generation and
+end-to-end session hash survive every replacement. A competing valid Noise
+request cannot steal the pending slot, and retired encrypted confirmations cannot
+restore old ownership. Each completed rotation releases the old link and index;
+counts return from two peers/one candidate/three links and indexes to two peers,
+no candidates and two links and indexes. One further peer joins after churn stops.
+This uses one-second rotation settings and ordinary stranger token capacity,
+with periodic rekey disabled. It qualifies paced core admission and cleanup,
+not payment accounting or fairness under an unrestricted identity flood. The new
+regression and 36 related checks pass. Production code and the r498 package are
+unchanged.
+
 `work/udp-pressure-r497` introduced the finite UDP-pressure hardware mode;
 `work/admission-hardware-r499` repeats it on the r498 package. It mixes invalid
 Noise initiations, unsolicited replies and unknown-index records from 64 source
