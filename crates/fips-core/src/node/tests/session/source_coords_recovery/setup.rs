@@ -16,6 +16,17 @@ pub(super) fn ready(nodes: &[TestNode], destination: &NodeAddr) -> bool {
             .all(|node| node.node.discovery_work_deadline_ms().is_none())
 }
 
+pub(super) async fn finish(nodes: &mut [TestNode], destination: &NodeAddr) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !ready(nodes, destination) {
+            discovery_turn(nodes).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
 #[test]
 fn cached_coordinates_do_not_finish_an_admitted_setup_retry() {
     run(true);

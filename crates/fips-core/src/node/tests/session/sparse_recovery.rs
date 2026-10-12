@@ -125,7 +125,10 @@ async fn sparse_session_recovery(lose_remote_session: bool, delay_prior_report: 
         .unwrap();
     let recovered = tokio::time::timeout(Duration::from_secs(16), async {
         loop {
-            process_available_packets(&mut nodes).await;
+            // Each live node services its own maintenance deadlines. Poll
+            // all nodes without waiting up to a second for another node's
+            // crypto notification inside this timed multi-node fixture.
+            poll_available_packets(&mut nodes).await;
             run_session_retransmit_work(&mut nodes).await;
             for node in &mut nodes {
                 node.node.check_link_heartbeats().await;

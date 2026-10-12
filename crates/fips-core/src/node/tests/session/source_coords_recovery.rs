@@ -274,17 +274,9 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
         .node
         .maybe_initiate_route_query_lookup(&destination)
         .await;
-    let discovered = tokio::time::timeout(Duration::from_secs(5), async {
-        // A first valid reply can leave a later setup retry admitted at a
-        // transit. Finish that real due work inside this same setup budget,
-        // before changing roots and measuring a fresh original's recovery.
-        while !setup::ready(&nodes, &destination) {
-            discovery_turn(&mut nodes).await;
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    if discovered.is_err() {
+    // A first valid reply can leave an admitted retry at a transit. Finish
+    // its real due work within the existing five-second setup budget.
+    if !setup::finish(&mut nodes, &destination).await {
         let discovery = discovery_diagnostics(&nodes, &destination);
         cleanup_nodes(&mut nodes).await;
         panic!("initial authenticated discovery did not complete: {discovery:?}");
@@ -321,6 +313,15 @@ async fn root_change_recovery(traffic: Traffic, delayed_filter: bool) {
         );
     }
     drain_to_quiescence(&mut nodes).await;
+    // Establishing the reverse session can start another ordinary lookup.
+    // Packet quiescence alone does not finish its admitted retry deadlines.
+    // Complete that setup work before invalidating coordinates or offering
+    // the original packet whose one-second recovery deadline is measured.
+    if !setup::finish(&mut nodes, &destination).await {
+        let discovery = discovery_diagnostics(&nodes, &destination);
+        cleanup_nodes(&mut nodes).await;
+        panic!("session setup discovery did not complete: {discovery:?}");
+    }
     if traffic != Traffic::Direct {
         assert_eq!(
             nodes[0]
