@@ -206,6 +206,31 @@ neighbors. These admission rules do not authorize spending by themselves. See
 [CUSTOMER-ENTRY.md](CUSTOMER-ENTRY.md) for admission limits and bootstrap, and
 [the acceptance report](PROTOTYPE-RESULTS.md) for the physical customer checks.
 
+Optional top-level `max_peers` and `neighbor_rotation` settings control the native
+neighbor roster. For a small changing neighborhood, for example:
+
+```json
+{
+  "max_peers": 2,
+  "neighbor_rotation": { "idle_secs": 2, "interval_secs": 2 }
+}
+```
+
+`max_peers` is a total limit including configured peers. It must cover the
+configured list and be in `1..=24`, the existing maximum of eight configured
+neighbors plus sixteen extra slots. Omitting it preserves the existing limits;
+enabling rotation alone uses sixteen extra slots plus the configured list.
+Rotation is disabled when omitted. When enabled, it uses the existing
+[native replacement policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation):
+configured peers and peers with recent application demand stay protected, and a
+new candidate must authenticate before replacing an eligible idle neighbor.
+Both timing values must be positive. A shorter idle window permits quicker
+replacement of quiet neighbors as well as faster exploration.
+
+These local settings take effect on the next service start and can change
+without reinitializing saved accounts. They do not enable link discovery,
+change `neighbor_admission`, authorize purchases or alter financial terms.
+
 Financial terms are saved at initialization. Changing prices, capital, lifetime
 budget or exposure settings afterward stops startup for explicit reconciliation.
 Changing network addresses does not reset the saved financial terms. The

@@ -136,7 +136,14 @@ async fn healthy_transports_start() {
         )]));
         drop(websocket);
         RelayService::initialize(config.clone()).await.unwrap();
-        for _ in 0..2 {
+        for rotating in [false, true] {
+            if rotating {
+                config.max_peers = Some(2);
+                config.neighbor_rotation = Some(fips_core::config::NeighborRotationConfig {
+                    idle_secs: 2,
+                    interval_secs: 2,
+                });
+            }
             let service = RelayService::load(config.clone()).await.unwrap();
             let report = native_request(&config, &json!({"command": "show_transports"}))
                 .await

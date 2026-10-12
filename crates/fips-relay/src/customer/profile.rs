@@ -115,6 +115,8 @@ impl CustomerProfile {
             customer_network: None,
             mint_export: None,
             neighbor_admission: self.neighbor_admission,
+            max_peers: None,
+            neighbor_rotation: None,
             destination_fees: Default::default(),
             return_allowance: false,
             return_bandwidth: None,

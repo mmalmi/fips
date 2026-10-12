@@ -10,7 +10,6 @@ use std::{
 };
 use tokio::process::{Child, Command};
 
-pub mod mint;
 mod transports;
 pub use transports::{udp_bind, udp_transports};
 
@@ -21,6 +20,8 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         customer_network: None,
         mint_export: None,
         neighbor_admission: Default::default(),
+        max_peers: None,
+        neighbor_rotation: None,
         destination_fees: Default::default(),
         return_allowance: false,
         return_bandwidth: None,

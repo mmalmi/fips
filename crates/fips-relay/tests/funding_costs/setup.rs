@@ -120,7 +120,9 @@ pub(super) struct Bench {
     pub children: Vec<Child>,
 }
 
-pub(super) use crate::process_support::mint::pause_channel_close;
+#[path = "../process_support/mint.rs"]
+mod mint;
+pub(super) use mint::pause_channel_close;
 
 // Observe the small fixture's stored balance without competing with the running
 // service for exclusive SDK wallet ownership or invoking recovery on its behalf.

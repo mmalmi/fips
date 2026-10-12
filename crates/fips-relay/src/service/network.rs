@@ -12,6 +12,12 @@ use std::{
 
 impl ServiceConfig {
     pub(super) fn validate_network(&self) -> Result<(), String> {
+        if self
+            .max_peers
+            .is_some_and(|limit| !(1..=24).contains(&limit) || limit < self.neighbors.len())
+        {
+            return Err("max_peers must cover configured neighbors and be in 1..=24".into());
+        }
         let counts: Vec<_> = self.transports.instance_counts().collect();
         if counts.is_empty() || counts.iter().map(|(_, count)| count).sum::<usize>() > 4 {
             return Err("configure between one and four native transport instances".into());
@@ -137,10 +143,13 @@ impl ServiceConfig {
         config.node.discovery.nostr.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
-        if self.customer_network.is_some()
+        config.node.neighbor_rotation = self.neighbor_rotation.clone();
+        if self.max_peers.is_some()
+            || self.neighbor_rotation.is_some()
+            || self.customer_network.is_some()
             || self.neighbor_admission == NeighborAdmission::AuthenticatedAdjacent
         {
-            config.node.limits.max_peers = self.neighbors.len() + 16;
+            config.node.limits.max_peers = self.max_peers.unwrap_or(self.neighbors.len() + 16);
             config.node.limits.max_connections = config.node.limits.max_peers * 2;
             config.node.limits.max_links = config.node.limits.max_peers * 2;
             config.node.limits.max_pending_inbound = 16;

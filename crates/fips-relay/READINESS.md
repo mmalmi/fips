@@ -11389,6 +11389,23 @@ application traffic becomes idle. Defaults and production admission logic remain
 unchanged. This fixed-layout comparison does not establish a worst-case recovery
 bound, physical radio mobility or general contention fairness.
 
+The ordinary relay service now exposes the same native policy through optional
+[`max_peers` and `neighbor_rotation`](SERVICE.md) settings. Earlier simulations
+configured the core directly; those settings could not be enabled through a
+normal service profile. The total peer cap is bounded to `1..=24` and must cover
+configured neighbors. Existing defaults, discovery and purchase authority stay
+unchanged. The service delegates replacement and timing validation to the core;
+local capacity/timing changes can reload without reinitializing financial state.
+
+`work/service-neighbor-policy-r457` passes 330 unit and six service checks,
+including the existing four-transport reload and mixed UDP/TCP paid-restart
+cases. `work/service-neighbor-package-r458` retains those identical runtime
+sources, limits a test-helper import to its consumers, and passes strict relay
+lint, source-size checks, two mint checks and the ordinary ARM64 build. Relay
+formatting passes. Complete source/dependency inventories and closed build
+processes are verified. This establishes service configuration and packaging;
+physical crowded-neighbor acceptance using these settings remains outstanding.
+
 The crowded fixture can reuse the bounded brief-contact observer with
 `FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records
 pending lookup changes alongside coordinates, session epochs, watches and

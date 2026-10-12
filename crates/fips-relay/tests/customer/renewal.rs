@@ -1,6 +1,9 @@
 //! Customer reconnect while a funded successor overlaps an unresolved mint close.
 use super::*;
 
+#[path = "../process_support/mint.rs"]
+mod mint;
+
 fn journal(config: &ServiceConfig) -> Value {
     serde_json::from_slice(
         &std::fs::read(config.state_directory.join("controller/controller.json")).unwrap(),
@@ -50,11 +53,8 @@ pub(super) async fn rebind_during_close(
     let expiry = purchase["contract"]["expires_unix"].as_u64().unwrap();
     let saved = journal(&configs[1]);
     assert_eq!(saved["policy"]["renewal"]["before_expiry_secs"], 30);
-    let (committed, release) = process_support::mint::pause_channel_close(
-        proxy,
-        &configs[1].state_directory.join("wallet"),
-        original,
-    );
+    let (committed, release) =
+        mint::pause_channel_close(proxy, &configs[1].state_directory.join("wallet"), original);
     tokio::time::timeout(Duration::from_secs(75), committed)
         .await
         .expect("the phone's automatic expiry close must commit")

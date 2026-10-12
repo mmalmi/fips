@@ -57,6 +57,12 @@ pub struct ServiceConfig {
     /// is configured separately; neither grants purchase authority.
     #[serde(default)]
     pub neighbor_admission: NeighborAdmission,
+    /// Optional total native peer limit, including protected configured peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peers: Option<usize>,
+    /// Local native exploration policy; does not authorize payment control or spending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighbor_rotation: Option<fips_core::config::NeighborRotationConfig>,
     pub neighbors: Vec<PeerConfig>,
     /// Local fees for future offers; existing financial agreements stay intact.
     #[serde(
