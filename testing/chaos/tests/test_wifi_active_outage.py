@@ -33,6 +33,7 @@ class ActiveOutageTests(unittest.TestCase):
                 diagnostic_error=False, brief=False, radio_station=False, removed_peer=None,
                 replaced_link=None, recreated_peer=None, root=False):
         run = Mock()
+        run.mesh_peers.side_effect = lambda name, peers: WifiRun.mesh_peers(run, name, peers)
         run.args = SimpleNamespace(recovery_timing=timing, brief_outage=brief, root_outage=root)
         run.nodes = {name: Mock(npub=name) for name in ("n01", "n02", "n03")}
         run.state_json.side_effect = lambda name, _path: {'local': list(bytes.fromhex(ADDRESSES[name]))}

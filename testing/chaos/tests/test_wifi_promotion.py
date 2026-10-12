@@ -29,6 +29,7 @@ class PromotionLifecycleTests(unittest.TestCase):
         f.raw["n01"]["controller"]["recovery_only"] = [captured["offer_id"]]
         f.raw["n01"]["controller"]["watched_routes"]["n03"]["pending"] = None
         run = Mock()
+        run.mesh_peers.side_effect = lambda name, peers: WifiRun.mesh_peers(run, name, peers)
         run.args = SimpleNamespace(promotion_restart_source=restart)
         run.evidence = {}
         run.assert_finances = Mock(return_value={})
