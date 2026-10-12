@@ -129,6 +129,13 @@ impl Controller {
         id: &str,
         payment: CashuSpilmanPayment,
     ) -> Result<ControllerResponse, String> {
+        if id.is_empty() || id.len() > 128 {
+            return Err("invalid settlement identity".into());
+        }
+        // Read settlement state after excluding concurrent expiry completion.
+        let Some(_claim) = self.settlement_claim(id) else {
+            return Ok(ControllerResponse::Pending);
+        };
         let state = self.snapshot().await?;
         let sale = state
             .seller_settlements
@@ -140,11 +147,15 @@ impl Controller {
         {
             return Err("wrong settlement buyer or channel".into());
         }
-        let Some(_claim) = self.settlement_claim(id) else {
-            return Ok(ControllerResponse::Pending);
-        };
-        if let Some(old) = &sale.payment {
-            if old.balance != payment.balance {
+        // Expiry can save the completed report before a cooperative request.
+        // Reuse its signed balance without applying a new payment.
+        let final_balance = sale
+            .payment
+            .as_ref()
+            .map(|p| p.balance)
+            .or_else(|| sale.report.as_ref().map(|r| r.signed_sat));
+        if let Some(balance) = final_balance {
+            if balance != payment.balance {
                 return Err("final settlement balance already fixed".into());
             }
         } else {

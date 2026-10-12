@@ -145,7 +145,38 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
                 .balance_sat,
             balance
         );
-        let reverse = request(&configs[2], &AdminRequest::Settle).await.unwrap();
+        let reverse_buyer = read(2);
+        let reverse_funding = reverse_buyer["funding"].as_object().unwrap();
+        assert_eq!(reverse_funding.len(), 1);
+        let reverse_id = reverse_funding.values().next().unwrap()["funded"]["terms"]["id"]
+            .as_str()
+            .unwrap();
+        let expired = tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let sale = read(1)["seller_settlements"][reverse_id].clone();
+                if sale["report"].is_object() {
+                    break sale;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("provider must finish the reverse sale at service expiry without its buyer");
+        assert!(expired["payment"].is_null());
+        let reverse = match request(&configs[2], &AdminRequest::Settle).await {
+            Ok(report) => report,
+            Err(error) => {
+                let provider_error = request(&configs[1], &AdminRequest::Status)
+                    .await
+                    .map(|status| status["last_error"].clone());
+                panic!("reverse settlement failed: {error}; provider error: {provider_error:?}");
+            }
+        };
+        assert_eq!(
+            reverse["settlements"],
+            serde_json::json!([expired["report"]])
+        );
+        assert!(read(1)["seller_settlements"][reverse_id]["payment"].is_null());
         let receiver = cashu_service::FileSpilmanPaymentReceiver::load(
             &configs[1].state_directory.join("receiver"),
             cashu_service::FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
