@@ -11465,6 +11465,22 @@ restoration, stopped processes and archived accounts before removing test
 profiles. This demonstrates the quiet-neighbor fix in a fixed-layout trial;
 it does not establish a general rejoin latency or moving-radio guarantee.
 
+Repeated physical trials remain unqualified. The shared crowded scenario now
+accepts one to three cycles, requires a fresh direct probe before each radio
+cut, retains partial delivery and service observations, and preserves the first
+failure during cleanup. Twenty-one focused fixture checks pass. In
+`work/repeated-crowded-fresh-radio-r474`, two crowded rejoins retain the original
+processes, useful peer and paid channels. The next paid datagram probe receives
+seven of eight packets, so the third cycle never starts and the trial remains
+rejected. The later service observations show the expected connected neighbors
+and zero credit-limit or durable-window admission denials; they do not locate
+the packet loss or exclude a transient disconnection. All 384 test sats return,
+and independent closure verifies restored routers, stopped processes and archived
+accounts before cleanup. Earlier repeated trials r470 and r472 also remain
+rejected with their original evidence and all test funds recovered. Further
+observations must distinguish datagram loss from transient routing failure and
+qualify reliable application delivery across repeated changes.
+
 The crowded fixture can reuse the bounded brief-contact observer with
 `FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records
 pending lookup changes alongside coordinates, session epochs, watches and

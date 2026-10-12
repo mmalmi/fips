@@ -22,6 +22,9 @@ class CrowdedWifiRun(PaidWifiRun):
         if any(getattr(args, name, False) for name in (
                 'active_outage', 'streams', 'interrupted_promotion', 'carrier_pressure_port')):
             raise ValueError('crowded rejoin is a separate paid Wi-Fi scenario')
+        self.cycles = getattr(args, 'crowded_rejoin', 1)
+        if type(self.cycles) is not int or not 1 <= self.cycles <= 3:
+            raise ValueError('crowded rejoin requires one to three cycles')
         super().__init__(args)
         self.idle = self.nodes['n03'].add_profile('idle')
         self.addresses = {}
@@ -33,6 +36,14 @@ class CrowdedWifiRun(PaidWifiRun):
 
     def participants(self):
         return {**self.nodes, 'idle': self.idle}
+
+    def mesh_peers(self, name, peers):
+        if name != 'n02':
+            return peers
+        auxiliary = [peer for peer in peers if peer['npub'] == self.idle.npub]
+        require(len(auxiliary) <= 1 and all(peer['transport'] == 'udp' for peer in auxiliary),
+                'idle competitor has an unexpected carrier')
+        return [peer for peer in peers if peer['npub'] != self.idle.npub]
 
     def udp_config(self, name):
         node = self.nodes[name]
@@ -73,32 +84,68 @@ class CrowdedWifiRun(PaidWifiRun):
             adapters = [a for a in adapters if a['type'] == 'ethernet']
         return super().discovery_adapter(name, adapters)
 
-    def keep_useful(self, stop):
-        rounds = []
+    def keep_useful(self, stop, rounds):
         while not stop.is_set() and len(rounds) < 160:
             shape = probes.arm(self, 'n02', 'n01', 8, 128, lifetime_secs=12)
-            sent = probes.send(self, 'n02', 'n01', shape, 4,
-                               max_duration_secs=5, operation_timeout=10)
-            submitted(sent, shape)
-            report = eventually('useful direct-neighbor delivery', lambda: probes.receive(
-                self, 'n02', 'n01', shape, complete=True), 5)
-            rounds.append(dict(at=time.monotonic(), shape=shape, sent=sent, received=report))
+            current = dict(at=time.monotonic(), shape=shape)
+            rounds.append(current)
+            current['sent'] = probes.send(self, 'n02', 'n01', shape, 4,
+                                         max_duration_secs=5, operation_timeout=10)
+            submitted(current['sent'], shape)
+
+            def delivered():
+                current['received'] = probes.receive(self, 'n02', 'n01', shape)
+                require(current['received']['unique_packets'] == shape['packet_count'],
+                        'useful direct-neighbor delivery incomplete')
+                return current['received']
+
+            eventually('useful direct-neighbor delivery', delivered, 5)
         require(stop.is_set(), 'useful stream exceeded the bounded trial')
         return rounds
 
+    def useful_flowing(self, rounds):
+        if not rounds:
+            return None
+        shape = rounds[-1]['shape']
+        report = self.ctl('n01', 'status').get('probe') or {}
+        if (report.get('stream_id') == shape['stream_id']
+                and report.get('source') == self.nodes['n02'].npub
+                and report.get('unique_packets', 0) >= 2):
+            return dict(shape=shape, received=report)
+        return None
+
     def mesh_outage(self):
-        data = dict(passed=False, processes_before=processes(self), samples=[])
-        self.evidence['crowded_rejoin'] = data
+        rounds = self.evidence['crowded_rejoins'] = []
         original = peer_sessions(self)['n02'][self.nodes['n01'].npub]
+        owners = processes(self)
+        for index in range(self.cycles):
+            self.rejoin_round(original, index == 0)
+            data = rounds[-1]
+            require(data['processes_before'] == owners,
+                    'repeated crowding restarted an original relay')
+            require(data['idle_pid_before'] == rounds[0]['idle_pid_before'],
+                    'repeated crowding restarted the idle competitor')
+            if index + 1 < self.cycles:
+                current = self.assert_finances()
+                data['paid_between_rounds'] = self.paid_streams(
+                    current, 'original channels pay between crowded rejoins')
+                self.retain_channels(self.channel_anchor, data['paid_between_rounds'])
+            self.save()
+
+    def rejoin_round(self, original, start_idle):
+        data = dict(passed=False, processes_before=processes(self), samples=[], useful_rounds=[])
+        self.evidence['crowded_rejoins'].append(data)
         data['useful_original'] = original
         stop = threading.Event()
         radio = self.nodes['n03']
         resumed = False
         with ThreadPoolExecutor(max_workers=1) as pool:
-            useful = pool.submit(self.keep_useful, stop)
+            useful = pool.submit(self.keep_useful, stop, data['useful_rounds'])
 
             def observed():
-                require(stop.is_set() or not useful.done(), 'useful-neighbor stream stopped prematurely')
+                if not stop.is_set() and useful.done():
+                    useful.result()
+                    raise RuntimeError('useful-neighbor stream stopped prematurely')
                 reply = self.nodes['n02'].native({'command': 'show_peers'})
                 require(reply['status'] == 'ok', 'provider native observation failed')
                 peers = reply['data']['peers']
@@ -113,21 +160,20 @@ class CrowdedWifiRun(PaidWifiRun):
                 return peers
 
             try:
-                def flowing():
-                    report = self.ctl('n01', 'status').get('probe') or {}
-                    return (report.get('source') == self.nodes['n02'].npub
-                            and report.get('unique_packets', 0) >= 2)
-
-                eventually('useful direct application traffic', flowing, 10)
+                data['before_cut'] = eventually('fresh useful direct application traffic',
+                    lambda: self.useful_flowing(data['useful_rounds']), 10)
+                observed()
                 data['cut_started'] = time.monotonic()
+                self.save()
                 radio.mesh_down()
                 data['isolated'] = eventually('radio peer removal while useful traffic continues',
                     lambda: observed() and self.ready(line=True, isolated=True), 100)
-                configure_stopped(self.idle, neighbors=[dict(
-                    npub=self.nodes['n02'].npub,
-                    addresses=[dict(transport='udp', addr=self.provider_udp)],
-                )])
-                self.idle.start()
+                if start_idle:
+                    configure_stopped(self.idle, neighbors=[dict(
+                        npub=self.nodes['n02'].npub,
+                        addresses=[dict(transport='udp', addr=self.provider_udp)],
+                    )])
+                    self.idle.start()
 
                 def crowded():
                     peers = observed()
@@ -160,14 +206,27 @@ class CrowdedWifiRun(PaidWifiRun):
                         'idle candidate acquired payment authority')
                 data['idle_pid_after'] = self.idle.remote(['cat', self.idle.temporary + '/process.pid']).decode()
                 require(data['idle_pid_before'] == data['idle_pid_after'], 'idle process was replaced')
+            except Exception as error:
+                data['failure'] = str(error)
+                self.record_probe_failure('crowded radio rejoin', error,
+                    dict(source='n02', destination='n01', useful_rounds=data['useful_rounds']))
+                raise
             finally:
+                errors = []
                 try:
                     if 'cut_started' in data and not resumed:
                         radio.mesh_up()
-                finally:
-                    stop.set()
-                    data['useful_rounds'] = useful.result(timeout=20)
-                    self.save()
+                except Exception as error:
+                    errors.append(error)
+                stop.set()
+                try:
+                    useful.result(timeout=20)
+                except Exception as error:
+                    errors.append(error)
+                data['cleanup_errors'] = [str(error) for error in errors]
+                self.save()
+                if errors and 'failure' not in data:
+                    raise errors[0]
         data['processes_after'] = processes(self)
         require(data['processes_before'] == data['processes_after'], 'crowded test restarted a paid relay')
         self.verify_open_profiles()

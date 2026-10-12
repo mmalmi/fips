@@ -547,6 +547,16 @@ it cannot provide an onward path. Existing guards restore all three routers and
 the normal settlement collects all 384 test sats. This is a neighbor-admission
 check, not a radio-congestion or throughput benchmark.
 
+Use `--crowded-rejoin 3` for three departures and returns on the same funded
+accounts. The idle competitor remains running and may refill the slot immediately
+after each departure. Every round must retain the original useful peer and relay
+processes; both directions pay on the original channels between rounds. Each
+round's bounded observations are saved in `crowded_rejoins`. The same 900-second
+trial deadline, original spending limits and 384-test-sat issuance cap apply.
+Each departure requires delivery from that round's fresh direct probe. Failed
+probes retain partial delivery counts and service observations; cleanup preserves
+the first failure while still restoring the radio and stopping the sender.
+
 Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at
 least 11.5 seconds; the actual outage also includes radio commands and serial

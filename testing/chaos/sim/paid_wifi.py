@@ -310,8 +310,8 @@ def main():
                         help="radio to remove with --active-outage: n01 source, n02 bridge or n03 leaf (default)")
     parser.add_argument('--root-outage', action='store_true',
                         help='select the elected root, observe its replacement and require the original tree after rejoin')
-    parser.add_argument('--crowded-rejoin', action='store_true',
-                        help='fill a two-peer roster and recover the paid radio route while retaining its useful neighbor')
+    parser.add_argument('--crowded-rejoin', nargs='?', type=int, choices=(1, 2, 3), const=1, default=0,
+                        help='repeat crowded radio recovery one to three times, retaining useful peers and paid channels')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:

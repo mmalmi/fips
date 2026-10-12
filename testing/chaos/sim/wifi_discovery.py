@@ -168,8 +168,25 @@ class WifiRun:
     def probe(self, source, destination, phase):
         evidence = {"source": source, "destination": destination}
         # Separate physical clocks do not establish one-way latency accuracy.
-        capture_probe(self, source, destination, eventually, evidence, measure_latency=False)
+        try:
+            capture_probe(self, source, destination, eventually, evidence, measure_latency=False)
+        except Exception as error:
+            self.record_probe_failure(phase, error, evidence)
+            raise
         self.phase(phase, **evidence)
+
+    def record_probe_failure(self, phase, error, evidence):
+        if 'failed_probe' in self.evidence:
+            return
+        failed = dict(phase=phase, error=str(error), at=time.monotonic(), **evidence, states={})
+        self.evidence['failed_probe'] = failed
+        self.save()
+        for name in self.nodes:
+            try:
+                failed['states'][name] = self.ctl(name, 'status')
+            except Exception as inspection:
+                failed['states'][name] = {'error': str(inspection)}
+        self.save()
 
     def profile_config(self, node):
         return free_config(node)
