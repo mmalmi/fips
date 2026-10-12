@@ -157,10 +157,8 @@ pub(crate) fn check_next_signaling_state(
                         }
                     }
                     // have-local-offer->SetRemote(pranswer)->have-remote-pranswer
-                    RTCSdpType::Pranswer => {
-                        if next == RTCSignalingState::HaveRemotePranswer {
-                            return Ok(next);
-                        }
+                    RTCSdpType::Pranswer if next == RTCSignalingState::HaveRemotePranswer => {
+                        return Ok(next);
                     }
                     _ => {}
                 }
@@ -189,10 +187,8 @@ pub(crate) fn check_next_signaling_state(
                         }
                     }
                     // have-remote-offer->SetLocal(pranswer)->have-local-pranswer
-                    RTCSdpType::Pranswer => {
-                        if next == RTCSignalingState::HaveLocalPranswer {
-                            return Ok(next);
-                        }
+                    RTCSdpType::Pranswer if next == RTCSignalingState::HaveLocalPranswer => {
+                        return Ok(next);
                     }
                     _ => {}
                 }

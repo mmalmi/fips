@@ -7,6 +7,7 @@ family together and verify packaged consumers before changing these pins.
 This package preserves the upstream 0.17.1 protocol implementation. Its package
 dependencies explicitly select the Nostr VPN native socket policy extension so
 registry installations receive the same socket and DNS hooks as local builds.
+Two equivalent signaling-state match guards keep strict Clippy checks passing.
 The upstream source and licenses are retained below and alongside this file.
 
 <h1 align="center">
