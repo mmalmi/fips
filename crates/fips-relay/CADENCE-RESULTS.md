@@ -508,6 +508,41 @@ other deferred-work allocations, so a count of allocator calls in this one
 function cannot establish total allocation cost. Existing awaits, cadence and
 financial policy remain in place; the profile informs further investigation.
 
+### Skip root-flush allocation when no traffic is pending
+
+`work/root-flush-r480` adds a guard after draining deferred control turns, so
+newly queued root traffic still reaches the existing flush operation. When no
+root traffic is pending, the exact qualified Android binary skips allocation
+and copying of a 10,384-byte future. Pending forwards, control ingress and root
+recovery retain their existing order and handling. This removes verified
+unnecessary allocation work; it is not a claim about allocation frequency or
+whole-process memory savings.
+
+The candidate passes 29 receive-loop/root-recovery checks, 330 relay unit checks,
+six live-service checks, strict core/relay lint and the 1,077-file source-size
+gate. Its ordinary ARM build passes, and Android qualification passes ten
+lifecycle tests plus packaging/signature/native-byte checks. The 108 harness
+checks are reused with their exact unchanged source hashes.
+
+`work/phone-root-flush-r481` repeats r479's two five-minute background windows
+with only the phone executable changed. Routers, mint, workload, prices and
+budgets stay the same. All 37 MiB arrive with matching hashes and acknowledgments;
+the same 11 channels include seven automatic replacements. All 512 test sats
+return, all four wallets are empty and 1,272 management checks pass. Independent
+closure verifies normal networking and original accounts; closed test accounts
+are archived and temporary profiles and the phone app removed.
+
+| Background window | Baseline r479 CPU / MiB | Candidate r481 CPU / MiB |
+| --- | ---: | ---: |
+| First five minutes | 10.711 s | 10.322 s |
+| Second five minutes | 10.947 s | 10.869 s |
+
+The observed CPU reductions are 3.6% and 0.7%. One trial per executable does not
+establish a repeatable CPU speedup. The narrow guard is retained for its verified
+allocation avoidance and preserved delivery/recovery behavior; CPU readiness
+remains open. These externally powered, paced trials do not measure saturation,
+battery life, natural deep idle, physical storage writes or full wire overhead.
+
 ## Current storage syscall comparison — 7 October 2026
 
 The current ordinary Linux ARM64 executable on `29a88d481`, with measurement

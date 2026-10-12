@@ -6237,8 +6237,10 @@ empty wallets, restored networking and original phone accounts; 1,266 management
 checks pass. This qualifies two paced five-minute LAN windows across repeated
 renewals, not sustained saturation, natural deep idle, network suspension or
 moving-radio handover. [Measured phone costs](CADENCE-RESULTS.md#background-phone-channel-renewal--12-october-2026)
-still leave most process CPU outside the scoped payment operations; no runtime
-optimization is claimed.
+still leave most process CPU outside the scoped payment operations. The r481
+follow-up preserves delivery, seven renewals and full collection while a small
+guard avoids allocating an empty root flush. Its 0.7–3.6% lower observed CPU
+does not establish a repeatable speedup; see [the allocation comparison](CADENCE-RESULTS.md#skip-root-flush-allocation-when-no-traffic-is-pending).
 
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
 currency, in indexed pages of at most 128 records and 4 MiB of stored payload. Oversized pages
