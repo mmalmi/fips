@@ -310,6 +310,8 @@ def main():
                         help="radio to remove with --active-outage: n01 source, n02 bridge or n03 leaf (default)")
     parser.add_argument('--root-outage', action='store_true',
                         help='select the elected root, observe its replacement and require the original tree after rejoin')
+    parser.add_argument('--crowded-rejoin', action='store_true',
+                        help='fill a two-peer roster and recover the paid radio route while retaining its useful neighbor')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:
@@ -329,7 +331,10 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    if args.carrier_pressure_port is not None:
+    if args.crowded_rejoin:
+        from .wifi_crowded import CrowdedWifiRun
+        CrowdedWifiRun(args).execute()
+    elif args.carrier_pressure_port is not None:
         from .wifi_carrier_pressure import WifiCarrierPressureRun
         from .wifi_carrier_owner import WifiCarrierOwnerRun
         pressure_run = WifiCarrierOwnerRun if args.carrier_pressure_transport == 'tcp' else WifiCarrierPressureRun

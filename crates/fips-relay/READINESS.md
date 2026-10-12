@@ -11403,8 +11403,28 @@ cases. `work/service-neighbor-package-r458` retains those identical runtime
 sources, limits a test-helper import to its consumers, and passes strict relay
 lint, source-size checks, two mint checks and the ordinary ARM64 build. Relay
 formatting passes. Complete source/dependency inventories and closed build
-processes are verified. This establishes service configuration and packaging;
-physical crowded-neighbor acceptance using these settings remains outstanding.
+processes are verified.
+
+The same ordinary ARM64 binary passes physical crowded-neighbor acceptance in
+`work/crowded-radio-r461`. Three open-mesh routers form a paid two-hop line. An
+unfunded fourth identity, hosted beside the departing leaf and connected only to
+the middle router over management-bound UDP, fills its two-peer roster. After
+96.5 seconds of radio absence, the returning leaf replaces that idle neighbor;
+the original useful peer retains its authentication time across 95 bounded
+roster observations. All 424 direct useful-link payloads and 40 paid payloads
+arrive. The three relay processes, auxiliary process and original paid channels
+survive, automatic payments advance, and all 384 test sats are collected.
+Independent closure verifies 435 management checks, restored normal routers,
+stopped test processes and byte-verified account archives before cleanup.
+
+Roster rejoin is observed 21.273 seconds after restoration starts, with the
+ordinary beacon cadence unchanged. This single fixed-layout observation does
+not bound recovery, qualify brief mobile contacts or measure radio congestion.
+The preceding r460 trial is rejected for overlapping probe commands despite
+recovering all test funds. The shared `sim.paid_wifi --crowded-rejoin` scenario
+drains the direct sender before starting the paid recovery probe; its acceptance
+methods retain the physically exercised logic. See the
+[reproduction options](../../testing/chaos/README.md).
 
 The crowded fixture can reuse the bounded brief-contact observer with
 `FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records

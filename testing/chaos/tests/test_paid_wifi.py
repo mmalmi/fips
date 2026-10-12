@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.paid_settlement import settle_and_collect
 from sim.paid_wifi import PaidWifiRun, reconciled_channels, retain_channels
+from sim.wifi_crowded import CrowdedWifiRun
 from sim.paid_faults import validate_unpaid_probe
 from sim.paid_wifi_mint import LocalMint
 from tests.test_paid_faults import finances
@@ -75,6 +76,27 @@ class PaidWifiTests(unittest.TestCase):
                     self.assertRaises(ValueError):
                 PaidWifiRun(args)
             setup.assert_not_called()
+
+    def test_crowded_rejoin_rejects_other_scenarios_before_any_setup(self):
+        for field in ('active_outage', 'streams', 'interrupted_promotion', 'carrier_pressure_port'):
+            args = SimpleNamespace(**{field: True})
+            with self.subTest(field=field), patch('sim.paid_wifi.PaidWifiRun.__init__') as setup, \
+                    self.assertRaisesRegex(ValueError, 'separate paid Wi-Fi scenario'):
+                CrowdedWifiRun(args)
+            setup.assert_not_called()
+
+    def test_crowded_rejoin_command_selects_the_shared_paid_lifecycle(self):
+        from sim.paid_wifi import main
+        argv = ['paid_wifi', '--inventory', '/inventory', '--binary', '/relay',
+                '--mint-binary', '/mint', '--mint-address', '127.0.0.1',
+                '--output', '/output', '--crowded-rejoin']
+        with patch.object(sys, 'argv', argv), patch('sim.paid_wifi.signal.signal'), \
+                patch('sim.paid_wifi.signal.alarm'), \
+                patch('sim.wifi_crowded.CrowdedWifiRun') as run:
+            main()
+        run.assert_called_once()
+        self.assertTrue(run.call_args.args[0].crowded_rejoin)
+        run.return_value.execute.assert_called_once_with()
 
     def test_partition_anchor_waits_for_pending_signature_to_be_credited(self):
         prior, pending = accounts(), accounts()

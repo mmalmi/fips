@@ -536,6 +536,17 @@ Processes, channels and spending limits remain unchanged. This mode cannot be
 combined with a fixed `--outage-node`, `--brief-outage`, `--streams` or
 `--interrupted-promotion`.
 
+Use `--crowded-rejoin` as a separate scenario, optionally with `--open-mesh`.
+It caps the middle router at two FIPS peers with two-second idle/rotation
+settings. After the leaf radio leaves and is evicted, an unfunded fourth identity
+on the leaf's host fills the spare slot over management-bound UDP. Continuous
+direct application traffic protects the other radio neighbor. The returning leaf
+must replace the idle peer, retain the useful peer's authentication time and
+deliver paid traffic on the original channels. The auxiliary process stays alive;
+it cannot provide an onward path. Existing guards restore all three routers and
+the normal settlement collects all 384 test sats. This is a neighbor-admission
+check, not a radio-congestion or throughput benchmark.
+
 Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at
 least 11.5 seconds; the actual outage also includes radio commands and serial
