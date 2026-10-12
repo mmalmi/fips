@@ -1,0 +1,117 @@
+[package]
+edition = "2021"
+name = "nvpn-igd-next"
+version = "0.16.2"
+authors = [
+    "Darius C",
+    "Simon Bernier St-Pierre <sbernierstpierre@gmail.com>",
+]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Internet Gateway Protocol client"
+homepage = "https://github.com/dariusc93/rust-igd"
+readme = "README.md"
+keywords = [
+    "igd",
+    "upnp",
+    "tokio",
+]
+license = "MIT"
+repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+aio_tokio = [
+    "futures",
+    "tokio",
+    "hyper",
+    "hyper-util",
+    "http-body-util",
+    "bytes",
+    "http",
+    "async-trait",
+]
+default = []
+
+[lib]
+name = "igd_next"
+path = "src/lib.rs"
+
+
+[dependencies.async-trait]
+version = "0.1.72"
+optional = true
+
+[dependencies.attohttpc]
+version = "0.30.0"
+default-features = false
+
+[dependencies.bytes]
+version = "1"
+optional = true
+
+[dependencies.futures]
+version = "0.3"
+optional = true
+
+[dependencies.http]
+version = "1"
+optional = true
+
+[dependencies.http-body-util]
+version = "0.1"
+optional = true
+
+[dependencies.hyper]
+version = "1"
+features = [
+    "client",
+    "http1",
+    "http2",
+]
+optional = true
+default-features = false
+
+[dependencies.hyper-util]
+version = "0.1"
+features = [
+    "client",
+    "client-legacy",
+    "http1",
+    "http2",
+]
+optional = true
+default-features = false
+
+[dependencies.log]
+version = "0.4"
+
+[dependencies.rand]
+version = "0.9.0"
+
+
+[dependencies.tokio]
+version = "1"
+features = ["net"]
+optional = true
+
+[dependencies.url]
+version = "2"
+
+[dependencies.xmltree]
+version = "0.10"
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[[test]]
+name = "host_provider"
+path = "tests/host_provider.rs"
+required-features = ["aio_tokio"]

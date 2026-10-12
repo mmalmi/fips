@@ -1,0 +1,59 @@
+[package]
+edition = "2021"
+name = "nvpn-crab-nat"
+version = "0.7.6"
+authors = ["Ryan Andersen <ryco117@gmail.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "A library providing a pure Rust implementation of a client for both the NAT Port Mapping Protocol (NAT-PMP) and the Port Control Protocol (PCP)."
+readme = "README.md"
+license = "MIT"
+repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
+
+[lib]
+name = "crab_nat"
+path = "src/lib.rs"
+
+[dependencies.bytes]
+version = "1.10.1"
+
+[dependencies.displaydoc]
+version = "0.2.5"
+
+[dependencies.num_enum]
+version = "0.7.5"
+
+[dependencies.rand]
+version = "0.10.1"
+
+[dependencies.thiserror]
+version = "2.0.17"
+
+[dependencies.tokio]
+version = "1.48.0"
+features = [
+    "io-util",
+    "net",
+    "time",
+]
+
+[dependencies.tracing]
+version = "0.1.41"
+optional = true
+
+[dev-dependencies.tokio]
+version = "1.48.0"
+features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+]
+
+
+[[test]]
+name = "socket_protection"
+path = "tests/socket_protection.rs"

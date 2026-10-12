@@ -1,0 +1,580 @@
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    num::NonZeroU16,
+    time::Duration,
+};
+
+use bytes::{Buf, BufMut};
+use num_enum::TryFromPrimitive;
+
+use crate::{
+    helpers::{self, RequestSendError},
+    InternetProtocol, PortMapping, PortMappingOptions, PortMappingType, TimeoutConfig, VersionCode,
+    RECOMMENDED_MAPPING_LIFETIME_SECONDS, SANE_MAX_REQUEST_RETRIES,
+};
+
+/// The RFC states that the first response timeout SHOULD be 250 milliseconds, and double on each successive failure.
+pub const FIRST_TIMEOUT_MILLIS: u64 = 250;
+
+/// Mapping requests have datagrams of size 12 bytes, see <https://www.rfc-editor.org/rfc/rfc6886#section-3.3>.
+pub const REQUEST_DATAGRAM_SIZE: usize = 12;
+
+/// Mapping responses have datagrams of size 16 bytes, see <https://www.rfc-editor.org/rfc/rfc6886#section-3.3>.
+pub const RESPONSE_DATAGRAM_SIZE: usize = 16;
+
+/// The default `TimeoutConfig` for NAT-PMP requests.
+pub const TIMEOUT_CONFIG_DEFAULT: TimeoutConfig = TimeoutConfig {
+    initial_timeout: Duration::from_millis(FIRST_TIMEOUT_MILLIS),
+    max_retries: SANE_MAX_REQUEST_RETRIES,
+    max_retry_timeout: None,
+};
+
+/// Result codes from a NAT-PMP response.
+/// See <https://www.rfc-editor.org/rfc/rfc6886#section-3.5>
+#[derive(
+    Clone, Copy, Debug, displaydoc::Display, PartialEq, thiserror::Error, TryFromPrimitive,
+)]
+#[repr(u16)]
+pub enum ResultCode {
+    /// The operation was completed successfully.
+    Success,
+
+    /// The server does not support this version of the protocol.
+    UnsupportedVersion,
+
+    /// The server did not authorize the operation.
+    NotAuthorized,
+
+    /// The server is not in a valid network state to perform the operation.
+    NetworkFailure,
+
+    /// The server is lacking resources to complete the operation.
+    OutOfResources,
+
+    /// The server does not support the requested operation.
+    UnsupportedOpcode,
+}
+
+/// Operation codes for NAT-PMP.
+#[derive(Clone, Copy, Debug, PartialEq, TryFromPrimitive)]
+#[repr(u8)]
+pub enum OperationCode {
+    /// Request the public IP address of the gateway.
+    ExternalAddress,
+
+    /// Map a UDP port on the gateway.
+    MapUdp,
+
+    /// Map a TCP port on the gateway.
+    MapTcp,
+}
+
+/// Specific reasons why a NAT-PMP response was considered invalid.
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidResponseKind {
+    /// The response had an incorrect number of bytes.
+    #[error("Incorrect number of bytes: {0}")]
+    IncorrectByteCount(usize),
+
+    /// The version byte is not a recognized version code.
+    #[error("Unknown version: {0}")]
+    UnknownVersion(u8),
+
+    /// The response opcode doesn't match the expected opcode.
+    #[error("Incorrect opcode: {0:?}")]
+    IncorrectOpcode(OperationCode),
+
+    /// The result code is not a recognized result code.
+    #[error("Invalid result code: {0:#X}")]
+    InvalidResultCode(u16),
+
+    /// After a successful result code, the version doesn't match the request.
+    #[error("Invalid version not matching request: {0:?}")]
+    VersionMismatch(VersionCode),
+
+    /// The external port was zero (invalid for a mapping response).
+    #[error("Invalid external port of zero")]
+    ZeroExternalPort,
+
+    /// A deletion response had non-zero external port or lifetime.
+    #[error("Invalid response to deletion request: {external_port} {lifetime_seconds}")]
+    InvalidDeletionResponse {
+        external_port: u16,
+        lifetime_seconds: u32,
+    },
+
+    /// The response R bit (most significant bit) was not set on the opcode byte.
+    #[error("Response R bit (MSb) must be set: {0:#X}")]
+    ResponseBitNotSet(u8),
+
+    /// The operation code (after masking R bit) is not a recognized operation.
+    #[error("Invalid operation code: {0:#X}")]
+    InvalidOperationCode(u8),
+
+    /// The internal port in the response doesn't match the request.
+    #[error("Incorrect internal port: {received}, expected {expected}")]
+    IncorrectInternalPort { received: u16, expected: u16 },
+}
+
+/// Errors that may occur when trying to map a port on the gateway, categorized by the root of the issue.
+#[derive(Debug, thiserror::Error)]
+pub enum Failure {
+    /// Failed to bind, connect, read, or write to a UDP socket.
+    #[error("UDP socket error: {0}")]
+    Socket(std::io::Error),
+
+    /// The gateway was unreachable within the timeout.
+    #[error("Gateway did not respond within the timeout")]
+    Timeout,
+
+    /// The gateway did not give a valid response according to the NAT-PMP protocol.
+    #[error("Invalid response: {0}")]
+    InvalidResponse(InvalidResponseKind),
+
+    /// The server does not support this version of the protocol.
+    #[error("Server responded with code: Unsupported version: {0}")]
+    UnsupportedVersion(VersionCode),
+
+    /// The server did not authorize the operation.
+    #[error("Server responded with code: Not authorized")]
+    NotAuthorized,
+
+    /// The server is not in a valid network state to perform the operation.
+    #[error("Server responded with code: Network failure")]
+    NetworkFailure,
+
+    /// The server is lacking resources to complete the operation.
+    #[error("Server responded with code: Out of resources")]
+    OutOfResources,
+
+    /// The server does not support the requested operation.
+    #[error("Server responded with code: Unsupported opcode")]
+    UnsupportedOpcode,
+}
+impl From<RequestSendError> for Failure {
+    fn from(e: RequestSendError) -> Self {
+        match e {
+            RequestSendError::Socket(e) => Failure::Socket(e),
+            RequestSendError::Timeout => Failure::Timeout,
+        }
+    }
+}
+
+/// Helper to map result codes to a more standard `Result` pattern.
+/// # Errors
+/// Every `ResultCode` except `ResultCode::Success` will return a `Failure` aligning with the respective error.
+pub fn code_to_result(result_code: ResultCode, v: VersionCode) -> Result<(), Failure> {
+    // Map error result codes to a failure, otherwise continue.
+    match result_code {
+        ResultCode::Success => Ok(()),
+        ResultCode::UnsupportedVersion => Err(Failure::UnsupportedVersion(v)),
+        ResultCode::NotAuthorized => Err(Failure::NotAuthorized),
+        ResultCode::NetworkFailure => Err(Failure::NetworkFailure),
+        ResultCode::OutOfResources => Err(Failure::OutOfResources),
+        ResultCode::UnsupportedOpcode => Err(Failure::UnsupportedOpcode),
+    }
+}
+
+/// Attempt to complete the `ExternalAddress` operation.
+/// Returns the public IP address of the gateway.
+/// # Errors
+/// Returns a `natpmp::Failure` enum which decomposes into different errors depending on the cause.
+pub async fn external_address(
+    gateway: IpAddr,
+    timeout_config: Option<TimeoutConfig>,
+) -> Result<Ipv4Addr, Failure> {
+    external_address_with_policy(gateway, timeout_config, crate::SocketPolicy::default()).await
+}
+
+/// Uses the supplied socket protector before connect or send and retains it for renewals and cleanup.
+/// Protection errors return immediately without a native-socket fallback.
+pub async fn external_address_with_socket_protector(
+    gateway: IpAddr,
+    timeout_config: Option<TimeoutConfig>,
+    protector: crate::SocketProtector,
+) -> Result<Ipv4Addr, Failure> {
+    external_address_with_policy(
+        gateway,
+        timeout_config,
+        crate::SocketPolicy(Some(protector)),
+    )
+    .await
+}
+
+pub(crate) async fn external_address_with_policy(
+    gateway: IpAddr,
+    timeout_config: Option<TimeoutConfig>,
+    socket_policy: crate::SocketPolicy,
+) -> Result<Ipv4Addr, Failure> {
+    /// External address responses have datagrams of size 12 bytes, see <https://www.rfc-editor.org/rfc/rfc6886#section-3.2>.
+    const ADDRESS_RESPONSE_SIZE: usize = 12;
+
+    // Create a new UDP socket and connect to the gateway.
+    let socket = helpers::new_socket(gateway, socket_policy.0.as_ref())
+        .await
+        .map_err(Failure::Socket)?;
+
+    // Use a byte-buffer to read the response into.
+    let mut recv_buffer = [0; ADDRESS_RESPONSE_SIZE];
+    let mut recv = &mut recv_buffer[..];
+
+    // Try to send the request data until a response is read, respecting the RFC recommended timeouts and retry counts.
+    let n = helpers::try_send_until_response(
+        timeout_config.unwrap_or(TIMEOUT_CONFIG_DEFAULT),
+        &socket,
+        &[
+            VersionCode::NatPmp as u8,
+            OperationCode::ExternalAddress as u8,
+        ],
+        &mut recv,
+        std::convert::identity,
+    )
+    .await?;
+
+    // An `ExternalAddress` response is always expected to be 12 bytes.
+    if n != ADDRESS_RESPONSE_SIZE {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::IncorrectByteCount(n),
+        ));
+    }
+    let mut reader = &recv_buffer[..ADDRESS_RESPONSE_SIZE];
+
+    // Read and verify the version and operation bytes.
+    let v = VersionCode::try_from(reader.get_u8())
+        .map_err(|e| Failure::InvalidResponse(InvalidResponseKind::UnknownVersion(e.number)))?;
+    let op = response_to_opcode(reader.get_u8())?;
+    if op != OperationCode::ExternalAddress {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::IncorrectOpcode(op),
+        ));
+    }
+
+    // Read and verify the result code.
+    let result_code = ResultCode::try_from(reader.get_u16())
+        .map_err(|e| Failure::InvalidResponse(InvalidResponseKind::InvalidResultCode(e.number)))?;
+    let _gateway_epoch_seconds = reader.get_u32();
+
+    // Map error result codes to a failure, otherwise continue.
+    code_to_result(result_code, v)?;
+
+    // Since the `ResultCode` is `Success`, the version should always be `NatPmp`.
+    if v != VersionCode::NatPmp {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::VersionMismatch(v),
+        ));
+    }
+
+    // The response was a success, read the remaining 4 bytes as the external IP.
+    let external_ip = Ipv4Addr::new(
+        reader.get_u8(),
+        reader.get_u8(),
+        reader.get_u8(),
+        reader.get_u8(),
+    );
+
+    Ok(external_ip)
+}
+
+/// Attempts to map a port on the gateway using NAT-PMP.
+/// Will try to use the given external port if it is `Some`, otherwise it will let the gateway choose.
+/// Will request the specified lifetime if it is `Some`, otherwise it will use the RFC recommended lifetime.
+/// # Errors
+/// Returns a `natpmp::Failure` enum which decomposes into different errors depending on the cause.
+pub async fn port_mapping(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    internal_port: NonZeroU16,
+    mapping_options: PortMappingOptions,
+) -> Result<PortMapping, Failure> {
+    port_mapping_with_policy(
+        gateway,
+        protocol,
+        internal_port,
+        mapping_options,
+        crate::SocketPolicy::default(),
+    )
+    .await
+}
+
+/// Uses the supplied socket protector before connect or send and retains it for renewals and cleanup.
+/// Protection errors return immediately without a native-socket fallback.
+pub async fn port_mapping_with_socket_protector(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    internal_port: NonZeroU16,
+    mapping_options: PortMappingOptions,
+    protector: crate::SocketProtector,
+) -> Result<PortMapping, Failure> {
+    port_mapping_with_policy(
+        gateway,
+        protocol,
+        internal_port,
+        mapping_options,
+        crate::SocketPolicy(Some(protector)),
+    )
+    .await
+}
+
+pub(crate) async fn port_mapping_with_policy(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    internal_port: NonZeroU16,
+    mapping_options: PortMappingOptions,
+    socket_policy: crate::SocketPolicy,
+) -> Result<PortMapping, Failure> {
+    let PortMappingInternal {
+        gateway_epoch_seconds,
+        external_port,
+        lifetime_seconds,
+        timeout_config,
+    } = port_mapping_internal_with_policy(
+        gateway,
+        protocol,
+        internal_port.get(),
+        mapping_options,
+        socket_policy.clone(),
+    )
+    .await?;
+    let external_port = NonZeroU16::new(external_port).ok_or(Failure::InvalidResponse(
+        InvalidResponseKind::ZeroExternalPort,
+    ))?;
+
+    Ok(PortMapping {
+        gateway,
+        protocol,
+        internal_port,
+        external_port,
+        lifetime_seconds,
+        expiration: std::time::Instant::now() + Duration::from_secs(u64::from(lifetime_seconds)),
+        gateway_epoch_seconds,
+        mapping_type: PortMappingType::NatPmp,
+        timeout_config,
+        socket_policy,
+    })
+}
+
+/// Attempts to remove a NAT-PMP mapping on the gateway.
+/// Using a local port of `None` will remove all port mappings for our client with the given protocol.
+/// # Errors
+/// Returns a `natpmp::Failure` enum which decomposes into different errors depending on the cause.
+pub async fn try_drop_mapping(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    local_port: Option<NonZeroU16>,
+    timeout_config: Option<TimeoutConfig>,
+) -> Result<(), Failure> {
+    try_drop_mapping_with_policy(
+        gateway,
+        protocol,
+        local_port,
+        timeout_config,
+        crate::SocketPolicy::default(),
+    )
+    .await
+}
+
+/// Uses the supplied socket protector before connect or send and retains it for renewals and cleanup.
+/// Protection errors return immediately without a native-socket fallback.
+pub async fn try_drop_mapping_with_socket_protector(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    local_port: Option<NonZeroU16>,
+    timeout_config: Option<TimeoutConfig>,
+    protector: crate::SocketProtector,
+) -> Result<(), Failure> {
+    try_drop_mapping_with_policy(
+        gateway,
+        protocol,
+        local_port,
+        timeout_config,
+        crate::SocketPolicy(Some(protector)),
+    )
+    .await
+}
+
+pub(crate) async fn try_drop_mapping_with_policy(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    local_port: Option<NonZeroU16>,
+    timeout_config: Option<TimeoutConfig>,
+    socket_policy: crate::SocketPolicy,
+) -> Result<(), Failure> {
+    // Mapping deletion is specified by the same operation code and format as mapping creation.
+    // The difference is that the lifetime and external port must be set to `0` and an internal port of `0` will remove all mappings for the protocol.
+    let PortMappingInternal {
+        external_port,
+        lifetime_seconds,
+        ..
+    } = port_mapping_internal_with_policy(
+        gateway,
+        protocol,
+        local_port.map_or(0, NonZeroU16::get),
+        PortMappingOptions {
+            external_port: None,
+            lifetime_seconds: Some(0),
+            timeout_config,
+        },
+        socket_policy,
+    )
+    .await?;
+
+    // Check that the response is correct for a deletion request.
+    if external_port != 0 || lifetime_seconds != 0 {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::InvalidDeletionResponse {
+                external_port,
+                lifetime_seconds,
+            },
+        ));
+    }
+
+    Ok(())
+}
+
+/// A successful response to a port mapping request.
+struct PortMappingInternal {
+    pub gateway_epoch_seconds: u32,
+    pub external_port: u16,
+    pub lifetime_seconds: u32,
+    pub timeout_config: TimeoutConfig,
+}
+
+/// Helper for attempting a port mapping with more permissive input.
+/// # Errors
+/// Returns a `natpmp::Failure` enum which decomposes into different errors depending on the cause.
+/// # Panics
+/// Panics if `internal_port` is `0` but does not have a valid "delete all" request.
+/// I.e., the `mapping_options.lifetime_seconds` must be `Some(0)` and the `mapping_options.external_port` must be `None`.
+async fn port_mapping_internal_with_policy(
+    gateway: IpAddr,
+    protocol: InternetProtocol,
+    internal_port: u16,
+    mapping_options: PortMappingOptions,
+    socket_policy: crate::SocketPolicy,
+) -> Result<PortMappingInternal, Failure> {
+    // Ensure that a local port of `0` is only used for valid "delete all" requests.
+    // See the last paragraph of section 3.4, <https://www.rfc-editor.org/rfc/rfc6886#section-3.4>.
+    #[cfg(debug_assertions)]
+    assert!(
+        internal_port != 0
+            || (mapping_options.lifetime_seconds.is_some_and(|l| l == 0)
+                && mapping_options.external_port.is_none()),
+        "Internal port can only be `0` for a valid 'delete all' request."
+    );
+
+    let socket = helpers::new_socket(gateway, socket_policy.0.as_ref())
+        .await
+        .map_err(Failure::Socket)?;
+
+    // Determine the operation code based on the protocol to map.
+    let req_op = match protocol {
+        InternetProtocol::Udp => OperationCode::MapUdp,
+        InternetProtocol::Tcp => OperationCode::MapTcp,
+    };
+
+    // Create a byte-buffer with enough space for the request and response bytes.
+    let mut send_buffer = [0; REQUEST_DATAGRAM_SIZE];
+    let mut send = &mut send_buffer[..];
+
+    // Format the port mapping request.
+    send.put_u8(VersionCode::NatPmp as u8);
+    send.put_u8(req_op as u8);
+    send.put_u16(0); // Reserved.
+    send.put_u16(internal_port);
+    send.put_u16(mapping_options.external_port.map_or(0, NonZeroU16::get));
+    send.put_u32(
+        mapping_options
+            .lifetime_seconds
+            .unwrap_or(RECOMMENDED_MAPPING_LIFETIME_SECONDS),
+    );
+
+    let timeout_config = mapping_options
+        .timeout_config
+        .unwrap_or(TIMEOUT_CONFIG_DEFAULT);
+
+    // Use a byte-buffer to read the response into.
+    let mut recv_buffer = [0; RESPONSE_DATAGRAM_SIZE];
+    let mut recv = &mut recv_buffer[..];
+
+    // Try to send the request data until a response is read, respecting the RFC recommended timeouts and retries counts.
+    let n = helpers::try_send_until_response(
+        timeout_config,
+        &socket,
+        &send_buffer[..REQUEST_DATAGRAM_SIZE],
+        &mut recv,
+        std::convert::identity,
+    )
+    .await?;
+
+    // A port mapping response is always expected to be 16 bytes.
+    if n != RESPONSE_DATAGRAM_SIZE {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::IncorrectByteCount(n),
+        ));
+    }
+    let mut recv = &recv_buffer[..RESPONSE_DATAGRAM_SIZE];
+
+    // Read and verify the version and operation bytes.
+    let v = VersionCode::try_from(recv.get_u8())
+        .map_err(|e| Failure::InvalidResponse(InvalidResponseKind::UnknownVersion(e.number)))?;
+    let op = response_to_opcode(recv.get_u8())?;
+    if op != req_op {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::IncorrectOpcode(op),
+        ));
+    }
+
+    // Read and verify the result code.
+    let result_code = ResultCode::try_from(recv.get_u16())
+        .map_err(|e| Failure::InvalidResponse(InvalidResponseKind::InvalidResultCode(e.number)))?;
+    let gateway_epoch_seconds = recv.get_u32();
+
+    // Map error result codes to a failure, otherwise continue.
+    code_to_result(result_code, v)?;
+
+    // Since the `ResultCode` is `Success`, the version should always be `NatPmp`.
+    if v != VersionCode::NatPmp {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::VersionMismatch(v),
+        ));
+    }
+
+    // Validate that the response corresponds to the requested internal port.
+    let response_internal_port = recv.get_u16();
+    if response_internal_port != internal_port {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::IncorrectInternalPort {
+                received: response_internal_port,
+                expected: internal_port,
+            },
+        ));
+    }
+
+    // The response was a success, read the mapping information.
+    let external_port = recv.get_u16();
+    let lifetime_seconds = recv.get_u32();
+
+    Ok(PortMappingInternal {
+        gateway_epoch_seconds,
+        external_port,
+        lifetime_seconds,
+        timeout_config,
+    })
+}
+
+/// Response `OperationCode`s are the same as the request `OperationCode`s, but with the 128 bit set.
+/// This function verifies the response indicator (R) bit is set, then masks it out and converts to an `OperationCode`.
+/// # Errors
+/// Returns a `Failure::InvalidResponse` if the R bit is not set or the masked opcode is unrecognized.
+fn response_to_opcode(op: u8) -> Result<OperationCode, Failure> {
+    if op & 0x80 == 0 {
+        return Err(Failure::InvalidResponse(
+            InvalidResponseKind::ResponseBitNotSet(op),
+        ));
+    }
+    OperationCode::try_from(op & 0x7F)
+        .map_err(|e| Failure::InvalidResponse(InvalidResponseKind::InvalidOperationCode(e.number)))
+}
+
+#[cfg(test)]
+mod tests;
