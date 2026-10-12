@@ -157,12 +157,6 @@ pub(super) async fn load_mint_proofs(
     .map_err(|error| error.to_string())
 }
 
-pub(super) async fn start_bench(root: &Path, seed: u64, lifetime: u64) -> Bench {
-    let (mint, network) = start_mint(root, seed).await;
-    let url = mint.url().to_owned();
-    start_nodes(root, mint, network, &url, lifetime, lifetime / 2).await
-}
-
 pub(super) async fn start_mint(root: &Path, seed: u64) -> (LocalMint, PaymentNetwork) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

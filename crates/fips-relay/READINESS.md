@@ -9221,6 +9221,24 @@ and route-history, seven multi-node controller and five test-mint financial
 scenarios. Strict all-feature/all-target linting, default compilation, formatting
 and the 600-line relay source / 1000-line integration-test limits pass.
 
+The existing service case is extended in `work/repeated-channel-retirement-r510`
+to three successive channel cycles on the same wallets, each with its real
+60-second wallet deadline. All wallets retain their initial 16-MiB logical storage
+limit. Every cycle covers lost release replies, automatic buyer/seller/receiver
+retirement, restart, missing sender-file rejection, and later custody upkeep
+without new funding. Retired channel counts and signed spending accumulate;
+funding sequence numbers advance instead of being reused.
+
+The source retains 112 test sats of gross debits and 99 of verified refunds after
+three cycles. Its unchanged 48-sat net spending limit refuses a fourth 40-sat
+funding reservation without changing the wallet balance or budget. Source wallet
+storage charges are 8,423,759, 8,425,757 and 8,428,388 bytes after the three cycles;
+receiver charges remain 4,287,539 bytes. The case passes in 195.75 seconds with
+strict funding-target lint, formatting and source-size checks. Only the existing
+test changes. This finite reuse check does not establish an indefinite storage
+plateau, a total physical disk bound, paid payload performance or hardware
+power-loss durability.
+
 ### Bounded incoming receipt enumeration
 
 The SDK's receipt reader now selects at most 128 incoming sat transactions for
