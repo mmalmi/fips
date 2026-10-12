@@ -551,6 +551,15 @@ Processes, channels and spending limits remain unchanged. This mode cannot be
 combined with a fixed `--outage-node`, `--brief-outage`, `--streams` or
 `--interrupted-promotion`.
 
+Use `--open-mesh --handover-frequency 5745` for a staggered channel change and
+return. The requested frequency must differ from the original and be explicitly
+enabled without radar/no-IR restrictions on every dedicated mesh radio. A leaf
+moves during partial paid delivery; the other radios follow after observed peer
+eviction. Fresh traffic must pay on the original channels in both directions.
+The same owned-profile guard restores the saved radio configuration after an
+interruption. This mode cannot be combined with another outage/pressure scenario.
+It tests controlled channel handover, not automatic channel selection or movement.
+
 Use `--crowded-rejoin` as a separate scenario, optionally with `--open-mesh`.
 It caps the middle router at two FIPS peers with two-second idle/rotation
 settings. After the leaf radio leaves and is evicted, an unfunded fourth identity

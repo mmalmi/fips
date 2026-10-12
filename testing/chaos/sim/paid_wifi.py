@@ -43,6 +43,8 @@ class PaidWifiRun(WifiRun):
     quote_max_units = 30_000
 
     def __init__(self, args):
+        from .wifi_channel import options
+        options(args)
         promotion_artifact = wifi_promotion_checks.options(args)
         requested_outage = getattr(args, "outage_node", None)
         if requested_outage is not None:
@@ -221,7 +223,10 @@ class PaidWifiRun(WifiRun):
             self.channel_anchor = self.paid_streams(funded, "paid two-hop wireless stream delivered")
             original_channels(self.nodes, self.channel_anchor)
             self.phase("original channels automatically paid before outage", financial=self.channel_anchor)
-            if getattr(self.args, "active_outage", False):
+            if getattr(self.args, "handover_frequency", None) is not None:
+                from .wifi_channel import exercise
+                exercise(self)
+            elif getattr(self.args, "active_outage", False):
                 active_radio_outage(self, outage_node=self.outage_node)
             else:
                 self.mesh_outage()
@@ -302,6 +307,8 @@ def main():
                         help="also crash the source at the held commitment and restart its saved profile during the cut")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
+    parser.add_argument("--handover-frequency", type=int,
+                        help="stagger an open-mesh channel switch to this enabled non-DFS frequency and back")
     parser.add_argument("--brief-outage", action="store_true",
                         help="rejoin before FIPS peer eviction; requires --active-outage")
     parser.add_argument("--recovery-timing", action="store_true",

@@ -39,7 +39,7 @@ def receive(run, source, destination, shape, *, complete=False, round_trip=False
 
 
 def send_with_radio_cut(run, source, destination, shape, rate, radio, evidence, *,
-                        round_trip=False, verify_route=None):
+                        round_trip=False, verify_route=None, cut=None):
     """Cut during partial delivery, drain one finite send, and let the caller restore."""
     with ThreadPoolExecutor(max_workers=1) as pool:
         evidence["dispatch_started"] = time.monotonic()
@@ -67,7 +67,7 @@ def send_with_radio_cut(run, source, destination, shape, rate, radio, evidence, 
             evidence["cut_started"] = cut_started
             run.save()  # An uncertain radio command still needs the caller's restoration.
             evidence["cut_attempted"] = True
-            radio.mesh_down()
+            (radio.mesh_down if cut is None else cut)()
             evidence["cut_completed"] = time.monotonic()
             # A pending control response alone does not prove remote sending continues.
             require(evidence["cut_completed"] - evidence["dispatch_started"]
