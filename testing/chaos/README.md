@@ -502,6 +502,21 @@ or occupied slots may remain. The shared duplex, accounting and restoration chec
 apply unchanged. This tests startup expiry alongside radio forwarding, not paid
 forwarding over the WebSocket listener itself.
 
+Use `--carrier-pressure-transport udp` for two paced rejection windows at 2,000
+and 10,000 packets/s, followed by a quiet recovery window. Each carries the same
+4 MiB paid stream in both directions. One controller worker uses 64 source ports
+on its existing address, mixes invalid Noise initiations, unsolicited replies
+and unknown-index records, with a 45-second deadline and a 450,000-packet ceiling. It
+does not add addresses or spoof sources. The middle router's temporary UDP
+listener must be unused beforehand. Native receive counters must confirm that
+at least half the submitted packets reached FIPS, and actual submission must
+reach 75% of the target rate. Paid bytes must advance in both directions across
+multiple live samples. The original process must retain two peers, at most eight
+pending connections and a 64 MiB observed RSS high-water ceiling. These are finite
+trial thresholds, not general resource bounds or Sybil-fairness guarantees.
+Exact delivery, automatic credit, settlement and network restoration remain
+mandatory. Native transport samples retain kernel-drop and error counters.
+
 Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
 explicitly funded round-trip stream is still sending. The fixture waits for
 partial replies, removes leaf n03 from the radio mesh by default, observes actual peer

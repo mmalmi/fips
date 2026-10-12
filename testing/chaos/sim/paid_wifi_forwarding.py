@@ -32,16 +32,18 @@ def finish_mint(run):
     run.save()
 
 
-def listeners(node, port):
+def listeners(node, port, protocol='tcp'):
     """OpenWrt exposes both address families in the kernel's native hex form."""
-    rows = node.remote(["cat", "/proc/net/tcp", "/proc/net/tcp6"]).decode().splitlines()
+    if protocol not in ('tcp', 'udp'):
+        raise ValueError('unsupported listener protocol')
+    rows = node.remote(["cat", "/proc/net/" + protocol, "/proc/net/" + protocol + '6']).decode().splitlines()
     found = []
     for row in rows:
         fields = row.split()
         if not fields or fields[0] == "sl":
             continue
         address, number = fields[1].split(":")
-        if fields[3] == "0A" and int(number, 16) == port:
+        if (protocol == 'udp' or fields[3] == "0A") and int(number, 16) == port:
             found.append(address.upper())
     return sorted(found)
 

@@ -291,9 +291,9 @@ def main():
     parser.add_argument("--streams", action="store_true",
                         help="exact paid TCP/FIPS streams before, during and after bounded frame loss")
     parser.add_argument("--carrier-pressure-port", type=int,
-                        help="unused middle-router TCP port for bounded rejection during paid radio streams")
-    parser.add_argument("--carrier-pressure-transport", choices=('tcp', 'websocket'), default='tcp',
-                        help="TCP rejected records (default), or WebSocket discovery-only expiry")
+                        help="unused middle-router port for bounded rejection during paid radio streams")
+    parser.add_argument("--carrier-pressure-transport", choices=('tcp', 'websocket', 'udp'), default='tcp',
+                        help="TCP rejected records (default), WebSocket discovery-only expiry, or UDP packet pressure")
     parser.add_argument("--interrupted-promotion", action="store_true",
                         help="hold real full acceptance, withdraw the middle radio and recover one Watch")
     parser.add_argument("--promotion-provenance", type=Path,
@@ -319,7 +319,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:
-        parser.error("carrier pressure requires an unprivileged TCP port")
+        parser.error("carrier pressure requires an unprivileged port")
     if args.carrier_pressure_transport != 'tcp' and args.carrier_pressure_port is None:
         parser.error("--carrier-pressure-transport requires --carrier-pressure-port")
     if args.outage_node is not None and not args.active_outage:

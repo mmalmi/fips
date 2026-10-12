@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.carrier_pressure import RECORDS, rejected
 from sim.wifi_carrier_pressure import WifiCarrierPressureRun
 from sim.wifi_carrier_owner import WifiCarrierOwnerRun
+from sim.udp_pressure import UdpPressure
 
 try:
     from websockets.exceptions import ConnectionClosed
@@ -22,6 +23,72 @@ except ImportError:
 
 
 class CarrierPressureTests(unittest.TestCase):
+    def test_udp_pressure_paces_real_datagrams_and_closes_all_sources(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind(('127.0.0.1', 0))
+            receiver.settimeout(2)
+            pressure = UdpPressure(receiver.getsockname(), rate=2000, duration=2)
+            received = []
+            pressure.start()
+            try:
+                while len(received) < 512:
+                    received.append(receiver.recvfrom(2048))
+                self.assertGreaterEqual(pressure.observe()['sent'], 512)
+            finally:
+                pressure.finish()
+            sent = sum(row['sent'] for row in pressure.rows[0])
+            while len(received) < sent:
+                received.append(receiver.recvfrom(2048))
+            self.assertEqual({source[1] for _, source in received}, set(pressure.ports))
+            self.assertEqual(len(pressure.ports), 64)
+            self.assertEqual(sum(len(data) for data, _ in received),
+                             sum(row['bytes'] for row in pressure.rows[0]))
+            self.assertEqual({data[0] for data, _ in received}, {0, 1, 2})
+            self.assertGreaterEqual(pressure.ended - pressure.started, (sent / 2000) - 0.02)
+            for port in pressure.ports:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reused:
+                    reused.bind(('0.0.0.0', port))
+            with self.assertRaisesRegex(RuntimeError, 'cannot be replayed'):
+                pressure.start()
+
+    def test_udp_worker_deadline_and_partial_paid_progress_cannot_pass(self):
+        from copy import deepcopy
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind(('127.0.0.1', 0))
+            pressure = UdpPressure(receiver.getsockname(), rate=100, duration=1)
+            pressure.start()
+            with self.assertRaisesRegex(TimeoutError, 'finite window'):
+                pressure.job.result(timeout=3)
+            with self.assertRaises(TimeoutError):
+                pressure.finish()
+        pressure = UdpPressure(('127.0.0.1', 14970), rate=2000)
+        pressure.started, pressure.ended, pressure.ports = 0, 20, list(range(64))
+        snapshot = {'host_process': dict(pid=12, start_ticks=34, peak_rss_kib=20000),
+                    'native': {'status': {'data': dict(peer_count=2, connection_count=0)}}}
+        row = {'before': snapshot, 'after': snapshot,
+               'carrier_before': {'packets_recv': 0}, 'carrier_after': {'packets_recv': 39000},
+               'rejections': [dict(kind=kind, sent=13000) for kind in RECORDS],
+               'samples': [dict(bridge=snapshot, pressure={'sent': count},
+                                endpoints={name: {'received_bytes': count} for name in ('n01', 'n03')})
+                           for count in (1000, 10000, 20000)]}
+        pressure.validate(row)
+        for failure in ('no_ingress', 'stalled_paid', 'restarted', 'excess_memory', 'extra_peer'):
+            bad = deepcopy(row)
+            if failure == 'no_ingress':
+                bad['carrier_after']['packets_recv'] = 0
+            elif failure == 'stalled_paid':
+                bad['samples'][-1]['endpoints']['n01']['received_bytes'] = 10000
+            else:
+                bad['after'] = deepcopy(snapshot)
+                if failure == 'extra_peer':
+                    bad['after']['native']['status']['data']['peer_count'] = 3
+                else:
+                    key, value = ('pid', 99) if failure == 'restarted' else ('peak_rss_kib', 70000)
+                    bad['after']['host_process'][key] = value
+            with self.subTest(failure=failure), self.assertRaises(RuntimeError):
+                pressure.validate(bad)
+        pressure.finish()
+
     def test_closed_records_pass_but_a_retained_socket_or_response_fails(self):
         for mode in ('close', 'hold', 'response'):
             with self.subTest(mode=mode), socket.socket() as listener:

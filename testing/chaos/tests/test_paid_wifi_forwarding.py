@@ -134,6 +134,10 @@ class ForwardingTests(unittest.TestCase):
         node = Mock()
         node.remote.return_value = sockets(["00000000"], PORT + 1) + sockets(LOOPBACKS)
         self.assertEqual(listeners(node, PORT), sorted(LOOPBACKS))
+        node.remote.return_value = sockets(LOOPBACKS).replace(b' 0A ', b' 07 ')
+        self.assertEqual(listeners(node, PORT), [])
+        self.assertEqual(listeners(node, PORT, 'udp'), sorted(LOOPBACKS))
+        node.remote.assert_called_with(['cat', '/proc/net/udp', '/proc/net/udp6'])
 
     def test_partial_start_failure_cleans_only_the_owned_child_when_zero_issued(self):
         def spawn_once(args, **kwargs):
