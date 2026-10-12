@@ -58,6 +58,12 @@ async fn protected_network_uses_host_resolution_and_upstream_connection_types() 
         calls: Mutex::new(Vec::new()),
     });
     let network = Net::new_native(host.clone());
+    assert_eq!(
+        network
+            .resolve_addr(true, "host-network.invalid:12345")
+            .await?,
+        server.local_addr()?
+    );
     // This upstream trait identity is shared by unmodified DTLS/STUN/SCTP crates.
     let connection: Arc<dyn upstream::Conn + Send + Sync> =
         network.dial(true, "host-network.invalid:12345").await?;
@@ -73,7 +79,10 @@ async fn protected_network_uses_host_resolution_and_upstream_connection_types() 
         .await
         .expect("native reply arrived")?;
     assert_eq!(&bytes[..length], b"reply");
-    assert_eq!(*host.calls.lock().unwrap(), ["dial", "resolve", "bind"]);
+    assert_eq!(
+        *host.calls.lock().unwrap(),
+        ["resolve", "dial", "resolve", "bind"]
+    );
     Ok(())
 }
 

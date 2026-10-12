@@ -20,6 +20,7 @@ members = [
     "vendor/turn",
     "vendor/webrtc-ice",
     "vendor/webrtc",
+    "vendor/mdns-sd",
 ]
 # These experimental applications depend on unreleased payment/TCP work.
 # Keep the stable libraries and daemon independently buildable and testable.

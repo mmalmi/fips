@@ -1403,6 +1403,16 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
+dependencies = [
+ "humantime",
+ "log",
+]
+
+[[package]]
+name = "env_logger"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
@@ -1955,6 +1965,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humantime"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
+
+[[package]]
 name = "hyper"
 version = "0.14.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2484,21 +2500,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdns-sd"
-version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2bb8ce26633738d98ffcef71ec58bff967c6675be50229823c2835f6316e67e"
-dependencies = [
- "fastrand",
- "flume",
- "if-addrs",
- "log",
- "mio",
- "socket-pktinfo",
- "socket2 0.6.2",
-]
-
-[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2847,13 +2848,13 @@ dependencies = [
  "hkdf",
  "if-addrs",
  "libc",
- "mdns-sd",
  "netlink-packet-core",
  "netlink-packet-netfilter",
  "netlink-sys",
  "nostr",
  "nostr-sdk",
  "nvpn-fips-identity",
+ "nvpn-mdns-sd",
  "nvpn-webrtc",
  "portable-atomic",
  "procfs",
@@ -2903,6 +2904,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvpn-mdns-sd"
+version = "0.19.1"
+dependencies = [
+ "env_logger 0.10.2",
+ "fastrand",
+ "flume",
+ "humantime",
+ "if-addrs",
+ "log",
+ "mio",
+ "serde",
+ "serde_json",
+ "socket-pktinfo",
+ "socket2 0.6.2",
+ "test-log",
+ "test-log-macros",
+]
+
+[[package]]
 name = "nvpn-turn"
 version = "0.17.1"
 dependencies = [
@@ -2910,7 +2930,7 @@ dependencies = [
  "base64",
  "clap 3.2.25",
  "criterion",
- "env_logger",
+ "env_logger 0.11.11",
  "futures",
  "hex",
  "log",
@@ -2933,7 +2953,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "dtls",
- "env_logger",
+ "env_logger 0.11.11",
  "hex",
  "interceptor",
  "lazy_static",
@@ -2976,7 +2996,7 @@ dependencies = [
  "chrono",
  "clap 3.2.25",
  "crc",
- "env_logger",
+ "env_logger 0.11.11",
  "hyper",
  "ipnet",
  "lazy_static",
@@ -4568,6 +4588,27 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
+]
+
+[[package]]
+name = "test-log"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6159ab4116165c99fc88cce31f99fa2c9dbe08d3691cb38da02fc3b45f357d2b"
+dependencies = [
+ "env_logger 0.10.2",
+ "test-log-macros",
+]
+
+[[package]]
+name = "test-log-macros"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ba277e77219e9eea169e8508942db1bf5d8a41ff2db9b20aab5a5aadc9fa25d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]
