@@ -1,0 +1,27 @@
+[package]
+name = "nvpn-webrtc-util"
+version = "0.17.1"
+edition = "2021"
+description = "Native socket policy extension for Nostr VPN WebRTC"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
+
+[lib]
+name = "webrtc_util"
+
+[features]
+default = ["buffer", "conn", "ifaces", "vnet", "marshal", "sync"]
+buffer = ["upstream/buffer"]
+conn = ["upstream/conn", "buffer", "sync"]
+ifaces = ["upstream/ifaces"]
+vnet = ["upstream/vnet", "ifaces", "conn", "dep:tokio"]
+marshal = ["upstream/marshal"]
+sync = ["upstream/sync"]
+
+[dependencies]
+upstream = { package = "webrtc-util", version = "=0.17.1", default-features = false }
+tokio = { version = "1", features = ["sync"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "net", "time"] }

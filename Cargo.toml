@@ -16,6 +16,10 @@ members = [
     "crates/fips-endpoint",
     "crates/fips-identity",
     "crates/fips-sim",
+    "vendor/webrtc-util",
+    "vendor/turn",
+    "vendor/webrtc-ice",
+    "vendor/webrtc",
 ]
 # These experimental applications depend on unreleased payment/TCP work.
 # Keep the stable libraries and daemon independently buildable and testable.
