@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.99] - 2026-10-12
+
+### Added
+
+- Let embedding hosts supply socket protection and carrier DNS across native
+  TCP, UDP, WebSocket, Tor, Nostr, STUN, WebRTC and local discovery. Apply the
+  policy before network traffic and retain native behavior when no policy is set.
+- Package transport adapters with explicit host socket hooks, including retained
+  protection for NAT mapping renewal and cleanup and router discovery requests.
+
+### Fixed
+
+- Use the maintained Norway YAML parser and require patched Rustls 0.23.45.
+  Omit unused transport demos and the discontinued async-std router backend.
+- Preserve FIPS packet formats, routing semantics and peer compatibility.
+
 ## [0.4.98] - 2026-10-12
 
 ### Fixed
