@@ -11366,6 +11366,23 @@ cargo test --profile openwrt -p fips-relay --no-default-features \
   -- --ignored --nocapture --test-threads=1
 ```
 
+Two further existing scenarios pass with only the shared fixture's
+[`EncounterProfile::baseline`](tests/priced_paths/merge_split/full_roster/repeated.rs)
+`idle_secs` changed from ten to two seconds in `work/mobile-age-variation-r455`. The
+`root_change_full_rosters_recover_paid_routes_without_candidate_departures`
+case reaches delivery/all-hop credit at 11.831 seconds on joining and 6.956 on
+rejoining. The `lossy_brief_contacts_and_long_absence_reuse_original_paid_routes`
+case uses 5% loss, 10-ms latency, a 1-Mbit/s bridge and a 31-second absence after
+owner removal; its corresponding times are 15.208 and 18.229 seconds. Both retain
+the original paid local links, accounts and resource limits, and collect all
+3,072 test sats. These are separate characterizations, not paired speed tests.
+
+In the lossy rejoin, bridge/tree observations occur at 3.829/4.031 seconds.
+Each subsequent direction needs one outstanding payload retried in the
+fixture's existing seven-second round. The sequential cohorts therefore finish
+much later than the tree connects; 18.229 seconds is not an admission delay.
+Warm contacts deliver 32/32 offers before their cuts; cold contacts deliver 0/19.
+
 Short cold contacts still carry no offers before their cuts; some arrive later
 with the two-second setting. Lowering `idle_secs` also shortens protection after
 application traffic becomes idle. Defaults and production admission logic remain
