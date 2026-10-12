@@ -199,14 +199,25 @@ funding admission, payout import and retirement. Missing files fail recovery
 without creating a replacement wallet or losing the saved capacity policy.
 Restore the original files before retrying.
 
-Settlement imports the SDK's original closed payout through its original wallet
-allowance, including a zero payout, before saving the controller report. Retrying
-an interrupted import does not credit coins twice. Authenticated receiver retirement
-removes the corresponding wallet admission only after the original payout handoff.
+Settlement imports the SDK's original closed payout, including a zero payout,
+before saving the controller report. For payouts already spent at the mint,
+original wallet coin records are required even without a storage limit. The mint's
+spent status alone does not prove that this wallet received the payout. Missing
+those records leaves settlement unfinished; restoring the originals permits retry
+without crediting spent coins again.
+When capacity accounting is enabled, import also requires the original wallet
+allowance. Authenticated receiver retirement removes the corresponding wallet
+admission only after the original payout handoff.
 These are logical storage reservations. Fresh services can explicitly configure
 native wallet capacity before initialization; [service setup](SERVICE.md) describes
 the fixed policy. Other wallet paths/stores and physical recovery still need
 separate deployment acceptance.
+
+A provider can complete settlement at service expiry before a cooperative
+request arrives. A later request from the original buyer for the same channel
+and signed balance returns that saved report without applying another payment.
+Settlement state is read while holding the channel's settlement claim, including
+when expiry completes concurrently with the request.
 
 After the buyer has durably recovered its refund, it sends one
 `ReleaseSettlement { channel_id }` request over the existing authenticated

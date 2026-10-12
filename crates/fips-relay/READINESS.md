@@ -5944,6 +5944,36 @@ or attribute the historical payment stalls. The r35 package includes this fix
 and passes the isolated Linux acceptance above; current-device and physical
 power-loss acceptance remain outstanding.
 
+### Payout custody and completed expiry reports
+
+SDK `e700518d14ee` requires the original wallet records when retrying import of
+payout coins already spent at the mint, including wallets without a storage
+limit. Missing records leave settlement unfinished; restoring the original spent
+records permits retry without crediting those coins again. The regression
+reproduces the previous false success and covers both storage policies.
+
+FIPS `ce9be291d7ce` returns an already completed expiry report when the original
+buyer later requests settlement for the same channel and signed balance. It reads
+state under the existing settlement claim, so concurrent expiry cannot leave the
+request using stale state. Replay neither applies another payment nor opens a
+wallet. Wrong buyers, channels and balances remain rejected. The existing process
+test now waits for automatic expiry and verifies the late cooperative response
+against the saved report after crash recovery.
+
+The exact source passes 440 SDK workspace tests (one existing opt-in soak
+excluded), 346 relay unit tests and both selected process recovery tests. The
+shared-wallet restart case accounts for all 512 test sats: 500 available and
+12 in mint fees. Formatting, strict SDK/relay lint, the source-size gate and the
+ordinary ARM64 OpenWrt build pass. The router package excludes SDK simulation.
+Exact inputs, failing reproductions, passing logs and artifact hashes are retained
+in `work/receiver-custody-r482` and `work/expired-report-replay-r485`.
+
+The [settlement recovery contract](HISTORY.md#completed-seller-channels-and-report-release)
+describes these changes. No schema or protocol message changes are required.
+These fixes have not yet been qualified on the physical routers or Pixel. Other
+missing/conflicting records and physical power-loss cases remain open; this does
+not establish production readiness.
+
 ### Missing withdrawal journals
 
 Native CDK `5ff0b4b801ff` preserves withdrawal reservations whose original
