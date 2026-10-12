@@ -549,6 +549,8 @@ def main():
                         help='also test transit with the screen off; operator unlock is needed afterward')
     parser.add_argument('--sustained-transit', action='store_true',
                         help='transfer nine MiB per direction through the background phone for at least five minutes')
+    parser.add_argument('--compare-transit-rates', action='store_true',
+                        help='compare four MiB per direction in five-minute background windows at 32 and 256 KiB/s')
     parser.add_argument('--forced-idle', action='store_true',
                         help='verify paid foreground-service transit during and after forced Android Doze')
     parser.add_argument('--phone-outage', action='store_true',
@@ -562,16 +564,10 @@ def main():
         help='use the existing guarded temporary open radio profile',
     )
     args = parser.parse_args()
-    if args.screen_off and not args.transit:
-        parser.error('--screen-off requires --transit')
-    if args.sustained_transit and not args.transit:
-        parser.error('--sustained-transit requires --transit')
-    if args.forced_idle and not args.transit:
-        parser.error('--forced-idle requires --transit')
-    if args.phone_outage and not args.transit:
-        parser.error('--phone-outage requires --transit')
-    if args.phone_renewal and not args.transit:
-        parser.error('--phone-renewal requires --transit')
+    for name in ('screen_off', 'sustained_transit', 'compare_transit_rates',
+                 'forced_idle', 'phone_outage', 'phone_renewal'):
+        if getattr(args, name) and not args.transit:
+            parser.error('--' + name.replace('_', '-') + ' requires --transit')
     if args.impaired_transit and not (args.transit and args.sustained_transit):
         parser.error('--impaired-transit requires --transit --sustained-transit')
     os.umask(0o077)

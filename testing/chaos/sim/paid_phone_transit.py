@@ -36,6 +36,10 @@ class PhoneTransitRun(PaidPhoneRun):
                 and not any(getattr(args, flag, False) for flag in
                             ('screen_off', 'forced_idle', 'phone_outage', 'phone_renewal'))),
                 'impaired transit requires its own sustained background workload')
+        compare = bool(getattr(args, 'compare_transit_rates', False))
+        require(not compare or not any(getattr(args, flag, False) for flag in (
+            'screen_off', 'forced_idle', 'phone_outage', 'phone_renewal', 'impaired_transit')),
+            'rate comparison requires its own healthy background workload')
         super().__init__(args)
         if getattr(args, 'impaired_transit', None) == 'corrupt':
             self.nodes['n02'].diagnostic_log_filter = 'warn,fips_core::node::handlers::encrypted=debug'
@@ -47,6 +51,7 @@ class PhoneTransitRun(PaidPhoneRun):
                              screen_off_requested=bool(getattr(args, 'screen_off', False)),
                              impaired_transit_requested=impaired,
                              sustained_transit_requested=bool(getattr(args, 'sustained_transit', False)), windows=[])
+        self.evidence['compare_transit_rates_requested'] = compare
         for name in ('paid_phone_transit.py', 'stream_probe.py'):
             self.evidence['harness_sha256'][name] = hashlib.sha256(
                 Path(__file__).with_name(name).read_bytes()).hexdigest()
@@ -144,10 +149,15 @@ class PhoneTransitRun(PaidPhoneRun):
 
     def stream(self, mode, *, unpaid=False, observe=None):
         count, duration = (1024, 4) if unpaid else (512 * 1024, 30)
-        minimum = 300 if (not unpaid and mode == 'background'
-                          and getattr(self.args, 'sustained_transit', False)) else 0
+        compare = bool(getattr(self.args, 'compare_transit_rates', False))
+        minimum = 300 if (not unpaid and (
+            mode == 'background' and (getattr(self.args, 'sustained_transit', False) or compare)
+            or mode == 'background-high-rate' and compare)) else 0
+        rate = (256 if mode == 'background-high-rate' and compare else 32) * 1024
         if minimum:
-            count, duration = 9 * 1024**2, 300
+            # Both comparison windows share the original channels. Endpoints
+            # pay the onward tariff as well, so reserve room for both transfers.
+            count, duration = (4 if compare else 9) * 1024**2, 300
         row = {'mode': mode, 'unpaid': unpaid, 'minimum_duration_secs': minimum,
                'before': resources(self.phone), 'battery_before':
                    self.phone.shell('dumpsys', 'battery').decode()}
@@ -155,14 +165,18 @@ class PhoneTransitRun(PaidPhoneRun):
         self.save()
         if minimum:
             row['payment_before'] = control(self.phone, 'status')
+            if compare:
+                row['routers_before'] = {name: self.ctl(name, 'status') for name in self.nodes}
         def sample():
             require(self.topology() is not None, 'transit topology changed during transfer')
             return {'line_verified': True, **self.screen(mode), **(observe() if observe else {})}
         duplex(self, row, label=('unpaid-' if unpaid else '') + mode,
-               count=count, duration=duration, rate=32 * 1024, observe=sample, expect_denial=unpaid)
+               count=count, duration=duration, rate=rate, observe=sample, expect_denial=unpaid)
         row['after'] = resources(self.phone)
         if minimum:
             row['payment_after'] = control(self.phone, 'status')
+            if compare:
+                row['routers_after'] = {name: self.ctl(name, 'status') for name in self.nodes}
         require(row['before']['process'] == row['after']['process'], 'phone process changed')
         row['cpu_seconds'] = (row['after']['cpu_ticks'] - row['before']['cpu_ticks']) / row['before']['ticks_per_second']
         self.save()
@@ -206,6 +220,8 @@ class PhoneTransitRun(PaidPhoneRun):
             self.phase('original paid channels retained through UDP impairment and fresh recovery traffic')
         else:
             self.stream('background')
+            if getattr(self.args, 'compare_transit_rates', False):
+                self.stream('background-high-rate')
         event = ('idle' if getattr(self.args, 'forced_idle', False) else
                  'outage' if getattr(self.args, 'phone_outage', False) else None)
         if event:

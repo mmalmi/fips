@@ -14,16 +14,29 @@ from sim.paid_phone_transit import PhoneTransitRun
 
 
 class StreamProbeTests(unittest.TestCase):
+    def test_rate_comparison_rejects_mixed_faults_before_preparing_devices(self):
+        for flag in ('screen_off', 'forced_idle', 'phone_outage', 'phone_renewal', 'impaired_transit'):
+            args = SimpleNamespace(transit=True, open_mesh=False, sustained_transit=False,
+                                   compare_transit_rates=True, **{flag: True})
+            with self.subTest(flag=flag), patch('sim.paid_phone_transit.PaidPhoneRun.__init__') as base:
+                with self.assertRaises(RuntimeError):
+                    PhoneTransitRun(args)
+                base.assert_not_called()
+
     def test_sustained_transit_requires_five_minutes_only_in_the_paid_background_window(self):
-        cases = [(True, 'background', False, 300, 9 * 1024**2, 300),
-                 (True, 'background', False, 299, 9 * 1024**2, 300),
-                 (True, 'foreground', False, 16, 512 * 1024, 30),
-                 (False, 'background', False, 16, 512 * 1024, 30),
-                 (True, 'background', True, 4, 1024, 4)]
-        for sustained, mode, unpaid, elapsed, count, duration in cases:
-            with self.subTest(sustained=sustained, mode=mode, unpaid=unpaid, elapsed=elapsed):
+        cases = [(True, False, 'background', False, 300, 9 * 1024**2, 300, 32),
+                 (True, False, 'background', False, 299, 9 * 1024**2, 300, 32),
+                 (True, False, 'foreground', False, 16, 512 * 1024, 30, 32),
+                 (False, False, 'background', False, 16, 512 * 1024, 30, 32),
+                 (True, False, 'background', True, 4, 1024, 4, 32),
+                 (False, True, 'background', False, 300, 4 * 1024**2, 300, 32),
+                 (False, True, 'background-high-rate', False, 300, 4 * 1024**2, 300, 256)]
+        for sustained, compare, mode, unpaid, elapsed, count, duration, rate in cases:
+            with self.subTest(sustained=sustained, compare=compare, mode=mode, unpaid=unpaid, elapsed=elapsed):
                 run = PhoneTransitRun.__new__(PhoneTransitRun)
-                run.args = SimpleNamespace(sustained_transit=sustained)
+                run.args = SimpleNamespace(sustained_transit=sustained, compare_transit_rates=compare)
+                run.nodes = dict.fromkeys(('n01', 'n02', 'n03'))
+                run.ctl = Mock(return_value={'measurements': 'retained'})
                 run.phone = Mock()
                 run.phone.shell.return_value = b'USB-powered test'
                 run.evidence = {'windows': []}
@@ -45,6 +58,11 @@ class StreamProbeTests(unittest.TestCase):
                         self.assertTrue(run.evidence['windows'][0]['passed'])
                     self.assertEqual(send.call_args.kwargs['count'], count)
                     self.assertEqual(send.call_args.kwargs['duration'], duration)
+                    self.assertEqual(send.call_args.kwargs['rate'], rate * 1024)
+                    if compare:
+                        row = run.evidence['windows'][0]
+                        self.assertEqual(set(row['routers_before']), set(run.nodes))
+                        self.assertEqual(row['routers_after'], row['routers_before'])
 
     def test_unpaid_deadline_requires_fresh_finished_zero_delivery_evidence(self):
         for received in (0, 1):

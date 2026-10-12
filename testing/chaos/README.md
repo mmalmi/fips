@@ -1235,6 +1235,27 @@ and process CPU include diagnostic overhead; they do not measure unplugged
 battery life, Android deep idle or payment-specific CPU. Physical results remain
 separate from harness tests.
 
+Use `--compare-transit-rates` with `--transit` to run two healthy background
+windows at 32 then 256 KiB/s per direction. Each offers four MiB per direction
+and lasts five minutes, retaining the original channels, tariffs and spending
+limits. The reduced per-window payload reserves channel capacity for both rates
+and their onward charges. This mode runs separately from fault, renewal,
+screen-off and forced-idle cases.
+
+The fixture records payment and CPU counters for all four participants. After
+the run succeeds, analyze the saved result with:
+
+```sh
+python3 testing/relay-cadence/phone_rates.py /private/results/phone-rates/result.json
+```
+
+The analyzer validates full acknowledged delivery, matched workloads, unchanged
+channel terms and counter epochs, and advancing payments at every paying hop.
+Completion times distinguish achieved throughput from the offered rate. The
+probes keep pumping until the fixed deadline to recover late acknowledgments,
+so full-window CPU includes different idle tails and diagnostic work. One
+ordered pair does not establish a throughput ceiling or an optimization.
+
 Add `--forced-idle` to `--transit` for one controlled Android Doze window.
 It requires an initially active phone and a temporary acceptance app without a
 battery-optimization exemption. After the paid background window, force deep

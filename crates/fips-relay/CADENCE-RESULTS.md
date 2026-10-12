@@ -1,5 +1,47 @@
 # Paid-relay cadence measurements
 
+## Background phone rate comparison — 12 October 2026
+
+The r447 fixture reuses the qualified r439 native and Android runtime graph.
+Three OpenWrt routers and an Android phone form an authenticated UDP line on the
+existing LAN. The phone's activity stays hidden and its routing foreground service
+remains active. After unpaid denial and a paid warm-up, two ordered five-minute
+windows each carry four MiB per direction, offered at 32 then 256 KiB/s. No
+payment policy, tariff, channel capacity or spending limit changes between rates.
+
+All 17 MiB across the warm-up and measured windows arrive with exact payload
+digests and acknowledgment. Every paying hop advances credit on its original
+32-sat channel. All 512 test sats are collected, four wallets end empty, and
+1,239 management checks pass. Independent closure verifies restored networking,
+unchanged original phone accounts and removal of the temporary app and router
+profiles. Evidence is `work/phone-rate-r447` in the private recovery bundle.
+
+Completion includes connection setup and final acknowledgment. The table uses
+the slower endpoint in each window; CPU is the phone process counter delta over
+the complete five-minute window, divided by eight delivered payload MiB.
+
+| Offered KiB/s per direction | Completion seconds | Completed KiB/s per direction | Phone process CPU s / payload MiB | Scoped payment CPU ms / payload MiB |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 128.094 | 31.98 | 13.43 | 140.88 |
+| 256 | 16.107 | 254.31 | 6.11 | 84.27 |
+
+The shared analyzer also reports all three routers, logical journal activity,
+payment-record bytes and native link counters. Phone resident memory after the
+two windows is approximately 270.1 MiB in both cases, including the Android app.
+The probes keep pumping after completion for ACK recovery, so these CPU totals
+include different idle tails and diagnostic work. Scoped payment spans exclude
+scheduler and TCP/FIPS/core transport work. Journal bytes are not physical
+flash/SQLite writes, and payment records are not complete wire attribution.
+
+This one ordered pair verifies the offered-rate increase on this path. It does
+not establish a throughput ceiling, sustained saturation, natural deep idle,
+battery cost or an optimization. No runtime or default-policy change is made.
+The final harness and analyzer pass 106 Linux checks. Reproduce with
+`--transit --compare-transit-rates` in `sim.paid_phone`, then run
+`python3 testing/relay-cadence/phone_rates.py /private/results/phone-rates/result.json`.
+The analyzer rejects changed workloads, purchased terms, payment identities,
+counter epochs, unfinished delivery and inter-window counter resets.
+
 ## Current native matrix — 7 October 2026
 
 The ordinary Linux daemon now reports measurement version 3. Payer and provider
