@@ -9,6 +9,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
 MAX_LINES="${FIPS_RUST_FILE_MAX_LINES:-1000}"
 
 case "$MAX_LINES" in
@@ -57,12 +58,12 @@ done < <(baseline_paths)
 
 roots=()
 for root in crates src examples testing; do
-  [[ -d "$ROOT_DIR/$root" ]] && roots+=("$ROOT_DIR/$root")
+  [[ -d "$root" ]] && roots+=("$root")
 done
 
 while IFS= read -r file; do
   [[ -z "$file" ]] && continue
-  rel="${file#$ROOT_DIR/}"
+  rel="$file"
   lines="$(awk 'END { print NR }' "$file")"
   allowed="$(baseline_for "$rel")"
   checked=$((checked + 1))
