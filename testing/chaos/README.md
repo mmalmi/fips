@@ -562,6 +562,27 @@ payload hashes independently of the strict paid probes. Failed probes retain
 partial delivery counts and service observations; cleanup preserves the first
 failure while still restoring the radio and stopping the sender.
 
+Add `--crowded-pressure` to one `--crowded-rejoin` for eight unfunded identities
+retrying the middle router over management-bound UDP while the original radio
+route carries 120 40-byte paid packets in each direction at one per second.
+Seven additional profiles share the existing guards; every fresh candidate must
+send UDP join traffic across at least three observations, while the original idle candidate
+keeps its existing retry backoff. All eight must remain unfunded. The two-minute
+stream must overlap at least 90 seconds of observed join pressure, retain
+the original authenticated peers and processes, and deliver every paid packet.
+Samples check the two-peer cap, at most eight native connections and a 64 MiB
+provider RSS high-water ceiling. These are finite trial checks, not proof of
+long-term memory bounds or resistance to arbitrary identity floods. Fresh quotes
+allow 60,000 bytes at 512 msat/KiB; the original 32-sat channels, spending and
+issuance limits apply. Candidate observations survive assertion failures, and
+the provider's authenticated roster determines which peers occupy its slots.
+Competitors stop before settlement, which still collects all 384 test sats.
+Both incumbent radio neighbors receive the same bounded ordinary application
+traffic through the accounting checks and competitor shutdown, so those checks
+do not leave a deliberately idle slot for candidates to replace.
+This mode uses fixed
+identities and a fixed radio layout, without a throughput or mobility claim.
+
 Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at
 least 11.5 seconds; the actual outage also includes radio commands and serial

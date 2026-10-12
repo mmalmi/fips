@@ -24,8 +24,15 @@ class CrowdedWifiRun(PaidWifiRun):
         self.cycles = getattr(args, 'crowded_rejoin', 1)
         if type(self.cycles) is not int or not 1 <= self.cycles <= 3:
             raise ValueError('crowded rejoin requires one to three cycles')
+        if getattr(args, 'crowded_pressure', False) and self.cycles != 1:
+            raise ValueError('join pressure requires exactly one crowded rejoin')
         super().__init__(args)
         self.idle = self.nodes['n03'].add_profile('idle')
+        self.pressure = None
+        if getattr(args, 'crowded_pressure', False):
+            from .wifi_admission_pressure import AdmissionPressure
+            self.pressure = AdmissionPressure(self)
+            self.quote_max_units = 60_000
         self.addresses = {}
         self.provider_udp = None
         self.evidence.update(acceptance_kind='paid_crowded_radio_rejoin',
@@ -34,7 +41,8 @@ class CrowdedWifiRun(PaidWifiRun):
         self.evidence['crowded_harness_sha256'] = digest(Path(__file__).read_bytes())
 
     def participants(self):
-        return {**self.nodes, 'idle': self.idle}
+        candidates = self.pressure.peers if self.pressure else {'idle': self.idle}
+        return {**self.nodes, **candidates}
 
     def mesh_peers(self, name, peers):
         if name != 'n02':
@@ -60,6 +68,8 @@ class CrowdedWifiRun(PaidWifiRun):
         if node is self.nodes['n02']:
             config.update(max_peers=2, neighbor_rotation=dict(idle_secs=2, interval_secs=2))
             config['transports']['udp'] = self.udp_config('n02')
+        if self.pressure:
+            config['terms'].update(fee_msat_per_kib=512, quote_max_units=self.quote_max_units)
         return config
 
     def before_launch(self):
@@ -71,6 +81,8 @@ class CrowdedWifiRun(PaidWifiRun):
                 'idle candidate must remain unfunded')
         self.idle_financial = self.idle.monetary_journals()
         self.evidence['auxiliary_identity'] = self.idle.npub
+        if self.pressure:
+            self.pressure.prepare()
         super().before_launch()
 
     def discovery_adapter(self, name, adapters):
@@ -87,29 +99,41 @@ class CrowdedWifiRun(PaidWifiRun):
         self.useful_stop = threading.Event()
         self.useful_packets = self.evidence['useful_packets'] = []
         self.useful = None
-        with ThreadPoolExecutor(max_workers=1) as self.useful_pool:
+        workers = 2 if getattr(self, 'pressure', None) else 1
+        with ThreadPoolExecutor(max_workers=workers) as self.useful_pool:
             try:
                 super().exercise()
             finally:
                 self.useful_stop.set()
 
     def collect(self):
-        self.useful_stop.set()
         error = None
-        if self.useful is not None:
-            try:
-                self.useful.result(timeout=20)
-            except Exception as failure:
-                error = failure
-                self.evidence['useful_error'] = str(failure)
-            self.evidence['useful_finished_at'] = time.monotonic()
-            self.save()
+        try:
+            for node in self.nodes.values():
+                for profile in node.auxiliary_profiles.values():
+                    profile.stop()
+            self.evidence['competitors_stopped_before_settlement'] = True
+            eventually('original radio neighbors before settlement', lambda: self.ready(line=True), 60)
+        except Exception as failure:
+            error = failure
+            self.evidence['competitor_stop_error'] = str(failure)
+        self.useful_stop.set()
+        pressure_useful = getattr(getattr(self, 'pressure', None), 'useful', None)
+        for label, future in (('useful', self.useful), ('pressure_useful', pressure_useful)):
+            if future is not None:
+                try:
+                    future.result(timeout=20)
+                except Exception as failure:
+                    error = error or failure
+                    self.evidence[label + '_error'] = str(failure)
+        self.evidence['useful_finished_at'] = time.monotonic()
+        self.save()
         result = super().collect()
         if error is not None and 'acceptance_failure' not in self.evidence:
             raise error
         return result
 
-    def keep_useful(self, stop, packets):
+    def keep_useful(self, stop, packets, destination='n01'):
         # Ordinary data does not take the probe's shared sender/receiver permit.
         # Keep it running through paid probes and financial observations, too.
         while not stop.is_set() and len(packets) < 3600:
@@ -117,12 +141,12 @@ class CrowdedWifiRun(PaidWifiRun):
             current = dict(at=time.monotonic(), sha256=digest(payload.encode()),
                            bytes=len(payload), observed=False)
             packets.append(current)
-            current['sent'] = self.ctl('n02', 'send', destination=self.nodes['n01'].npub,
+            current['sent'] = self.ctl('n02', 'send', destination=self.nodes[destination].npub,
                                        payload=payload, operation_timeout=5)
             require(current['sent'].get('queued') is True, 'useful data was not queued')
             deadline = time.monotonic() + 0.75
             while not stop.is_set():
-                current['received'] = self.ctl('n01', 'status', operation_timeout=5)['received']
+                current['received'] = self.ctl(destination, 'status', operation_timeout=5)['received']
                 if current['received']['last_sha256'] == current['sha256']:
                     current.update(observed=True, observed_at=time.monotonic())
                     break
@@ -156,6 +180,8 @@ class CrowdedWifiRun(PaidWifiRun):
                     current, 'original channels pay between crowded rejoins')
                 self.retain_channels(self.channel_anchor, data['paid_between_rounds'])
             self.save()
+        if getattr(self, 'pressure', None):
+            self.pressure.exercise()
 
     def rejoin_round(self, original, start_idle):
         data = dict(passed=False, processes_before=processes(self), samples=[],

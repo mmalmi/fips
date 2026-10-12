@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.paid_settlement import settle_and_collect
 from sim.paid_wifi import PaidWifiRun, reconciled_channels, retain_channels
 from sim.wifi_crowded import CrowdedWifiRun
+from sim.wifi_admission_pressure import AdmissionPressure, check_sample
 from sim.paid_faults import validate_unpaid_probe
 from sim.paid_wifi_mint import LocalMint
 from tests.test_paid_faults import finances
@@ -34,6 +35,29 @@ def accounts():
 
 
 class PaidWifiTests(unittest.TestCase):
+    def test_final_rejoin_check_uses_the_configured_quote_limit(self):
+        service = object.__new__(PaidWifiRun)
+        service.args, service.evidence = SimpleNamespace(), {}
+        service.nodes = {name: SimpleNamespace(npub=name) for name in ('n01', 'n02', 'n03')}
+        service.quote_max_units = 60_000
+        before, paid = accounts(), accounts()
+        paid['n01'].update(remaining=46, authorized=18, signed={'n01': 18},
+                           signed_after={'n01': 18}, buyer_units={'n01': 35_000})
+        paid['n02']['credited']['n01'] = 18_000
+        paid['n02']['seller_channels']['n01'].update(
+            paid_msat=18_000, submitted_msat=17_500, reserved_msat=17_500)
+        paid['n02']['seller_units']['n01'] = 35_000
+        service.form_line, service.mesh_outage, service.verify_shortcuts = Mock(), Mock(), Mock()
+        service.assert_finances, service.finances = Mock(return_value=before), Mock(return_value=before)
+        service.paid_streams = Mock(side_effect=[before, paid])
+        service.ctl = Mock(side_effect=lambda name, _kind, **_fields: dict(npub=name))
+        service.phase, service.save = Mock(), Mock()
+        service.collect = Mock(return_value=dict(settled_wallet_balances=dict(n01=127, n02=130, n03=127)))
+        with patch('sim.paid_wifi.PaidRelayRun.unpaid_probe'):
+            service.exercise()
+        service.verify_shortcuts.assert_called_once_with()
+        service.collect.assert_called_once_with()
+
     def test_mint_selection_keeps_the_existing_local_and_remote_adapters(self):
         service = object.__new__(PaidWifiRun)
         service.run, service.root = "a" * 12, Path("/private/output")
@@ -108,6 +132,62 @@ class PaidWifiTests(unittest.TestCase):
                 CrowdedWifiRun(SimpleNamespace(crowded_rejoin=count))
             setup.assert_not_called()
 
+    def test_join_pressure_registers_all_candidates_before_guard_setup(self):
+        run = SimpleNamespace(nodes={name: Mock() for name in ('n01', 'n02', 'n03')},
+                              idle=Mock(), evidence={})
+        pressure = AdmissionPressure(run)
+        self.assertEqual(len(pressure.peers), 8)
+        self.assertIs(pressure.peers['idle'], run.idle)
+        self.assertEqual(run.nodes['n01'].add_profile.call_count, 4)
+        self.assertEqual(run.nodes['n03'].add_profile.call_count, 3)
+        run.nodes['n02'].add_profile.assert_not_called()
+        for count in (2, 3):
+            with self.subTest(count=count), patch('sim.paid_wifi.PaidWifiRun.__init__') as setup, \
+                    self.assertRaisesRegex(ValueError, 'exactly one crowded rejoin'):
+                CrowdedWifiRun(SimpleNamespace(crowded_rejoin=count, crowded_pressure=True))
+            setup.assert_not_called()
+
+    def test_join_pressure_rejects_process_changes_and_exceeded_trial_ceilings(self):
+        first = dict(native=dict(status=dict(data=dict(peer_count=2, connection_count=2))),
+                     host_process=dict(pid=10, start_ticks=100, peak_rss_kib=12_000))
+        check_sample(copy.deepcopy(first), first)
+        for path, field, value in ((('native', 'status', 'data'), 'peer_count', 3),
+                                   (('native', 'status', 'data'), 'connection_count', 9),
+                                   (('host_process',), 'pid', 11),
+                                   (('host_process',), 'start_ticks', 101),
+                                   (('host_process',), 'peak_rss_kib', 65_537)):
+            changed = copy.deepcopy(first)
+            row = changed
+            for key in path:
+                row = row[key]
+            row[field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                check_sample(changed, first)
+
+    def test_candidate_view_is_recorded_without_claiming_provider_admission(self):
+        pressure = object.__new__(AdmissionPressure)
+        pressure.run = SimpleNamespace(nodes={'n02': SimpleNamespace(npub='provider')})
+        peer = Mock()
+        pressure.peers = {'idle': peer}
+        status = dict(purchases=[], history=[], locked_sat=0, remaining_budget_sat=64,
+                      funding_budget={}, watched_routes=[],
+                      peers=[dict(npub='provider', connected=False, transport='udp')])
+        peer.control.return_value = status
+        peer.native.side_effect = lambda command: dict(status='ok', data=(dict(retries=[])
+            if command['command'] == 'show_routing' else
+            dict(transports=[dict(type='udp', stats=dict(packets_sent=3))])))
+        for connected, transport in ((False, None), (False, 'udp'), (True, 'udp')):
+            status['peers'][0]['connected'] = connected
+            status['peers'][0]['transport'] = transport
+            observed = {}
+            pressure.observe_candidates('provider-address', observed)
+            self.assertIs(observed['idle']['status'], status)
+        status['peers'][0]['npub'] = 'unexpected'
+        observed = {}
+        with self.assertRaisesRegex(RuntimeError, 'unexpected neighbor'):
+            pressure.observe_candidates('provider-address', observed)
+        self.assertIs(observed['idle']['status'], status)
+
     def test_crowded_partition_allows_only_the_known_udp_competitor(self):
         service = object.__new__(CrowdedWifiRun)
         service.nodes = {name: SimpleNamespace(npub=name) for name in ('n01', 'n02', 'n03')}
@@ -149,7 +229,7 @@ class PaidWifiTests(unittest.TestCase):
 
     def test_useful_data_retains_partial_evidence_without_taking_probe_controls(self):
         service = object.__new__(CrowdedWifiRun)
-        service.nodes = {'n01': SimpleNamespace(npub='useful')}
+        service.nodes = {'n03': SimpleNamespace(npub='useful')}
         packets, stop = [], threading.Event()
         def control(_name, kind, **fields):
             if kind == 'send':
@@ -162,17 +242,19 @@ class PaidWifiTests(unittest.TestCase):
             raise RuntimeError('observation failed')
         service.ctl = Mock(side_effect=control)
         with self.assertRaisesRegex(RuntimeError, 'observation failed'):
-            service.keep_useful(stop, packets)
+            service.keep_useful(stop, packets, 'n03')
         self.assertEqual(packets[0]['sent'], {'queued': True})
         self.assertTrue(packets[0]['observed'])
         self.assertFalse(packets[1]['observed'])
         self.assertEqual([call.args[:2] for call in service.ctl.call_args_list],
-                         [('n02', 'send'), ('n01', 'status')] * 2)
+                         [('n02', 'send'), ('n03', 'status')] * 2)
         self.assertEqual(len(service.ctl.call_args_list[0].kwargs['payload']), 128)
 
     def test_useful_traffic_survives_all_paid_checks_and_stops_before_collection(self):
         service = object.__new__(CrowdedWifiRun)
-        service.nodes, service.evidence = {'n01': SimpleNamespace(npub='useful')}, {}
+        competitor = Mock()
+        service.nodes = {'n01': SimpleNamespace(npub='useful', auxiliary_profiles={'idle': competitor})}
+        service.evidence, service.ready = {}, Mock(return_value=True)
         service.cycles, service.channel_anchor = 3, {}
         service.save, service.assert_finances, service.retain_channels = Mock(), Mock(), Mock()
         running = threading.Event()
@@ -195,6 +277,8 @@ class PaidWifiTests(unittest.TestCase):
             paid()  # Final paid verification also runs after mesh_outage returns.
             self.assertEqual(service.collect(), {'collected': 384})
         def collect():
+            competitor.stop.assert_called_once_with()
+            service.ready.assert_called_once_with(line=True)
             self.assertTrue(service.useful_stop.is_set())
             self.assertTrue(service.useful.done())
             return {'collected': 384}
@@ -208,10 +292,12 @@ class PaidWifiTests(unittest.TestCase):
         service.evidence['acceptance_failure'] = 'first failure'
         service.useful = Mock()
         service.useful.result.side_effect = RuntimeError('sender failed during cleanup')
+        service.pressure = SimpleNamespace(useful=Mock())
         with patch.object(PaidWifiRun, 'collect', return_value={'collected': 384}):
             self.assertEqual(service.collect(), {'collected': 384})
         self.assertEqual(service.evidence['acceptance_failure'], 'first failure')
         self.assertEqual(service.evidence['useful_error'], 'sender failed during cleanup')
+        service.pressure.useful.result.assert_called_once_with(timeout=20)
 
     def test_failed_probe_retains_partial_delivery_despite_an_observer_failure(self):
         service = object.__new__(PaidWifiRun)

@@ -67,6 +67,9 @@ class AuxiliaryProfile(RelayCommands):
     def remote(self, *args, **kwargs):
         return self.owner.remote(*args, **kwargs)
 
+    def stop(self):
+        self.owner.stop(self)
+
     def prepare(self, config):
         if config["state_directory"] != self.state:
             raise ValueError("auxiliary profile must use its own fresh account directory")
@@ -114,25 +117,30 @@ candidates_running() {{
   [ "$candidates_alive" = 1 ]
 }}
 signal_candidate() {{
+  if [ -n "$stop_config" ] && [ "$stop_config" != "$2" ]; then return 0; fi
   if owned_candidate "$@"; then kill -"$signal" "$pid" || :; fi
 }}
 stop_candidate() {{
+  stop_config=${{1:-}}
+  if [ -n "$stop_config" ]; then
+    candidates_running "$stop_config" || [ "$candidate_known" = 1 ] || return 1
+  fi
   # Signal every profile before waiting; all share one bounded shutdown window.
   signal=TERM
   each_candidate signal_candidate
   for attempt in $(seq 1 {stop_seconds}); do
-    candidates_running || return 0
+    candidates_running "$stop_config" || return 0
     sleep 1
   done
-  if candidates_running; then
+  if candidates_running "$stop_config"; then
     touch {t}/candidate-forced-stop
     signal=KILL
     each_candidate signal_candidate
     for attempt in $(seq 1 5); do
-      candidates_running || return 0
+      candidates_running "$stop_config" || return 0
       sleep 1
     done
   fi
-  if candidates_running; then touch {t}/candidate-stop-failed; fi
+  if candidates_running "$stop_config"; then touch {t}/candidate-stop-failed; fi
 }}
 """

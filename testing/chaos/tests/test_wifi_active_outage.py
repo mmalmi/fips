@@ -8,7 +8,7 @@ from unittest.mock import Mock, call, patch
 
 from sim.paid_wifi import PaidWifiRun
 from sim.paid_faults import PACKETS, PAYLOAD_BYTES, paid_progress
-from sim.wifi_active_outage import active_radio_outage
+from sim.wifi_active_outage import active_radio_outage, peer_sessions
 from sim.wifi_discovery import WifiRun
 from test_wifi_roundtrip import round_trip_report
 from test_paid_wifi import accounts
@@ -28,6 +28,16 @@ def probe_report(count, expected=24, stream="a" * 32):
 
 
 class ActiveOutageTests(unittest.TestCase):
+    def test_unexpected_native_roster_survives_the_failed_assertion(self):
+        run = Mock()
+        run.nodes = {name: Mock(npub=name) for name in ('n01', 'n02', 'n03')}
+        reply = dict(status='ok', data=dict(peers=[]))
+        run.nodes['n01'].native.return_value = reply
+        evidence = {}
+        with self.assertRaisesRegex(RuntimeError, 'original two-hop line'):
+            peer_sessions(run, evidence=evidence)
+        self.assertEqual(evidence, {'n01': reply})
+
     def run_cut(self, *, completed=False, lost=False, observation_error=False, restart=False,
                 late_cut=False, cut_error=False, outage_node="n03", stale_peer=None, timing=False,
                 diagnostic_error=False, brief=False, radio_station=False, removed_peer=None,

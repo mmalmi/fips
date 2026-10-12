@@ -246,7 +246,7 @@ case "${{1:-}}" in
 esac
 [ "${{1:-}}" != cleanup ] || {{ cleanup; exit 0; }}
 # The caller holds operation.lock and checks the live lease for this path.
-[ "${{1:-}}" != stop ] || {{ stop_candidate; exit 0; }}
+[ "${{1:-}}" != stop ] || {{ [ "$#" -le 2 ]; stop_candidate "${{2:-}}"; exit 0; }}
 [ "${{1:-}}" != stopped ] || {{ ! candidates_running; exit $?; }}
 if [ "${{1:-}}" = can-start ]; then
   [ "$#" = 2 ] && [ -n "$2" ] || exit 1
@@ -337,10 +337,13 @@ test "$age" -le 35
         self.write(self.config, json.dumps(config).encode())
         self.npub = self.remote([self.binary, "init", self.config], timeout=45).decode().strip()
 
-    def stop(self):
+    def stop(self, profile=None):
         # Preserve the guard, executable and profiles for offline wallet collection.
+        if profile is not None and profile not in self.profiles():
+            raise ValueError('cannot stop an unregistered profile')
         t = self.temporary
-        self.guarded(f"sh {t}/guard.sh stop; test ! -f {t}/candidate-stop-failed; "
+        selected = '' if profile is None else ' ' + shlex.quote(profile.config)
+        self.guarded(f"sh {t}/guard.sh stop{selected}; test ! -f {t}/candidate-stop-failed; "
                      f"test ! -f {t}/candidate-forced-stop", timeout=CLEANUP_TIMEOUT_SECONDS)
 
     def install_filter(self, excluded_mac=None):

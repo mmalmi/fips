@@ -176,6 +176,21 @@ class PaidFaultTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not reconciled"):
             validate_finances(before, after)
 
+    def test_custom_quote_limit_keeps_the_original_financial_caps(self):
+        before, after = finances(), finances()
+        after['n01'].update(remaining=38, authorized=26, signed={'n01': 26},
+                            signed_after={'n01': 26}, buyer_units={'n01': 50_056})
+        after['n02']['credited']['n01'] = 26_000
+        after['n02']['seller_channels']['n01'].update(
+            paid_msat=26_000, submitted_msat=25_028, reserved_msat=25_028)
+        after['n02']['seller_units']['n01'] = 50_056
+        with self.assertRaisesRegex(RuntimeError, 'original quote'):
+            validate_finances(before, after)
+        validate_finances(before, after, quote_max_units=60_000)
+        after['n01']['buyer_units']['n01'] = 60_001
+        with self.assertRaisesRegex(RuntimeError, 'original quote'):
+            validate_finances(before, after, quote_max_units=60_000)
+
     def test_active_traffic_need_not_have_zero_outstanding_usage(self):
         before = finances()
         after = copy.deepcopy(before)

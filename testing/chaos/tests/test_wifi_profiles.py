@@ -70,6 +70,25 @@ class ProfileGuardTests(unittest.TestCase):
             self.assertEqual(Path(profile.config).read_text(), "retained account settings")
         self.assertFalse((self.remote / "candidate-forced-stop").exists())
 
+    def test_selected_auxiliary_stop_keeps_primary_and_other_profile_running(self):
+        other = self.node.add_profile('other')
+        Path(other.temporary).mkdir()
+        Path(other.config).parent.mkdir(parents=True)
+        self.guard.write_bytes(self.node.guard_script())
+        self.start_guard()
+        children = [self.launch(profile) for profile in (self.node, self.aux, other)]
+        self.aux.stop()
+        self.assertEqual(children[1].wait(timeout=3), -15)
+        self.assertIsNone(children[0].poll())
+        self.assertIsNone(children[2].poll())
+        with self.assertRaises(RuntimeError):
+            self.node.guarded('sh ' + str(self.guard) + ' stop /unregistered/config')
+        self.assertIsNone(children[0].poll())
+        self.assertIsNone(children[2].poll())
+        self.node.stop()
+        self.assertEqual(children[0].wait(timeout=3), -15)
+        self.assertEqual(children[2].wait(timeout=3), -15)
+
     def test_router_cleanup_collects_all_logs_before_removing_shared_executable(self):
         staged = self.remote / "fips-relay"
         shutil.copy2(sys.executable, staged)

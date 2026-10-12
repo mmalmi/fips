@@ -25,21 +25,23 @@ from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
 
 
-def retain_channels(prior, current):
+def retain_channels(prior, current, *, quote_max_units=30_000):
     """Rejoining cannot replace funding, release capital or reset authorization."""
     require(original_channels(current, current) == original_channels(prior, prior),
             "rejoin changed the original channel owners")
-    validate_finances(prior, current, wallet=False)
+    validate_finances(prior, current, wallet=False, quote_max_units=quote_max_units)
 
 
-def reconciled_channels(prior, current):
-    retain_channels(prior, current)
+def reconciled_channels(prior, current, *, quote_max_units=30_000):
+    retain_channels(prior, current, quote_max_units=quote_max_units)
     # A new signature can race the earlier frozen stream-payment target. Only
     # require credit already observed here to survive the coming partition.
     return current if payments_credited(current) else None
 
 
 class PaidWifiRun(WifiRun):
+    quote_max_units = 30_000
+
     def __init__(self, args):
         promotion_artifact = wifi_promotion_checks.options(args)
         requested_outage = getattr(args, "outage_node", None)
@@ -178,7 +180,7 @@ class PaidWifiRun(WifiRun):
                         and not any(state["budget"].values()) and state["remaining"] == self.buyer_budget,
                         "discovery created spending or payment authority")
         else:
-            retain_channels(self.channel_anchor, current)
+            self.retain_channels(self.channel_anchor, current)
         return current
 
     def account_execute(self, name, binary, action, body):
@@ -202,7 +204,7 @@ class PaidWifiRun(WifiRun):
             evidence[source] = sample
         self.phase("wireless stream accounting and automatic payment confirmed", directions=evidence)
         return eventually("reconciled channel observation before radio departure", lambda:
-                          reconciled_channels(before, self.finances()))
+                          reconciled_channels(before, self.finances(), quote_max_units=self.quote_max_units))
 
     def exercise(self):
         if getattr(self.args, "interrupted_promotion", False):
@@ -225,7 +227,7 @@ class PaidWifiRun(WifiRun):
                 self.mesh_outage()
             rejoined = self.assert_finances()
             paid = self.paid_streams(rejoined, "same paid route delivers after automatic radio rejoin")
-            retain_channels(self.channel_anchor, paid)
+            self.retain_channels(self.channel_anchor, paid)
             for name, node in self.nodes.items():
                 require(self.ctl(name, "status")["npub"] == node.npub, "radio rejoin changed identity")
             self.phase("same funding and channels pay automatically after radio rejoin", financial=paid)
@@ -261,7 +263,7 @@ class PaidWifiRun(WifiRun):
         return collection
 
     def retain_channels(self, prior, current):
-        return retain_channels(prior, current)
+        return retain_channels(prior, current, quote_max_units=self.quote_max_units)
 
     def finish(self):
         try:
@@ -312,6 +314,8 @@ def main():
                         help='select the elected root, observe its replacement and require the original tree after rejoin')
     parser.add_argument('--crowded-rejoin', nargs='?', type=int, choices=(1, 2, 3), const=1, default=0,
                         help='repeat crowded radio recovery one to three times, retaining useful peers and paid channels')
+    parser.add_argument('--crowded-pressure', action='store_true',
+                        help='after one crowded rejoin, keep eight unfunded candidates retrying during two minutes of paid traffic')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:
@@ -324,6 +328,8 @@ def main():
         parser.error("--brief-outage requires --active-outage")
     if args.recovery_timing and not args.active_outage:
         parser.error("--recovery-timing requires --active-outage")
+    if args.crowded_pressure and args.crowded_rejoin != 1:
+        parser.error('--crowded-pressure requires exactly one --crowded-rejoin')
     os.umask(0o077)
 
     def deadline(_signum, _frame):

@@ -24,13 +24,15 @@ def processes(run):
     return result
 
 
-def peer_sessions(run, *, connected=True):
+def peer_sessions(run, *, connected=True, evidence=None):
     """Observe peer authentication times, with links and Noise indices as diagnostics."""
     result = {}
     for name, node in run.nodes.items():
         run.monitor.check()
         run.check_forwards()
         reply = node.native({"command": "show_peers"})
+        if evidence is not None:
+            evidence[name] = reply
         require(reply.get("status") == "ok", "native peer session observation failed")
         peers = reply["data"]["peers"]
         wanted = {other.npub for key, other in run.nodes.items()
