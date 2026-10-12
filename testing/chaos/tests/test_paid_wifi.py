@@ -16,6 +16,7 @@ from sim.paid_settlement import settle_and_collect
 from sim.paid_wifi import PaidWifiRun, reconciled_channels, retain_channels
 from sim.wifi_crowded import CrowdedWifiRun
 from sim.wifi_admission_pressure import AdmissionPressure, check_sample
+from sim.wifi_newcomer_accounts import frozen_status
 from sim.paid_faults import validate_unpaid_probe
 from sim.paid_wifi_mint import LocalMint
 from tests.test_paid_faults import finances
@@ -35,6 +36,29 @@ def accounts():
 
 
 class PaidWifiTests(unittest.TestCase):
+    def test_stopped_profile_cannot_reuse_a_stale_financial_observation(self):
+        before = {'controller': {'local': [1] * 32, 'policy': {'max_locked_sat': 64},
+                    'funding': {'old': {'channel': 'original'}}, 'buyer_settlements': {}},
+                  'buyer': {'total_budget_sat': 64, 'channels': {'original': {'authorized_sat': 3}}}}
+        status = {'remaining_budget_sat': 61, 'funding_budget': {'locked_sat': 32}}
+        after = copy.deepcopy(before)
+        after['buyer']['checkpoint'] = 'stopped'
+        observed = frozen_status(before, status, after)
+        self.assertEqual(observed, status)
+        observed['funding_budget']['locked_sat'] = 0
+        self.assertEqual(status['funding_budget']['locked_sat'], 32)
+        for changed in ('liability', 'funding', 'refund'):
+            with self.subTest(changed=changed):
+                after = copy.deepcopy(before)
+                if changed == 'liability':
+                    after['buyer']['channels']['original']['authorized_sat'] += 1
+                elif changed == 'funding':
+                    after['controller']['funding']['extra'] = {'channel': 'new'}
+                else:
+                    after['controller']['buyer_settlements']['original'] = {'refunded': True}
+                with self.assertRaises(RuntimeError):
+                    frozen_status(before, status, after)
+
     def test_final_rejoin_check_uses_the_configured_quote_limit(self):
         service = object.__new__(PaidWifiRun)
         service.args, service.evidence = SimpleNamespace(), {}

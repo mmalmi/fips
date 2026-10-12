@@ -316,6 +316,8 @@ def main():
                         help='repeat crowded radio recovery one to three times, retaining useful peers and paid channels')
     parser.add_argument('--crowded-pressure', nargs='?', type=int, choices=(1, 2, 3, 4), const=1, default=0,
                         help='after one crowded rejoin, retry admission with one to four fresh identity groups')
+    parser.add_argument('--crowded-newcomer', action='store_true',
+                        help='replace the disconnected buyer with a fresh paying radio identity; requires one crowded rejoin and a remote mint')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:
@@ -330,6 +332,8 @@ def main():
         parser.error("--recovery-timing requires --active-outage")
     if args.crowded_pressure and args.crowded_rejoin != 1:
         parser.error('--crowded-pressure requires exactly one --crowded-rejoin')
+    if args.crowded_newcomer and (args.crowded_rejoin != 1 or args.crowded_pressure or not args.mint_host):
+        parser.error('--crowded-newcomer requires one --crowded-rejoin, a remote mint and no --crowded-pressure')
     os.umask(0o077)
 
     def deadline(_signum, _frame):
@@ -337,7 +341,10 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    if args.crowded_rejoin:
+    if args.crowded_newcomer:
+        from .wifi_newcomer import NewcomerWifiRun
+        NewcomerWifiRun(args).execute()
+    elif args.crowded_rejoin:
         from .wifi_crowded import CrowdedWifiRun
         CrowdedWifiRun(args).execute()
     elif args.carrier_pressure_port is not None:

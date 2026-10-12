@@ -563,6 +563,20 @@ it cannot provide an onward path. Existing guards restore all three routers and
 the normal settlement collects all 384 test sats. This is a neighbor-admission
 check, not a radio-congestion or throughput benchmark.
 
+Add `--crowded-newcomer` to one `--crowded-rejoin`, with an explicit
+`--mint-host`, to replace the departed buyer with a fresh radio identity. Four
+independent accounts receive 128 test sats each; the idle competitor stays
+unfunded. The original buyer stops with its channel unsettled. The newcomer
+must replace the idle competitor, retain the useful incumbent, reject unpaid
+forwarding, then buy and automatically pay for both directions over radio.
+The incumbent reuses its original channel for the new destination. Finally,
+the original buyer returns, both original directions deliver again, and the
+shared collector verifies every wallet and collects all 512 test sats.
+Stopped-account observations require unchanged durable financial authority;
+they do not open a second service or wallet owner. This mode cannot be combined
+with `--crowded-pressure`. It tests one newcomer in a fixed radio layout, without
+a fairness, movement or throughput claim.
+
 Use `--crowded-rejoin 3` for three departures and returns on the same funded
 accounts. The idle competitor remains running and may refill the slot immediately
 after each departure. Every round must retain the original useful peer and relay
