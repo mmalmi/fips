@@ -11335,24 +11335,42 @@ Reproduce with core filters `discovery::forwarding_contention::` and
 
 #### Observing recovery after the tree connects
 
-The current wallet graph passes the existing crowded finite-contact and ordinary
-brief-contact cases in `work/mobile-encounter-r451`. The untraced crowded run
-forms its first bridge 16.419 seconds after sustained contact begins and restores
-delivery/all-hop credit by 24.632 seconds. Its second encounter takes 31.875
-seconds through credit, within the unchanged 60-second bound. Both boundaries
-retain their two-peer cap and useful original links; all 3,072 test sats from
-the two cases are collected. The separate brief-contact case delivers before
-each cut, including its cold contacts.
+The current wallet graph passes the crowded finite-contact and ordinary
+brief-contact cases in `work/mobile-encounter-r451`. The separate brief-contact
+case delivers before each cut, including its cold contacts. A diagnostic repeat
+of the crowded case records bridge requests waiting behind other candidates'
+owned attempts, including incoming preparation.
 
-Crowded short cold contacts still deliver 0 of 18 offers; warm contacts deliver
-28 of 34 before their cuts. A separate admission trace on the identical binary
-also passes, collects its 1,536 test sats and records bridge requests waiting
-behind other candidates' owned attempts. Its timing differs and is not a
-performance comparison. This locates an admission wait without justifying
-preemption, shorter deadlines or larger resource limits. All recorded source
-and dependency hashes match, and every runner process group is closed. These
-finite software results do not establish reliable short cold encounters,
-physical radio mobility or general contention fairness.
+The existing neighbor-age setting can be compared using one shared, opt-in
+fixture. Two untraced observations per setting, from `work/mobile-encounter-r451`,
+`work/mobile-age-r453` and `work/mobile-age-comparison-r454`, give:
+
+| Minimum age | First recovery | Rejoin recovery | Cold offers before cut | Warm offers before cut |
+| --- | --- | --- | --- | --- |
+| 10 seconds | 17.679–24.632 s | 31.875–31.947 s | 0/36 | 58/67 |
+| 2 seconds | 8.608–8.705 s | 2.769–4.585 s | 0/32 | 63/63 |
+
+Each uses seed 139, four competing candidates per boundary, two neighbor slots,
+two-second attempt spacing and the same 60-second encounter deadline. Recovery
+includes fresh delivery and credit on every hop. Times start at sustained
+opening and include the existing probe schedule; the cold
+cohort drains before the first sustained-recovery observations. Original paid
+local links, channels and budgets survive, resource-cap checks pass, and all
+6,144 test sats across these four observations are collected. The manual
+comparison repeats both settings without adding routine-suite runtime:
+
+```sh
+cargo test --profile openwrt -p fips-relay --no-default-features \
+  --features measurements --test priced_paths \
+  compare_neighbor_age_during_crowded_paid_encounters \
+  -- --ignored --nocapture --test-threads=1
+```
+
+Short cold contacts still carry no offers before their cuts; some arrive later
+with the two-second setting. Lowering `idle_secs` also shortens protection after
+application traffic becomes idle. Defaults and production admission logic remain
+unchanged. This fixed-layout comparison does not establish a worst-case recovery
+bound, physical radio mobility or general contention fairness.
 
 The crowded fixture can reuse the bounded brief-contact observer with
 `FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records

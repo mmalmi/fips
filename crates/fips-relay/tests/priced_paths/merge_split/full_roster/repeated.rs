@@ -16,6 +16,7 @@ mod payment_snapshot;
 #[derive(Clone, Copy, Debug)]
 struct EncounterProfile {
     seed: u64,
+    idle_secs: u64,
     staged_root: bool,
     bridge_link: SimLink,
     finite_contacts: bool,
@@ -26,6 +27,7 @@ impl EncounterProfile {
     fn baseline(staged_root: bool) -> Self {
         Self {
             seed: 126,
+            idle_secs: 10,
             staged_root,
             finite_contacts: false,
             post_split_absence: Duration::ZERO,
@@ -327,7 +329,7 @@ async fn exercise_repeated(profile: EncounterProfile) {
     let (mut bench, mut observer, anchor, candidates) = Box::pin(setup_crowded_with_staged_root(
         profile.seed,
         Some(fips_core::config::NeighborRotationConfig {
-            idle_secs: 10,
+            idle_secs: profile.idle_secs,
             interval_secs: 2,
         }),
         profile.staged_root,
