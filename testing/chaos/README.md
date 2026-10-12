@@ -540,7 +540,8 @@ Use `--crowded-rejoin` as a separate scenario, optionally with `--open-mesh`.
 It caps the middle router at two FIPS peers with two-second idle/rotation
 settings. After the leaf radio leaves and is evicted, an unfunded fourth identity
 on the leaf's host fills the spare slot over management-bound UDP. Continuous
-direct application traffic protects the other radio neighbor. The returning leaf
+ordinary application data protects the other radio neighbor, including during
+paid probes and financial observations. The returning leaf
 must replace the idle peer, retain the useful peer's authentication time and
 deliver paid traffic on the original channels. The auxiliary process stays alive;
 it cannot provide an onward path. Existing guards restore all three routers and
@@ -553,9 +554,13 @@ after each departure. Every round must retain the original useful peer and relay
 processes; both directions pay on the original channels between rounds. Each
 round's bounded observations are saved in `crowded_rejoins`. The same 900-second
 trial deadline, original spending limits and 384-test-sat issuance cap apply.
-Each departure requires delivery from that round's fresh direct probe. Failed
-probes retain partial delivery counts and service observations; cleanup preserves
-the first failure while still restoring the radio and stopping the sender.
+Each departure requires two recently confirmed unique useful payloads sent after
+that round begins. The useful sender uses the existing ordinary-data command,
+with 128-byte payloads capped at four sends per second and 3,600 sends per trial;
+it stops before settlement. `useful_packets` records submission and observed
+payload hashes independently of the strict paid probes. Failed probes retain
+partial delivery counts and service observations; cleanup preserves the first
+failure while still restoring the radio and stopping the sender.
 
 Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at

@@ -11465,21 +11465,35 @@ restoration, stopped processes and archived accounts before removing test
 profiles. This demonstrates the quiet-neighbor fix in a fixed-layout trial;
 it does not establish a general rejoin latency or moving-radio guarantee.
 
-Repeated physical trials remain unqualified. The shared crowded scenario now
-accepts one to three cycles, requires a fresh direct probe before each radio
-cut, retains partial delivery and service observations, and preserves the first
-failure during cleanup. Twenty-one focused fixture checks pass. In
-`work/repeated-crowded-fresh-radio-r474`, two crowded rejoins retain the original
-processes, useful peer and paid channels. The next paid datagram probe receives
-seven of eight packets, so the third cycle never starts and the trial remains
-rejected. The later service observations show the expected connected neighbors
-and zero credit-limit or durable-window admission denials; they do not locate
-the packet loss or exclude a transient disconnection. All 384 test sats return,
-and independent closure verifies restored routers, stopped processes and archived
-accounts before cleanup. Earlier repeated trials r470 and r472 also remain
-rejected with their original evidence and all test funds recovered. Further
-observations must distinguish datagram loss from transient routing failure and
-qualify reliable application delivery across repeated changes.
+The earlier repeated trials r470, r472 and r474 remain rejected, with their
+original evidence and all test funds recovered. In r474, two rejoins pass before
+a paid datagram probe receives seven of eight packets. The later service
+observations show connected neighbors and zero credit-limit or durable-window
+admission denials, but do not locate that packet loss. The diagnostic r475 run
+then observes the original useful neighbor being replaced by the idle competitor
+between bursts and later reauthenticating. Its third radio cut never starts.
+The fixture had stopped useful traffic for paid probes and financial checks,
+which invalidated its assumption that the neighbor remained continuously useful.
+
+The shared scenario now keeps bounded ordinary application data running through
+those gaps and the final paid checks, using the existing local send command.
+Fresh payload hashes prove useful delivery independently of the paid probe
+receiver. The sender stops before settlement; failures retain partial evidence
+and the first error. All 21 focused fixture checks pass, including the lifecycle
+through three cycles and final payment checks. No routing or payment protocol
+change is required.
+
+The ordinary r467 package passes all three crowded radio rejoins in
+`work/continuous-useful-radio-r477`, with all 88 paid probe packets delivered on
+the original channels. The useful neighbor retains its original authentication,
+and all original relay processes and the unfunded competitor survive. The
+controller confirms 333 of 337 useful payloads by their unique hashes; the other
+four are not counted as confirmed delivery. All 384 test sats return, and
+independent closure verifies restored routers, stopped processes and archived
+accounts before cleanup. This is repeated fixed-layout radio interruption with
+one idle competitor. Physical movement, brief cold contacts, sustained hostile
+crowding and broader reliable-application recovery remain unqualified; the
+preceding single-datagram loss is not assigned a proven production cause.
 
 The crowded fixture can reuse the bounded brief-contact observer with
 `FIPS_CROWDED_TIMING=1`. It preserves unfamiliar candidate identities and records

@@ -1,6 +1,7 @@
 """Paid radio evidence and test-fund recovery without live hardware or money."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -136,52 +137,81 @@ class PaidWifiTests(unittest.TestCase):
         self.assertIs(reconciled_channels(prior, pending), pending)
         retain_channels(pending, copy.deepcopy(pending))
 
-    def test_useful_flow_requires_the_current_probe_before_another_radio_cut(self):
+    def test_useful_flow_requires_new_and_recent_confirmed_payloads(self):
         service = object.__new__(CrowdedWifiRun)
-        service.nodes = {'n02': SimpleNamespace(npub='provider')}
-        report = dict(stream_id='previous', source='provider', unique_packets=8)
-        service.ctl = Mock(return_value={'probe': report})
-        rounds = [{'shape': {'stream_id': 'current'}}]
-        self.assertFalse(service.useful_flowing(rounds))
-        report.update(stream_id='current', unique_packets=1)
-        self.assertFalse(service.useful_flowing(rounds))
-        report['unique_packets'] = 2
-        self.assertEqual(service.useful_flowing(rounds)['received'], report)
+        packets = [dict(observed=True, observed_at=9), dict(observed=False),
+                   dict(observed=True, observed_at=10)]
+        with patch('sim.wifi_crowded.time.monotonic', return_value=10):
+            self.assertFalse(service.useful_flowing(packets, 1))
+            self.assertEqual(service.useful_flowing(packets, 0), [packets[0], packets[2]])
+        with patch('sim.wifi_crowded.time.monotonic', return_value=13):
+            self.assertFalse(service.useful_flowing(packets, 0))
 
-    def test_failed_useful_probe_keeps_partial_delivery(self):
+    def test_useful_data_retains_partial_evidence_without_taking_probe_controls(self):
         service = object.__new__(CrowdedWifiRun)
-        rounds, stop = [], threading.Event()
-        shape = dict(stream_id='current', packet_count=8, payload_bytes=128)
-        sent = dict(stream_id='current', requested_packets=8, submitted_packets=8,
-                    submitted_bytes=1024, stopped_reason=None)
-        partial = {'unique_packets': 7}
-        with patch('sim.wifi_crowded.probes.arm', return_value=shape), \
-                patch('sim.wifi_crowded.probes.send', return_value=sent), \
-                patch('sim.wifi_crowded.probes.receive', return_value=partial), \
-                patch('sim.wifi_crowded.eventually', side_effect=lambda _name, check, _wait: check()), \
-                self.assertRaisesRegex(RuntimeError, 'incomplete'):
-            service.keep_useful(stop, rounds)
-        self.assertEqual(rounds[0]['sent'], sent)
-        self.assertEqual(rounds[0]['received'], partial)
+        service.nodes = {'n01': SimpleNamespace(npub='useful')}
+        packets, stop = [], threading.Event()
+        def control(_name, kind, **fields):
+            if kind == 'send':
+                self.assertEqual(fields['destination'], 'useful')
+                self.assertEqual(hashlib.sha256(fields['payload'].encode()).hexdigest(),
+                                 packets[-1]['sha256'])
+                return {'queued': True}
+            if len(packets) == 1:
+                return {'received': {'last_sha256': packets[0]['sha256']}}
+            raise RuntimeError('observation failed')
+        service.ctl = Mock(side_effect=control)
+        with self.assertRaisesRegex(RuntimeError, 'observation failed'):
+            service.keep_useful(stop, packets)
+        self.assertEqual(packets[0]['sent'], {'queued': True})
+        self.assertTrue(packets[0]['observed'])
+        self.assertFalse(packets[1]['observed'])
+        self.assertEqual([call.args[:2] for call in service.ctl.call_args_list],
+                         [('n02', 'send'), ('n01', 'status')] * 2)
+        self.assertEqual(len(service.ctl.call_args_list[0].kwargs['payload']), 128)
 
-    def test_crowded_cleanup_preserves_the_first_failure(self):
+    def test_useful_traffic_survives_all_paid_checks_and_stops_before_collection(self):
         service = object.__new__(CrowdedWifiRun)
-        service.nodes, service.evidence = {'n03': Mock()}, {'crowded_rejoins': []}
-        service.save, service.record_probe_failure = Mock(), Mock()
-        service.useful_flowing = Mock(side_effect=RuntimeError('first failure'))
-        future = Mock()
-        future.done.return_value = False
-        future.result.side_effect = RuntimeError('sender failure')
-        with patch('sim.wifi_crowded.processes', return_value={}), \
-                patch('sim.wifi_crowded.ThreadPoolExecutor') as pool, \
-                patch('sim.wifi_crowded.eventually', side_effect=lambda _name, check, _wait: check()), \
-                self.assertRaisesRegex(RuntimeError, 'first failure'):
-            pool.return_value.__enter__.return_value.submit.return_value = future
-            service.rejoin_round({}, False)
-        data = service.evidence['crowded_rejoins'][0]
-        self.assertEqual(data['failure'], 'first failure')
-        self.assertEqual(data['cleanup_errors'], ['sender failure'])
-        service.nodes['n03'].mesh_down.assert_not_called()
+        service.nodes, service.evidence = {'n01': SimpleNamespace(npub='useful')}, {}
+        service.cycles, service.channel_anchor = 3, {}
+        service.save, service.assert_finances, service.retain_channels = Mock(), Mock(), Mock()
+        running = threading.Event()
+        def useful(stop, packets):
+            running.set()
+            self.assertTrue(stop.wait(2))
+            return packets
+        service.keep_useful = useful
+        def rejoin(_original, _first):
+            self.assertTrue(running.wait(1))
+            self.assertFalse(service.useful_stop.is_set())
+            service.evidence['crowded_rejoins'].append(dict(processes_before={}, idle_pid_before=1))
+        service.rejoin_round = Mock(side_effect=rejoin)
+        def paid(*_args):
+            self.assertFalse(service.useful_stop.is_set())
+            return {}
+        service.paid_streams = Mock(side_effect=paid)
+        def exercise():
+            service.mesh_outage()
+            paid()  # Final paid verification also runs after mesh_outage returns.
+            self.assertEqual(service.collect(), {'collected': 384})
+        def collect():
+            self.assertTrue(service.useful_stop.is_set())
+            self.assertTrue(service.useful.done())
+            return {'collected': 384}
+        with patch('sim.wifi_crowded.peer_sessions', return_value={'n02': {'useful': {}}}), \
+                patch('sim.wifi_crowded.processes', return_value={}), \
+                patch.object(PaidWifiRun, 'exercise', side_effect=exercise), \
+                patch.object(PaidWifiRun, 'collect', side_effect=collect):
+            service.exercise()
+        self.assertEqual(service.rejoin_round.call_count, 3)
+        self.assertEqual(service.paid_streams.call_count, 2)
+        service.evidence['acceptance_failure'] = 'first failure'
+        service.useful = Mock()
+        service.useful.result.side_effect = RuntimeError('sender failed during cleanup')
+        with patch.object(PaidWifiRun, 'collect', return_value={'collected': 384}):
+            self.assertEqual(service.collect(), {'collected': 384})
+        self.assertEqual(service.evidence['acceptance_failure'], 'first failure')
+        self.assertEqual(service.evidence['useful_error'], 'sender failed during cleanup')
 
     def test_failed_probe_retains_partial_delivery_despite_an_observer_failure(self):
         service = object.__new__(PaidWifiRun)
