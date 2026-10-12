@@ -1055,6 +1055,15 @@ host/mint power loss or radio interruption. The existing restart/settlement
 checks and the wrong-process refusal test run with
 `python3 -B -m unittest tests.test_guest_system tests.test_wifi_restart_load tests.test_paid_settlement`.
 
+Add `--write-iops 20` to limit the account disk to 20 write operations per second
+on both boots, including funding, paid traffic, crash recovery and settlement.
+The default `0` leaves writes unlimited. Before funding, 64 direct 4-KiB writes
+must reach that disk, and their elapsed time must demonstrate the requested
+throttle. The result records this probe and the guest block counters; every boot
+records its exact QEMU drive settings. Use separate fresh outputs for unlimited
+and throttled cases. The same financial and delivery checks apply to both; this
+finite storage-pressure case is not a flash endurance or throughput benchmark.
+
 ### Continuous paid Wi-Fi renewal
 
 `sim.wifi_renewal_load` runs two simultaneous five-minute streams through one

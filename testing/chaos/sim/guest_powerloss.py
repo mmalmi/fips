@@ -47,7 +47,8 @@ class PowerLossRun(CommittedSettlement):
                          'test_funds_only': True, 'source_revision': args.source_revision,
                          'binaries': {name: digest(args.binary_dir / name) for name in
                                       ('fips-relay', 'fips-relay-test-mint')}}
-        self.guest = Guest(self.root / 'guest', args.kernel, args.binary_dir / 'fips-relay')
+        self.guest = Guest(self.root / 'guest', args.kernel, args.binary_dir / 'fips-relay',
+                           write_iops=args.write_iops)
         mint_root = self.root / 'mint'
         mint_root.mkdir(mode=0o700)
         self.mint = LocalMint(args.binary_dir / 'fips-relay-test-mint', '127.0.0.1', mint_root)
@@ -200,6 +201,8 @@ class PowerLossRun(CommittedSettlement):
             mounts = self.guest.execute(['cat', '/proc/mounts']).decode().splitlines()
             require(any(line.startswith('/dev/vda /data ext4 ') and 'commit=60' in line
                         for line in mounts), 'guest state is not on the explicit ext4 filesystem')
+            self.evidence['storage_probe'] = self.guest.storage_probe()
+            self.save()
             self.prepare_accounts(mint)
             for source, destination in [('n01', 'n03'), ('n03', 'n01')]:
                 self.ctl(source, 'buy', destination=self.nodes[destination].npub)
@@ -263,7 +266,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source-revision', required=True)
     parser.add_argument('--cut-at', choices=('traffic', 'settlement', 'renewal_funding'), default='traffic')
+    parser.add_argument('--write-iops', type=int, default=0,
+                        help='limit account-disk writes per second on every boot (0: unlimited)')
     args = parser.parse_args()
+    if args.write_iops < 0:
+        parser.error('--write-iops must be nonnegative')
     os.umask(0o077)
     PowerLossRun(args).run()
 

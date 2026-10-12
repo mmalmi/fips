@@ -15,6 +15,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import time
 import uuid
 
 from .paid_relay import eventually, write_json
@@ -33,7 +34,9 @@ def digest(path):
 
 
 class Guest:
-    def __init__(self, root, kernel, relay):
+    def __init__(self, root, kernel, relay, *, write_iops=0):
+        require(type(write_iops) is int and write_iops >= 0, 'invalid disk write limit')
+        self.write_iops = write_iops
         self.root = root.resolve()
         self.kernel, self.relay = kernel.resolve(strict=True), relay.resolve(strict=True)
         self.qemu = shutil.which('qemu-system-x86_64')
@@ -143,6 +146,27 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
         return command([*self.ssh(), 'root@127.0.0.1', shlex.join(args)],
                        data=data, timeout=timeout)
 
+    def storage_probe(self):
+        """Verify actual direct writes before funding, without relay-side hooks."""
+        def stats():
+            return [int(x) for x in self.execute(['cat', '/sys/block/vda/stat']).split()]
+
+        before = stats()
+        started = time.monotonic()
+        self.execute(['dd', 'if=/dev/zero', 'of=/data/.storage-probe', 'bs=4096',
+                      'count=64', 'oflag=direct', 'conv=fsync', 'status=none'])
+        seconds = time.monotonic() - started
+        after = stats()
+        writes, sectors = after[4] - before[4], after[6] - before[6]
+        require(writes >= 64 and sectors >= 512, 'probe did not reach the account disk')
+        if self.write_iops:
+            require(seconds >= 32 / self.write_iops, 'disk write throttle had no observed effect')
+        self.execute(['rm', '/data/.storage-probe'])
+        self.execute(['sync'])
+        return {'write_iops': self.write_iops, 'direct_writes': 64, 'bytes': 64 * 4096,
+                'seconds': seconds, 'disk_writes': writes, 'disk_sectors': sectors,
+                'disk_write_ms': after[7] - before[7]}
+
     def boot(self, mint_port):
         require(self.process is None or self.process.poll() is not None, 'guest already running')
         self.boots += 1
@@ -151,7 +175,8 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
                 '-kernel', str(self.kernel), '-initrd', str(self.root / 'initramfs.gz'),
                 '-append', 'console=ttyS0 rdinit=/init panic=-1', '-nodefaults', '-no-reboot',
                 '-display', 'none', '-monitor', 'none', '-serial', 'stdio',
-                '-drive', f'file={self.root / "state.ext4"},format=raw,if=virtio,cache=none',
+                '-drive', f'file={self.root / "state.ext4"},format=raw,if=virtio,cache=none'
+                          f',throttling.iops-write={self.write_iops}',
                 '-netdev', f'user,id=n0,restrict=on,hostfwd=tcp:127.0.0.1:{self.port}-:22',
                 '-device', 'virtio-net-pci,netdev=n0']
         with (self.root / f'boot-{self.boots}.log').open('xb') as log:
