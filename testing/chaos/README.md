@@ -1321,6 +1321,23 @@ identity, terms and lifetime budgets remain unchanged. This workload runs
 separately from other transit variants and tests one reconnect on the configured
 LAN, not arbitrary mobile mesh movement.
 
+Use `--transit --phone-renewal sustained` for two consecutive five-minute
+background TCP/FIPS windows, each carrying nine MiB per direction at 32 KiB/s.
+The middle router issues 300-second quotes; ordinary 80%/30-second renewal also
+applies to the endpoints. Downstream expiry bounds the upstream quote, so the
+three affected buyers must each renew at least twice. Capacity can trigger an
+additional renewal, including on the fourth purchase; each participant may fund
+at most four channels in this bounded workload.
+Each successor must show increasing acknowledged payment and received bytes in
+both directions during the same active stream. Retain the original identities,
+processes, 32-sat channel size, 64-sat lifetime budgets and configured capital
+limits. Restore the app's foreground activity and pause renewals after the
+second window, settle every observed funded channel and
+collect all 512 test sats. This workload changes no network settings and uses no
+mint fault or manual successor purchase. It tests paced LAN transit while the
+app is in the background; saturation, natural Android deep idle and moving-radio
+handover require separate workloads.
+
 Add `--impaired-transit` to `--transit --sustained-transit` for five minutes of
 paid background forwarding with one in twenty UDP packets dropped in each
 direction on the phone-to-middle-router link. The exact address/port rules use

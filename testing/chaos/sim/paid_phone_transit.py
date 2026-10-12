@@ -147,7 +147,7 @@ class PhoneTransitRun(PaidPhoneRun):
                 'routing foreground service is absent')
         return {'wakefulness': awake[1], 'activities': components, 'foreground_service': True}
 
-    def stream(self, mode, *, unpaid=False, observe=None):
+    def stream_shape(self, mode, unpaid):
         count, duration = (1024, 4) if unpaid else (512 * 1024, 30)
         compare = bool(getattr(self.args, 'compare_transit_rates', False))
         minimum = 300 if (not unpaid and (
@@ -158,6 +158,11 @@ class PhoneTransitRun(PaidPhoneRun):
             # Both comparison windows share the original channels. Endpoints
             # pay the onward tariff as well, so reserve room for both transfers.
             count, duration = (4 if compare else 9) * 1024**2, 300
+        return count, duration, rate, minimum
+
+    def stream(self, mode, *, unpaid=False, observe=None):
+        count, duration, rate, minimum = self.stream_shape(mode, unpaid)
+        compare = bool(getattr(self.args, 'compare_transit_rates', False))
         row = {'mode': mode, 'unpaid': unpaid, 'minimum_duration_secs': minimum,
                'before': resources(self.phone), 'battery_before':
                    self.phone.shell('dumpsys', 'battery').decode()}
@@ -246,7 +251,9 @@ class PhoneTransitRun(PaidPhoneRun):
             state = self.finances()
             return state if payments_credited(state) and all(x['authorized'] > 0 for x in state.values()) else None
         final = eventually('provider credit on every paying direction', paid, 45)
-        require(len(final['phone']['credited']) == 2 and len(final['phone']['signed']) == 1,
+        counts = getattr(self, 'settlement_channel_counts', dict.fromkeys(self.accounts.nodes, 1))
+        require(len(final['phone']['credited']) == counts['n01'] + counts['n02']
+                and len(final['phone']['signed']) == counts['phone'],
                 'phone did not both sell and buy onward forwarding')
         require(control(self.phone, 'status')['received']['packets'] == 0,
                 'phone was an application endpoint instead of transit')

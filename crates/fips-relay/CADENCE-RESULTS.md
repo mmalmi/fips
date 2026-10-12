@@ -1,5 +1,42 @@
 # Paid-relay cadence measurements
 
+## Background phone channel renewal — 12 October 2026
+
+The r479 workload uses the current ordinary router and Android runtime graph
+over the existing four-node LAN UDP line. The phone routes with its activity
+hidden and foreground service active. Two consecutive five-minute TCP/FIPS
+windows each deliver nine MiB per direction, paced at 32 KiB/s. Each of the three
+buyers with short-lived quotes renews twice; the fourth renews once on capacity.
+The original 32-sat channel size, 64-sat lifetime budgets, capital limits and
+processes remain unchanged. Every successor shows advancing payment and delivery
+in both directions during an active stream.
+
+All 37 MiB including warm-up arrive with exact digests and acknowledgments.
+Eleven channels settle, all 512 test sats are collected, and 1,266 management
+checks pass. Independent closure verifies empty wallets and restored devices.
+The original r478 trial's failed foreground-only pause and its successful fund
+recovery remain separate evidence. The corrected harness passes 108 focused
+Linux checks. Private evidence is `work/phone-renewable-r479`.
+
+| Background window | Slower endpoint completion, s | Phone process CPU s / payload MiB | Scoped payment CPU ms / payload MiB | Payment requests sent | Payment record bytes sent | Payment logical journal bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| First | 288.138 | 10.711 | 147.039 | 32 | 24,680 | 285,500 |
+| Second | 288.068 | 10.947 | 155.687 | 28 | 23,077 | 385,246 |
+
+Each row divides CPU by eighteen delivered application-payload MiB. Whole-process
+CPU includes the measurement interval, probe pumping after payload completion
+and diagnostics. Scoped payment spans account for 1.37% and 1.42% of measured
+process CPU; they exclude scheduler and TCP/FIPS/core transport work. The
+existing shared counter analyzer checks monotonic counters and unchanged link
+epochs while allowing the expected channel replacements. Logical journal bytes
+are not physical flash/SQLite writes; payment records are not complete wire
+attribution. The phone is externally powered and observed through ADB.
+
+These results qualify paced background renewal and settlement. They do not show
+an optimization, throughput ceiling, sustained saturation, natural deep-idle
+behavior, battery cost or moving-radio handover. Reproduce with
+`--transit --phone-renewal sustained` in `sim.paid_phone`.
+
 ## Background phone rate comparison — 12 October 2026
 
 The r447 fixture reuses the qualified r439 native and Android runtime graph.

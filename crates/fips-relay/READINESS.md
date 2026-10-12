@@ -6216,6 +6216,30 @@ hidden while its foreground routing service runs; USB power, finite transfers
 and different idle tails do not establish battery cost, sustained saturation or
 an optimization. See [the measured costs](CADENCE-RESULTS.md#background-phone-rate-comparison--12-october-2026).
 
+The ten-minute background renewal workload (`--transit --phone-renewal sustained`)
+extends this to two nine-MiB transfers per direction across automatic successors.
+Its first physical trial, `work/phone-renewable-r478`, delivers all 37 MiB including
+warm-up with exact digests and acknowledgments, but fails before settlement: the
+fixture attempts a foreground-only pause while the app is hidden. Its original
+failed result remains intact. Recovery collects all 512 test sats across eleven
+channels, verifies restored devices and archives/removes the temporary accounts
+and app; 1,188 original and 183 recovery management checks pass. Capacity renewal
+on the fourth purchase also invalidates the fixture's assumed ten-channel total.
+The corrected harness restores the foreground before pausing and verifies every
+observed funded successor, with at least two renewals on each expiry-bound buyer,
+at most four channels per participant, unchanged lifetime/capital limits, and
+live payment and bidirectional delivery advances. Its 108 focused Linux checks
+pass. The fresh `work/phone-renewable-r479` trial passes delivery and settlement:
+37 MiB arrive with exact digests and acknowledgments, 101 live observations cover
+eleven funded channels, all four processes and original spending limits remain
+unchanged, and all 512 test sats are collected. Independent closure verifies
+empty wallets, restored networking and original phone accounts; 1,266 management
+checks pass. This qualifies two paced five-minute LAN windows across repeated
+renewals, not sustained saturation, natural deep idle, network suspension or
+moving-radio handover. [Measured phone costs](CADENCE-RESULTS.md#background-phone-channel-renewal--12-october-2026)
+still leave most process CPU outside the scoped payment operations; no runtime
+optimization is claimed.
+
 Native CDK `1a5f0caa569f` reads pending quotes for the selected mint and
 currency, in indexed pages of at most 128 records and 4 MiB of stored payload. Oversized pages
 shrink; a single oversized or corrupt selected record fails with evidence intact.
