@@ -463,7 +463,7 @@ storage allowances. Separate service-configured metadata limits bound ordinary
 initial key-cache reads before SQL projection and check the cumulative cache size
 as each keyset is loaded.
 
-The version-4 custody registry caps retained pages plus unfinished capture
+The version-5 custody registry caps retained pages plus unfinished capture
 reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
 original owners to reserve its full serialized proof size plus 16 KiB per nonempty
 page. Appending transfers that allowance to retained pages; retries use the same
@@ -478,6 +478,15 @@ history even when retirement precedes ordinary upkeep collection. Unspent or
 otherwise owned coins remain charged. The original plan and native owners remain
 until the complete capture fits and is sealed. The same transaction commits page
 changes and byte counters, checking every original record before replacement.
+
+When native wallet capacity is configured, admission also reserves the complete
+capture in that wallet's storage ledger. A single wallet-local archive owner covers
+retained pages, unfinished captures, native ownership metadata and maximum escaped
+capture cursors. Reservation changes and exact custody checkpoints commit together;
+unrelated writes cannot consume the space promised to an admitted capture. Scope
+and mint framing must fit before admission. Appends and acknowledgment can then
+finish at full native capacity; rejected new captures retain their original owners.
+This is a logical payload reservation, not reserved filesystem blocks.
 
 This is a logical page limit. Registry metadata has its separate 1 MiB bound and
 each page is limited to 4 MiB plus 16 KiB. Encoding reserves bounded whitespace
