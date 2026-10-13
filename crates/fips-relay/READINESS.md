@@ -1,8 +1,9 @@
 # Paid-relay v1 readiness
 
-**Status: active; production readiness is not established.** Reviewed against
-FIPS `4a487ca8c` on 14 October 2026. The latest FIPS runtime change is `711b68a3d`;
-subsequent wallet changes are qualified in r519/r520 below. The accepted graph
+**Status: active; production readiness is not established.** Reviewed on
+14 October 2026. The r523 native candidate adds a control idle-expiry fix.
+Physical r520/r521 results use runtime `711b68a3d` with the subsequent wallet
+changes qualified in r519/r520 below. The accepted graph
 includes Cashu service `6a90ccc40da2` and CDK `04c37d5a152a`. Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
@@ -90,6 +91,7 @@ retirement loop or duplicate simulation framework to hide that distinction.
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
+| r523 control expiry | A native TCP/FIPS regression fails on the old code when idle expiry discards a queued request. The fix passes 17 control unit and 16 integration tests, strict affected-target lint, formatting, source-size checks and an ordinary Linux build. Empty expired streams still close. | Fixes the demonstrated buffered-request race; does not prove it caused the r522 failure. Performance and physical-device qualification of this change remain open. |
 | r515, runtime `711b68a3d` | 335 relay unit checks, strict all-target lint, three real wallet-retirement cycles and an ordinary ARM64 build. Three regressions fail under the prior controller locking; stale receiver planning is revalidated. | Wallet work remains serialized; pending retirement still fences journal mutations. |
 | r519 SDK/CDK | Native custody reservations pass 443 SDK workspace tests (one existing ignored), 198 SQL wallet tests, strict affected-target lint and a three-cycle FIPS wallet lifecycle. Interrupted and full-capacity captures preserve their original coins, checkpoints and promised space. | Logical storage accounting; unrelated workflows and physical storage retain their separate acceptance requirements. The full CDK workspace was not run. |
 | r520, r519 ordinary ARM64 artifact | All 2,048 paid payloads arrive across three routers with 16 MiB native wallet limits. Six controller reads take 165–208 ms while sender/receiver SQLite writers are held. Two sender and two receiver records retire with original budgets; 384/384 test sats are collected; 282 management checks pass. Archived database inspection verifies the limits and sender custody reservations. | A finite contention scenario, not a power cut, throughput benchmark or flash-endurance result. Receivers use the existing release queue; senders use custody archive format 5. |
@@ -152,6 +154,13 @@ trials finish, all 285,696 probe packets arrive and all 40,960 test sats are
 collected, but the strict analyzer correctly refuses the controller error.
 Original results and settled profiles are retained; owned processes are stopped.
 Investigate the connection failure before rerunning or accepting cadence numbers.
+
+The r523 focused regression reproduces a receiver discarding a queued request
+when its idle deadline has elapsed. The candidate reads the record prefix and
+enters fresh admission before expiring an empty stream; timeout and connection
+limits stay unchanged. The traced matrix repeat delivers all packets and recovers
+all test funds without reproducing the original error. That diagnostic run does
+not establish the cause of r522 or qualify the corrected build's performance.
 
 ## Authenticated adjacent neighbors
 

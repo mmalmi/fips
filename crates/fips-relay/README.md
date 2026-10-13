@@ -93,8 +93,9 @@ service port retains at most eight idle connections, with one per peer and
 direction, for up to five seconds. Clients serialize requests on a reused stream.
 Every request acquires fresh admission and revalidates membership; completion
 releases its record buffers and admission permit. Idle eviction closes TCP
-gracefully so an unacknowledged response is not discarded. A failed exchange is
-reported without replaying a transmitted request.
+gracefully so an unacknowledged response is not discarded. A queued request enters
+fresh admission before idle expiry is considered. A failed exchange is reported
+without replaying a transmitted request.
 
 These three services do not negotiate a wire version or capabilities. Acceptance
 uses matching software builds; independent clients and mixed-version upgrades

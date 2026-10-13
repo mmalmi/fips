@@ -1,6 +1,9 @@
 //! Idle entries retain only connection identity and expiry, with no admission permit.
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 const MAX_IDLE_STREAMS: usize = 8;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -97,9 +100,7 @@ impl IdleStreams {
         let mut requests = Vec::new();
         for id in ids {
             let stream = self.streams.remove(&id).expect("current idle stream");
-            if stream.since.elapsed() >= IDLE_TIMEOUT
-                || !matches!(tcp.state(id), Some(State::Established | State::CloseWait))
-            {
+            if !matches!(tcp.state(id), Some(State::Established | State::CloseWait)) {
                 let _ = tcp.close(id, now).await;
                 continue;
             }
@@ -126,7 +127,9 @@ impl IdleStreams {
                     ));
                 }
                 Ok(bytes) if bytes.is_empty() => {
-                    if tcp.is_read_closed(id) {
+                    // Buffered requests end idleness before the deadline check;
+                    // a delayed service poll must not discard accepted bytes.
+                    if tcp.is_read_closed(id) || stream.since.elapsed() >= IDLE_TIMEOUT {
                         let _ = tcp.close(id, now).await;
                     } else {
                         self.streams.insert(id, stream);
