@@ -849,6 +849,39 @@ Focused Linux checks: `python3 -m unittest tests.test_wifi_signer_storage
 tests.test_wifi_full_state tests.test_wifi_discovery tests.test_remote_mint
 tests.test_wifi_restart` from `testing/chaos`.
 
+### Controller reads during wallet retirement
+
+`sim.wifi_retirement` uses the same guarded three-router lifecycle and capped test
+mint. It sends 1,024 paid packets in each direction, settles the original channels,
+then holds SQLite write transactions on two isolated wallets. Once sender history
+retirement is durably pending, six controller reads must each complete within two
+seconds while both writers remain held. Releasing the transactions must finish
+the original sender/receiver handoffs without changing spending limits. The shared
+collector verifies wallet distribution and collects all 384 test sats.
+
+Build `tools/sqlite_hold.c` against SQLite for the router architecture and supply
+that executable with `--sqlite-hold`. The helper opens only an existing database,
+uses `BEGIN IMMEDIATE` without changing SQL data, and rolls back on release,
+termination or its deadline. The router guard also requests release during
+cleanup. Test a native build before using the ARM64 build:
+
+```sh
+cc -O2 -Wall -Wextra -Werror tools/sqlite_hold.c -lsqlite3 -o /tmp/sqlite-hold-native
+FIPS_SQLITE_HOLD=/tmp/sqlite-hold-native python3 -B -m unittest tests.test_sqlite_hold
+python3 -B -m sim.wifi_retirement \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address "$BENCH_MINT_ADDRESS" \
+  --sqlite-hold /private/artifacts/sqlite-hold-arm64 \
+  --output /private/results/wallet-retirement
+```
+
+Run from `testing/chaos`. Use a fresh output directory and a test-only mint;
+normal router accounts are never used. This measures bounded controller response
+under SQLite contention, not storage throughput or physical power-loss recovery.
+
 ### Router load, restart and frame loss
 
 `sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped

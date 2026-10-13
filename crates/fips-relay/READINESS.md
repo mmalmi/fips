@@ -9314,9 +9314,26 @@ The real three-cycle wallet-retirement case passes with restarts, retained gross
 debits/refunds and refusal of funding beyond the unchanged lifetime limit.
 Strict all-target relay lint, formatting and source-size checks pass. The ordinary
 ARM64 router binary builds with no SDK simulation features; its unchanged SDK
-uses the previously qualified dependency graph. This change has not yet run on
-physical routers. It does not bound wallet work or journal-write latency, and
-wallet ownership continues to serialize funding with retirement.
+uses the previously qualified dependency graph. It does not bound wallet work
+or journal-write latency, and wallet ownership continues to serialize funding
+with retirement.
+
+The same binary passes `sim.wifi_retirement` on three Cudy routers in
+`work/retirement-router-r516`. All 2,048 paid radio payloads arrive before the
+original channels settle. A bounded helper then holds SQLite write transactions
+on the sender and receiver wallets without changing their SQL data. While the
+sender's original retirement is durably pending and both writers remain held,
+six controller reads complete in 161–178 ms, including SSH and CLI overhead.
+Requested release rolls back both helper transactions; the original two sender
+channels and two receiver records retire with unchanged spending/capital totals.
+All 384 test sats are collected and all 282 management checks pass. Independent
+postflight checks verify restored original router state and archive the settled
+accounts before removing the temporary profiles. Sixty-three Linux helper and
+shared harness checks pass, including actual writer contention, permitted reads,
+rollback and release after a deadline or termination. See [the reproducible
+scenario](../../testing/chaos/README.md#controller-reads-during-wallet-retirement).
+This is one finite SQLite-contention batch, not sustained storage-pressure,
+physical power-loss or flash-endurance acceptance.
 
 ### Bounded incoming receipt enumeration
 
