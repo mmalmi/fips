@@ -4,28 +4,25 @@ Experimental service components for **sender-funded, best-effort forwarding**.
 Delivery receipts are an optional future experiment. The relay does not inspect
 TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 
-See [the acceptance report and runbook](PROTOTYPE-RESULTS.md) for the completed
-three-router/Pixel demonstration and its limits, [SERVICE.md](SERVICE.md) for
-operation, and [TESTBENCH.md](TESTBENCH.md) for isolated funding and collection.
-Physical route changes, restart, exhaustion/renewal and customer Wi-Fi have been
-exercised. All 12,800 historical test sats were collected. The latest
-[performance comparison](PERFORMANCE.md) retained the baseline after rejecting
-two tuning experiments without reliable CPU savings.
+See [the current v1 assessment](READINESS.md) for tested builds and outstanding
+acceptance, [SERVICE.md](SERVICE.md) for operation, and [TESTBENCH.md](TESTBENCH.md)
+for isolated funding and collection. The [original prototype report](PROTOTYPE-RESULTS.md)
+records the completed three-router/Pixel demonstration; its scope and totals are
+historical. Current [cadence comparisons](CADENCE-RESULTS.md) report CPU, storage
+and wire measurements separately. The earlier [forwarding comparison](PERFORMANCE.md)
+retained its baseline after two tuning experiments failed to show reliable savings.
 
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
 
-The broader [v1 readiness work](READINESS.md) is active. [Adaptive cadence](CADENCE.md),
-authenticated adjacent-neighbor admission, UDP/TCP/native Ethernet/WebSocket forwarding
-and financial-history retirement have bounded acceptance evidence. Physical checks
-also cover open Wi-Fi joining, paid provider failover/recovery and a Pixel session;
-the [matched cadence measurements](CADENCE-RESULTS.md) report their cost boundaries.
-Newer routing and recovery code still needs matched hardware acceptance. Software
-checks cover cancellation before funding, recovery of committed sends and exact
-proof-history handoff. Aggregate wallet storage, bounded database enumeration and
-broader physical mesh encounters remain open. The
-prototype reports below describe the earlier r6 hardware build, not current v1
-production readiness.
+The v1 goal remains active. [Adaptive cadence](CADENCE.md), authenticated adjacent
+admission, UDP/TCP/native Ethernet/WebSocket forwarding and financial-history
+retirement have software and controlled device evidence. This includes open Wi-Fi
+joining, paid route recovery, phone transit and wallet failure/recovery. Whole-wallet
+resource bounds, router power-cut qualification, broader mobile acceptance and a
+common final target build remain open. The [acceptance checklist](READINESS.md#scope-and-outstanding-acceptance)
+distinguishes those requirements from historical results and unqualified extensions.
+The prototype reports below describe the earlier r6 hardware build.
 
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
 to deliver through paid relays to an unfunded recipient without buying a reverse
