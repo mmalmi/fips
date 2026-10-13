@@ -1,9 +1,9 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed against
-FIPS `e100c6bc7` on 13 October 2026. The latest runtime change is `711b68a3d`;
-the following commit adds its physical regression. The accepted dependency graph
-includes Cashu service `9337169930a6` and CDK `f5c260e5fdef`. Use the complete
+FIPS `4a487ca8c` on 14 October 2026. The latest FIPS runtime change is `711b68a3d`;
+subsequent wallet changes are qualified in r519/r520 below. The accepted graph
+includes Cashu service `6a90ccc40da2` and CDK `04c37d5a152a`. Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
 
@@ -61,9 +61,9 @@ closed financial recovery and the remaining observations listed here.
 | Threat model and integration proposal | [Threat model below](#boundaries-and-threats), explicit mint trust and [local TollGate proposal](TOLLGATE.md). | Review these contracts against the final implementation. The deliverable is a proposal; actual TollGate interoperability needs its separate acceptance before it is claimed. |
 | Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. | Retain the 600-line relay/Android and 1000-line integration limits; remove superseded code/tests without losing distinct failure coverage. |
 
-The next implementation audit is wallet resource completion: enumerate the actual
-workflows and stores, check admission/rollback/reserved completion capacity, then
-exercise any missing boundary through the existing process harness. A page-size
+The wallet resource audit has closed the custody archive's native completion-space
+gap. Continue through the remaining workflows and stores, checking admission,
+rollback and reserved completion capacity through the existing harness. A page-size
 limit does not by itself bound a whole maintenance call. Do not add another
 retirement loop or duplicate simulation framework to hide that distinction.
 
@@ -90,14 +90,16 @@ retirement loop or duplicate simulation framework to hide that distinction.
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
 | r515, runtime `711b68a3d` | 335 relay unit checks, strict all-target lint, three real wallet-retirement cycles and an ordinary ARM64 build. Three regressions fail under the prior controller locking; stale receiver planning is revalidated. | Wallet work remains serialized; pending retirement still fences journal mutations. |
-| r516, same ordinary ARM64 runtime | All 2,048 paid payloads arrive across three routers. Six controller reads take 161–178 ms while sender/receiver SQLite writers are held. Two sender and two receiver records retire with original budgets; 384/384 test sats are collected; 282 management checks pass. | A finite contention scenario, not a power cut, throughput benchmark or flash-endurance result. |
+| r519 SDK/CDK | Native custody reservations pass 443 SDK workspace tests (one existing ignored), 198 SQL wallet tests, strict affected-target lint and a three-cycle FIPS wallet lifecycle. Interrupted and full-capacity captures preserve their original coins, checkpoints and promised space. | Logical storage accounting; unrelated workflows and physical storage retain their separate acceptance requirements. The full CDK workspace was not run. |
+| r520, r519 ordinary ARM64 artifact | All 2,048 paid payloads arrive across three routers with 16 MiB native wallet limits. Six controller reads take 165–208 ms while sender/receiver SQLite writers are held. Two sender and two receiver records retire with original budgets; 384/384 test sats are collected; 282 management checks pass. Archived database inspection verifies the limits and sender custody reservations. | A finite contention scenario, not a power cut, throughput benchmark or flash-endurance result. Receivers use the existing release queue; senders use custody archive format 5. |
+| r518 SDK | Unspent-only collection skips unrelated ownership scans; 442 workspace tests and strict lint pass. An eight-visit, 256-receipt fixture falls from 9,774 to 1,474 µs for the archive and 8,540 to 1,055 µs for the queue. | Fixture elapsed time, not CPU attribution or device throughput. Spent candidates still require full ownership checks. |
 | r513 SDK / r514 routers | Unchanged single-page custody maintenance stops rewriting the page; the updated SDK passes physical wallet-full refusal/recovery with all 6,144 payloads and all 384 test sats recovered. | Does not prove total wallet CPU, flash life or every workflow's storage bound. |
 | r512 phone | Refreshed admission build routes between routers during 49.61 seconds of forced Doze; four MiB delivered, all four original paid channels advance, 512 test sats collected and 591 management checks pass. | Externally powered/ADB-observed; predates r513/r515 and does not qualify natural deep idle. |
 | r511 radio mobility | Controlled open-radio channel change and return preserve paid connections; all 64 probes and financial recovery pass. | No actual movement or automatic channel-selection result. |
 
-The r515 ordinary ARM64 relay SHA-256 is
-`fc227058b713f654f4bb066d36e0b593f2e212eb68c2253efd3f8e9fe2322a74`.
-The r516 harness uses that executable without wallet simulation; only the test
+The r519 ordinary ARM64 relay SHA-256 is
+`00f4829cad636e0fea7984f442b53293d5bdc8cc565fdbbdc088e5345e7decbf`.
+The r520 harness uses that executable without wallet simulation; only the test
 mint simulates money. Original router services/accounts were restored, owned
 processes stopped and settled profiles archived before removal. The device test
 is reproducible through [the chaos harness](../../testing/chaos/README.md#controller-reads-during-wallet-retirement).
@@ -206,6 +208,14 @@ capacity exhaustion and concurrent channel work. Fresh configured wallets have
 native storage admission and reserved completion capacity. Three real lifecycle
 cycles check reopen, retirement and refusal of a further purchase at the original
 lifetime limit. They do not prove a whole-wallet storage plateau indefinitely.
+
+Custody archive format 5 reserves its pages, native ownership metadata and maximum
+cursor growth in the same transaction as its exact registry checkpoint. Other
+writes cannot consume an admitted capture's remaining allowance. A failed write
+or stale comparison rolls back both; acknowledgment releases unused space. The
+full-capacity regression completes two overlapping captures across reopen while
+unrelated writes fill the remaining wallet. This reserves logical native payload,
+not filesystem blocks. Receiver proof release retains its separate bounded queue.
 
 The remaining audit must include all reachable workflows/stores/queries and
 aggregate memory, disk and maintenance work. Proof capture and owner/receipt scans
