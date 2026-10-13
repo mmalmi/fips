@@ -146,6 +146,13 @@ endurance and maximum throughput are separate experiments; their absence cannot
 be concealed by a passing paced workload. Detailed methods and commands belong
 in the existing [benchmark runbook](../../testing/relay-cadence/README.md).
 
+The r522 comparison on the accepted r519 dependency graph is rejected: one
+high-rate window reports `control stream ended before its record`. All eight
+trials finish, all 285,696 probe packets arrive and all 40,960 test sats are
+collected, but the strict analyzer correctly refuses the controller error.
+Original results and settled profiles are retained; owned processes are stopped.
+Investigate the connection failure before rerunning or accepting cadence numbers.
+
 ## Authenticated adjacent neighbors
 
 No fixed operator roster is required in authenticated-adjacent mode. Discovery
