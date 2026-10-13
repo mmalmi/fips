@@ -63,6 +63,12 @@ for them. Keep management services isolated. Exhausting an ordinary TollGate
 session must leave this FIPS entry reachable without granting unrestricted WAN
 forwarding. Conversely, paying a FIPS relay must not open the ordinary access gate.
 
+Mint access may use the existing [HTTP-over-FIPS adapter](TESTBENCH.md#mint-http-over-fips)
+with a pinned export identity and bounded free mint requests and replies. This
+keeps funding reachable over the mesh before buying ordinary Internet. The saved
+mint URL and identity remain immutable; an outage must not select another mint
+or silently fall back to unrestricted Internet access.
+
 FIPS retains its existing sender-pays model. Each relay buys onward service under
 its own configured price, capital and lifetime limits. Accepting customer funds
 does not authorize buying from arbitrary customers. The adapter must not fund
@@ -85,9 +91,10 @@ tunnel. Free or discounted destinations remain ordinary
 
 ## Current limits
 
-The native customer and profile are test-only: local numeric endpoints, an
-explicit local HTTP test mint, finite test-fund limits and explicit account
-setup. The Android app sends test payloads; it is not an Internet VPN or
+The native customer and profile are test-only: local numeric entry endpoints,
+an explicit local HTTP test mint or its pinned TCP/FIPS export, finite test-fund
+limits and explicit account setup. The Android app sends test payloads; it is not
+an Internet VPN or
 production wallet. An ordinary browser cannot use this UDP customer interface
 by opening the portal alone. Matching-build FIPS tests do not establish an
 independent TollGate client or mixed-version peer implementation.
