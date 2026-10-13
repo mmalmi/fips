@@ -9270,6 +9270,22 @@ test changes. This finite reuse check does not establish an indefinite storage
 plateau, a total physical disk bound, paid payload performance or hardware
 power-loss durability.
 
+The SDK collector avoids an unchanged custody write when only one acknowledged
+page is eligible and all its original coins must remain. It still verifies those
+coins on later visits and after restart; multiple-page rotation remains intact.
+In `work/idle-custody-r513`, the baseline writes on all eight idle visits, while
+the fixed collector writes on none of sixteen visits across wallet reopenings.
+A subsequently spent coin is collected and the other unspent coin stays intact.
+The unchanged three-cycle FIPS retirement case also passes in 195.14 seconds,
+with the same storage charges, cumulative debits, refunds and spending refusal
+as r510. All 441 SDK workspace tests pass, with one existing explicit soak
+ignored; strict workspace/all-target SDK lint also passes. Strict funding-target
+lint and source-size checks pass. The ordinary
+ARM64 router executable also builds from this source and dependency graph,
+without SDK simulation features; device acceptance of this SDK change remains
+pending. This measures single-page idle writes, not total wallet write
+amplification or flash lifetime.
+
 ### Bounded incoming receipt enumeration
 
 The SDK's receipt reader now selects at most 128 incoming sat transactions for
