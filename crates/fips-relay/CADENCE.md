@@ -223,15 +223,15 @@ library/binary checks, formatting and the source-size gate passed. This was a
 software checkpoint; later physical results are recorded separately in
 [READINESS.md](READINESS.md) and [CADENCE-RESULTS.md](CADENCE-RESULTS.md).
 
-An optimized [guarded clean-link comparison](CADENCE-RESULTS.md) covers all four
-250/500/1000/2000-ms policies with identical terms under idle, burst, steady and
-high-rate workloads. Two opposite-order passes delivered all 285,696 packets and
-settled/collected all 40,960 isolated test sats. Idle payment traffic was zero.
-At high rate, 1 s/2 s policies used 40 balance updates versus 59 at 250 ms; CPU varied
-between repeats, so this does not select a production default or prove a router
-speedup. The 500 ms default remains unchanged.
+The latest optimized [guarded native comparison](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026)
+covers all four 250/500/1000/2000-ms policies with identical terms under idle,
+bursty, steady and high-rate workloads. Two opposite-order passes verify delivery
+and collection of all test funds. The results distinguish zero idle application
+polling from remaining TCP/FIPS transport traffic and report costs with their
+measurement limits. The 500-ms default remains unchanged.
 
-The optional `measurements` feature exposes synchronous thread CPU spans and
+The optional `measurements` feature exposes scoped thread CPU spans, including
+controller future polls and inherited blocking work, and
 attributed logical journal I/O separately from whole-process CPU and payment
 record counters. See the [measurement boundaries](../../testing/relay-cadence/README.md).
 These diagnostics have no financial authority and compile to no-ops by default.

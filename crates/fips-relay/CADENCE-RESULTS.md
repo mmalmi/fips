@@ -1,5 +1,72 @@
 # Paid-relay cadence measurements
 
+## Native matrix with the control expiry fix — 14 October 2026
+
+The ordinary Linux daemon at `d6874c3bf` passes the unchanged eight-trial matrix
+with Cashu service `6a90ccc40da2` and CDK `04c37d5a152a`. The runtime includes the
+queued-request idle-expiry fix, core default features and a wallet SDK without
+simulation. Only the test mint simulates money. Five processes, three paid hops
+and two funded directions run over UDP loopback in a two-core scope, in
+250/500/1000/2000/2000/1000/500/250-ms order. Tariffs, channel capacity, durable
+windows, allowance, workload schedules and the three-second tail are unchanged.
+The [runbook](../../testing/relay-cadence/README.md) defines these inputs.
+
+All 285,696 payloads arrive with zero duplicates, invalid payloads/timestamps or
+controller errors. The strict analyzer accepts delivery, accounting boundaries,
+counter continuity and costs. All 48 channels settle and all 40,960 test sats
+are collected. Independent closure verifies hashes, unchanged source/dependency
+inventories and stopped processes; settled profiles and raw evidence are retained
+in the private `work/cadence-current-r524` bundle. The original rejected r522 run
+and diagnostic r523 repeat retain their separate verdicts. This pass does not
+prove which event caused the original intermittent error.
+
+Values below average two trials per policy and sum all five service processes.
+Each bursty trial delivers 512,000 application bytes, each steady trial 3,200,000,
+and each high-rate trial 32,000,000. CPU is normalized to delivered payload MiB;
+storage and traffic are KiB per complete workload observation, including its tail.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bursty | 250 ms | 2.0 | 22.28 | 13.25 | 1.60 | 3.67 |
+| Bursty | 500 ms | 2.0 | 24.00 | 13.32 | 1.60 | 3.67 |
+| Bursty | 1 s | 2.0 | 21.55 | 13.30 | 1.60 | 3.44 |
+| Bursty | 2 s | 2.0 | 23.42 | 13.33 | 1.60 | 3.44 |
+| Steady | 250 ms | 19.0 | 33.82 | 130.41 | 15.19 | 30.70 |
+| Steady | 500 ms | 19.0 | 33.93 | 130.49 | 15.19 | 30.70 |
+| Steady | 1 s | 14.0 | 24.87 | 97.20 | 11.19 | 22.78 |
+| Steady | 2 s | 10.0 | 18.44 | 70.60 | 8.00 | 16.77 |
+| High rate | 250 ms | 60.0 | 11.30 | 430.70 | 48.34 | 95.92 |
+| High rate | 500 ms | 44.0 | 8.00 | 313.69 | 35.46 | 70.35 |
+| High rate | 1 s | 40.0 | 7.43 | 282.63 | 32.24 | 63.96 |
+| High rate | 2 s | 40.0 | 7.36 | 282.17 | 32.24 | 63.96 |
+
+Every four-second idle workload, including its three-second tail, records zero
+payment requests/records, payment CPU and payment journal writes. Local
+payment-service transport traffic still averages 1.36 KiB per idle observation;
+zero application polling does not imply zero TCP/FIPS transport traffic.
+
+All bursty and steady trials put their 95th-percentile delivery latency in the
+500-µs bucket; all high-rate trials put it in the 1-ms bucket. These use a shared
+host clock. High-rate goodput is 31.908–31.916 Mbps; this paced test does not find
+the throughput ceiling. Whole-process CPU at high rate averages
+0.178/0.169/0.175/0.172 seconds per delivered MiB for the four policies. A reduction
+in scoped payment work therefore does not establish an overall CPU improvement.
+
+At high rate, one second uses about 7% less scoped payment CPU and 9% fewer local
+payment-carrier bytes than 500 ms. One and two seconds both average 40 updates:
+the longer age limit produces no further reduction in updates at this load.
+At the steady rate, two seconds reduces scoped payment CPU by about 46% relative
+to 500 ms. Two repetitions on clean loopback links do not establish a general
+optimum. The 500-ms default remains unchanged.
+
+Payment CPU includes controller future polls and inherited blocking work; it
+excludes scheduler scans and shared TCP/FIPS/core work outside those spans.
+Journal bytes are logical relay writes, excluding wallet SQLite and physical
+storage. Record bytes include application framing; local carrier bytes include
+submitted TCP/FIPS traffic, ACKs and retransmissions, excluding opaque transit,
+shared traffic, UDP/kernel/radio framing and airtime. This qualifies the current
+native comparison, not physical router/phone performance or total payment cost.
+
 ## Background phone channel renewal — 12 October 2026
 
 The r479 workload uses the current ordinary router and Android runtime graph
@@ -79,7 +146,7 @@ The final harness and analyzer pass 106 Linux checks. Reproduce with
 The analyzer rejects changed workloads, purchased terms, payment identities,
 counter epochs, unfinished delivery and inter-window counter resets.
 
-## Current native matrix — 7 October 2026
+## Earlier native matrix — 7 October 2026
 
 The ordinary Linux daemon now reports measurement version 3. Payer and provider
 future polls each use a thread-local CPU span that ends before yielding; blocking

@@ -56,7 +56,7 @@ closed financial recovery and the remaining observations listed here.
 | Every supported forwarding path | Shared native transit/originated accounting, mixed UDP/TCP/WebSocket process tests, native Ethernet/radio and radio/WSS hardware evidence. See [accounting](ACCOUNTING.md) and [service](SERVICE.md). | Review the enabled-path inventory and carrier matrix, including scalar/batched/deferred sends, loop/bypass/replay resistance, duplicate/unsolicited traffic and loss/reordering. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), quote cache/rate tests and unfunded-recipient process tests. | Final negative checks must reject unpaid application transit, unauthorized reverse spending and quote-port bypass while allowing bounded joining/payment progress. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
-| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the current graph, including delayed funding/renewal and merge/split. | Reconcile the remaining carrier/admission matrix and physical mobile observations with this graph. No global-optimality claim. |
+| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Reconcile the remaining carrier/admission matrix and physical mobile observations with the final graph. No global-optimality claim. |
 | Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | Physical router power-cut qualification at original funding, committed settlement and history handoff boundaries, preserving the original evidence and test-fund conservation. |
 | Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. | Finish the workflow/store/query resource audit, including aggregate pressure, maintenance duration and completion capacity. Finite cycles alone do not prove bounded indefinite operation. |
 | Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | Freeze and qualify a common final graph on the intended targets. Exercise install/reopen/recovery with preserved accounts and remove owned test resources. Natural Android deep idle is still unqualified. |
@@ -91,7 +91,8 @@ retirement loop or duplicate simulation framework to hide that distinction.
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| r523 control expiry | A native TCP/FIPS regression fails on the old code when idle expiry discards a queued request. The fix passes 17 control unit and 16 integration tests, strict affected-target lint, formatting, source-size checks and an ordinary Linux build. Empty expired streams still close. | Fixes the demonstrated buffered-request race; does not prove it caused the r522 failure. Performance and physical-device qualification of this change remain open. |
+| r524 native cadence | Runtime `d6874c3bf` passes the unchanged eight-trial comparison and strict delivery/accounting/cost validation. All 285,696 payloads arrive and all 40,960 test sats are collected. Processes stop and original settled profiles are retained. [Current costs](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026) cover idle, bursty, steady and high-rate workloads. | Two repeats per policy on clean Linux loopback links. Scoped CPU, logical relay writes and local payment-service transport counters exclude shared/physical costs; current physical-device performance remains open. |
+| r523 control expiry | A native TCP/FIPS regression fails on the old code when idle expiry discards a queued request. The fix passes 17 control unit and 16 integration tests, strict affected-target lint, formatting, source-size checks and an ordinary Linux build. Empty expired streams still close. | Fixes the demonstrated buffered-request race; does not prove it caused the r522 failure. Physical-device qualification of this change remains open. |
 | r515, runtime `711b68a3d` | 335 relay unit checks, strict all-target lint, three real wallet-retirement cycles and an ordinary ARM64 build. Three regressions fail under the prior controller locking; stale receiver planning is revalidated. | Wallet work remains serialized; pending retirement still fences journal mutations. |
 | r519 SDK/CDK | Native custody reservations pass 443 SDK workspace tests (one existing ignored), 198 SQL wallet tests, strict affected-target lint and a three-cycle FIPS wallet lifecycle. Interrupted and full-capacity captures preserve their original coins, checkpoints and promised space. | Logical storage accounting; unrelated workflows and physical storage retain their separate acceptance requirements. The full CDK workspace was not run. |
 | r520, r519 ordinary ARM64 artifact | All 2,048 paid payloads arrive across three routers with 16 MiB native wallet limits. Six controller reads take 165–208 ms while sender/receiver SQLite writers are held. Two sender and two receiver records retire with original budgets; 384/384 test sats are collected; 282 management checks pass. Archived database inspection verifies the limits and sender custody reservations. | A finite contention scenario, not a power cut, throughput benchmark or flash-endurance result. Receivers use the existing release queue; senders use custody archive format 5. |
@@ -142,8 +143,9 @@ Keep the three measurements distinct:
   relay journals, SDK snapshots, receiver databases and wallet shared memory.
   Logical bytes/syscalls do not measure physical media wear or mmap writes.
 
-Final candidate comparison remains open. Complete shared-work attribution is
-also open if claiming total payment overhead. Radio airtime, battery life, flash
+The corrected native candidate passes the r524 comparison. Current physical-device
+comparison and complete shared-work attribution remain open; the latter is required
+if claiming total payment overhead. Radio airtime, battery life, flash
 endurance and maximum throughput are separate experiments; their absence cannot
 be concealed by a passing paced workload. Detailed methods and commands belong
 in the existing [benchmark runbook](../../testing/relay-cadence/README.md).
@@ -153,7 +155,7 @@ high-rate window reports `control stream ended before its record`. All eight
 trials finish, all 285,696 probe packets arrive and all 40,960 test sats are
 collected, but the strict analyzer correctly refuses the controller error.
 Original results and settled profiles are retained; owned processes are stopped.
-Investigate the connection failure before rerunning or accepting cadence numbers.
+These failed measurements are not accepted performance evidence.
 
 The r523 focused regression reproduces a receiver discarding a queued request
 when its idle deadline has elapsed. The candidate reads the record prefix and
@@ -161,6 +163,8 @@ enters fresh admission before expiring an empty stream; timeout and connection
 limits stay unchanged. The traced matrix repeat delivers all packets and recovers
 all test funds without reproducing the original error. That diagnostic run does
 not establish the cause of r522 or qualify the corrected build's performance.
+The ordinary corrected build subsequently passes r524 with no controller errors;
+that result qualifies its scoped native costs while preserving the earlier failures.
 
 ## Authenticated adjacent neighbors
 
