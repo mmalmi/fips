@@ -9282,9 +9282,21 @@ as r510. All 441 SDK workspace tests pass, with one existing explicit soak
 ignored; strict workspace/all-target SDK lint also passes. Strict funding-target
 lint and source-size checks pass. The ordinary
 ARM64 router executable also builds from this source and dependency graph,
-without SDK simulation features; device acceptance of this SDK change remains
-pending. This measures single-page idle writes, not total wallet write
-amplification or flash lifetime.
+without SDK simulation features. This measures single-page idle writes, not total
+wallet write amplification or flash lifetime.
+
+With SDK `9337169`, the existing full-wallet filesystem case passes on three
+Cudy routers in `work/idle-custody-router-r514-traced`. A flash-backed 8 MiB ext4
+image reaches real ENOSPC; the blocked payment retains its snapshot while the
+other buyer keeps paying. The original channels recover automatically after
+space is freed, without restarting or purchasing again. All 6,144 payloads arrive,
+all 384 test sats return, and 267 management checks pass. Independent read-only
+inspection verifies the clean closed filesystem and all six wallet files;
+archived test profiles are removed and normal baselines restored. The first
+attempt in `work/idle-custody-router-r514` stops at a setup check after both
+ENOSPC probes; its cause remains unconfirmed. It also recovers all funds and
+restores the routers. The retry adds shell tracing without changing financial
+checks. Neither attempt measures idle writes, flash wear or physical power loss.
 
 ### Bounded incoming receipt enumeration
 
