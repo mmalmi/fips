@@ -163,6 +163,15 @@ intent resumes before ordinary funding recovery. Wallet ownership spans the
 blocking operation even if the async caller is cancelled. This performs local
 journal cleanup only and introduces no network message.
 
+Sender and receiver wallet retirement run outside the controller journal lock.
+Controller reads remain available while the wallet is busy; the persisted intent
+still suspends journal changes, and the wallet owner still excludes funding.
+Completion revalidates the exact pending plan before removing any evidence.
+Receiver planning also releases the journal lock before consulting the wallet;
+it rechecks current reports and competing intents before saving its plan, without
+overwriting unrelated changes made while planning was in progress. This does not
+bound wallet operation duration or the controller's own journal write time.
+
 For an abandoned wallet send, the SDK also acknowledges its exact original refund
 receipt before discarding the operation identity. Its saved channel intent retains
 the verified net refund and original token cost through the wallet's durable

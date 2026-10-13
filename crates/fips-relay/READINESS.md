@@ -9298,6 +9298,26 @@ ENOSPC probes; its cause remains unconfirmed. It also recovers all funds and
 restores the routers. The retry adds shell tracing without changing financial
 checks. Neither attempt measures idle writes, flash wear or physical power loss.
 
+### Controller reads during wallet retirement
+
+Channel retirement releases the controller journal lock around SDK wallet work;
+the saved financial intent still suspends journal changes. Completion revalidates
+that exact intent before removing evidence. See [the handoff rules](HISTORY.md).
+
+In `work/retirement-liveness-r515`, three deterministic coordinator checks fail
+with the prior locking behavior and pass with the fix: sender retirement,
+receiver planning and receiver retirement all leave the journal readable during
+wallet work. Receiver planning also preserves unrelated changes and rejects a
+report changed while its wallet plan was being prepared. All 335 relay unit
+tests pass, including the existing interrupted-write and lifetime-budget checks.
+The real three-cycle wallet-retirement case passes with restarts, retained gross
+debits/refunds and refusal of funding beyond the unchanged lifetime limit.
+Strict all-target relay lint, formatting and source-size checks pass. The ordinary
+ARM64 router binary builds with no SDK simulation features; its unchanged SDK
+uses the previously qualified dependency graph. This change has not yet run on
+physical routers. It does not bound wallet work or journal-write latency, and
+wallet ownership continues to serialize funding with retirement.
+
 ### Bounded incoming receipt enumeration
 
 The SDK's receipt reader now selects at most 128 incoming sat transactions for

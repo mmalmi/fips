@@ -1,5 +1,6 @@
 use super::*;
 use crate::ledger::{ChannelUsage, Limits};
+mod liveness;
 mod recovery;
 mod support;
 use support::{prepare_sales, resume_sales, retire_sales};

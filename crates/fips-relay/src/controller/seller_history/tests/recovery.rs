@@ -41,7 +41,7 @@ fn receiver_commit_failures_and_lost_replies_resume_the_original_financial_inten
         let sdk = RefCell::new((p.accounting.before.clone(), 0));
         let path = store.directory.join("controller.json");
         let saved = root.path().join("before-final-write.json");
-        let failed = store.resume_sales(&seller, no_prepare, |p| {
+        let failed = Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, |p| {
             if boundary == 0 {
                 return Err("receiver write failed".into());
             }
@@ -68,9 +68,10 @@ fn receiver_commit_failures_and_lost_replies_resume_the_original_financial_inten
         drop(seller);
         let seller = DurableRelay::load(&root.path().join("seller")).unwrap();
         assert_eq!(
-            store
-                .resume_sales(&seller, no_prepare, |p| apply_sdk(&sdk, p))
-                .unwrap(),
+            Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, |p| apply_sdk(
+                &sdk, p
+            ))
+            .unwrap(),
             1
         );
         assert_eq!(
@@ -93,9 +94,10 @@ fn receiver_commit_failures_and_lost_replies_resume_the_original_financial_inten
             Some(&p.accounting.after)
         );
         assert_eq!(
-            store
-                .resume_sales(&seller, no_prepare, |_| panic!("no pending intent"))
-                .unwrap(),
+            Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, |_| panic!(
+                "no pending intent"
+            ))
+            .unwrap(),
             0
         );
     }
@@ -136,7 +138,7 @@ fn receiver_proof_queue_backpressure_retains_the_exact_plan_across_reload() {
     // The real SDK owns proof deletion. This closure models its durable receiver
     // commit followed by release-queue backpressure, without minting fixture money.
     for _ in 0..2 {
-        let error = store.resume_sales(&seller, no_prepare, |p| {
+        let error = Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, |p| {
             assert_eq!(serde_json::to_value(p).unwrap(), exact_plan);
             apply_sdk(&sdk, p)?;
             Err("proof release queue is full".into())
@@ -169,7 +171,7 @@ fn receiver_proof_queue_backpressure_retains_the_exact_plan_across_reload() {
         Ok(after)
     };
     assert_eq!(
-        store.resume_sales(&seller, no_prepare, |p| {
+        Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, |p| {
             admit(p)?;
             Err("proof release reply lost".into())
         }),
@@ -178,7 +180,7 @@ fn receiver_proof_queue_backpressure_retains_the_exact_plan_across_reload() {
     assert_eq!(serde_json::to_value(&store.journal).unwrap(), saved_journal);
     store = reload(store);
     assert_eq!(
-        store.resume_sales(&seller, no_prepare, &mut admit).unwrap(),
+        Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, &mut admit).unwrap(),
         1
     );
     assert_eq!(sdk.borrow().1, 1);
@@ -204,9 +206,10 @@ fn receiver_proof_queue_backpressure_retains_the_exact_plan_across_reload() {
     );
     store = reload(store);
     assert_eq!(
-        store
-            .resume_sales(&seller, no_prepare, |_| panic!("no pending handoff"))
-            .unwrap(),
+        Store::resume_sales(&Mutex::new(&mut store), &seller, no_prepare, |_| panic!(
+            "no pending handoff"
+        ))
+        .unwrap(),
         0
     );
 }
@@ -227,17 +230,17 @@ fn legacy_pending_sales_acquire_receiver_evidence_before_losing_original_ids() {
         store = reload(store);
         let original = store.journal.clone();
         let prepared = Cell::new(0);
-        store
-            .resume_sales(
-                &seller,
-                |ids| {
-                    assert_eq!(ids, std::slice::from_ref(&t.id));
-                    prepared.set(prepared.get() + 1);
-                    support::receiver_plan(&original, ids)
-                },
-                |p| Ok(p.accounting.after.clone()),
-            )
-            .unwrap();
+        Store::resume_sales(
+            &Mutex::new(&mut store),
+            &seller,
+            |ids| {
+                assert_eq!(ids, std::slice::from_ref(&t.id));
+                prepared.set(prepared.get() + 1);
+                support::receiver_plan(&original, ids)
+            },
+            |p| Ok(p.accounting.after.clone()),
+        )
+        .unwrap();
         assert_eq!(prepared.get(), 1);
         assert_eq!(store.journal.history_version(), 6);
         assert_ne!(
@@ -292,9 +295,12 @@ fn ineligible_or_changed_receiver_evidence_never_saves_a_new_cleanup_intent() {
     let t = append(&mut store, &seller, &t, 1, true);
     let original = store.journal.clone();
     let snapshot = serde_json::to_value(&original).unwrap();
-    let failed = store.prepare_sales(&seller, t.expires_unix + 61, |_| {
-        Err("payout missing".into())
-    });
+    let failed = Store::prepare_sales(
+        &Mutex::new(&mut store),
+        &seller,
+        t.expires_unix + 61,
+        |_| Err("payout missing".into()),
+    );
     assert!(failed.is_err());
     for field in [
         "capacity",
@@ -362,9 +368,13 @@ fn ineligible_or_changed_receiver_evidence_never_saves_a_new_cleanup_intent() {
             p.validate().unwrap();
         }
         assert!(
-            store
-                .prepare_sales(&seller, t.expires_unix + 61, |_| Ok(p.clone()))
-                .is_err(),
+            Store::prepare_sales(
+                &Mutex::new(&mut store),
+                &seller,
+                t.expires_unix + 61,
+                |_| Ok(p.clone())
+            )
+            .is_err(),
             "{field}"
         );
         assert_eq!(serde_json::to_value(&store.journal).unwrap(), snapshot);

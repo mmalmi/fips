@@ -121,6 +121,32 @@ pub(super) fn pending(store: &Store) -> Plan {
 }
 
 #[test]
+fn wallet_retirement_keeps_controller_reads_available() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, buyer, template) = fixture(root.path());
+    append(&mut store, &buyer, &template);
+    store.prepare_channel_retirement(&buyer, u64::MAX).unwrap();
+    let budget = Controller::capital(&store.journal).unwrap();
+    let result = ack(&pending(&store), &store.journal.policy.mint_url);
+    let shared = Mutex::new(store);
+    let retired = Store::resume_channel_retirement(&shared, &buyer, |_, _| {
+        let mut store = shared
+            .try_lock()
+            .map_err(|_| "wallet blocks controller reads")?;
+        assert_eq!(Controller::capital(&store.journal).unwrap(), budget);
+        assert!(
+            store.change(|_| Ok(())).is_err(),
+            "pending handoff must fence writes"
+        );
+        Ok(result)
+    });
+    assert_eq!(retired, Ok(1));
+    let mut store = shared.into_inner().unwrap();
+    store.change(|_| Ok(())).unwrap();
+    assert_eq!(Controller::capital(&store.journal).unwrap(), budget);
+}
+
+#[test]
 fn repeated_completed_channels_preserve_lifetime_budgets_and_reject_replays() {
     let root = tempfile::tempdir().unwrap();
     let (mut store, mut buyer, template) = fixture(root.path());
@@ -132,8 +158,7 @@ fn repeated_completed_channels_preserve_lifetime_budgets_and_reject_replays() {
         let p = pending(&store);
         let sdk = ack(&p, &store.journal.policy.mint_url);
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk))
                 .unwrap(),
             1
         );
@@ -163,9 +188,10 @@ fn repeated_completed_channels_preserve_lifetime_budgets_and_reject_replays() {
         let buyer_modified = std::fs::metadata(&buyer_file).unwrap().modified().unwrap();
         store.prepare_channel_retirement(&buyer, 10_000).unwrap();
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| panic!("idle wallet call"))
-                .unwrap(),
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| panic!(
+                "idle wallet call"
+            ))
+            .unwrap(),
             0
         );
         buyer.retire_channels(p.buyer.as_ref().unwrap()).unwrap();
@@ -232,9 +258,10 @@ fn interrupted_handoff_resumes_before_or_after_buyer_and_wallet_commit() {
                     _ => mismatch.token_refund_sat = 1,
                 }
                 assert!(
-                    store
-                        .resume_channel_retirement(&buyer, |_, _| Ok(mismatch))
-                        .is_err()
+                    Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(
+                        mismatch
+                    ))
+                    .is_err()
                 );
             }
         }
@@ -243,8 +270,7 @@ fn interrupted_handoff_resumes_before_or_after_buyer_and_wallet_commit() {
         drop(buyer);
         let buyer = BuyerAuthorizer::load(&root.path().join("buyer")).unwrap();
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| Ok(expected))
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(expected))
                 .unwrap(),
             1
         );
@@ -288,9 +314,7 @@ fn unfinished_expiring_and_legacy_funding_remain_and_corrupt_plans_fail() {
         );
     }
     let expected = ack(&p, &store.journal.policy.mint_url);
-    store
-        .resume_channel_retirement(&buyer, |_, _| Ok(expected))
-        .unwrap();
+    Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(expected)).unwrap();
     let mut legacy = template;
     legacy.funded = None;
     store.journal.funding.insert(legacy.id.clone(), legacy);
@@ -337,19 +361,19 @@ fn failed_writes_never_certify_unpersisted_cleanup_or_reset_spending() {
             let result = ack(&p, &store.journal.policy.mint_url);
             let mut called = false;
             assert!(
-                store
-                    .resume_channel_retirement(&buyer, |_, _| {
-                        called = true;
-                        Ok(result)
-                    })
-                    .is_err()
+                Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| {
+                    called = true;
+                    Ok(result)
+                })
+                .is_err()
             );
             assert_eq!(called, boundary == 2);
         }
         assert!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| panic!("failed writer reached wallet"))
-                .is_err()
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| panic!(
+                "failed writer reached wallet"
+            ))
+            .is_err()
         );
         assert!(store.change(|_| Ok(())).is_err());
         // Restore the last durable file, never the failed in-memory candidate.
@@ -360,8 +384,7 @@ fn failed_writes_never_certify_unpersisted_cleanup_or_reset_spending() {
         let buyer = BuyerAuthorizer::load(&root.path().join("buyer")).unwrap();
         store.prepare_channel_retirement(&buyer, 10_000).unwrap();
         let result = ack(&pending(&store), &store.journal.policy.mint_url);
-        store
-            .resume_channel_retirement(&buyer, |_, _| Ok(result))
+        Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(result))
             .unwrap();
         assert_eq!(buyer.remaining_budget_sat(), Some(63));
         assert_eq!(Controller::capital(&store.journal).unwrap().exposure_sat, 2);
@@ -401,9 +424,7 @@ fn buyer_schema_cannot_omit_or_downgrade_retired_obligations() {
     store.prepare_channel_retirement(&buyer, 10_000).unwrap();
     let p = pending(&store);
     let result = ack(&p, &store.journal.policy.mint_url);
-    store
-        .resume_channel_retirement(&buyer, |_, _| Ok(result))
-        .unwrap();
+    Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(result)).unwrap();
     drop(buyer);
     let path = root.path().join("buyer/buyer.json");
     let original: serde_json::Value =

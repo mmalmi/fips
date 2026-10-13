@@ -3,6 +3,7 @@ use super::*;
 use crate::buyer::channel_history::Plan as BuyerPlan;
 use cashu_service::{CashuRequestSequence, CashuSpilmanRetiredHistory};
 use sha2::{Digest, Sha256};
+use std::borrow::BorrowMut;
 
 #[cfg(test)]
 mod abandoned_tests;
@@ -34,7 +35,7 @@ pub(super) struct Totals {
     pub expires_through_unix: u64,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Plan {
     before: Totals,
     after: Totals,
@@ -250,18 +251,17 @@ impl Controller {
         let runtime = tokio::runtime::Handle::current();
         blocking(move || {
             let _guard = guard;
-            let mut store = store.lock().map_err(|_| "controller state poisoned")?;
             let timestamp = now()?;
             let mut prepare =
                 |ids: &[String]| runtime.block_on(control.receiver_retirement_plan(ids, timestamp));
             let mut retire = |plan: &cashu_service::CashuSpilmanReceiverRetirement| {
                 runtime.block_on(control.retire_receiver(plan))
             };
-            let mut count = store.resume_sales(&seller, &mut prepare, &mut retire)?;
+            let mut count = Store::resume_sales(&*store, &seller, &mut prepare, &mut retire)?;
             if select {
-                store.prepare_channel_retirement(&buyer, timestamp)?;
+                with_store(&*store, |s| s.prepare_channel_retirement(&buyer, timestamp))?;
             }
-            count += store.resume_channel_retirement(&buyer, |scope, through| {
+            count += Store::resume_channel_retirement(&*store, &buyer, |scope, through| {
                 runtime
                     .block_on(cashu_service::retire_cashu_spilman_wallet_channels(
                         &directory, scope, through,
@@ -269,9 +269,9 @@ impl Controller {
                     .map_err(|e| e.to_string())
             })?;
             if select {
-                count += store.retire_sales(&seller, timestamp, &mut prepare, &mut retire)?;
+                count +=
+                    Store::retire_sales(&*store, &seller, timestamp, &mut prepare, &mut retire)?;
             }
-            drop(store);
             // Completed financial owners leave durable paged custody. Visit one
             // page per upkeep turn, including turns with no newly retired channel.
             // The wallet guard still fences funding; the controller journal is free.
@@ -321,35 +321,66 @@ impl Store {
     }
 
     fn resume_channel_retirement(
-        &mut self,
+        shared: &Mutex<impl BorrowMut<Store>>,
         buyer: &BuyerAuthorizer,
         retire: impl FnOnce(&str, u64) -> Result<CashuSpilmanRetiredHistory, String>,
     ) -> Result<usize, String> {
-        if !self.ready {
-            return Err("controller journal suspended".into());
-        }
-        let Some(plan) = self
-            .journal
-            .history
-            .as_ref()
-            .and_then(|h| h.channels.as_ref())
-            .and_then(|h| h.pending.clone())
-        else {
+        let selected = with_store(shared, |store| {
+            if !store.ready {
+                return Err("controller journal suspended".into());
+            }
+            let plan = store
+                .journal
+                .history
+                .as_ref()
+                .and_then(|h| h.channels.as_ref())
+                .and_then(|h| h.pending.clone());
+            if let Some(p) = &plan {
+                p.validate(&store.journal)?;
+            }
+            Ok(plan.map(|p| (scope(&store.journal), p)))
+        })?;
+        let Some((scope, plan)) = selected else {
             return Ok(0);
         };
-        plan.validate(&self.journal)?;
-        if let Some(plan) = &plan.buyer {
-            buyer.retire_channels(plan).map_err(|e| e.to_string())?;
+        if let Some(buyer_plan) = &plan.buyer {
+            buyer
+                .retire_channels(buyer_plan)
+                .map_err(|e| e.to_string())?;
         }
-        let result = retire(&scope(&self.journal), plan.after.through)?;
-        if !plan.after.matches(&result, &self.journal.policy.mint_url) {
-            return Err("retired wallet evidence differs from controller".into());
-        }
-        let mut j = self.journal.clone();
-        plan.finish(&mut j)?;
-        Controller::validate_journal(&j, &j.policy, j.local)?;
-        self.journal = j;
-        self.persist()?;
-        Ok(plan.funding.len())
+        let result = retire(&scope, plan.after.through)?;
+        with_store(shared, |store| {
+            if !store.ready
+                || store
+                    .journal
+                    .history
+                    .as_ref()
+                    .and_then(|h| h.channels.as_ref())
+                    .and_then(|h| h.pending.as_ref())
+                    != Some(&plan)
+            {
+                return Err("channel retirement intent changed".into());
+            }
+            plan.validate(&store.journal)?;
+            if !plan.after.matches(&result, &store.journal.policy.mint_url) {
+                return Err("retired wallet evidence differs from controller".into());
+            }
+            let mut j = store.journal.clone();
+            plan.finish(&mut j)?;
+            Controller::validate_journal(&j, &j.policy, j.local)?;
+            store.journal = j;
+            store.persist()?;
+            Ok(plan.funding.len())
+        })
     }
+}
+
+/// Wallet work runs between these journal accesses. Pending financial intents
+/// continue to fence mutations until the original handoff is acknowledged.
+pub(super) fn with_store<T>(
+    shared: &Mutex<impl BorrowMut<Store>>,
+    job: impl FnOnce(&mut Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = shared.lock().map_err(|_| "controller state poisoned")?;
+    job((*guard).borrow_mut())
 }
