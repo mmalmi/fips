@@ -2,17 +2,16 @@
 
 **Status: active; production readiness is not established.** Reviewed on
 14 October 2026. Runtime `d6874c3bf` includes the r523 control idle-expiry fix.
-Current Linux, physical ARM64 router and Android checks use Cashu service
-`28630d4ba50f` and CDK `04c37d5a152a`. The r542 Android package builds the same
-production graph; r547 qualifies its paid phone transit and controlled forced
-idle, with original accounts preserved and owned test resources removed.
-SDK `831f6f2` adds the r546 aggregate test and measurements after the r541
-coverage in `39d25170deb6`. SDK `4a069bb` extends it in r549 to client-store
-admission across distinct neighbors; these changes affect tests and documentation
-only. r550 runs the existing SDK storage-pressure cases on an ARM64 Cudy and
-exposes a 72-second large-history retirement call. Earlier carrier and hardware
-results retain their recorded dependency graph; final target reconciliation
-remains open.
+SDK `6a025d0` reuses verified coin identities within capture pages. r553 qualifies
+its full SDK suite, r554 measures a 5.6% reduction in large-history retirement
+time on a Cudy, and r555 qualifies three ordinary Linux relay retirement cycles.
+r556 builds the same graph for ARM64; execution of that ordinary router binary
+remains pending. CDK stays at `04c37d5a152a`.
+
+The r540 router and r547 Android acceptance use SDK `28630d4ba50f`; their
+original accounts are preserved and owned test resources removed. Earlier
+carrier and hardware results retain their recorded graph. Final target
+reconciliation and the remaining acceptance below are still open.
 Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
@@ -44,7 +43,7 @@ Current implementation and deployment boundaries:
   emulation nor process interruption establishes physical flash power-loss safety.
 - The Android app embeds the same service and has customer and transit evidence.
   It remains an arm64 bench app, not a production wallet or general Internet VPN.
-  The r540 routers and r547 phone use the current runtime/dependency graph;
+  The r540 routers and r547 phone qualify their recorded runtime/dependency graph;
   outstanding acceptance below still prevents treating it as a qualified
   production release.
 - Acceptance uses fresh profiles and test money. Legacy profile migration is
@@ -99,9 +98,9 @@ under the unchanged 32 MiB client budget. This covers its completion reservation
 not a literally full 32 MiB file. Remaining reachable workflows and larger
 router-pressure profiles still need qualification. r550 now measures synthetic
 retirement, collection and capture on one Cudy; larger real channel/refund profiles
-remain separate. Its 72-second retirement observation requires investigation
-before accepting large-history maintenance on routers. A page-size limit does
-not itself bound a whole maintenance call.
+remain separate. Profiling and identity reuse reduce the large-history call to
+68.346 seconds in r554; its remaining maintenance cost is still open. A page-size
+limit does not itself bound a whole maintenance call.
 Reuse the existing harness for admission, rollback and reserved completion checks.
 
 ### Evidence and stopping rules
@@ -223,9 +222,38 @@ progress for these five cases, not a hard time or memory bound.
 SQLite files use `/tmp` on the router. Timings exclude fixture construction and
 later assertion/cleanup work; process peak memory includes startup and wallet
 open. They do not establish flash durability, flash performance, battery cost or
-paid forwarding under contention. The 72-second whole retirement call is a
-concrete remaining performance issue to profile, rather than treating the faster
-Linux observation as router acceptance.
+paid forwarding under contention. The 72-second whole retirement call remains
+an open router maintenance cost.
+
+Temporary stage timers in r551/r552 locate that cost on Linux and the Cudy.
+The router's 72.607-second diagnostic call spends 55.816 seconds capturing
+history. That includes 10.930 seconds reading the source journal/keysets,
+17.208 seconds validating the source and native operations, and 15.017 seconds
+reading and checking coin pages. These inner stages are included in the capture
+time. All 32 management checks pass, and independent postflight verifies the
+original configuration and removal of the test resources. The timers stay in
+private frozen source copies; these diagnostic wall times do not attribute CPU.
+
+SDK `6a025d0` reuses identities already verified within a coin page;
+live coin, ownership, scope and recovery checks remain in place. Its paired,
+uninstrumented Cudy run reduces 256-original retirement from 1.996 to 1.873
+seconds and 7,680-original retirement from 72.394 to 68.346 seconds (5.6%).
+Large-case peak VmHWM is 50.74 / 50.96 MiB before/after. All four cases retain
+their custody, capacity and reopen assertions; all 63 management checks pass.
+Independent postflight verifies unchanged configuration, stopped processes and
+removal of 60,464 KiB of owned scratch data. This modest measured saving leaves
+the whole-call maintenance cost open. Shared Linux measurements overlap and
+establish no consistent speedup there.
+
+r553 passes all 444 SDK workspace tests, strict all-target lint and formatting;
+three opt-in resource tests remain excluded from the default suite. The existing
+source-contract test also rejects a changed secret paired with its old identity.
+r555 passes three ordinary Linux daemon retirement cycles, affected strict lint
+and source-size checks. Independent accounting conserves all 384 test sats:
+371 remain in the original wallets and 13 are mint input fees, with no duplicate
+or mint-spent wallet originals. The complete original fixture is preserved and
+hash-verified. r556's ordinary ARM64 build uses the same frozen graph; its device
+acceptance and the Android rebuild remain pending.
 
 ## Performance acceptance
 
