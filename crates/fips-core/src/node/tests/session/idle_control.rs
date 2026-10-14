@@ -7,7 +7,34 @@ use std::panic::AssertUnwindSafe;
 
 #[test]
 fn cached_endpoint_send_preserves_ready_incoming_payload() {
-    run_large_stack_async_test("cached-send-ready-ingress", || async {
+    send_preserves_incoming_backlog(SendCase::EndpointSuccess);
+}
+
+#[test]
+fn failed_cached_endpoint_send_preserves_ready_incoming_payload() {
+    send_preserves_incoming_backlog(SendCase::EndpointFailure);
+}
+
+#[test]
+fn failed_link_send_preserves_ready_incoming_payload() {
+    send_preserves_incoming_backlog(SendCase::LinkFailure);
+}
+
+#[test]
+fn failed_session_control_send_preserves_ready_incoming_payload() {
+    send_preserves_incoming_backlog(SendCase::SessionControlFailure);
+}
+
+#[derive(Clone, Copy)]
+enum SendCase {
+    EndpointSuccess,
+    EndpointFailure,
+    LinkFailure,
+    SessionControlFailure,
+}
+
+fn send_preserves_incoming_backlog(case: SendCase) {
+    run_large_stack_async_test("send-ready-ingress", move || async move {
         let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
         let result = AssertUnwindSafe(async {
             populate_all_coord_caches(&mut nodes);
@@ -97,9 +124,60 @@ fn cached_endpoint_send_preserves_ready_incoming_payload() {
             .await
             .expect("incoming crypto completes");
 
-            send_endpoint_data_via_dataplane(&mut nodes[1].node, identities[0], vec![0x3c])
-                .await
+            let destination = *identities[0].node_addr();
+            let remote = nodes[1]
+                .node
+                .prepare_dataplane_cached_endpoint_send(&destination)
                 .unwrap();
+            let payload =
+                crate::node::EndpointDataPayload::from_packet_payload(vec![0x3c]).unwrap();
+            if matches!(case, SendCase::EndpointSuccess) {
+                nodes[1]
+                    .node
+                    .send_dataplane_prepared_endpoint_payloads(remote, vec![payload])
+                    .await
+                    .unwrap();
+            } else {
+                // A prepared native route can outlive transport registration.
+                // Remove only its carrier after admitting real incoming records;
+                // the production output sink must return its actual error.
+                let transport_id = nodes[1].transport_id;
+                let transport = nodes[1].node.transports.remove(&transport_id).unwrap();
+                let result = match case {
+                    SendCase::EndpointFailure => nodes[1]
+                        .node
+                        .send_dataplane_prepared_endpoint_payloads(remote, vec![payload])
+                        .await
+                        .map_err(|failure| failure.error),
+                    SendCase::LinkFailure => {
+                        nodes[1]
+                            .node
+                            .send_dataplane_fmp_link_plaintext(
+                                &destination,
+                                &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
+                                false,
+                            )
+                            .await
+                    }
+                    SendCase::SessionControlFailure => {
+                        nodes[1]
+                            .node
+                            .send_dataplane_fsp_coords_warmup(&destination)
+                            .await
+                    }
+                    SendCase::EndpointSuccess => unreachable!(),
+                };
+                nodes[1].node.transports.insert(transport_id, transport);
+                let expected_error = if matches!(case, SendCase::LinkFailure) {
+                    matches!(result, Err(NodeError::LocalRouteUnavailable(_)))
+                } else {
+                    matches!(result, Err(NodeError::SendFailed { .. }))
+                };
+                assert!(
+                    expected_error,
+                    "native transport output must reject the missing carrier: {result:?}"
+                );
+            }
             drain_to_quiescence(&mut nodes).await;
             let mut received = Vec::new();
             while let Ok(event) = endpoints[1].event_rx.try_recv() {
@@ -111,7 +189,7 @@ fn cached_endpoint_send_preserves_ready_incoming_payload() {
             }
             assert_eq!(
                 received, originals,
-                "cached send must retain every unrelated completed incoming payload"
+                "send completion must retain every unrelated completed incoming payload"
             );
         })
         .catch_unwind()

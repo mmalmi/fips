@@ -90,6 +90,12 @@ pub(in crate::node) struct CachedEndpointSendFailure {
 }
 
 impl DataplanePendingOutboundFailure {
+    fn into_turn(self) -> DataplaneLiveNodeTurn {
+        match self {
+            Self::TurnFailed(turn) | Self::Stopped { turn, .. } | Self::Exhausted(turn) => turn,
+        }
+    }
+
     fn source_policy_rejected(&self, send_token: u64) -> bool {
         let turn = match self {
             Self::TurnFailed(turn) | Self::Stopped { turn, .. } | Self::Exhausted(turn) => turn,
@@ -202,20 +208,23 @@ impl Node {
                     | DataplanePendingOutboundFailure::Exhausted(turn) => turn,
                     DataplanePendingOutboundFailure::Stopped { turn, .. } => turn,
                 };
-                if let Some(drop) = failure_turn
+                let error = if let Some(drop) = failure_turn
                     .output_drops()
                     .iter()
                     .find(|drop| drop.send_token() == Some(send_token))
                 {
-                    return Err(self.dataplane_fmp_output_drop_error(*node_addr, drop));
-                }
-                return Err(NodeError::SendFailed {
-                    node_addr: *node_addr,
-                    reason: Self::dataplane_pending_outbound_failure_from_stop(
-                        "FMP link send",
-                        &failure,
-                    ),
-                });
+                    self.dataplane_fmp_output_drop_error(*node_addr, drop)
+                } else {
+                    NodeError::SendFailed {
+                        node_addr: *node_addr,
+                        reason: Self::dataplane_pending_outbound_failure_from_stop(
+                            "FMP link send",
+                            &failure,
+                        ),
+                    }
+                };
+                self.defer_dataplane_control_turn(failure.into_turn());
+                return Err(error);
             }
         };
         self.defer_dataplane_control_turn(pending_turn);
@@ -345,12 +354,7 @@ impl Node {
                         &failure,
                     ),
                 };
-                let turn = match failure {
-                    DataplanePendingOutboundFailure::TurnFailed(turn)
-                    | DataplanePendingOutboundFailure::Stopped { turn, .. }
-                    | DataplanePendingOutboundFailure::Exhausted(turn) => turn,
-                };
-                (turn, Err(error))
+                (failure.into_turn(), Err(error))
             }
         };
         // This completion may also contain unrelated control ingress.
@@ -461,7 +465,11 @@ impl Node {
                 "queued endpoint data deferred without transport output".into()
             }
             Err(failure) => {
-                Self::dataplane_pending_outbound_failure_from_stop("queued endpoint data", &failure)
+                let reason = Self::dataplane_pending_outbound_failure_from_stop(
+                    "queued endpoint data", &failure,
+                );
+                self.defer_dataplane_control_turn(failure.into_turn());
+                reason
             }
         };
         Err(CachedEndpointSendFailure {
@@ -683,6 +691,7 @@ impl Node {
                     self.record_route_failure(*dest_addr, next_hop);
                     self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
                 }
+                self.defer_dataplane_control_turn(failure.into_turn());
                 return Err(error);
             }
         };
