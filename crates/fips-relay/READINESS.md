@@ -69,14 +69,16 @@ and r532 the four funded bootstrap, return, newcomer and contention scenarios.
 Physical mobility, resource and target acceptance remain separate requirements.
 
 The wallet resource audit has closed the custody archive's native completion-space
-gap. The r527/r530 benchmark measures one collection call through native admission
-refusal at the 16 MiB logical limit, preserving referenced coins and progressing
-without unreserved growth space. It now covers unfinished-operation scans and
-near-4-MiB plain-secret originals as well as retained receipts. Full capture
-traversal, parsed spending-condition expansion, remaining workflows and router
-resource observations still need qualification. A page-size limit does not by
-itself bound a whole maintenance call; reuse the existing harness for admission,
-rollback and reserved completion-capacity checks.
+gap. The r527/r530/r533 benchmark covers retained receipts, unfinished-operation
+scans, near-4-MiB plain secrets and parsed P2PK conditions at the 16 MiB logical
+limit. Collection preserves original ownership and progresses without unreserved
+growth space. r533 also observes both traversals of the shared capture routine,
+including reservation and all appends, with bounded native source lookup.
+The real sender callback separately rebuilds and validates its original-owner set
+per page; shared-capture timings do not qualify that cost. Whole retirement,
+remaining reachable workflows and router resource observations still need
+qualification. A page-size limit does not itself bound a whole maintenance call.
+Reuse the existing harness for admission, rollback and reserved completion checks.
 
 ### Evidence and stopping rules
 
@@ -103,6 +105,7 @@ rollback and reserved completion-capacity checks.
 | r529 paid carriers | Runtime `d6874c3bf` passes seven existing native scenarios: mixed UDP/TCP, configured and URL-seeded WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss. Paid/unpaid boundaries, exhaustion, renewal, restart and final conservation pass; successful cases recover 2,688 test sats. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples. Strict service lint, formatting and source-size checks pass. | Linux process/virtual-link evidence with unchanged runtime and accepted dependencies. Ethernet runs in an isolated namespace. CA injection is limited to the generated-CA fixture. Loss tests deliver 39,895–39,914 of 42,000 payloads per direction while counting every-twentieth-frame loss; they do not measure maximum throughput or physical mobility. |
 | r531 quotes and free routes | Six existing cases pass on the current graph: paid/free quote composition over native neighbor control, an explicitly free destination across three relays, arbitrary free destinations, free price-selection recovery and rejection of a paid prefix under a zero-price ceiling. The ordinary daemon's free-route cases preserve monetary journals through restart and make no mint requests. | Unchanged production and test source. Linux loopback evidence without funded wallets; it does not replace the four funded admission scenarios above. Artifact/log hashes, stopped processes and removal of successful temporary state are verified in the private `work/admission-current-r531` bundle. |
 | r532 funded admission | Both unfunded-recipient bootstrap/earned-return cases, fresh paying-neighbor admission under full-wallet pressure, and mixed free/paid contention pass on the current ordinary runtime. All 2,816 test sats are conserved. The contention case delivers all 24 paid payloads and reconciles payment while the free stream is active; background-queue overflow is observed and free traffic resumes after refill. Strict affected-target lint, formatting and source-size checks pass. | Test-state retention is shared and extended; runtime unchanged. Linux loopback contention is pinned to two CPUs with mandatory observed background pressure. This establishes local scheduling, not Wi-Fi airtime or unrestricted-identity fairness. Sources/artifacts/logs and successful cleanup are verified in `work/funded-admission-r532`. |
+| r533 capture and decoded conditions | SDK `d3b98e4` extends the existing benchmark with 16 passing profiles; 443 workspace tests pass (two opt-in tests ignored), with strict all-target lint. Shared capture preserves 16,384 originals across 128 pages, finishes at its admitted limit, survives reopen and retains exact ownership/totals. Full-history P2PK collection preserves protected originals and progresses without extra capacity. | Production source unchanged. Shared capture takes 1.59 s with peak reported VmHWM 25.96 MiB; 50,000-key conditions peak at 77.50 MiB. Timings exclude caller send-plan and refund verification. Finite x86-64 observations, not hard heap bounds or router qualification. Source/artifact/log hashes and stopped processes are verified in `work/history-resources-r533`. |
 | r527/r530 collection pressure | The existing native SQLite benchmark now covers receipts, unfinished-operation ownership and large plain-secret originals. SDK `d7ac1a7` adds only test/fixture changes; all 22 r530 profiles pass alongside the earlier 12 receipt profiles. Protected originals and exact owners survive full logical capacity; eligible originals collect without raising limits or resetting lifetime totals. Required workspace verification passes 443 tests (two opt-in tests ignored), plus strict all-target lint. | At the 16 MiB admission limit, full unfinished-operation histories take 363–464 ms per call with reported VmHWM below 30 MiB. Near-4-MiB plain-secret profiles peak at 65.70 MiB. These are finite x86-64 wall-time/kernel observations, not CPU attribution, hard heap bounds, parsed-condition expansion, full-capture, router or physical-storage qualification. Private evidence remains in `work/history-resources-r530`. |
 | r528 accounting paths | Current runtime/dependency graph passes 58 core forwarding/admission checks, 336 relay unit checks, 37 bootstrap/buyer/ledger/durable checks and five service-startup checks. Failed-bind, replay, completion, source authority and bounded-wait coverage are checked by exact test names. The stale buyer fixture now gives its history/pending checks a 20-sat channel while retaining the 10-sat spending budget; strict affected lint, formatting and source-size checks pass. | Runtime unchanged. The original 11-pass/one-failure buyer run remains rejected; only its fixture needed correction. This covers contract/startup paths, not the complete mixed paid-carrier or physical acceptance matrix. |
 | r526 Wi-Fi cadence | The corrected `d6874c3bf` ARM64 build passes all eight trials over native Ethernet/802.11s: all 93,696 payloads arrive, all 16 channels settle, all 3,072 test sats are collected and 2,109 management checks pass. Strict delivery/accounting/cost validation and independent restoration/archive checks pass. [Current radio costs](CADENCE-RESULTS.md#wi-fi-matrix-with-the-control-expiry-fix--14-october-2026) cover all four policies. | Two repeats per policy on three stationary routers with one paid relay. Scoped CPU, logical journal writes and local carrier bytes exclude shared/physical costs. No one-way latency, maximum-throughput or power-cut claim. |
@@ -276,15 +279,17 @@ full-capacity regression completes two overlapping captures across reopen while
 unrelated writes fill the remaining wallet. This reserves logical native payload,
 not filesystem blocks. Receiver proof release retains its separate bounded queue.
 
-The remaining audit must include all reachable workflows/stores/queries and
-aggregate memory, disk and maintenance work. Proof capture and owner/receipt scans
-can traverse many bounded pages in one call; r515 removes the controller lock
-from that work but does not make the work constant-time. The r527 experiment
-measures retained-receipt scans without claiming those other workloads are bounded.
-See [history](HISTORY.md) and the matching SDK's `docs/wallet-history.md` for exact
-ownership/limit contracts and the reproducible pressure command. Private evidence
-in `work/history-pressure-r527` binds the measurements, source graph and gates;
-the earlier fixture that attempted to exceed capacity retains its rejected result.
+The remaining audit must include reachable workflows/stores/queries and aggregate
+memory, disk and maintenance work. Proof capture and owner/receipt scans can
+traverse many bounded pages in one call; r515 removes the controller lock from
+that work but does not make the work constant-time. r527/r530/r533 measure receipt
+and operation scans, decoded large originals and shared capture. The native
+sender callback's repeated source authorization and Spilman refund verification
+remain separate from those shared-capture observations. See [history](HISTORY.md)
+and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts
+and the reproducible pressure command. Private evidence in the named resource
+bundles binds sources, measurements and gates; failed profiles retain their
+original rejected results.
 
 ### Recovery record read bounds
 
