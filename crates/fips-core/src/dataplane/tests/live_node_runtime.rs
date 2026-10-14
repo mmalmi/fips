@@ -374,15 +374,20 @@
 
     #[tokio::test]
     async fn deferred_session_packet_precedes_fresh_packet_after_route_install() {
-        deferred_session_packet_precedes_new_ingress(false).await;
+        deferred_session_packet_precedes_new_ingress(false, false).await;
     }
 
     #[tokio::test]
     async fn deferred_session_packet_precedes_ready_link_completion_after_route_install() {
-        deferred_session_packet_precedes_new_ingress(true).await;
+        deferred_session_packet_precedes_new_ingress(true, false).await;
     }
 
-    async fn deferred_session_packet_precedes_new_ingress(ready_link: bool) {
+    #[tokio::test]
+    async fn retained_handshake_proof_does_not_hide_older_session_from_completion() {
+        deferred_session_packet_precedes_new_ingress(true, true).await;
+    }
+
+    async fn deferred_session_packet_precedes_new_ingress(ready_link: bool, retained_proof: bool) {
         let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let source = *source_peer.node_addr();
         let local = NodeAddr::from_bytes([0x78; 16]);
@@ -455,6 +460,22 @@
                 OwnerConfig::new(1, 8).with_source_peer(source_peer),
                 key,
             );
+            if retained_proof {
+                live_node.deferred_raw_ingress.push_front((
+                    DataplaneRawIngress::from_live_received(
+                        PacketProtocol::Fmp,
+                        ReceivedPacket::with_timestamp(
+                            TransportId::new(178),
+                            TransportAddr::from_string("198.51.100.178:9000"),
+                            PacketBuffer::new(fmp_encrypted_wire(
+                                178, 0, 0, &178_000u32.to_le_bytes(), key,
+                            )),
+                            178_000,
+                        ),
+                    ),
+                    crate::time::now_ms(),
+                ));
+            }
             let datagram = crate::protocol::SessionDatagram::new(
                 source,
                 local,
@@ -509,7 +530,7 @@
                             tun_limit: 0,
                             endpoint_tx: &endpoint_io.event_tx,
                             transports: &transports,
-                            crypto_limit: 8,
+                            crypto_limit: if retained_proof { 1 } else { 8 },
                             transport_send_batch_packets: 8,
                         },
                     )
@@ -534,7 +555,7 @@
         .await
         .expect("both genuine encrypted records finish authentication");
         assert_eq!(delivered, [0, 1]);
-        assert!(live_node.deferred_raw_ingress.is_empty());
+        assert_eq!(live_node.deferred_raw_ingress.len(), usize::from(retained_proof));
     }
 
     #[tokio::test]

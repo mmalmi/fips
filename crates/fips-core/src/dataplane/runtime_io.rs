@@ -12,9 +12,13 @@ impl DataplaneTurnDriver {
         }
         let mut admitted = 0;
         let admitted_before = summary.inbound_admitted;
-        // Retry only the bounded snapshot present before this turn. A record
-        // still waiting for its handshake retains its age and cannot spin here.
-        for _ in 0..limit.min(deferred_raw_ingress.len()) {
+        // Visit the initial snapshot once, retrying at most the turn allowance.
+        // Retained handshake proofs do not spend a session continuation slot.
+        let mut retried = 0;
+        for _ in 0..deferred_raw_ingress.len() {
+            if retried == limit {
+                break;
+            }
             let (packet, deferred_at_ms) = deferred_raw_ingress.pop_front().unwrap();
             // A nested send has no raw ingress allowance. Leave handshake
             // proofs retained for the receive loop if that send is canceled.
@@ -23,6 +27,7 @@ impl DataplaneTurnDriver {
                 deferred_raw_ingress.push_back((packet, deferred_at_ms));
                 continue;
             }
+            retried += 1;
             if let Some(packet) = Self::raw_ingress_socket_packet(
                 packet,
                 routes,
