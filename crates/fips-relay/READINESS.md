@@ -64,10 +64,13 @@ closed financial recovery and the remaining observations listed here.
 | Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. | Retain the 600-line relay/Android and 1000-line integration limits; remove superseded code/tests without losing distinct failure coverage. |
 
 The wallet resource audit has closed the custody archive's native completion-space
-gap. Continue through the remaining workflows and stores, checking admission,
-rollback and reserved completion capacity through the existing harness. A page-size
-limit does not by itself bound a whole maintenance call. Do not add another
-retirement loop or duplicate simulation framework to hide that distinction.
+gap. The r527 retained-receipt benchmark now measures one collection call through
+actual admission refusal at the 16 MiB logical limit, preserving referenced coins
+and progressing without unreserved growth space. Large individual proof records,
+unfinished-operation scans, full capture traversal and the remaining workflows
+still need aggregate resource qualification. A page-size limit does not by itself
+bound a whole maintenance call; reuse the existing harness for admission, rollback
+and reserved completion-capacity checks.
 
 ### Evidence and stopping rules
 
@@ -91,6 +94,7 @@ retirement loop or duplicate simulation framework to hide that distinction.
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
+| r527 retained-receipt pressure | SDK `c6db9e4` adds an opt-in native SQLite benchmark; all 12 optimized Linux runs pass. Queue/archive collection preserves every referenced original and makes progress at full logical capacity, including 11,070/11,400 retained receipts. Full workspace verification passes 443 tests (two opt-in tests ignored), plus strict all-target lint. | Storage-only fixtures, unchanged production code. At the full 16 MiB admission limit, a call takes 59–103 ms and reported process VmHWM stays below 28 MiB. These are x86-64 wall-time/kernel observations with small proof records, not CPU attribution, hard memory bounds, router or physical-storage qualification. |
 | r528 accounting paths | Current runtime/dependency graph passes 58 core forwarding/admission checks, 336 relay unit checks, 37 bootstrap/buyer/ledger/durable checks and five service-startup checks. Failed-bind, replay, completion, source authority and bounded-wait coverage are checked by exact test names. The stale buyer fixture now gives its history/pending checks a 20-sat channel while retaining the 10-sat spending budget; strict affected lint, formatting and source-size checks pass. | Runtime unchanged. The original 11-pass/one-failure buyer run remains rejected; only its fixture needed correction. This covers contract/startup paths, not the complete mixed paid-carrier or physical acceptance matrix. |
 | r526 Wi-Fi cadence | The corrected `d6874c3bf` ARM64 build passes all eight trials over native Ethernet/802.11s: all 93,696 payloads arrive, all 16 channels settle, all 3,072 test sats are collected and 2,109 management checks pass. Strict delivery/accounting/cost validation and independent restoration/archive checks pass. [Current radio costs](CADENCE-RESULTS.md#wi-fi-matrix-with-the-control-expiry-fix--14-october-2026) cover all four policies. | Two repeats per policy on three stationary routers with one paid relay. Scoped CPU, logical journal writes and local carrier bytes exclude shared/physical costs. No one-way latency, maximum-throughput or power-cut claim. |
 | r524 native cadence | Runtime `d6874c3bf` passes the unchanged eight-trial comparison and strict delivery/accounting/cost validation. All 285,696 payloads arrive and all 40,960 test sats are collected. Processes stop and original settled profiles are retained. [Current native costs](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026) cover idle, bursty, steady and high-rate workloads. | Two repeats per policy on clean Linux loopback links. Scoped CPU, logical relay writes and local payment-service transport counters exclude shared/physical costs. |
@@ -255,8 +259,12 @@ not filesystem blocks. Receiver proof release retains its separate bounded queue
 The remaining audit must include all reachable workflows/stores/queries and
 aggregate memory, disk and maintenance work. Proof capture and owner/receipt scans
 can traverse many bounded pages in one call; r515 removes the controller lock
-from that work but does not make the work constant-time. See [history](HISTORY.md)
-and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts.
+from that work but does not make the work constant-time. The r527 experiment
+measures retained-receipt scans without claiming those other workloads are bounded.
+See [history](HISTORY.md) and the matching SDK's `docs/wallet-history.md` for exact
+ownership/limit contracts and the reproducible pressure command. Private evidence
+in `work/history-pressure-r527` binds the measurements, source graph and gates;
+the earlier fixture that attempted to exceed capacity retains its rejected result.
 
 ### Recovery record read bounds
 
