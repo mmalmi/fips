@@ -6,6 +6,124 @@ use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
 #[test]
+fn cached_endpoint_send_preserves_ready_incoming_payload() {
+    run_large_stack_async_test("cached-send-ready-ingress", || async {
+        let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+        let result = AssertUnwindSafe(async {
+            populate_all_coord_caches(&mut nodes);
+            let identities = nodes
+                .iter()
+                .map(|n| PeerIdentity::from_pubkey_full(n.node.identity().pubkey_full()))
+                .collect::<Vec<_>>();
+            let mut endpoints = nodes
+                .iter_mut()
+                .map(|n| n.node.attach_endpoint_data_io(8).unwrap())
+                .collect::<Vec<_>>();
+            nodes[0]
+                .node
+                .initiate_session(*identities[1].node_addr(), identities[1].pubkey_full())
+                .await
+                .unwrap();
+            wait_for_session_established(
+                &mut nodes,
+                0,
+                identities[1].node_addr(),
+                Duration::from_secs(5),
+                "cached send incoming ownership",
+            )
+            .await;
+            drain_to_quiescence(&mut nodes).await;
+            assert!(
+                nodes[0]
+                    .node
+                    .dataplane
+                    .owner_active_path(crate::dataplane::OwnerId::fsp_node(
+                        *identities[1].node_addr()
+                    ),)
+                    .unwrap()
+                    .is_some()
+            );
+
+            // Admit a real receive backlog with one crypto dispatch, then send
+            // in the other direction while its completions remain outstanding.
+            let originals = (0..8).map(|tag| vec![tag; 1200]).collect::<Vec<_>>();
+            let (packet_tx, mut packet_rx) = crate::transport::packet_channel(8);
+            for original in &originals {
+                send_endpoint_data_via_dataplane(
+                    &mut nodes[0].node,
+                    identities[1],
+                    original.clone(),
+                )
+                .await
+                .unwrap();
+                let packet =
+                    tokio::time::timeout(Duration::from_secs(1), nodes[1].packet_rx.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                packet_tx.send(packet).unwrap();
+            }
+            let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
+            let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+            let (_tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+            let endpoint_tx = nodes[1].node.endpoint_events.sender().unwrap();
+            let mut io = crate::node::handlers::rx_loop_dataplane_io(
+                &mut packet_rx,
+                &mut fast_rx,
+                &mut endpoint_rx,
+                &mut tun_rx,
+                &endpoint_tx,
+            );
+            let turn = nodes[1]
+                .node
+                .drain_dataplane_turn_with_firsts(
+                    &mut io,
+                    crate::dataplane::DataplaneLiveTurnFirsts::default(),
+                    crate::node::handlers::RxLoopDataplaneTurnLimits::new(8, 0, 0, 1),
+                )
+                .await;
+            assert!(turn.drops().is_empty() && turn.raw_ingress_drops().is_empty());
+            assert!(
+                turn.fsp_session_ingress_count() < originals.len(),
+                "receive backlog remains"
+            );
+            nodes[1].node.defer_dataplane_control_turn(turn);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                let ready = nodes[1].node.dataplane.readiness_notify();
+                while !nodes[1].node.dataplane.has_runnable_output_work() {
+                    ready.notified().await;
+                }
+            })
+            .await
+            .expect("incoming crypto completes");
+
+            send_endpoint_data_via_dataplane(&mut nodes[1].node, identities[0], vec![0x3c])
+                .await
+                .unwrap();
+            drain_to_quiescence(&mut nodes).await;
+            let mut received = Vec::new();
+            while let Ok(event) = endpoints[1].event_rx.try_recv() {
+                endpoints[1].event_rx.release_messages(event.messages.len());
+                for delivered in event.messages {
+                    assert_eq!(delivered.source_peer, identities[0]);
+                    received.push(delivered.payload.as_slice().to_vec());
+                }
+            }
+            assert_eq!(
+                received, originals,
+                "cached send must retain every unrelated completed incoming payload"
+            );
+        })
+        .catch_unwind()
+        .await;
+        cleanup_nodes(&mut nodes).await;
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    });
+}
+
+#[test]
 fn retained_ingress_does_not_complete_a_nested_send_wait() {
     run_large_stack_async_test("retained-ingress-send-wait", || async {
         let mut nodes = run_tree_test(2, &[(0, 1)], false).await;

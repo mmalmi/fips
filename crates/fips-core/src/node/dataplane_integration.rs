@@ -451,8 +451,15 @@ impl Node {
         let unsent = self.take_deferred_pending_endpoint_payloads(send_token);
         self.requeue_deferred_dataplane_endpoint_batches();
         let reason = match result {
-            Ok(_) if unsent.is_empty() => return Ok(()),
-            Ok(_) => "queued endpoint data deferred without transport output".into(),
+            Ok((_, turn)) => {
+                // Sending can retire unrelated receives from the same worker.
+                // Keep their dispatch ownership after the send receipt arrives.
+                self.defer_dataplane_control_turn(turn);
+                if unsent.is_empty() {
+                    return Ok(());
+                }
+                "queued endpoint data deferred without transport output".into()
+            }
             Err(failure) => {
                 Self::dataplane_pending_outbound_failure_from_stop("queued endpoint data", &failure)
             }
