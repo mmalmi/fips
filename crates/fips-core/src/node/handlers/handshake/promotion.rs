@@ -189,6 +189,23 @@ impl Node {
                 && connection.confirms_refresh_of(existing_peer);
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
+            // A fresh responder installs its receiver before advertising Msg2.
+            // If that reply never arrives, transport priority must not strand
+            // the peer on this unconfirmed path after another carrier proves
+            // possession of its candidate keys. Established sessions and rekey
+            // handoffs retain their existing arbitration.
+            let confirmed_initial_fallback = inbound_alternate_path
+                && connection.confirms_refresh_of(existing_peer)
+                && !existing_peer.fmp_mmp_is_initiator()
+                && existing_peer.handshake_msg2().is_some()
+                && !existing_peer.rekey_in_progress()
+                && existing_peer.pending_new_session().is_none()
+                && !existing_peer.is_draining()
+                && remote_epoch.is_some()
+                && existing_peer.remote_epoch() == remote_epoch
+                && self
+                    .dataplane_fmp_link_metrics(&peer_node_addr, std::time::Instant::now())
+                    .is_some_and(|metrics| !metrics.current_epoch_authenticated);
             let existing_payload_path_unusable = self
                 .session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms)
                 || self
@@ -242,6 +259,7 @@ impl Node {
                 || authenticated_inbound_connection_refresh
                 || late_inbound_refresh_for_active_outbound
                 || confirmed_same_path_refresh
+                || confirmed_initial_fallback
                 || if outbound_alternate_path {
                     outbound_alternate_path_wins
                 } else if inbound_alternate_path {

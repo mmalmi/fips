@@ -14,6 +14,9 @@ mod rotation;
 #[path = "candidates/capacity_per_peer.rs"]
 mod capacity_per_peer;
 
+#[path = "candidates/initial_fallback.rs"]
+mod initial_fallback;
+
 struct Candidate {
     link: LinkId,
     index: SessionIndex,
