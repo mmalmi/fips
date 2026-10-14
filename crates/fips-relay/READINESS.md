@@ -3,8 +3,10 @@
 **Status: active; production readiness is not established.** Reviewed on
 14 October 2026. Runtime `d6874c3bf` includes the r523 control idle-expiry fix.
 Physical r520/r521 results use runtime `711b68a3d` with the subsequent wallet
-changes qualified in r519/r520 below. The accepted graph
-includes Cashu service `6a90ccc40da2` and CDK `04c37d5a152a`. Use the complete
+changes qualified in r519/r520 below. The current Linux candidate includes Cashu
+service `28630d4ba50f` and CDK `04c37d5a152a`. Earlier carrier and hardware results
+retain their recorded dependency graph; final target reconciliation remains open.
+Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
 
@@ -74,12 +76,13 @@ scans, near-4-MiB plain secrets and parsed P2PK conditions at the 16 MiB logical
 limit. Collection preserves original ownership and progresses without unreserved
 growth space. r533 also observes both traversals of the shared capture routine,
 including reservation and all appends, with bounded native source lookup.
-The real sender callback separately rebuilds and validates its original-owner set
-per page. r534 measures the actual native retirement path and finds sharply rising
-cost, reaching about 144 s for 7,680 originals; its safety checks pass. This cost
-needs targeted optimization and comparison before accepting whole-retirement
-performance. Spilman refund verification, remaining reachable workflows and router
-resource observations still need qualification. A page-size limit does not itself bound a whole maintenance call.
+r534 exposed repeated source validation in actual native retirement, reaching
+about 144 s for 7,680 originals. Capture-scoped source reuse reduces that case to
+4.312–4.314 s in r535, with comparable peak memory and live ownership/coin checks.
+r539 adds the changed-keyset regression; r537 qualifies three real FIPS retirement
+cycles on the new SDK. Spilman refund resource costs, remaining reachable workflows
+and router observations still need qualification. A page-size limit does not
+itself bound a whole maintenance call.
 Reuse the existing harness for admission, rollback and reserved completion checks.
 
 ### Evidence and stopping rules
@@ -107,7 +110,8 @@ Reuse the existing harness for admission, rollback and reserved completion check
 | r529 paid carriers | Runtime `d6874c3bf` passes seven existing native scenarios: mixed UDP/TCP, configured and URL-seeded WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss. Paid/unpaid boundaries, exhaustion, renewal, restart and final conservation pass; successful cases recover 2,688 test sats. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples. Strict service lint, formatting and source-size checks pass. | Linux process/virtual-link evidence with unchanged runtime and accepted dependencies. Ethernet runs in an isolated namespace. CA injection is limited to the generated-CA fixture. Loss tests deliver 39,895–39,914 of 42,000 payloads per direction while counting every-twentieth-frame loss; they do not measure maximum throughput or physical mobility. |
 | r531 quotes and free routes | Six existing cases pass on the current graph: paid/free quote composition over native neighbor control, an explicitly free destination across three relays, arbitrary free destinations, free price-selection recovery and rejection of a paid prefix under a zero-price ceiling. The ordinary daemon's free-route cases preserve monetary journals through restart and make no mint requests. | Unchanged production and test source. Linux loopback evidence without funded wallets; it does not replace the four funded admission scenarios above. Artifact/log hashes, stopped processes and removal of successful temporary state are verified in the private `work/admission-current-r531` bundle. |
 | r532 funded admission | Both unfunded-recipient bootstrap/earned-return cases, fresh paying-neighbor admission under full-wallet pressure, and mixed free/paid contention pass on the current ordinary runtime. All 2,816 test sats are conserved. The contention case delivers all 24 paid payloads and reconciles payment while the free stream is active; background-queue overflow is observed and free traffic resumes after refill. Strict affected-target lint, formatting and source-size checks pass. | Test-state retention is shared and extended; runtime unchanged. Linux loopback contention is pinned to two CPUs with mandatory observed background pressure. This establishes local scheduling, not Wi-Fi airtime or unrestricted-identity fairness. Sources/artifacts/logs and successful cleanup are verified in `work/funded-admission-r532`. |
-| r534 actual native retirement | An isolated diagnostic extends the same benchmark through `retire_owned_send_requests`: six profiles (two repeats each) and all 18 existing source-ownership contracts pass. Reopen preserves exact unspent originals and lifetime send costs; later collection preserves the retirement total. | Runtime unchanged; diagnostic fixture extensions are not yet integrated. 256 / 2,048 / 7,680 originals take 0.272–0.281 / 10.698–10.709 / 143.911–143.993 s, with peak VmHWM 22.62 / 33.08 / 67.18 MiB. This exposes an unresolved scaling cost consistent with rebuilding and validating the full source on each page. It excludes Spilman refund verification and hardware qualification. Verified raw evidence is in `work/native-retirement-r534`. |
+| r534/r535 native retirement; r539 source checks | SDK `28630d4` integrates the whole-retirement benchmark and capture-scoped reuse. Six profiles pass, preserving exact originals and lifetime totals through reopen and later collection. All 443 workspace tests pass (two opt-in tests ignored), plus strict all-target lint and 19 focused source contracts on identical production code. Changed journal/keyset data triggers full validation; native owners and requested coins remain live checks. | 256 / 2,048 / 7,680 originals now take 0.137–0.149 / 0.994–1.008 / 4.312–4.314 s. The largest baseline was 143.911–143.993 s: at least 33.36 times faster, with peak VmHWM 67.18 / 67.14 MiB before/after. Linux wall-time observations, not CPU attribution, hard heap bounds or router qualification. The failed r536 fixture setup is retained; r539 adds its missing mint parent. Sources, hashes and logs remain in the matching `work/native-retirement-r534`, `work/capture-cache-r535` and `work/capture-cache-keysets-r539` bundles. |
+| r537 FIPS retirement on the optimized SDK | The ordinary Linux daemon passes three channel settlement/expiry/restart cycles at 16 MiB native capacity, preserving original refunds and refusing another purchase at the original lifetime limit. Strict affected lint and source-size checks pass. Independent mint/wallet accounting finds 371 test sats in wallets and 13 in mint input fees, accounting for all 384 issued sats without duplicate or mint-spent wallet originals. | Existing test assertions are unchanged; its original fixture is retained and hash-verified in `work/capture-cache-relay-r537`. Source/dependency identities and stopped processes are verified. This checks actual FIPS integration, not physical power loss, router resource use or the remaining Spilman refund scaling audit. |
 | r533 capture and decoded conditions | SDK `d3b98e4` extends the existing benchmark with 16 passing profiles; 443 workspace tests pass (two opt-in tests ignored), with strict all-target lint. Shared capture preserves 16,384 originals across 128 pages, finishes at its admitted limit, survives reopen and retains exact ownership/totals. Full-history P2PK collection preserves protected originals and progresses without extra capacity. | Production source unchanged. Shared capture takes 1.59 s with peak reported VmHWM 25.96 MiB; 50,000-key conditions peak at 77.50 MiB. Timings exclude caller send-plan and refund verification. Finite x86-64 observations, not hard heap bounds or router qualification. Source/artifact/log hashes and stopped processes are verified in `work/history-resources-r533`. |
 | r527/r530 collection pressure | The existing native SQLite benchmark now covers receipts, unfinished-operation ownership and large plain-secret originals. SDK `d7ac1a7` adds only test/fixture changes; all 22 r530 profiles pass alongside the earlier 12 receipt profiles. Protected originals and exact owners survive full logical capacity; eligible originals collect without raising limits or resetting lifetime totals. Required workspace verification passes 443 tests (two opt-in tests ignored), plus strict all-target lint. | At the 16 MiB admission limit, full unfinished-operation histories take 363–464 ms per call with reported VmHWM below 30 MiB. Near-4-MiB plain-secret profiles peak at 65.70 MiB. These are finite x86-64 wall-time/kernel observations, not CPU attribution, hard heap bounds, parsed-condition expansion, full-capture, router or physical-storage qualification. Private evidence remains in `work/history-resources-r530`. |
 | r528 accounting paths | Current runtime/dependency graph passes 58 core forwarding/admission checks, 336 relay unit checks, 37 bootstrap/buyer/ledger/durable checks and five service-startup checks. Failed-bind, replay, completion, source authority and bounded-wait coverage are checked by exact test names. The stale buyer fixture now gives its history/pending checks a 20-sat channel while retaining the 10-sat spending budget; strict affected lint, formatting and source-size checks pass. | Runtime unchanged. The original 11-pass/one-failure buyer run remains rejected; only its fixture needed correction. This covers contract/startup paths, not the complete mixed paid-carrier or physical acceptance matrix. |
@@ -286,9 +290,10 @@ The remaining audit must include reachable workflows/stores/queries and aggregat
 memory, disk and maintenance work. Proof capture and owner/receipt scans can
 traverse many bounded pages in one call; r515 removes the controller lock from
 that work but does not make the work constant-time. r527/r530/r533 measure receipt
-and operation scans, decoded large originals and shared capture. The native
-sender callback's repeated source authorization and Spilman refund verification
-remain separate from those shared-capture observations. See [history](HISTORY.md)
+and operation scans, decoded large originals and shared capture. r534/r535 measure
+actual native sender retirement and reduce repeated source authorization through
+capture-scoped reuse. Spilman refund resource costs remain separately unqualified.
+See [history](HISTORY.md)
 and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts
 and the reproducible pressure command. Private evidence in the named resource
 bundles binds sources, measurements and gates; failed profiles retain their
