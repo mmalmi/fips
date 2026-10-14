@@ -9,8 +9,10 @@ idle, with original accounts preserved and owned test resources removed.
 SDK `831f6f2` adds the r546 aggregate test and measurements after the r541
 coverage in `39d25170deb6`. SDK `4a069bb` extends it in r549 to client-store
 admission across distinct neighbors; these changes affect tests and documentation
-only. Earlier carrier and hardware results retain their recorded dependency
-graph; final target reconciliation remains open.
+only. r550 runs the existing SDK storage-pressure cases on an ARM64 Cudy and
+exposes a 72-second large-history retirement call. Earlier carrier and hardware
+results retain their recorded dependency graph; final target reconciliation
+remains open.
 Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
@@ -95,8 +97,11 @@ and lifetime totals. r549 adds client-store admission saturation across distinct
 neighbors: four 1,024-sat channels complete their refunds and retire 4,097 originals
 under the unchanged 32 MiB client budget. This covers its completion reservations,
 not a literally full 32 MiB file. Remaining reachable workflows and larger
-router-pressure profiles still need qualification. A page-size limit does not
-itself bound a whole maintenance call.
+router-pressure profiles still need qualification. r550 now measures synthetic
+retirement, collection and capture on one Cudy; larger real channel/refund profiles
+remain separate. Its 72-second retirement observation requires investigation
+before accepting large-history maintenance on routers. A page-size limit does
+not itself bound a whole maintenance call.
 Reuse the existing harness for admission, rollback and reserved completion checks.
 
 ### Evidence and stopping rules
@@ -130,6 +135,7 @@ Reuse the existing harness for admission, rollback and reserved completion check
 | r541 sender refunds | SDK `39d25170deb6` extends the existing real-mint regression through retirement of 1,023 refund coins. The fragmented case retains coverage of 2,049 native originals plus 31 refund coins. All four observed runs preserve exact custody, costs, reopen and replay rejection; an independent archived-wallet audit conserves 6,144 test sats with no pending wallet operations. All 444 workspace tests and strict all-target lint pass; two opt-in tests are ignored by the default suite. | Whole-call observations, including wallet open, take 0.675–0.678 s / 0.726–0.784 s, with maximum process VmHWM 31.92 / 22.63 MiB. These use fresh processes on shared x86-64 Linux, default native wallets without configured capacity, and one channel per case. They do not qualify a full 16 MiB wallet, aggregate refunds, hard heap/deadline bounds or routers. Existing child-process helpers are shared; production code is unchanged. Original fixtures, hashes and stopped-process checks remain in `work/refund-retirement-r541`. |
 | r546 aggregate refunds | SDK `831f6f2` adds one opt-in production-path test. Both runs admit six 256-sat channels, refuse and cancel the seventh request, then refund and retire the complete original prefix under the unchanged 16 MiB native limit. Each preserves 1,559 original coins and lifetime totals through reopen/replay. Independent database audits conserve all 8,192 test sats; 444 workspace tests, strict lint and formatting pass (three opt-in tests ignored by default). | Fresh-process whole retirement calls take 0.675–0.706 s with peak VmHWM up to 34.06 MiB on shared x86-64 Linux. The client file is 4,161,457 bytes; this covers admission saturation, not a full 32 MiB client store, physical disk pressure or router memory. A 1,024-output opening exceeded the native limit before funding. Failed setup fixtures retain their original financial evidence. Inputs, stopped processes, original archives and custody checks remain in `work/aggregate-refund-r546`; production code is unchanged. |
 | r549 distinct-neighbor refund pressure | SDK `4a069bb` reuses the aggregate fixture with separate receivers and two admission profiles. Native pressure admits six 256-sat channels; client pressure admits four 1,024-sat channels. Each refuses and cancels the next request, finishes admitted refunds and retires the full prefix without changing its budgets or lifetime totals. All three runs preserve exact originals; independent audits account for all 36,864 test sats with no unfinished wallet operations. All 444 workspace tests, strict all-target lint and formatting pass (three opt-in tests ignored by default). | The native case retires 1,559 originals in 0.696 s with peak VmHWM 32.40 MiB; two client cases retire 4,097 originals in 2.663–2.685 s with peak up to 56.75 MiB. The client case has a 64 MiB native allowance and a 10,903,407-byte client file: it fills admission reservations, not a literal 32 MiB file. Shared x86-64 observations do not qualify device memory or physical disk exhaustion. Original fixtures, stopped processes and source/artifact/log hashes are verified in `work/aggregate-neighbors-r549`; production code is unchanged. |
+| r550 router storage pressure | Five existing SDK cases pass on one ARM64 Cudy with unchanged production sources, original ownership/capacity assertions and no mint or monetary operations. All 81 management checks pass; no memory-limit or OOM event occurs. Independent postflight verifies unchanged accounts/network configuration, stopped test processes, restored resource settings and archived diagnostics before removing 30,388 KiB of owned scratch data. | [Measurements below](#router-wallet-resource-observations) cover synthetic SQLite histories on `/tmp`, not flash, concurrent paid forwarding or large real refunds. Retiring 7,680 originals takes 72.315 s; this remains an unresolved router maintenance cost. Artifact/source/log hashes and the separately preserved failed launcher attempt remain in `work/router-pressure-r550`. |
 | r542/r547 Android | The current ordinary runtime and optimized SDK build for arm64 Android with core defaults, measurements and no wallet simulation. Strict target lint, all ten Java lifecycle tests, Android lint, APK signature and packaged-native checks pass. Physical r547 rejects unpaid transit and delivers four MiB while foreground, background and in 48.25 seconds of forced Doze, using the same process and four original paid channels. All 512 test sats are collected and 585 management checks pass. | Controlled LAN/UDP adjacency on the charging, ADB-connected phone. Natural deep idle, battery use and physical mobile encounters remain unqualified. Independent postflight verifies original accounts, normal Wi-Fi and router baselines; closed profiles are archived and the temporary app removed. Artifact/source hashes remain in `work/android-capture-r542`; device and financial closure remains in `work/phone-capture-r547`. |
 | r533 capture and decoded conditions | SDK `d3b98e4` extends the existing benchmark with 16 passing profiles; 443 workspace tests pass (two opt-in tests ignored), with strict all-target lint. Shared capture preserves 16,384 originals across 128 pages, finishes at its admitted limit, survives reopen and retains exact ownership/totals. Full-history P2PK collection preserves protected originals and progresses without extra capacity. | Production source unchanged. Shared capture takes 1.59 s with peak reported VmHWM 25.96 MiB; 50,000-key conditions peak at 77.50 MiB. Timings exclude caller send-plan and refund verification. Finite x86-64 observations, not hard heap bounds or router qualification. Source/artifact/log hashes and stopped processes are verified in `work/history-resources-r533`. |
 | r527/r530 collection pressure | The existing native SQLite benchmark now covers receipts, unfinished-operation ownership and large plain-secret originals. SDK `d7ac1a7` adds only test/fixture changes; all 22 r530 profiles pass alongside the earlier 12 receipt profiles. Protected originals and exact owners survive full logical capacity; eligible originals collect without raising limits or resetting lifetime totals. Required workspace verification passes 443 tests (two opt-in tests ignored), plus strict all-target lint. | At the 16 MiB admission limit, full unfinished-operation histories take 363–464 ms per call with reported VmHWM below 30 MiB. Near-4-MiB plain-secret profiles peak at 65.70 MiB. These are finite x86-64 wall-time/kernel observations, not CPU attribution, hard heap bounds, parsed-condition expansion, full-capture, router or physical-storage qualification. Private evidence remains in `work/history-resources-r530`. |
@@ -188,6 +194,38 @@ The physical helper takes an actual SQLite writer transaction without changing
 rows. Its deadline, signal handler and independent device guard release it.
 See [history coordination](HISTORY.md) and
 [the shared test](../../testing/chaos/sim/wifi_retirement.py).
+
+### Router wallet resource observations
+
+r550 cross-builds the existing SDK pressure test from `4a069bb` for ARM64 musl.
+It uses the relay's wallet/Spilman feature set plus the test's required
+`credit-store` feature, with no mint simulation. Each case constructs synthetic,
+unsigned storage records, then measures the production maintenance call in a
+fresh process. Original-owner preservation, reopen/replay and eventual collection
+assertions remain unchanged. These are SDK tests, not the ordinary relay daemon.
+
+| Workload | Measured maintenance, s | Process peak VmHWM, MiB |
+| --- | ---: | ---: |
+| Retire 256 originals across two sends | 2.011 | 13.75 |
+| Retire 7,680 originals across 60 sends | 72.315 | 50.83 |
+| Collect with 8,083 unfinished operations at native capacity | 11.377 | 20.96 |
+| Collect a 50,000-key proof with 4,301 receipt owners at native capacity | 8.248 | 51.58 |
+| Capture 16,384 originals across 128 pages | 22.651 | 18.23 |
+
+The native allowance is 16 MiB. Collection fixtures fill admission and then set
+the limit to their original charged size; capture removes unreserved headroom
+only after reserving its complete output. The separate test-process group has a
+192 MiB guard including fixture construction and child processes; it records no
+limit hits or OOM events. Management checks take at most 0.216 s and observed
+available system memory stays above 236 MiB. These observations establish useful
+progress for these five cases, not a hard time or memory bound.
+
+SQLite files use `/tmp` on the router. Timings exclude fixture construction and
+later assertion/cleanup work; process peak memory includes startup and wallet
+open. They do not establish flash durability, flash performance, battery cost or
+paid forwarding under contention. The 72-second whole retirement call is a
+concrete remaining performance issue to profile, rather than treating the faster
+Linux observation as router acceptance.
 
 ## Performance acceptance
 
