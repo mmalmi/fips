@@ -471,12 +471,21 @@ impl DataplaneTurnDriver {
         // A handshake may have installed a route since the preceding turn.
         // Admit those older records before ready link completions can unwrap
         // newer records for the same session, or fresh ingress can bypass them.
-        self.admit_deferred_raw_ingress(
+        let deferred_admitted = self.admit_deferred_raw_ingress(
             routes,
             deferred_raw_ingress,
-            raw_ingress_limit.max(crypto_limit),
+            if raw_ingress_limit == 0 {
+                crypto_limit
+            } else {
+                raw_ingress_limit
+            },
+            raw_ingress_limit > 0,
             &mut admission_summary,
         );
+        // Waiting-for-route records must not consume the allowance needed to
+        // receive their handshake. Already routable records share the ordinary
+        // raw budget with fresh ingress instead of doubling admission work.
+        let raw_ingress_limit = raw_ingress_limit.saturating_sub(deferred_admitted);
         // Ready completions are already owner-ordered work. Let their local
         // continuations consume this turn's bounded crypto budget before
         // admitting fresh raw/outbound packets.

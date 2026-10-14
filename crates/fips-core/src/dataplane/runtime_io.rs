@@ -4,16 +4,25 @@ impl DataplaneTurnDriver {
         routes: &mut DataplaneLiveRouteTable,
         deferred_raw_ingress: &mut VecDeque<DataplaneDeferredRawIngress>,
         limit: usize,
+        admit_handshake_proofs: bool,
         summary: &mut DataplaneRuntimeSummary,
-    ) {
+    ) -> usize {
         if deferred_raw_ingress.is_empty() || limit == 0 {
-            return;
+            return 0;
         }
+        let mut admitted = 0;
         let admitted_before = summary.inbound_admitted;
         // Retry only the bounded snapshot present before this turn. A record
         // still waiting for its handshake retains its age and cannot spin here.
         for _ in 0..limit.min(deferred_raw_ingress.len()) {
             let (packet, deferred_at_ms) = deferred_raw_ingress.pop_front().unwrap();
+            // A nested send has no raw ingress allowance. Leave handshake
+            // proofs retained for the receive loop if that send is canceled.
+            // Session records still precede ready link continuations there.
+            if packet.protocol == PacketProtocol::Fmp && !admit_handshake_proofs {
+                deferred_raw_ingress.push_back((packet, deferred_at_ms));
+                continue;
+            }
             if let Some(packet) = Self::raw_ingress_socket_packet(
                 packet,
                 routes,
@@ -22,6 +31,7 @@ impl DataplaneTurnDriver {
                 deferred_raw_ingress,
                 Some(deferred_at_ms),
             ) {
+                admitted += 1;
                 self.admit_socket_packet(packet, summary);
             }
         }
@@ -31,6 +41,7 @@ impl DataplaneTurnDriver {
                 summary.inbound_admitted.saturating_sub(admitted_before) as u64,
             );
         }
+        admitted
     }
 
     fn admit_live_node_route_table_turn_with_firsts<RI>(

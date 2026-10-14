@@ -299,6 +299,80 @@
     }
 
     #[tokio::test]
+    async fn pending_outbound_turn_retains_deferred_handshake_proof() {
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source = *source_peer.node_addr();
+        let owner = OwnerId::fmp_node(source);
+        let transport_id = TransportId::new(179);
+        let mut node = crate::Node::new(crate::Config::new()).unwrap();
+        let endpoint_io = node.attach_endpoint_data_io(8).unwrap();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        register_keyed_owner(
+            &mut live_node.driver,
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+            179,
+        );
+        register_fmp_session_ingress_route(
+            &mut live_node.routes,
+            transport_id,
+            179,
+            owner,
+            *node.node_addr(),
+        );
+        live_node.defer_fmp_handshake_proof(ReceivedPacket::with_timestamp(
+            transport_id,
+            TransportAddr::from_string("198.51.100.179:9000"),
+            PacketBuffer::new(fmp_encrypted_wire(179, 0, 0, &179_000u32.to_le_bytes(), 179)),
+            179_000,
+        ));
+        let mut empty_raw = VecDeque::<DataplaneRawIngress>::new();
+        // Bootstrap sends can suspend or fail before the outer receive loop
+        // handles their turn. A turn with no raw budget must leave the retained
+        // handshake proof available to that loop, even if its caller drops it.
+        let turn = live_node
+            .pump_turn_with_firsts_and_transport_batch(
+                None,
+                &mut empty_raw,
+                0,
+                DataplaneLiveOutboundFirsts::default(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: None,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: None,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets: 8,
+                },
+            )
+            .await;
+        assert_eq!(turn.summary().inbound_admitted(), 0);
+        drop(turn);
+        assert_eq!(live_node.deferred_raw_ingress.len(), 1);
+        let turn = live_node
+            .pump_completion_output_turn_with_transport_batch(
+                false,
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: None,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: None,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets: 8,
+                },
+            )
+            .await;
+        assert_eq!(turn.summary().inbound_admitted(), 1);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(live_node.deferred_raw_ingress.is_empty());
+    }
+
+    #[tokio::test]
     async fn deferred_session_packet_precedes_fresh_packet_after_route_install() {
         deferred_session_packet_precedes_new_ingress(false).await;
     }
@@ -426,7 +500,7 @@
                     .pump_turn_with_firsts_and_transport_batch(
                         None,
                         &mut raw_source,
-                        8,
+                        if ready_link { 0 } else { 1 },
                         DataplaneLiveOutboundFirsts::default(),
                         DataplaneLiveTurnIo {
                             endpoint_data_rx: None,
@@ -440,6 +514,12 @@
                         },
                     )
                     .await;
+                if !ready_link {
+                    assert!(
+                        turn.summary().inbound_admitted() <= 1,
+                        "deferred and fresh raw ingress must share the admission budget",
+                    );
+                }
                 assert!(turn.drops().is_empty());
                 assert!(turn.raw_ingress_drops().is_empty());
                 assert!(turn.output_drops().is_empty());

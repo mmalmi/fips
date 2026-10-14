@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay protection, ordered completion, and worker offload for batches or busy pools.
 - Admit session records waiting for handshake keys before newer ingress and link
   completions, preventing startup packet reordering while retaining bounded retries.
+  Share admission limits with fresh packets and retain handshake proofs across
+  nested send cancellation.
 
 ## [0.4.99] - 2026-10-13
 
