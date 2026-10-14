@@ -187,6 +187,9 @@ fn send_preserves_incoming_backlog(case: SendCase) {
                     received.push(delivered.payload.as_slice().to_vec());
                 }
             }
+            // Deferred turns can dispatch after a newer ordinary receive turn.
+            // Check exact datagram ownership, without imposing stream ordering.
+            received.sort_unstable();
             assert_eq!(
                 received, originals,
                 "send completion must retain every unrelated completed incoming payload"
