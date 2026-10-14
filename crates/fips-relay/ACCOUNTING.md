@@ -118,6 +118,32 @@ Newer formats validate completed totals, unfinished records, channel sums and
 obligation limits on load. Legacy files cannot opt into the new tariff merely
 by adding a field to an old-format packet table.
 
+## Native path inventory
+
+The service installs its transit policy and source observer on the same FIPS
+endpoint for every supported adapter. Network validation accepts UDP, TCP,
+native Ethernet and WebSocket (with optional TLS), and rejects unsupported
+adapters before operation. Transport selection does not select a different tariff.
+
+| Path | Accounting boundary | Existing regression coverage |
+| --- | --- | --- |
+| Individual and batched transit | Both enter `prepare_session_datagram` after authenticated link receive. Route/TTL checks precede policy admission; the resulting `ForwardingPermit` follows the packet into the send queue. | Core `node::tests::session::forwarding_policy` checks multi-hop gating, captured-frame replay and fresh authenticated attempts. |
+| Deferred crypto/transport completion | During normal process execution, the permit completes once as submitted or unconfirmed, including send errors, cancellation, expiry and teardown. A transport receipt is local evidence only. | Core `node::handlers::forwarding::forwarding_fast_path_tests` covers delayed/out-of-order completion, aborts and queue ownership. |
+| Temporary admission shortage | A bounded wait retains the authenticated packet without a payment token. Rechecking current policy is required before sending; peer/policy replacement cancels old waits. | Core forwarding wait tests cover count/byte bounds, cancellation, delayed crypto and allowance wakeups. |
+| Locally originated traffic | `RouteObserver` records the sender's actual envelope and local submission. Transit source addresses cannot create this evidence. Early reservations and post-seal observations share completion ownership. | Core `node::tests::session::originated_observer` and source-route tests; relay `buyer` integration tests cover authority, persistence failure and budget bounds. |
+| Bootstrap, free destinations and return traffic | Explicit policies grant bounded exceptions. Ordinary payload cannot gain a free priority class by imitating a control shape; reverse spending needs its own authority. | Relay bootstrap/free-route/return-allowance unit checks, `bootstrap` integration tests and core background-lane completion tests. |
+| Service startup and wallet recovery access | The normal endpoint stays closed to forwarding until ready. The offline mint endpoint installs its separate restricted policy; it does not open a spending wallet or relay worker. | Service startup tests cover failed binds without spending; the mesh-mint service test exercises offline balance/export through the mesh. |
+
+The implementation boundaries are in
+[service setup](src/service.rs), [adapter validation](src/service/network.rs),
+[native forwarding](../fips-core/src/node/handlers/forwarding.rs),
+[permit completion](../fips-core/src/node/forwarding_policy.rs) and
+[source observation](../fips-core/src/node/originated_observer.rs).
+The table maps code to tests; it is not a claim that every historical test used
+the current binary. [Readiness](READINESS.md) records the qualified graph and
+remaining carrier/device checks. Direct local delivery does not incur a transit
+charge; ordinary IP forwarding outside the FIPS service is outside this policy.
+
 ## Verification scope
 
 Focused checks exercise 10,000 repeated-content attempts beyond a deliberately

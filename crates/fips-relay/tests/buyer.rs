@@ -222,7 +222,9 @@ fn compact_evidence_is_bounded(billing: fips_relay::ledger::BillingBasis) {
         },
     )
     .unwrap();
-    let terms = channel("bounded");
+    let mut terms = channel("bounded");
+    // Exercise history and pending limits independently of channel capacity.
+    terms.capacity_sat = 20;
     buyer.accept_channel(address(2), terms.clone(), 0).unwrap();
     let mut route = quote("stream", &terms);
     route.billing = billing;
