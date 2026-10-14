@@ -415,7 +415,30 @@ links as immediate route readiness. It does not promise seamless recovery.
 
 For failed-test diagnostics, set `FIPS_RELAY_TEST_LOG=fips_core::node=debug` and
 `FIPS_RELAY_TEST_LOG_DIR` to an existing private directory. Failed tests save only
-node logs there. Normal test wallets and account state remain temporary.
+node logs in that directory. Mixed-transport fixtures also print their private
+temporary recovery directories and retain the original mint, wallets and daemon
+accounts when setup, traffic or settlement fails. Successful fixtures remove
+their temporary state after checking final test-fund conservation. Keep failed
+financial owners intact until recovery is completed or explicitly retained;
+rerunning a test creates separate accounts and does not settle the failed ones.
+
+The opt-in [sustained carrier cases](tests/service/mixed_transport/sustained_loss.rs)
+send 42,000 one-kilobyte packets per direction at 140 packets/second while dropping
+every twentieth carrier frame. They check actual delivery, paid-neighbor
+continuity, key rotation, channel renewal and final conservation:
+
+```sh
+cargo test -p fips-relay --test service \
+  mixed_transport::sustained_loss::sustained_udp_loss_keeps_renewing_paid_neighbors_live \
+  -- --exact --ignored --nocapture
+```
+
+The corresponding `sustained_ethernet_loss_keeps_discovered_paid_neighbors_live`
+case needs Linux, `ip`, `nft` and a fresh network namespace containing only an
+enabled loopback interface. Run the compiled test executable in that namespace;
+the fixture refuses the host namespace and creates its own disposable interfaces.
+Its initial discovery topology changes before the paid workload starts, so a pass
+does not establish route failover during paid traffic or physical movement.
 
 ## Payment-store write failures
 

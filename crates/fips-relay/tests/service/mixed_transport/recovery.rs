@@ -97,9 +97,16 @@ impl MixedBench {
                             .unwrap()
                     })
                     .sum();
+                let authorized_sat = buyer["channels"][id.as_str().unwrap()]["authorized_sat"]
+                    .as_u64()
+                    .unwrap();
+                assert!(authorized_sat <= evidence.div_ceil(1_000));
+                // A signed whole-sat payment can reach the renewal threshold
+                // just before the underlying submitted-byte price does.
+                let renewal_evidence = evidence.max(authorized_sat.checked_mul(1_000).unwrap());
                 let policy = &self.configs[node].terms.controller;
                 assert!(
-                    u128::from(evidence) * 100
+                    u128::from(renewal_evidence) * 100
                         >= u128::from(policy.channel_capacity_sat)
                             * 1000
                             * u128::from(policy.renewal.as_ref().unwrap().at_capacity_percent),

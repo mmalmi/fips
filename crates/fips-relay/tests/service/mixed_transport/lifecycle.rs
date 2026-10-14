@@ -11,7 +11,7 @@ pub(super) enum Workload {
 }
 
 pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
-    let root = tempfile::tempdir().unwrap();
+    let mut root = super::retained_tempdir();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -107,6 +107,8 @@ pub(super) async fn run(second_hop: SecondHop, workload: Workload) {
     if !passed {
         Arc::try_unwrap(bench).ok().unwrap().into_inner().preserve();
         eprintln!("retained failed mint at {}", root.keep().display());
+    } else {
+        root.disable_cleanup(false);
     }
     assert!(
         passed,

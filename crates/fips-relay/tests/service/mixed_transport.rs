@@ -90,9 +90,17 @@ async fn mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_
     mixed_daemons_preserve_paid_limits(SecondHop::WebSocketSelfSigned).await;
 }
 
+fn retained_tempdir() -> tempfile::TempDir {
+    let mut root = tempfile::tempdir().unwrap();
+    root.disable_cleanup(true);
+    eprintln!("test recovery directory: {}", root.path().display());
+    root
+}
+
 async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
+    // Keep both mint and daemon originals if setup, traffic or settlement fails.
+    let mut root = retained_tempdir();
     tokio::time::timeout(Duration::from_secs(240), async {
-        let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -122,6 +130,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             .map(|gate| format!("http://{}", gate.address))
             .unwrap_or_else(|| mint.url().to_owned());
         let mut bench = MixedBench::start_with_second_hop(&mint_url, &network, second_hop).await;
+        bench.retain_on_drop(true);
         bench.set_stage("unfunded-admission");
         bench.assert_carriers().await;
         service_carrier::assert_status(&bench, false).await;
@@ -350,9 +359,12 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         }
         assert_eq!(total, 384);
         assert!(network.accounting().unwrap().is_conserved());
+        eprintln!("mixed carrier: all 384 test sats conserved");
+        bench.retain_on_drop(false);
     })
     .await
     .expect("mixed native transport acceptance deadline");
+    root.disable_cleanup(false);
 }
 
 async fn assert_replacement_accounts(

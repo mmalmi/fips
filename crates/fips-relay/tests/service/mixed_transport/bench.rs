@@ -99,7 +99,7 @@ impl MixedBench {
         second_hop: SecondHop,
         configure: impl Fn(usize, &mut ServiceConfig),
     ) -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let mut root = super::retained_tempdir();
         let ethernet = (second_hop == SecondHop::Ethernet).then(EthernetNetwork::new);
         let udp: Vec<_> = (0..3)
             .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
@@ -325,6 +325,7 @@ impl MixedBench {
         if ethernet.is_none() {
             ready(&configs, &paths, &npubs, &mut children).await;
         }
+        root.disable_cleanup(false);
         Self {
             _root: root,
             configs,
@@ -339,6 +340,10 @@ impl MixedBench {
             next_probe: AtomicU64::new(1),
             stage: "other-mixed-fixture",
         }
+    }
+
+    pub(super) fn retain_on_drop(&mut self, retain: bool) {
+        self._root.disable_cleanup(retain);
     }
 
     pub(super) fn preserve(self) {

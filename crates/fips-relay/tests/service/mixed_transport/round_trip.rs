@@ -130,14 +130,29 @@ pub(super) async fn assert_paid_round_trip(bench: &MixedBench, id: &str) {
     })
     .await
     .expect("both existing channels advance credited payment for the fixed round trip");
+    let after_states = bench.states().await;
     for node in [0, 2] {
-        let state = request(&bench.configs[node], &AdminRequest::Status)
-            .await
-            .unwrap();
+        let state = &after_states[node];
         assert_eq!(state["history"], before_states[node]["history"]);
+        let old: FundingBudget =
+            serde_json::from_value(before_states[node]["funding_budget"].clone()).unwrap();
+        let current: FundingBudget =
+            serde_json::from_value(state["funding_budget"].clone()).unwrap();
+        // An earlier channel refund can finish during this cohort. It may
+        // release capital, but cannot add a reservation, debit or active channel.
+        let refund = current
+            .wallet_refunded_sat
+            .checked_sub(old.wallet_refunded_sat)
+            .unwrap();
+        assert!(current.locked_sat <= old.locked_sat);
         assert_eq!(
-            state["funding_budget"],
-            before_states[node]["funding_budget"]
+            current,
+            FundingBudget {
+                wallet_refunded_sat: current.wallet_refunded_sat,
+                locked_sat: current.locked_sat,
+                exposure_sat: old.exposure_sat.checked_sub(refund).unwrap(),
+                ..old
+            }
         );
         assert_eq!(
             state["purchases"][0]["channel"]["id"],
