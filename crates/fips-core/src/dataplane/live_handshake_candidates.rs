@@ -47,7 +47,7 @@ impl DataplaneLiveNode {
     /// so the active owner authenticates, accounts for, and dispatches it once.
     pub(crate) fn defer_fmp_handshake_proof(&mut self, packet: ReceivedPacket) {
         self.deferred_raw_ingress.push_back((
-            DataplaneRawIngress::from_live_received(PacketProtocol::Fmp, packet),
+            DataplaneRawIngress::from_live_received(PacketProtocol::Fmp, packet).into(),
             crate::time::now_ms(),
         ));
         self.readiness_notify().notify_one();

@@ -241,7 +241,7 @@
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
         live_node
             .deferred_raw_ingress
-            .push_back((raw, crate::time::now_ms()));
+            .push_back((raw.into(), crate::time::now_ms()));
 
         assert!(live_node.has_deferred_raw_ingress());
         assert!(!live_node.has_runnable_work());
@@ -272,7 +272,7 @@
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
         live_node
             .deferred_raw_ingress
-            .push_back((raw, crate::time::now_ms()));
+            .push_back((raw.into(), crate::time::now_ms()));
 
         for _ in 0..16 {
             let _turn = live_node
@@ -296,6 +296,8 @@
             live_node.has_deferred_raw_ingress(),
             "first session data must remain queued until its handshake installs an owner",
         );
+        assert!(!live_node.has_runnable_work());
+        assert!(futures::FutureExt::now_or_never(live_node.readiness_notify().notified()).is_none());
     }
 
     #[tokio::test]
@@ -321,10 +323,12 @@
             owner,
             *node.node_addr(),
         );
+        let mut proof_payload = 179_000u32.to_le_bytes().to_vec();
+        proof_payload.push(crate::protocol::LinkMessageType::Heartbeat.to_byte());
         live_node.defer_fmp_handshake_proof(ReceivedPacket::with_timestamp(
             transport_id,
             TransportAddr::from_string("198.51.100.179:9000"),
-            PacketBuffer::new(fmp_encrypted_wire(179, 0, 0, &179_000u32.to_le_bytes(), 179)),
+            PacketBuffer::new(fmp_encrypted_wire(179, 0, 0, &proof_payload, 179)),
             179_000,
         ));
         let mut empty_raw = VecDeque::<DataplaneRawIngress>::new();
@@ -374,20 +378,46 @@
 
     #[tokio::test]
     async fn deferred_session_packet_precedes_fresh_packet_after_route_install() {
-        deferred_session_packet_precedes_new_ingress(false, false).await;
+        deferred_session_packet_precedes_new_ingress(false, None, 1, false).await;
     }
 
     #[tokio::test]
     async fn deferred_session_packet_precedes_ready_link_completion_after_route_install() {
-        deferred_session_packet_precedes_new_ingress(true, false).await;
+        deferred_session_packet_precedes_new_ingress(true, None, 1, false).await;
     }
 
     #[tokio::test]
     async fn retained_handshake_proof_does_not_hide_older_session_from_completion() {
-        deferred_session_packet_precedes_new_ingress(true, true).await;
+        deferred_session_packet_precedes_new_ingress(true, Some(0), 1, false).await;
     }
 
-    async fn deferred_session_packet_precedes_new_ingress(ready_link: bool, retained_proof: bool) {
+    #[tokio::test]
+    async fn admitted_handshake_proof_does_not_hide_older_session_from_completion() {
+        deferred_session_packet_precedes_new_ingress(true, Some(1), 1, false).await;
+    }
+
+    #[tokio::test]
+    async fn session_backlog_exceeding_allowance_precedes_ready_link_completion() {
+        deferred_session_packet_precedes_new_ingress(true, Some(1), 2, false).await;
+    }
+
+    #[tokio::test]
+    async fn session_backlog_exceeding_allowance_precedes_fresh_raw_ingress() {
+        deferred_session_packet_precedes_new_ingress(false, None, 2, false).await;
+    }
+
+    #[tokio::test]
+    async fn session_backlog_exceeding_allowance_precedes_fast_ingress() {
+        deferred_session_packet_precedes_new_ingress(false, None, 2, true).await;
+    }
+
+    async fn deferred_session_packet_precedes_new_ingress(
+        ready_link: bool,
+        proof_raw_budget: Option<usize>,
+        older_count: usize,
+        fast_packet: bool,
+    ) {
+        let retained_proof = proof_raw_budget.is_some();
         let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let source = *source_peer.node_addr();
         let local = NodeAddr::from_bytes([0x78; 16]);
@@ -405,7 +435,11 @@
                 ReceivedPacket::with_timestamp(
                     TransportId::new(178),
                     TransportAddr::from_string("198.51.100.178:9000"),
-                    PacketBuffer::new(fsp_encrypted_wire(counter, 0, &inner, key)),
+                    PacketBuffer::new(fsp_encrypted_wire(
+                        counter,
+                        if fast_packet { crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT } else { 0 },
+                        &inner, key,
+                    )),
                     178_000,
                 ),
             )
@@ -416,7 +450,13 @@
         let endpoint_io = node.attach_endpoint_data_io(8).unwrap();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
-        let mut raw_source = VecDeque::from([raw(0)]);
+        let mut raw_source = (0..older_count as u64).map(raw).collect::<VecDeque<_>>();
+        let blocked_source = NodeAddr::from_bytes([0x79; 16]);
+        let unrelated_backlog = usize::from(older_count > 1);
+        if unrelated_backlog > 0 {
+            raw_source.push_front(raw(255).with_fsp_source(blocked_source));
+        }
+        let mut fast_ingress = None;
         let first = live_node
             .pump_turn_with_firsts_and_transport_batch(
                 None,
@@ -437,7 +477,21 @@
             .await;
         assert!(raw_source.is_empty());
         assert_eq!(first.summary().inbound_admitted(), 0);
-        assert_eq!(live_node.deferred_raw_ingress.len(), 1);
+        assert_eq!(live_node.deferred_raw_ingress.len(), older_count + unrelated_backlog);
+        if older_count > 1 {
+            // Exercise a partial retry before the route exists. The original
+            // records must keep their relative order across that waiting turn.
+            live_node.pump_turn_with_firsts_and_transport_batch(
+                None, &mut raw_source, 1, DataplaneLiveOutboundFirsts::default(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: None, endpoint_limit: 0,
+                    tun_outbound_rx: None, tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx, transports: &transports,
+                    crypto_limit: 1, transport_send_batch_packets: 8,
+                },
+            ).await;
+            assert_eq!(live_node.deferred_raw_ingress.len(), older_count + unrelated_backlog);
+        }
 
         // The handshake installs keys while the first encrypted record is
         // waiting. A newly arrived record must not overtake that original.
@@ -461,6 +515,11 @@
                 key,
             );
             if retained_proof {
+                let mut proof_payload = 178_000u32.to_le_bytes().to_vec();
+                proof_payload.push(crate::protocol::LinkMessageType::Heartbeat.to_byte());
+                register_fmp_session_ingress_route(
+                    &mut live_node.routes, TransportId::new(178), 178, link_owner, local,
+                );
                 live_node.deferred_raw_ingress.push_front((
                     DataplaneRawIngress::from_live_received(
                         PacketProtocol::Fmp,
@@ -468,18 +527,18 @@
                             TransportId::new(178),
                             TransportAddr::from_string("198.51.100.178:9000"),
                             PacketBuffer::new(fmp_encrypted_wire(
-                                178, 0, 0, &178_000u32.to_le_bytes(), key,
+                                178, 0, 0, &proof_payload, key,
                             )),
                             178_000,
                         ),
-                    ),
+                    ).into(),
                     crate::time::now_ms(),
                 ));
             }
             let datagram = crate::protocol::SessionDatagram::new(
                 source,
                 local,
-                raw(1).payload.as_slice().to_vec(),
+                raw(older_count as u64).payload.as_slice().to_vec(),
             );
             let mut plaintext = 178_000u32.to_le_bytes().to_vec();
             plaintext.extend_from_slice(&datagram.encode());
@@ -511,17 +570,42 @@
                 |slot| driver.mover.stage_retire_slot(slot),
             );
             wait_for_live_worker_completion(&live_node).await;
+        } else if fast_packet {
+            let transport_id = TransportId::new(178);
+            let remote = TransportAddr::from_string("198.51.100.178:9000");
+            live_node.routes.set_established_fast_ingress_direct_fsp_sources(
+                direct_fsp_sources(transport_id, remote.clone(), source, 1400),
+            );
+            let (sink, mut fast_rx) = DataplaneEstablishedFastIngressSink::channel(
+                live_node.routes.established_fast_ingress_snapshot(), 8,
+            );
+            let mut packets = vec![ReceivedPacket::with_timestamp(
+                transport_id, remote, raw(older_count as u64).payload, 178_000,
+            )];
+            assert_eq!(sink.try_ingest_batch(&mut packets), 1);
+            assert!(packets.is_empty());
+            fast_ingress = Some(fast_rx.try_recv().unwrap());
         } else {
-            raw_source.push_back(raw(1));
+            raw_source.push_back(raw(older_count as u64));
         }
         let mut delivered = Vec::new();
+        let mut proof_controls = 0;
+        let mut first_turn = true;
+        let readiness = live_node.readiness_notify();
+        // The first turn consumes the already-ready completion. Further turns
+        // must wake themselves as the real receive loop does, with no new
+        // packet source or maintenance tick to rescue a retained backlog.
+        while futures::FutureExt::now_or_never(readiness.notified()).is_some() {}
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while delivered.len() < 2 {
+            while delivered.len() <= older_count {
+                if !first_turn {
+                    readiness.notified().await;
+                }
                 let turn = live_node
                     .pump_turn_with_firsts_and_transport_batch(
-                        None,
+                        fast_ingress.take(),
                         &mut raw_source,
-                        if ready_link { 0 } else { 1 },
+                        if first_turn { proof_raw_budget.unwrap_or(if ready_link { 0 } else { 1 }) } else { 1 },
                         DataplaneLiveOutboundFirsts::default(),
                         DataplaneLiveTurnIo {
                             endpoint_data_rx: None,
@@ -530,12 +614,13 @@
                             tun_limit: 0,
                             endpoint_tx: &endpoint_io.event_tx,
                             transports: &transports,
-                            crypto_limit: if retained_proof { 1 } else { 8 },
+                            crypto_limit: if retained_proof || older_count > 1 { 1 } else { 8 },
                             transport_send_batch_packets: 8,
                         },
                     )
                     .await;
-                if !ready_link {
+                first_turn = false;
+                if !ready_link && !fast_packet {
                     assert!(
                         turn.summary().inbound_admitted() <= 1,
                         "deferred and fresh raw ingress must share the admission budget",
@@ -544,7 +629,10 @@
                 assert!(turn.drops().is_empty());
                 assert!(turn.raw_ingress_drops().is_empty());
                 assert!(turn.output_drops().is_empty());
-                assert!(turn.fmp_link_ingress().is_empty());
+                for ingress in turn.fmp_link_ingress() {
+                    assert_eq!(ingress.msg_type(), Some(crate::protocol::LinkMessageType::Heartbeat.to_byte()));
+                    proof_controls += 1;
+                }
                 for ingress in turn.fsp_authenticated_ingress.sessions {
                     let (_, _, _, _, _, _, _, _, plaintext) = ingress.into_parts();
                     delivered.push(plaintext.as_slice()[FSP_INNER_HEADER_SIZE]);
@@ -554,8 +642,13 @@
         })
         .await
         .expect("both genuine encrypted records finish authentication");
-        assert_eq!(delivered, [0, 1]);
-        assert_eq!(live_node.deferred_raw_ingress.len(), usize::from(retained_proof));
+        assert_eq!(delivered, (0..=older_count as u8).collect::<Vec<_>>());
+        assert_eq!(proof_controls, usize::from(retained_proof));
+        assert_eq!(live_node.deferred_raw_ingress.len(), unrelated_backlog);
+        if unrelated_backlog > 0 {
+            assert_eq!(live_node.deferred_raw_ingress[0].0.session_source(), Some(blocked_source));
+            assert!(!live_node.has_runnable_work());
+        }
     }
 
     #[tokio::test]
@@ -582,7 +675,7 @@
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
         live_node.deferred_raw_ingress.push_back((
-            raw,
+            raw.into(),
             crate::time::now_ms()
                 .saturating_sub(DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS + 1),
         ));

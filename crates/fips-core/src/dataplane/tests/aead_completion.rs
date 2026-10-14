@@ -322,6 +322,9 @@ fn session_ingress_raw_handoff_defers_unrouted_fsp() {
         .expect("unrouted sourced FSP packet should defer");
     assert!(deferred_raw_ingress.is_empty());
     assert!(deferred_at_ms > 0);
+    let DataplaneDeferredIngress::Raw(raw) = raw else {
+        panic!("unrouted FSP must retain its original wire record");
+    };
     assert_eq!(raw.protocol, PacketProtocol::Fsp);
     assert_eq!(raw.fsp_source, Some(source_addr));
     assert_eq!(raw.previous_hop, Some(previous_hop));

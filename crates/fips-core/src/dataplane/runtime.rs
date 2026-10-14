@@ -1,6 +1,37 @@
 const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS: u64 = 5_000;
 
-type DataplaneDeferredRawIngress = (DataplaneRawIngress, u64);
+#[derive(Debug)]
+enum DataplaneDeferredIngress {
+    Raw(DataplaneRawIngress),
+    Routed(SocketPacket),
+}
+
+impl From<DataplaneRawIngress> for DataplaneDeferredIngress {
+    fn from(packet: DataplaneRawIngress) -> Self {
+        Self::Raw(packet)
+    }
+}
+
+impl DataplaneDeferredIngress {
+    fn session_source(&self) -> Option<NodeAddr> {
+        match self {
+            Self::Raw(packet) if packet.protocol == PacketProtocol::Fsp => packet.fsp_source,
+            Self::Routed(packet) if packet.owner.protocol() == PacketProtocol::Fsp => {
+                Some(packet.owner.node_addr())
+            }
+            _ => None,
+        }
+    }
+}
+
+type DataplaneDeferredRawIngress = (DataplaneDeferredIngress, u64);
+
+fn deferred_session_ingress_pending(
+    queue: &VecDeque<DataplaneDeferredRawIngress>,
+    source: NodeAddr,
+) -> bool {
+    queue.iter().any(|(packet, _)| packet.session_source() == Some(source))
+}
 
 #[derive(Debug)]
 pub(crate) struct DataplaneTurnDriver {
@@ -467,19 +498,13 @@ impl DataplaneTurnDriver {
         let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts;
         let mut completion_report = None;
         let mut admission_summary = summary;
-        let mut completion_deferred_raw_ingress = std::collections::VecDeque::new();
         // A handshake may have installed a route since the preceding turn.
         // Admit those older records before ready link completions can unwrap
         // newer records for the same session, or fresh ingress can bypass them.
         let deferred_admitted = self.admit_deferred_raw_ingress(
             routes,
             deferred_raw_ingress,
-            if raw_ingress_limit == 0 {
-                crypto_limit
-            } else {
-                raw_ingress_limit
-            },
-            raw_ingress_limit > 0,
+            raw_ingress_limit,
             &mut admission_summary,
         );
         // Waiting-for-route records must not consume the allowance needed to
@@ -497,7 +522,7 @@ impl DataplaneTurnDriver {
                     routes,
                     endpoint_tx,
                     transports,
-                    deferred_raw_ingress: &mut completion_deferred_raw_ingress,
+                    deferred_raw_ingress,
                     crypto_limit: remaining_crypto_limit,
                     collect_transport_sent_receipts,
                     crypto_worker: &mut *crypto_worker,
@@ -510,7 +535,6 @@ impl DataplaneTurnDriver {
             completion_report = Some(report);
             admission_summary = DataplaneRuntimeSummary::default();
         }
-        deferred_raw_ingress.append(&mut completion_deferred_raw_ingress);
         let admission = self.admit_live_node_route_table_turn_with_firsts(
             DataplaneLiveAdmissionRequest {
                 summary: admission_summary,

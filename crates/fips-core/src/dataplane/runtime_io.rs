@@ -4,7 +4,6 @@ impl DataplaneTurnDriver {
         routes: &mut DataplaneLiveRouteTable,
         deferred_raw_ingress: &mut VecDeque<DataplaneDeferredRawIngress>,
         limit: usize,
-        admit_handshake_proofs: bool,
         summary: &mut DataplaneRuntimeSummary,
     ) -> usize {
         if deferred_raw_ingress.is_empty() || limit == 0 {
@@ -12,30 +11,48 @@ impl DataplaneTurnDriver {
         }
         let mut admitted = 0;
         let admitted_before = summary.inbound_admitted;
-        // Visit the initial snapshot once, retrying at most the turn allowance.
-        // Retained handshake proofs do not spend a session continuation slot.
+        // Inspect the initial snapshot once, retrying only the turn allowance.
+        // Leave unroutable records in place: rotating a partial backlog would
+        // invert its order when the handshake installs the session route.
+        let now_ms = crate::time::now_ms();
+        let mut cursor = 0;
         let mut retried = 0;
         for _ in 0..deferred_raw_ingress.len() {
             if retried == limit {
                 break;
             }
-            let (packet, deferred_at_ms) = deferred_raw_ingress.pop_front().unwrap();
-            // A nested send has no raw ingress allowance. Leave handshake
-            // proofs retained for the receive loop if that send is canceled.
-            // Session records still precede ready link continuations there.
-            if packet.protocol == PacketProtocol::Fmp && !admit_handshake_proofs {
-                deferred_raw_ingress.push_back((packet, deferred_at_ms));
+            let (packet, deferred_at_ms) = &deferred_raw_ingress[cursor];
+            if let DataplaneDeferredIngress::Raw(packet) = packet
+                && packet.protocol == PacketProtocol::Fsp
+                && packet.fsp_source.is_some_and(|source| !routes.fsp.contains_key(&source))
+                && now_ms.saturating_sub(*deferred_at_ms) <= DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS
+            {
+                cursor += 1;
+                continue;
+            }
+            let (packet, deferred_at_ms) = deferred_raw_ingress.remove(cursor).unwrap();
+            let queued_before = deferred_raw_ingress.len();
+            let packet = match packet {
+                DataplaneDeferredIngress::Raw(packet) => Self::raw_ingress_socket_packet(
+                    packet,
+                    routes,
+                    summary,
+                    &mut self.raw_ingress_drops,
+                    deferred_raw_ingress,
+                    Some(deferred_at_ms),
+                ),
+                DataplaneDeferredIngress::Routed(packet) => Some(packet),
+            };
+            if deferred_raw_ingress.len() > queued_before {
+                // Preserve position if a clock adjustment kept an expired
+                // record pending between the precheck and route lookup.
+                let pending = deferred_raw_ingress.pop_back().unwrap();
+                deferred_raw_ingress.insert(cursor, pending);
+                cursor += 1;
                 continue;
             }
             retried += 1;
-            if let Some(packet) = Self::raw_ingress_socket_packet(
-                packet,
-                routes,
-                summary,
-                &mut self.raw_ingress_drops,
-                deferred_raw_ingress,
-                Some(deferred_at_ms),
-            ) {
+            if let Some(packet) = packet {
                 admitted += 1;
                 self.admit_socket_packet(packet, summary);
             }
@@ -123,7 +140,7 @@ impl DataplaneTurnDriver {
             0
         };
         if let Some(fast_ingress) = fast_ingress {
-            self.admit_fast_ingress_runs(fast_ingress, &mut summary);
+            self.admit_fast_ingress_runs(fast_ingress, deferred_raw_ingress, &mut summary);
         }
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
@@ -299,6 +316,15 @@ impl DataplaneTurnDriver {
         };
 
         let (counter, ciphertext_offset, wire_flags) = header.open_metadata();
+        if deferred_at_ms.is_none()
+            && packet.protocol == PacketProtocol::Fsp
+            && packet.fsp_source.is_some_and(|source| {
+                deferred_session_ingress_pending(deferred_raw_ingress, source)
+            })
+        {
+            deferred_raw_ingress.push_back((packet.into(), crate::time::now_ms()));
+            return None;
+        }
         let Some(route) = router.route(&packet, header) else {
             if packet.protocol == PacketProtocol::Fsp && packet.fsp_source.is_some() {
                 let now_ms = crate::time::now_ms();
@@ -306,7 +332,7 @@ impl DataplaneTurnDriver {
                 if now_ms.saturating_sub(deferred_at_ms)
                     <= DATAPLANE_DEFERRED_RAW_INGRESS_MAX_AGE_MS
                 {
-                    deferred_raw_ingress.push_back((packet, deferred_at_ms));
+                    deferred_raw_ingress.push_back((packet.into(), deferred_at_ms));
                     return None;
                 }
             }
@@ -391,12 +417,24 @@ impl DataplaneTurnDriver {
     fn admit_fast_ingress_runs(
         &mut self,
         fast_ingress: DataplaneFastIngressBatch,
+        deferred_raw_ingress: &mut VecDeque<DataplaneDeferredRawIngress>,
         summary: &mut DataplaneRuntimeSummary,
     ) {
         for run in fast_ingress.into_runs() {
             let run_len = run.len();
             crate::perf_profile::record_dataplane_fast_ingress_owner_run(run_len);
             let (owner, lane, packets) = run.into_parts();
+            if owner.protocol() == PacketProtocol::Fsp
+                && deferred_session_ingress_pending(deferred_raw_ingress, owner.node_addr())
+            {
+                // Keep the captured route generation and receive epoch intact.
+                // Only this blocked owner's run leaves the normal fast path.
+                let now_ms = crate::time::now_ms();
+                deferred_raw_ingress.extend(packets.into_iter().map(|packet| {
+                    (DataplaneDeferredIngress::Routed(packet), now_ms)
+                }));
+                continue;
+            }
             let (admitted, dropped) =
                 self.mover.submit_socket_packet_run(Some(owner), Some(lane), packets);
             summary.inbound_admitted = summary.inbound_admitted.saturating_add(admitted);

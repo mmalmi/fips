@@ -199,6 +199,13 @@ impl DataplaneLiveNode {
 
     pub(crate) fn has_runnable_work(&self) -> bool {
         self.driver.has_runnable_work()
+            || self.deferred_raw_ingress.iter().any(|(packet, _)| match packet {
+                DataplaneDeferredIngress::Raw(packet) => {
+                    packet.protocol != PacketProtocol::Fsp
+                        || packet.fsp_source.is_some_and(|source| self.routes.fsp.contains_key(&source))
+                }
+                DataplaneDeferredIngress::Routed(_) => true,
+            })
     }
 
     pub(crate) fn attach_established_fast_ingress(
