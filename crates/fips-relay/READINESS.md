@@ -7,10 +7,11 @@ its full SDK suite, r554 measures a 5.6% reduction in large-history retirement
 time on a Cudy, and r555 qualifies three ordinary Linux relay retirement cycles.
 r556/r557 qualify the same graph on three ARM64 routers; r558/r559 build and
 qualify Android transit through foreground, background and controlled idle.
-CDK stays at `04c37d5a152a`. Original accounts are preserved and owned test
-resources removed. Earlier carrier and hardware results retain their recorded
-graph. Final acceptance reconciliation and the remaining observations below
-are still open.
+r562/r565 qualify both real aggregate-refund profiles on one ARM64 router.
+CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
+are removed and failed financial originals remain retained. Earlier carrier and
+hardware results retain their recorded graph. Final acceptance reconciliation
+and the remaining observations below are still open.
 Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
@@ -89,17 +90,16 @@ r539 adds the changed-keyset regression; r555 qualifies three real FIPS retireme
 cycles on SDK `6a025d0`. r557 replays paid forwarding and contended retirement on
 three routers, with scoped process resource observations. r541 extends the
 large-refund regression through full sender retirement and observes it in a fresh
-process. r546 qualifies aggregate refund completion and whole-prefix retirement
-at the configured 16 MiB native admission limit, preserving the original coins
-and lifetime totals. r549 adds client-store admission saturation across distinct
-neighbors: four 1,024-sat channels complete their refunds and retire 4,097 originals
-under the unchanged 32 MiB client budget. This covers its completion reservations,
-not a literally full 32 MiB file. Remaining reachable workflows and larger
-router-pressure profiles still need qualification. r550 now measures synthetic
-retirement, collection and capture on one Cudy; larger real channel/refund profiles
-remain separate. Profiling and identity reuse reduce the large-history call to
-68.346 seconds in r554; its remaining maintenance cost is still open. A page-size
-limit does not itself bound a whole maintenance call.
+process. r549 covers aggregate refunds at native and client-store admission
+saturation across distinct neighbors. r562/r565 qualify both profiles on one
+ARM64 router: six 256-sat channels under a 16 MiB native allowance, and four
+1,024-sat channels under a 64 MiB native allowance and unchanged 32 MiB client
+budget. Exact coins and lifetime totals survive retirement, reopen and replay.
+This covers completion reservations, not a literally full 32 MiB client file.
+r550/r554 cover synthetic retirement, collection and capture on the router;
+identity reuse reduces large-history retirement to 68.346 seconds. Remaining
+reachable workflows, maintenance interference and physical-storage behavior
+still need qualification. A page-size limit does not itself bound a whole call.
 Reuse the existing harness for admission, rollback and reserved completion checks.
 
 ### Evidence and stopping rules
@@ -131,8 +131,8 @@ Reuse the existing harness for admission, rollback and reserved completion check
 | r555 FIPS retirement on SDK `6a025d0` | The ordinary Linux daemon passes three channel settlement/expiry/restart cycles at 16 MiB native capacity, preserving original refunds and refusing another purchase at the original lifetime limit. Strict affected lint and source-size checks pass. Independent mint/wallet accounting finds 371 test sats in wallets and 13 in mint input fees, accounting for all 384 issued sats without duplicate or mint-spent wallet originals. | Existing test assertions are unchanged; its original fixture is retained and hash-verified in `work/identity-relay-r555`. Source/dependency identities and stopped processes are verified. This checks actual FIPS integration, not physical power loss, router resource use or the remaining Spilman refund scaling audit. |
 | r556/r557 ARM64 retirement on SDK `6a025d0` | The ordinary ARM64 build passes the existing three-router paid retirement scenario: all 2,048 payloads arrive, two sender and two receiver channels retire, original budgets survive wallet contention, and all 384 test sats are collected. Six controller reads take 0.155–0.161 s while the writers are held; all 282 management checks pass. Archived wallets retain the 16 MiB limit and the expected sender/receiver custody formats. | The release-to-retirement observation window is 2.784 s; candidate processes consume 0.337–0.474 CPU seconds each and peak at 23.13–27.76 MiB RSS over their lifetimes. These include background work and status sampling, not isolated cleanup cost, CPU-per-byte attribution or a before/after comparison. This small-channel scenario does not qualify large wallet-pressure cases or physical power loss. Original services/configuration are independently verified, stopped test profiles are archived and removed, and the test mint is closed. Evidence is bound to source/artifact hashes in `work/identity-arm-r556` and `work/identity-router-r557`. |
 | r541 sender refunds | SDK `39d25170deb6` extends the existing real-mint regression through retirement of 1,023 refund coins. The fragmented case retains coverage of 2,049 native originals plus 31 refund coins. All four observed runs preserve exact custody, costs, reopen and replay rejection; an independent archived-wallet audit conserves 6,144 test sats with no pending wallet operations. All 444 workspace tests and strict all-target lint pass; two opt-in tests are ignored by the default suite. | Whole-call observations, including wallet open, take 0.675–0.678 s / 0.726–0.784 s, with maximum process VmHWM 31.92 / 22.63 MiB. These use fresh processes on shared x86-64 Linux, default native wallets without configured capacity, and one channel per case. They do not qualify a full 16 MiB wallet, aggregate refunds, hard heap/deadline bounds or routers. Existing child-process helpers are shared; production code is unchanged. Original fixtures, hashes and stopped-process checks remain in `work/refund-retirement-r541`. |
-| r546 aggregate refunds | SDK `831f6f2` adds one opt-in production-path test. Both runs admit six 256-sat channels, refuse and cancel the seventh request, then refund and retire the complete original prefix under the unchanged 16 MiB native limit. Each preserves 1,559 original coins and lifetime totals through reopen/replay. Independent database audits conserve all 8,192 test sats; 444 workspace tests, strict lint and formatting pass (three opt-in tests ignored by default). | Fresh-process whole retirement calls take 0.675–0.706 s with peak VmHWM up to 34.06 MiB on shared x86-64 Linux. The client file is 4,161,457 bytes; this covers admission saturation, not a full 32 MiB client store, physical disk pressure or router memory. A 1,024-output opening exceeded the native limit before funding. Failed setup fixtures retain their original financial evidence. Inputs, stopped processes, original archives and custody checks remain in `work/aggregate-refund-r546`; production code is unchanged. |
 | r549 distinct-neighbor refund pressure | SDK `4a069bb` reuses the aggregate fixture with separate receivers and two admission profiles. Native pressure admits six 256-sat channels; client pressure admits four 1,024-sat channels. Each refuses and cancels the next request, finishes admitted refunds and retires the full prefix without changing its budgets or lifetime totals. All three runs preserve exact originals; independent audits account for all 36,864 test sats with no unfinished wallet operations. All 444 workspace tests, strict all-target lint and formatting pass (three opt-in tests ignored by default). | The native case retires 1,559 originals in 0.696 s with peak VmHWM 32.40 MiB; two client cases retire 4,097 originals in 2.663–2.685 s with peak up to 56.75 MiB. The client case has a 64 MiB native allowance and a 10,903,407-byte client file: it fills admission reservations, not a literal 32 MiB file. Shared x86-64 observations do not qualify device memory or physical disk exhaustion. Original fixtures, stopped processes and source/artifact/log hashes are verified in `work/aggregate-neighbors-r549`; production code is unchanged. |
+| r562/r565 real router refunds | The unchanged production SDK passes both admission-pressure profiles with real test-mint funding, refunds and whole-prefix retirement. Six 256-sat and four 1,024-sat channels preserve 1,559 and 4,097 original coins respectively. Independent mint/wallet audits conserve all 20,480 test sats, with no unfinished wallet operations or duplicate live coins. | [Measurements below](#real-refunds-under-admission-pressure) include whole calls and process memory. The client fixture uses a six-minute real expiry to accommodate device setup; financial limits are unchanged. These are isolated SDK tests on one ARM64 router, not concurrent daemon traffic or flash/power-loss qualification. Successful originals are archived before scratch removal; the failed earlier fixture retains its unclosed original channel separately. |
 | r550 router storage pressure | Five existing SDK cases pass on one ARM64 Cudy with unchanged production sources, original ownership/capacity assertions and no mint or monetary operations. All 81 management checks pass; no memory-limit or OOM event occurs. Independent postflight verifies unchanged accounts/network configuration, stopped test processes, restored resource settings and archived diagnostics before removing 30,388 KiB of owned scratch data. | [Measurements below](#router-wallet-resource-observations) cover synthetic SQLite histories on `/tmp`, not flash, concurrent paid forwarding or large real refunds. Retiring 7,680 originals takes 72.315 s; this remains an unresolved router maintenance cost. Artifact/source/log hashes and the separately preserved failed launcher attempt remain in `work/router-pressure-r550`. |
 | r558/r559 Android on SDK `6a025d0` | The current ordinary runtime and optimized SDK build for arm64 Android with core defaults, measurements and no wallet simulation. Strict target lint, all ten Java lifecycle tests, Android lint, APK signature and packaged-native checks pass. Physical r559 rejects unpaid transit and delivers four MiB while foreground, background and in 48.98 seconds of forced Doze, using the same process and four original paid channels. All 512 test sats are collected and 600 management checks pass. | Controlled LAN/UDP adjacency on the charging, ADB-connected phone. Natural deep idle, battery use and physical mobile encounters remain unqualified. Independent postflight verifies original accounts, normal Wi-Fi and router baselines; closed profiles are archived and the temporary app removed. Artifact/source hashes remain in `work/android-identities-r558`; device and financial closure remains in `work/phone-identities-r559`. |
 | r533 capture and decoded conditions | SDK `d3b98e4` extends the existing benchmark with 16 passing profiles; 443 workspace tests pass (two opt-in tests ignored), with strict all-target lint. Shared capture preserves 16,384 originals across 128 pages, finishes at its admitted limit, survives reopen and retains exact ownership/totals. Full-history P2PK collection preserves protected originals and progresses without extra capacity. | Production source unchanged. Shared capture takes 1.59 s with peak reported VmHWM 25.96 MiB; 50,000-key conditions peak at 77.50 MiB. Timings exclude caller send-plan and refund verification. Finite x86-64 observations, not hard heap bounds or router qualification. Source/artifact/log hashes and stopped processes are verified in `work/history-resources-r533`. |
@@ -187,6 +187,11 @@ and current accounting. Receiver planning revalidates reports after returning
 from wallet work; concurrent changes are not overwritten. An unresolved durable
 intent still blocks conflicting journal mutations. Reads stay available, but
 funding is not promised to bypass wallet serialization or a pending intent.
+
+Sender retirement holds the SDK client-store lock throughout capture, and
+[payment signing](src/controller/payments.rs) loads the same store. Responsive
+controller reads therefore do not establish concurrent payment progress. Signing
+delay and delivery during large-history maintenance still need measurement.
 
 The physical helper takes an actual SQLite writer transaction without changing
 rows. Its deadline, signal handler and independent device guard release it.
@@ -256,6 +261,48 @@ retirement scenario and r559's four paid phone-transit windows. r558 qualifies
 the Android build and lifecycle checks. These close the immediate target
 rebuild/regression gap, with resource, physical power-cut, mobility and natural
 idle acceptance still open.
+
+### Real refunds under admission pressure
+
+r562/r565 run the existing aggregate-refund fixture on one Cudy using production
+SDK `6a025d0`. Mint simulation is confined to the disposable test-mint fixture.
+Each profile refuses and cancels its next request at the original admission
+limit, finishes admitted refunds, then retires the entire prefix in a fresh
+process. Original custody, capacity, lifetime totals, reopen and replay assertions
+remain unchanged.
+
+| Admitted channels | Native allowance, MiB | Original coins | Whole retirement, s | Process peak VmHWM, MiB |
+| --- | ---: | ---: | ---: | ---: |
+| Six × 256 sats | 16 | 1,559 | 10.455 | 25.76 |
+| Four × 1,024 sats | 64 | 4,097 | 41.394 | 40.76 |
+
+These times include wallet open. The full fixture groups, including parent,
+child and mint, peak at 52.01 / 111.42 MiB below their 192 MiB guard, with no
+memory-limit or OOM events. All 116 management checks pass, taking at most
+0.198 seconds. Client files reach 4,161,457 / 10,903,407 bytes under the unchanged
+32 MiB budget; admission reserves future completion space. Independent audits
+account for 4,096 / 16,384 issued test sats entirely in the buyer and seller
+wallets, with no pending mint inputs or unfinished wallet operations. Original
+accounts/network configuration and restored resource settings are verified.
+The closed fixtures are hash-archived before their temporary files are removed.
+
+The first client attempt, r563, used a three-minute lifetime; its fourth provider
+payment was rejected as “expiry too soon.” That failed result remains retained: 15,360 test
+sats are in wallets and 1,024 are in the original unclosed channel. Independent
+checks account for all 16,384 issued sats without claiming recovery complete.
+The fresh r565 run uses the bounded, test-only six-minute lifetime option and
+still waits for actual expiry. Production code and financial/resource assertions
+are unchanged. SDK `0eff9b4` contains that fixture option and its documentation;
+r564 passes all 444 workspace tests, strict all-target lint and formatting
+(three opt-in tests are excluded from the default suite). A separate preflight
+refusal created no funds; removing a stopped, locally preserved executable met
+the original memory threshold.
+
+Evidence, source/artifact hashes, audits and cleanup checks remain in
+`work/router-refunds-r562`, `work/router-refunds-r563`,
+`work/refund-device-lifetime-r564` and `work/router-refunds-r565`. These SQLite
+fixtures use router RAM storage. The 41-second call leaves concurrent payment
+progress and flash behavior as explicit remaining checks.
 
 ## Performance acceptance
 
@@ -379,10 +426,10 @@ traverse many bounded pages in one call; r515 removes the controller lock from
 that work but does not make the work constant-time. r527/r530/r533 measure receipt
 and operation scans, decoded large originals and shared capture. r534/r535 measure
 actual native sender retirement and reduce repeated source authorization through
-capture-scoped reuse. r541/r546/r549 measure sender refunds through full
-retirement, including saturation of native and client admission budgets. These
-Linux observations do not close aggregate device-memory or physical-storage
-acceptance.
+capture-scoped reuse. r541/r549 measure sender refunds through full retirement,
+including saturation of native and client admission budgets. r562/r565 qualify
+both aggregate profiles on one ARM64 router. Other reachable workflows,
+concurrent payment progress and physical-storage acceptance remain open.
 
 The remaining resource audit follows these production entry points. Shared SDK
 limits apply on every wallet open; a bounded record or page does not establish
@@ -393,7 +440,7 @@ the total cost of the caller below.
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | Retained mint/keyset catalog limits and SQLite balance sums; device reopen cost under retained history. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
-| Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | Original payout/refund preservation, mint-reply bounds and reserved completion; device costs for larger admitted payouts. |
+| Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | Original payout/refund preservation, mint-reply bounds and reserved completion. Sender refund profiles pass r562/r565; larger receiver payouts and concurrent forwarding remain. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | Whole sender calls, receiver release queue and repeated owner scans; progress and memory on the intended routers. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | Bounded token input and export count, original send recovery and shared native custody; aggregate retained-export pressure. |
 
