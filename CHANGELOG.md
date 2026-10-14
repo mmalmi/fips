@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.100] - 2026-10-14
+
+### Fixed
+
+- Process one isolated small encrypted packet inline per mobile dataplane turn,
+  including packets whose encrypted contents retain the default bulk lane.
+  Avoid crypto-worker wakeups while preserving lane priority, authentication,
+  replay protection, ordered completion, and worker offload for batches or busy pools.
+
 ## [0.4.99] - 2026-10-13
 
 ### Added
