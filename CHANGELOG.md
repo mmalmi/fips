@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.101] - 2026-10-14
+
+### Fixed
+
+- Accept a confirmed fallback connection when the initial UDP reply was lost and
+  the initial responder has received no authenticated traffic. Bind the proof to
+  the exact current connection and retain established transport preference.
+- Require Rustls 0.23.46 for the latest TLS security fixes.
+
 ## [0.4.100] - 2026-10-14
 
 ### Fixed
