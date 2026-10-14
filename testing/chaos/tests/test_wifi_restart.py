@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.wifi_measurements import process_identity
-from sim.wifi_restart import crash_profile
+from sim.wifi_restart import crash_profile, pause_profile
 from tests import test_wifi_profiles as profiles
 
 
@@ -80,6 +80,23 @@ class CrashShellTests(unittest.TestCase):
     def observed(self, node, child):
         pid, ticks = process_identity(Path(f"/proc/{child.pid}/stat").read_text())
         return sample(pid, ticks, node.npub)
+
+    def test_pause_and_resume_only_the_exact_live_candidate(self):
+        child = self.launch(self.node)
+        observed = self.observed(self.node, child)
+        wrong = {**observed, 'host_process': {**observed['host_process'], 'start_ticks': 1}}
+        with self.assertRaises(RuntimeError):
+            pause_profile(self.node, wrong)
+        pause_profile(self.node, observed)
+        self.assertEqual(Path(f'/proc/{child.pid}/stat').read_text().rpartition(') ')[2].split()[0], 'T')
+        pause_profile(self.node, observed, resume=True)
+        for _ in range(100):
+            if Path(f'/proc/{child.pid}/stat').read_text().rpartition(') ')[2].split()[0] != 'T':
+                break
+            time.sleep(.01)
+        else:
+            self.fail('candidate did not resume')
+        self.assertIsNone(child.poll())
 
     def retained(self):
         paths = [self.guard, self.remote / "fips-relay", self.remote / "mesh.sh",

@@ -94,3 +94,21 @@ printf '%s\\000' "$target_pid" "$target_start" "$stopped"
             or parts[2] not in ("gone", "zombie")):
         raise RuntimeError("crash response did not verify the sampled process stopped")
     return {"pid": pid, "start_ticks": start, "stopped": True, "state": parts[2]}
+
+
+def pause_profile(node, before_sample, *, resume=False):
+    """Freeze only the sampled candidate; never sync its pending disk writes."""
+    _, _, command = sampled_process(node, before_sample)
+    if resume:
+        command += 'test "$process_state" = T\nkill -CONT "$target_pid"\n'
+    else:
+        command += '''kill -STOP "$target_pid"
+deadline=$(( $(cut -d . -f 1 /proc/uptime) + 3 ))
+while :; do
+  owned
+  if test "$process_state" = T; then break; fi
+  test "$(cut -d . -f 1 /proc/uptime)" -lt "$deadline"
+  sleep 1
+done
+'''
+    node.guarded(command, timeout=10)

@@ -106,8 +106,8 @@ class FundingRun(RouterAccountRecovery):
                 self.phase('preserving original pending funding and mint for deliberate recovery')
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(run_class=FundingRun):
+    parser = argparse.ArgumentParser(description=run_class.__doc__ or __doc__)
     for name in ('inventory', 'binary', 'mint-binary', 'mint-host', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--mint-address', required=True)
@@ -121,7 +121,7 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    FundingRun(args).execute()
+    run_class(args).execute()
 
 
 if __name__ == '__main__':
