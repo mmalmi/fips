@@ -299,6 +299,165 @@
     }
 
     #[tokio::test]
+    async fn deferred_session_packet_precedes_fresh_packet_after_route_install() {
+        deferred_session_packet_precedes_new_ingress(false).await;
+    }
+
+    #[tokio::test]
+    async fn deferred_session_packet_precedes_ready_link_completion_after_route_install() {
+        deferred_session_packet_precedes_new_ingress(true).await;
+    }
+
+    async fn deferred_session_packet_precedes_new_ingress(ready_link: bool) {
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source = *source_peer.node_addr();
+        let local = NodeAddr::from_bytes([0x78; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let key = 178;
+        let raw = |counter: u64| {
+            let inner = crate::node::session_wire::fsp_prepend_inner_header(
+                178_000,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                &[counter as u8],
+            );
+            DataplaneRawIngress::from_live_received(
+                PacketProtocol::Fsp,
+                ReceivedPacket::with_timestamp(
+                    TransportId::new(178),
+                    TransportAddr::from_string("198.51.100.178:9000"),
+                    PacketBuffer::new(fsp_encrypted_wire(counter, 0, &inner, key)),
+                    178_000,
+                ),
+            )
+            .with_fsp_source(source)
+            .with_previous_hop(source)
+        };
+        let mut node = crate::Node::new(crate::Config::new()).unwrap();
+        let endpoint_io = node.attach_endpoint_data_io(8).unwrap();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let mut raw_source = VecDeque::from([raw(0)]);
+        let first = live_node
+            .pump_turn_with_firsts_and_transport_batch(
+                None,
+                &mut raw_source,
+                8,
+                DataplaneLiveOutboundFirsts::default(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: None,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: None,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: 8,
+                    transport_send_batch_packets: 8,
+                },
+            )
+            .await;
+        assert!(raw_source.is_empty());
+        assert_eq!(first.summary().inbound_admitted(), 0);
+        assert_eq!(live_node.deferred_raw_ingress.len(), 1);
+
+        // The handshake installs keys while the first encrypted record is
+        // waiting. A newly arrived record must not overtake that original.
+        register_keyed_owner(
+            &mut live_node.driver,
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+            key,
+        );
+        register_fsp_session_payload_route(&mut live_node.routes, source, owner, local);
+        if ready_link {
+            // Stage an actual authenticated link completion, as when msg3 and
+            // the first data record arrive in adjacent native crypto turns.
+            // The regular live pump must admit the waiting FSP record before
+            // unwrapping this newer record into the same session owner.
+            let link_owner = OwnerId::fmp_node(source);
+            register_keyed_owner(
+                &mut live_node.driver,
+                link_owner,
+                OwnerConfig::new(1, 8).with_source_peer(source_peer),
+                key,
+            );
+            let datagram = crate::protocol::SessionDatagram::new(
+                source,
+                local,
+                raw(1).payload.as_slice().to_vec(),
+            );
+            let mut plaintext = 178_000u32.to_le_bytes().to_vec();
+            plaintext.extend_from_slice(&datagram.encode());
+            let packet = fmp_socket_packet(
+                link_owner,
+                1,
+                OutputTarget::SessionIngress { local_addr: local },
+                fmp_encrypted_wire(178, 1, 0, &plaintext, key),
+            )
+            .unwrap()
+            .with_source_path(TransportPath::live(
+                TransportId::new(178),
+                TransportAddr::from_string("198.51.100.178:9000"),
+            ));
+            let driver = &mut live_node.driver;
+            driver.mover.submit_socket_packet(packet).unwrap();
+            assert_eq!(
+                driver.mover.prepare_aead_available_into(
+                    1,
+                    &mut driver.prepared_work,
+                    &mut driver.ready_slots,
+                    &live_node.crypto_worker,
+                ),
+                1,
+            );
+            driver.mover.stage_retire_slots(&mut driver.ready_slots);
+            live_node.crypto_worker.submit_prepared_chunk(
+                &mut driver.prepared_work,
+                |slot| driver.mover.stage_retire_slot(slot),
+            );
+            wait_for_live_worker_completion(&live_node).await;
+        } else {
+            raw_source.push_back(raw(1));
+        }
+        let mut delivered = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while delivered.len() < 2 {
+                let turn = live_node
+                    .pump_turn_with_firsts_and_transport_batch(
+                        None,
+                        &mut raw_source,
+                        8,
+                        DataplaneLiveOutboundFirsts::default(),
+                        DataplaneLiveTurnIo {
+                            endpoint_data_rx: None,
+                            endpoint_limit: 0,
+                            tun_outbound_rx: None,
+                            tun_limit: 0,
+                            endpoint_tx: &endpoint_io.event_tx,
+                            transports: &transports,
+                            crypto_limit: 8,
+                            transport_send_batch_packets: 8,
+                        },
+                    )
+                    .await;
+                assert!(turn.drops().is_empty());
+                assert!(turn.raw_ingress_drops().is_empty());
+                assert!(turn.output_drops().is_empty());
+                assert!(turn.fmp_link_ingress().is_empty());
+                for ingress in turn.fsp_authenticated_ingress.sessions {
+                    let (_, _, _, _, _, _, _, _, plaintext) = ingress.into_parts();
+                    delivered.push(plaintext.as_slice()[FSP_INNER_HEADER_SIZE]);
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both genuine encrypted records finish authentication");
+        assert_eq!(delivered, [0, 1]);
+        assert!(live_node.deferred_raw_ingress.is_empty());
+    }
+
+    #[tokio::test]
     async fn deferred_first_session_ingress_expires_after_handshake_window() {
         let source = NodeAddr::from_bytes([0x77; 16]);
         let raw = DataplaneRawIngress::from_live_received(

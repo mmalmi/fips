@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including packets whose encrypted contents retain the default bulk lane.
   Avoid crypto-worker wakeups while preserving lane priority, authentication,
   replay protection, ordered completion, and worker offload for batches or busy pools.
+- Admit session records waiting for handshake keys before newer ingress and link
+  completions, preventing startup packet reordering while retaining bounded retries.
 
 ## [0.4.99] - 2026-10-13
 

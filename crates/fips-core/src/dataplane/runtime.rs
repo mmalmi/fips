@@ -468,6 +468,15 @@ impl DataplaneTurnDriver {
         let mut completion_report = None;
         let mut admission_summary = summary;
         let mut completion_deferred_raw_ingress = std::collections::VecDeque::new();
+        // A handshake may have installed a route since the preceding turn.
+        // Admit those older records before ready link completions can unwrap
+        // newer records for the same session, or fresh ingress can bypass them.
+        self.admit_deferred_raw_ingress(
+            routes,
+            deferred_raw_ingress,
+            raw_ingress_limit.max(crypto_limit),
+            &mut admission_summary,
+        );
         // Ready completions are already owner-ordered work. Let their local
         // continuations consume this turn's bounded crypto budget before
         // admitting fresh raw/outbound packets.
@@ -492,6 +501,7 @@ impl DataplaneTurnDriver {
             completion_report = Some(report);
             admission_summary = DataplaneRuntimeSummary::default();
         }
+        deferred_raw_ingress.append(&mut completion_deferred_raw_ingress);
         let admission = self.admit_live_node_route_table_turn_with_firsts(
             DataplaneLiveAdmissionRequest {
                 summary: admission_summary,
@@ -507,7 +517,6 @@ impl DataplaneTurnDriver {
                 deferred_raw_ingress,
             },
         );
-        deferred_raw_ingress.append(&mut completion_deferred_raw_ingress);
         if let Some(mut completion_report) = completion_report {
             if !admission.has_activity() {
                 return completion_report;

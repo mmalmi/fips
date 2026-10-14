@@ -1,4 +1,38 @@
 impl DataplaneTurnDriver {
+    fn admit_deferred_raw_ingress(
+        &mut self,
+        routes: &mut DataplaneLiveRouteTable,
+        deferred_raw_ingress: &mut VecDeque<DataplaneDeferredRawIngress>,
+        limit: usize,
+        summary: &mut DataplaneRuntimeSummary,
+    ) {
+        if deferred_raw_ingress.is_empty() || limit == 0 {
+            return;
+        }
+        let admitted_before = summary.inbound_admitted;
+        // Retry only the bounded snapshot present before this turn. A record
+        // still waiting for its handshake retains its age and cannot spin here.
+        for _ in 0..limit.min(deferred_raw_ingress.len()) {
+            let (packet, deferred_at_ms) = deferred_raw_ingress.pop_front().unwrap();
+            if let Some(packet) = Self::raw_ingress_socket_packet(
+                packet,
+                routes,
+                summary,
+                &mut self.raw_ingress_drops,
+                deferred_raw_ingress,
+                Some(deferred_at_ms),
+            ) {
+                self.admit_socket_packet(packet, summary);
+            }
+        }
+        if crate::perf_profile::enabled() {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::DataplaneLiveRawAdmitted,
+                summary.inbound_admitted.saturating_sub(admitted_before) as u64,
+            );
+        }
+    }
+
     fn admit_live_node_route_table_turn_with_firsts<RI>(
         &mut self,
         request: DataplaneLiveAdmissionRequest<'_, RI>,
@@ -77,8 +111,7 @@ impl DataplaneTurnDriver {
         }
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
-            let deferred_available = deferred_raw_ingress.len();
-            let fresh_drained = raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
+            raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
                 if let Some(socket_packet) =
                     Self::raw_ingress_socket_packet(
                         packet,
@@ -92,24 +125,6 @@ impl DataplaneTurnDriver {
                     raw_socket_packets.push(socket_packet);
                 }
             });
-            let deferred_limit = raw_ingress_limit
-                .saturating_sub(fresh_drained)
-                .min(deferred_available);
-            for _ in 0..deferred_limit {
-                let Some((packet, deferred_at_ms)) = deferred_raw_ingress.pop_front() else {
-                    break;
-                };
-                if let Some(socket_packet) = Self::raw_ingress_socket_packet(
-                    packet,
-                    routes,
-                    &mut summary,
-                    raw_ingress_drops,
-                    deferred_raw_ingress,
-                    Some(deferred_at_ms),
-                ) {
-                    raw_socket_packets.push(socket_packet);
-                }
-            }
         }
         self.admit_socket_packets(&mut raw_socket_packets, &mut summary);
         self.raw_socket_packets = raw_socket_packets;
