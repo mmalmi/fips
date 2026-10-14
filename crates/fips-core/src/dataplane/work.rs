@@ -51,8 +51,8 @@ enum CryptoOwnerRunItemState {
 
 impl CryptoOwnerRun {
     // Called before the run is shared or any executor can access its items.
-    fn is_small_priority_packet(&mut self) -> bool {
-        if self.items.len() != 1 || self.items[0].reservation.lane != Lane::Priority {
+    fn is_small_packet(&mut self) -> bool {
+        if self.items.len() != 1 {
             return false;
         }
         let bytes = match self.items[0].state.get_mut() {

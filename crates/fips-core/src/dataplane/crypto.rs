@@ -493,13 +493,14 @@ pub(crate) struct DataplaneAeadWorkerPool {
     native_executor: Option<Arc<NativeExecutor>>,
     counters: DataplaneAeadWorkerCounters,
     max_in_flight: usize,
-    inline_control_remaining: usize,
+    inline_packet_remaining: usize,
 }
 
 impl DataplaneAeadWorkerPool {
-    // Refilled once per live turn, not by each collect/retire pass within it.
+    // One small packet per mobile live turn, not per collect/retire pass.
+    // Encrypted control records may retain the default bulk lane until opened.
     fn begin_live_turn(&mut self) {
-        self.inline_control_remaining =
+        self.inline_packet_remaining =
             usize::from(cfg!(any(target_os = "android", target_os = "ios")));
     }
 
@@ -509,7 +510,7 @@ impl DataplaneAeadWorkerPool {
             native_executor: None,
             counters: DataplaneAeadWorkerCounters::new(),
             max_in_flight: max_in_flight.max(1),
-            inline_control_remaining: 0,
+            inline_packet_remaining: 0,
         }
     }
 
@@ -602,13 +603,13 @@ impl DataplaneAeadWorkerPool {
             let (mut run, cipher) = prepared.into_parts();
             // Ready but unretired work still occupies this pool. Do not jump
             // ahead of it or confuse pool-local idleness with executor idleness.
-            let inline = self.inline_control_remaining != 0
+            let inline = self.inline_packet_remaining != 0
                 && self.counters.in_flight.load(Relaxed) == 0
-                && run.is_small_priority_packet();
+                && run.is_small_packet();
             let run = self.prepare_owner_run(run, cipher);
             stage(Arc::clone(&run.slot));
             if inline {
-                self.inline_control_remaining -= 1;
+                self.inline_packet_remaining -= 1;
                 completed_inline = true;
                 // A partially executed ordered slot cannot safely be replayed
                 // after a panic. Preserve the native worker's failure policy.

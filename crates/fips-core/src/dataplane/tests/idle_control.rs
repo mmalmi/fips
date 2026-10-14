@@ -1,5 +1,74 @@
 use super::*;
 
+#[test]
+fn small_idle_wire_packet_keeps_bulk_lane_without_waking_crypto_worker() {
+    for forged in [false, true] {
+        let owner = fmp_owner(970);
+        let transport = TransportId::new(970);
+        let mut routes = DataplaneLiveRouteTable::default();
+        routes.register_fmp(
+            transport,
+            970,
+            DataplaneIngressRoute::new(owner, 1, OutputTarget::Transport),
+        );
+        let (sink, mut rx) = DataplaneEstablishedFastIngressSink::channel(
+            routes.established_fast_ingress_snapshot(),
+            4,
+        );
+        let mut wire = fmp_encrypted_wire(970, 4, 0, b"small encrypted packet", 17);
+        if forged {
+            *wire.last_mut().unwrap() ^= 1;
+        }
+        let mut packets = vec![ReceivedPacket::with_timestamp(
+            transport,
+            TransportAddr::from_string("198.51.100.97:9000"),
+            PacketBuffer::new(wire),
+            9000,
+        )];
+        assert_eq!(sink.try_ingest_batch(&mut packets), 1);
+        let (_, lane, mut packets) = rx
+            .try_recv()
+            .unwrap()
+            .into_runs()
+            .pop()
+            .unwrap()
+            .into_parts();
+        assert_eq!(lane, Lane::Bulk);
+        let packet = packets.pop().unwrap();
+        assert_eq!(packet.class, PacketClass::Bulk);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(17), test_key(17)));
+        mover.submit_socket_packet(packet).unwrap();
+        let mut pool = test_aead_worker_pool(8);
+        pool.inline_packet_remaining = 1;
+        let (dispatched, outputs, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
+        assert_eq!(dispatched, 1);
+        assert!(
+            pool.native_executor.is_none(),
+            "an isolated small wire packet must not require a worker hop"
+        );
+        if forged {
+            assert!(outputs.is_empty());
+            assert_eq!(drops.len(), 1);
+            assert_eq!(drops[0].reason(), PacketDropReason::CryptoFailed);
+        } else {
+            assert!(drops.is_empty());
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].lane, Lane::Bulk);
+            assert_eq!(
+                outputs[0].opened_payload(),
+                Some(b"small encrypted packet".as_slice())
+            );
+        }
+        assert_eq!(pool.available_capacity(), 8);
+        assert_eq!(pool.inline_packet_remaining, 0);
+    }
+}
+
 fn inline_receiver(class: PacketClass, payload: &[u8]) -> (Dataplane, DataplaneAeadWorkerPool) {
     let owner = fmp_owner(970);
     let mut mover = mover();
@@ -18,7 +87,7 @@ fn inline_receiver(class: PacketClass, payload: &[u8]) -> (Dataplane, DataplaneA
     packet.class = class;
     mover.submit_socket_packet(packet).unwrap();
     let mut pool = test_aead_worker_pool(8);
-    pool.inline_control_remaining = 1;
+    pool.inline_packet_remaining = 1;
     (mover, pool)
 }
 
@@ -38,7 +107,7 @@ fn small_idle_control_retires_without_waking_crypto_worker() {
         Some(b"small control".as_slice())
     );
     assert_eq!(pool.available_capacity(), 8);
-    assert_eq!(pool.inline_control_remaining, 0);
+    assert_eq!(pool.inline_packet_remaining, 0);
     let notify = pool.readiness_notify();
     let mut notified = std::pin::pin!(notify.notified());
     assert!(
@@ -52,18 +121,44 @@ fn small_idle_control_retires_without_waking_crypto_worker() {
 }
 
 #[test]
-fn bulk_and_large_priority_packets_keep_worker_offload() {
+fn large_packets_keep_worker_offload() {
     for (class, payload) in [
-        (PacketClass::Bulk, vec![1; 8]),
-        (PacketClass::Background, vec![1; 8]),
-        (PacketClass::Control, vec![1; 513]),
+        (PacketClass::Bulk, vec![1; 481]),
+        (PacketClass::Background, vec![1; 481]),
+        (PacketClass::Control, vec![1; 481]),
     ] {
         let (mut mover, mut pool) = inline_receiver(class, &payload);
         let (dispatched, _, _) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
         assert_eq!(dispatched, 1);
         assert!(pool.native_executor.is_some());
-        assert_eq!(pool.inline_control_remaining, 1);
+        assert_eq!(pool.inline_packet_remaining, 1);
     }
+}
+
+#[test]
+fn isolated_packet_at_inline_byte_limit_preserves_its_lane() {
+    for class in [PacketClass::Bulk, PacketClass::Background, PacketClass::Control] {
+        // The FMP header and authentication tag add 32 bytes to the plaintext.
+        let payload = vec![1; 480];
+        let (mut mover, mut pool) = inline_receiver(class, &payload);
+        let (dispatched, outputs, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
+        assert_eq!(dispatched, 1);
+        assert!(drops.is_empty());
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].opened_payload(), Some(payload.as_slice()));
+        assert_eq!(outputs[0].lane, class.lane());
+        assert!(pool.native_executor.is_none());
+    }
+}
+
+#[test]
+fn small_packet_batch_keeps_worker_offload() {
+    let (mut mover, mut pool) = inline_receiver(PacketClass::Control, b"first");
+    next_control(&mut mover, 5, 17);
+    let (dispatched, _, _) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
+    assert_eq!(dispatched, 2);
+    assert!(pool.native_executor.is_some());
+    assert_eq!(pool.inline_packet_remaining, 1);
 }
 
 fn next_control(mover: &mut Dataplane, counter: u64, key: u8) {
@@ -105,7 +200,7 @@ fn ready_but_unretired_work_prevents_inline_execution() {
     mover.stage_retire_slots(&mut ready);
     assert!(pool.submit_prepared_chunk(&mut prepared, |slot| mover.stage_retire_slot(slot)));
     assert_eq!(pool.available_capacity(), 7);
-    pool.inline_control_remaining = 1;
+    pool.inline_packet_remaining = 1;
     next_control(&mut mover, 5, 17);
     let (_, mut outputs, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
     assert!(drops.is_empty());
@@ -139,7 +234,7 @@ fn failed_inline_authentication_does_not_consume_replay_counter() {
     assert_eq!(drops.len(), 1);
     assert!(pool.native_executor.is_none());
     assert_eq!(pool.available_capacity(), 8);
-    pool.inline_control_remaining = 1;
+    pool.inline_packet_remaining = 1;
     next_control(&mut mover, 4, 18);
     let (_, retired, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
     assert!(drops.is_empty());
@@ -169,7 +264,7 @@ fn inline_control_sealing_round_trips_through_authenticated_receive() {
         ))
         .unwrap();
     let mut pool = test_aead_worker_pool(8);
-    pool.inline_control_remaining = 1;
+    pool.inline_packet_remaining = 1;
     let (_, sealed, drops) = run_with_worker_pool_limit(&mut sender, &mut pool, 4);
     assert!(drops.is_empty());
     assert_eq!(sealed.len(), 1);
@@ -190,7 +285,7 @@ fn inline_control_sealing_round_trips_through_authenticated_receive() {
     .unwrap();
     packet.class = PacketClass::Mmp;
     receiver.submit_socket_packet(packet).unwrap();
-    pool.inline_control_remaining = 1;
+    pool.inline_packet_remaining = 1;
     let (_, opened, drops) = run_with_worker_pool_limit(&mut receiver, &mut pool, 4);
     assert!(drops.is_empty());
     assert_eq!(opened.len(), 1);
@@ -232,7 +327,7 @@ fn authenticated_inline_packet_keeps_replay_protection() {
     let (_, outputs, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
     assert_eq!(outputs.len(), 1);
     assert!(drops.is_empty());
-    pool.inline_control_remaining = 1;
+    pool.inline_packet_remaining = 1;
     next_control(&mut mover, 4, 17);
     let (_, outputs, drops) = run_with_worker_pool_limit(&mut mover, &mut pool, 4);
     assert!(outputs.is_empty());
