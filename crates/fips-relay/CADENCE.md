@@ -223,12 +223,13 @@ library/binary checks, formatting and the source-size gate passed. This was a
 software checkpoint; later physical results are recorded separately in
 [READINESS.md](READINESS.md) and [CADENCE-RESULTS.md](CADENCE-RESULTS.md).
 
-The latest optimized [guarded native comparison](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026)
-covers all four 250/500/1000/2000-ms policies with identical terms under idle,
-bursty, steady and high-rate workloads. Two opposite-order passes verify delivery
-and collection of all test funds. The results distinguish zero idle application
-polling from remaining TCP/FIPS transport traffic and report costs with their
-measurement limits. The 500-ms default remains unchanged.
+The latest optimized [native comparison](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026)
+and [Wi-Fi comparison](CADENCE-RESULTS.md#wi-fi-matrix-with-the-control-expiry-fix--14-october-2026)
+cover all four 250/500/1000/2000-ms policies under idle, bursty, steady and high-rate
+workloads, keeping terms and workloads identical within each matrix. Two
+opposite-order passes verify delivery and collection of all test funds. Results
+distinguish zero idle application polling from remaining TCP/FIPS transport traffic
+and report costs with their measurement limits. The 500-ms default remains unchanged.
 
 The optional `measurements` feature exposes scoped thread CPU spans, including
 controller future polls and inherited blocking work, and

@@ -1,5 +1,72 @@
 # Paid-relay cadence measurements
 
+## Wi-Fi matrix with the control expiry fix — 14 October 2026
+
+The r526 comparison uses the corrected runtime and SDK/CDK graph from the native
+matrix below, with the r525 optimized ARM64 executable. Three OpenWrt routers use
+native Ethernet over 802.11s, one paid relay and two funded directions. All eight
+trials pass in 250/500/1000/2000/2000/1000/500/250-ms order, retaining the same
+tariff, channel capacity, durable window, grace, workloads and three-second tail.
+The relay fee is 1 msat/KiB, channels hold 32 sats, the durable window is 4,000 msat
+and grace is 8,000 msat.
+The untraced ordinary wallet build uses core default features; only the mint
+simulates money. The [hardware runbook](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3)
+defines the experiment and its prepaid boundary accounting.
+
+All 93,696 measured payloads arrive without duplicates, invalid payloads or
+controller errors. Strict analysis accepts delivery, accounting boundaries,
+counter continuity and costs. All 16 channels settle, all 3,072 test sats are
+collected and all 2,109 management checks pass. Each trial closes before the next
+starts. Raw reports retain every guard and inter-workload interval; those
+intervals record no payment CPU, application payment requests or journal writes.
+Independent closure verifies unchanged source/harness and executable hashes,
+restored router state, and stopped owned processes. All 24 settled profiles are
+archived before removal; mint financial evidence remains. The private
+`work/cadence-router-r526` bundle retains the raw measurements and closure hashes.
+
+Values average two trials per policy and sum all three service processes. Each
+bursty trial delivers 512,000 application bytes, steady delivers 3,200,000 and
+high rate delivers 8,000,000. CPU is per delivered payload MiB; storage and traffic
+are KiB per workload observation including its tail. These hardware workloads and
+paid-hop count differ from the Linux matrix, so compare policies within a matrix.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Steady | 250 ms | 3.0 | 53.65 | 20.17 | 2.40 | 5.03 |
+| Steady | 500 ms | 3.0 | 52.93 | 20.18 | 2.40 | 5.03 |
+| Steady | 1 s | 3.0 | 54.52 | 20.17 | 2.40 | 5.03 |
+| Steady | 2 s | 3.0 | 52.89 | 20.13 | 2.40 | 5.03 |
+| High rate | 250 ms | 4.0 | 29.15 | 37.20 | 3.21 | 6.68 |
+| High rate | 500 ms | 3.0 | 22.12 | 24.30 | 2.41 | 5.04 |
+| High rate | 1 s | 2.0 | 14.52 | 14.33 | 1.60 | 3.64 |
+| High rate | 2 s | 2.0 | 14.26 | 16.12 | 1.60 | 3.64 |
+
+Idle and bursty windows record zero payment CPU, application payment requests
+and payment journal writes for every policy. The small burst fits already
+acknowledged whole-sat credit, so its usage remains covered without another
+payment update. Idle local payment-carrier traffic is still 488 bytes per
+observation. Whole-process CPU remains nonzero in both workloads.
+
+At high rate, one second uses about 34% less scoped payment CPU and 28% fewer
+local payment-carrier bytes than 500 ms. Whole-process CPU averages
+0.804/0.805/0.792/0.789 seconds per delivered MiB for the four policies: the
+whole-process difference is much smaller. Steady traffic uses three updates
+under every policy, without a corresponding reduction from longer ages. Two
+repeats do not establish a general optimum; the 500-ms default stays unchanged.
+
+High-rate observed goodput ranges from 25.28 to 25.93 Mbps. The paced workload and
+controller observation overhead do not measure maximum throughput. Router clocks
+are not synchronized, so this experiment makes no one-way latency claim. Observed
+per-process RSS at workload endpoints ranges from 19.85 to 21.95 MiB; this finite
+workload does not qualify peak memory at the wallet's resource limits.
+
+Payment CPU excludes scheduler and shared core/transport work outside the measured
+spans. Journal bytes are logical relay writes, excluding wallet SQLite and physical
+storage. Local carrier bytes count submitted FIPS/payment-service payload and
+instrumented Ethernet framing, including ACKs and retransmissions. They exclude
+opaque transit, shared traffic and physical radio overhead. Full physical wire
+cost, airtime, battery use and flash endurance remain separate measurements.
+
 ## Native matrix with the control expiry fix — 14 October 2026
 
 The ordinary Linux daemon at `d6874c3bf` passes the unchanged eight-trial matrix

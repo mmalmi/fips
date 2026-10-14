@@ -91,9 +91,9 @@ retirement loop or duplicate simulation framework to hide that distinction.
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| r525 Wi-Fi cadence pilot | The corrected `d6874c3bf` ARM64 build passes one 250-ms pilot over native Ethernet/802.11s on three routers: all 11,712 measured payloads arrive, both paid channels settle, all 384 test sats are collected and 261 management checks pass. Strict delivery/accounting/cost validation and independent restoration/archive checks pass. | One pilot, not the eight-trial hardware comparison or a power-cut test. The initial attempt used an unreachable mint port and stopped before issuing funds; its failure and cleanup evidence are retained. |
-| r524 native cadence | Runtime `d6874c3bf` passes the unchanged eight-trial comparison and strict delivery/accounting/cost validation. All 285,696 payloads arrive and all 40,960 test sats are collected. Processes stop and original settled profiles are retained. [Current costs](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026) cover idle, bursty, steady and high-rate workloads. | Two repeats per policy on clean Linux loopback links. Scoped CPU, logical relay writes and local payment-service transport counters exclude shared/physical costs; current physical-device performance remains open. |
-| r523 control expiry | A native TCP/FIPS regression fails on the old code when idle expiry discards a queued request. The fix passes 17 control unit and 16 integration tests, strict affected-target lint, formatting, source-size checks and an ordinary Linux build. Empty expired streams still close. | Fixes the demonstrated buffered-request race; does not prove it caused the r522 failure. The r525 hardware pilot passes; the full physical comparison remains open. |
+| r526 Wi-Fi cadence | The corrected `d6874c3bf` ARM64 build passes all eight trials over native Ethernet/802.11s: all 93,696 payloads arrive, all 16 channels settle, all 3,072 test sats are collected and 2,109 management checks pass. Strict delivery/accounting/cost validation and independent restoration/archive checks pass. [Current radio costs](CADENCE-RESULTS.md#wi-fi-matrix-with-the-control-expiry-fix--14-october-2026) cover all four policies. | Two repeats per policy on three stationary routers with one paid relay. Scoped CPU, logical journal writes and local carrier bytes exclude shared/physical costs. No one-way latency, maximum-throughput or power-cut claim. |
+| r524 native cadence | Runtime `d6874c3bf` passes the unchanged eight-trial comparison and strict delivery/accounting/cost validation. All 285,696 payloads arrive and all 40,960 test sats are collected. Processes stop and original settled profiles are retained. [Current native costs](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026) cover idle, bursty, steady and high-rate workloads. | Two repeats per policy on clean Linux loopback links. Scoped CPU, logical relay writes and local payment-service transport counters exclude shared/physical costs. |
+| r523 control expiry | A native TCP/FIPS regression fails on the old code when idle expiry discards a queued request. The fix passes 17 control unit and 16 integration tests, strict affected-target lint, formatting, source-size checks and an ordinary Linux build. Empty expired streams still close. | Fixes the demonstrated buffered-request race; does not prove it caused the r522 failure. The r525 hardware pilot and full r526 Wi-Fi comparison pass. |
 | r515, runtime `711b68a3d` | 335 relay unit checks, strict all-target lint, three real wallet-retirement cycles and an ordinary ARM64 build. Three regressions fail under the prior controller locking; stale receiver planning is revalidated. | Wallet work remains serialized; pending retirement still fences journal mutations. |
 | r519 SDK/CDK | Native custody reservations pass 443 SDK workspace tests (one existing ignored), 198 SQL wallet tests, strict affected-target lint and a three-cycle FIPS wallet lifecycle. Interrupted and full-capacity captures preserve their original coins, checkpoints and promised space. | Logical storage accounting; unrelated workflows and physical storage retain their separate acceptance requirements. The full CDK workspace was not run. |
 | r520, r519 ordinary ARM64 artifact | All 2,048 paid payloads arrive across three routers with 16 MiB native wallet limits. Six controller reads take 165–208 ms while sender/receiver SQLite writers are held. Two sender and two receiver records retire with original budgets; 384/384 test sats are collected; 282 management checks pass. Archived database inspection verifies the limits and sender custody reservations. | A finite contention scenario, not a power cut, throughput benchmark or flash-endurance result. Receivers use the existing release queue; senders use custody archive format 5. |
@@ -103,15 +103,16 @@ retirement loop or duplicate simulation framework to hide that distinction.
 | r521 phone | Same FIPS runtime and SDK/CDK graph as the r520 routers. Four MiB delivered, including during 47.57 seconds of forced Doze; all four original paid channels advance, 512 test sats collected and 587 management checks pass. Android build, strict lint and ten lifecycle tests pass. | Externally powered/ADB-observed; does not qualify natural deep idle or battery use. |
 | r511 radio mobility | Controlled open-radio channel change and return preserve paid connections; all 64 probes and financial recovery pass. | No actual movement or automatic channel-selection result. |
 
-The r525 ARM64 relay SHA-256 is
+The r525 ARM64 relay used by r526 has SHA-256
 `fa9e61ed6dfe641b70eb04eab568e51857e3660ccffa8a46e86a245da94e2fcf`.
 It uses the same SDK/CDK graph as r524, core default features and no wallet
-simulation. The pilot retains the original tariffs, allowance, workload and tail;
-only its mint connection uses the established reachable port after the unfunded
-setup failure. Original services and accounts are restored, settled profiles are
-archived before removal, and mint financial evidence is retained. The private
-`work/control-router-r525` bundle binds these results to the source, binary,
-harness, analysis and cleanup hashes. Hardware cadence comparison remains open.
+simulation. Original services and accounts are restored. All 24 settled router
+profiles are archived and checked before removal; owned mint executables are
+removed while their financial evidence remains. The private
+`work/cadence-router-r526` bundle binds the full comparison to source, binary,
+harness, analysis and cleanup hashes. The r525 pilot separately passes with
+11,712 payloads and 384 recovered test sats. Its initial unreachable-mint-port
+attempt stopped before funding; that failure and cleanup evidence remain intact.
 
 The earlier r519 ordinary ARM64 relay SHA-256 is
 `00f4829cad636e0fea7984f442b53293d5bdc8cc565fdbbdc088e5345e7decbf`.
@@ -154,9 +155,9 @@ Keep the three measurements distinct:
   relay journals, SDK snapshots, receiver databases and wallet shared memory.
   Logical bytes/syscalls do not measure physical media wear or mmap writes.
 
-The corrected native candidate passes the r524 comparison. Current physical-device
-comparison and complete shared-work attribution remain open; the latter is required
-if claiming total payment overhead. Radio airtime, battery life, flash
+The corrected candidate passes the r524 native and r526 Wi-Fi comparisons.
+Complete shared-work attribution remains open and is required before claiming
+total payment overhead. Radio airtime, battery life, flash
 endurance and maximum throughput are separate experiments; their absence cannot
 be concealed by a passing paced workload. Detailed methods and commands belong
 in the existing [benchmark runbook](../../testing/relay-cadence/README.md).
