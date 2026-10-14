@@ -383,37 +383,47 @@
 
     #[tokio::test]
     async fn deferred_session_packet_precedes_fresh_packet_after_route_install() {
-        deferred_session_packet_precedes_new_ingress(false, None, 1, false).await;
+        deferred_session_packet_precedes_new_ingress(false, None, 1, false, None).await;
     }
 
     #[tokio::test]
     async fn deferred_session_packet_precedes_ready_link_completion_after_route_install() {
-        deferred_session_packet_precedes_new_ingress(true, None, 1, false).await;
+        deferred_session_packet_precedes_new_ingress(true, None, 1, false, None).await;
     }
 
     #[tokio::test]
     async fn retained_handshake_proof_does_not_hide_older_session_from_completion() {
-        deferred_session_packet_precedes_new_ingress(true, Some(0), 1, false).await;
+        deferred_session_packet_precedes_new_ingress(true, Some(0), 1, false, None).await;
     }
 
     #[tokio::test]
     async fn admitted_handshake_proof_does_not_hide_older_session_from_completion() {
-        deferred_session_packet_precedes_new_ingress(true, Some(1), 1, false).await;
+        deferred_session_packet_precedes_new_ingress(true, Some(1), 1, false, None).await;
     }
 
     #[tokio::test]
     async fn session_backlog_exceeding_allowance_precedes_ready_link_completion() {
-        deferred_session_packet_precedes_new_ingress(true, Some(1), 2, false).await;
+        deferred_session_packet_precedes_new_ingress(true, Some(1), 2, false, None).await;
     }
 
     #[tokio::test]
     async fn session_backlog_exceeding_allowance_precedes_fresh_raw_ingress() {
-        deferred_session_packet_precedes_new_ingress(false, None, 2, false).await;
+        deferred_session_packet_precedes_new_ingress(false, None, 2, false, None).await;
     }
 
     #[tokio::test]
     async fn session_backlog_exceeding_allowance_precedes_fast_ingress() {
-        deferred_session_packet_precedes_new_ingress(false, None, 2, true).await;
+        deferred_session_packet_precedes_new_ingress(false, None, 2, true, None).await;
+    }
+
+    #[tokio::test]
+    async fn packet_rx_first_survives_deferred_ingress_budget() {
+        deferred_session_packet_precedes_new_ingress(false, None, 1, false, Some(false)).await;
+    }
+
+    #[tokio::test]
+    async fn packet_rx_prefetch_survives_deferred_ingress_budget() {
+        deferred_session_packet_precedes_new_ingress(false, None, 1, false, Some(true)).await;
     }
 
     async fn deferred_session_packet_precedes_new_ingress(
@@ -421,6 +431,7 @@
         proof_raw_budget: Option<usize>,
         older_count: usize,
         fast_packet: bool,
+        packet_rx_prefetch: Option<bool>,
     ) {
         let retained_proof = proof_raw_budget.is_some();
         let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
@@ -442,7 +453,7 @@
                     TransportAddr::from_string("198.51.100.178:9000"),
                     PacketBuffer::new(fsp_encrypted_wire(
                         counter,
-                        if fast_packet { crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT } else { 0 },
+                        if fast_packet || packet_rx_prefetch.is_some() { crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT } else { 0 },
                         &inner, key,
                     )),
                     178_000,
@@ -462,6 +473,8 @@
             raw_source.push_front(raw(255).with_fsp_source(blocked_source));
         }
         let mut fast_ingress = None;
+        let mut first_packet = None;
+        let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
         let first = live_node
             .pump_turn_with_firsts_and_transport_batch(
                 None,
@@ -590,6 +603,13 @@
             assert_eq!(sink.try_ingest_batch(&mut packets), 1);
             assert!(packets.is_empty());
             fast_ingress = Some(fast_rx.try_recv().unwrap());
+        } else if packet_rx_prefetch.is_some() {
+            first_packet = Some(ReceivedPacket::with_timestamp(
+                TransportId::new(178),
+                TransportAddr::from_string("198.51.100.178:9000"),
+                raw(older_count as u64).payload,
+                178_000,
+            ));
         } else {
             raw_source.push_back(raw(older_count as u64));
         }
@@ -606,24 +626,42 @@
                 if !first_turn {
                     readiness.notified().await;
                 }
-                let turn = live_node
-                    .pump_turn_with_firsts_and_transport_batch(
-                        fast_ingress.take(),
-                        &mut raw_source,
-                        if first_turn { proof_raw_budget.unwrap_or(if ready_link { 0 } else { 1 }) } else { 1 },
-                        DataplaneLiveOutboundFirsts::default(),
-                        DataplaneLiveTurnIo {
-                            endpoint_data_rx: None,
-                            endpoint_limit: 0,
-                            tun_outbound_rx: None,
-                            tun_limit: 0,
-                            endpoint_tx: &endpoint_io.event_tx,
-                            transports: &transports,
-                            crypto_limit: if retained_proof || older_count > 1 { 1 } else { 8 },
-                            transport_send_batch_packets: 8,
+                let io = DataplaneLiveTurnIo {
+                    endpoint_data_rx: None,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: None,
+                    tun_limit: 0,
+                    endpoint_tx: &endpoint_io.event_tx,
+                    transports: &transports,
+                    crypto_limit: if retained_proof || older_count > 1 { 1 } else { 8 },
+                    transport_send_batch_packets: 8,
+                };
+                let raw_limit = if first_turn {
+                    proof_raw_budget.unwrap_or(if ready_link { 0 } else { 1 })
+                } else { 1 };
+                let turn = if let Some(prefetch) = packet_rx_prefetch {
+                    live_node.pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_batch(
+                        &mut packet_rx,
+                        DataplaneLiveTurnFirsts {
+                            raw_packet: first_packet.take(),
+                            raw_ingress_prefetch: prefetch,
+                            ..Default::default()
                         },
-                    )
-                    .await;
+                        raw_limit,
+                        direct_fsp_sources(
+                            TransportId::new(178),
+                            TransportAddr::from_string("198.51.100.178:9000"),
+                            source, 1400,
+                        ),
+                        false,
+                        io,
+                    ).await
+                } else {
+                    live_node.pump_turn_with_firsts_and_transport_batch(
+                        fast_ingress.take(), &mut raw_source, raw_limit,
+                        DataplaneLiveOutboundFirsts::default(), io,
+                    ).await
+                };
                 first_turn = false;
                 if !ready_link && !fast_packet {
                     assert!(

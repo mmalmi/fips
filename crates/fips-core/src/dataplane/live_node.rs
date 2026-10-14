@@ -833,39 +833,49 @@ impl DataplaneLiveNode {
                 Some(&mut direct_fsp_reassembler),
                 self.fmp_handshake_candidates.clone(),
             );
-        if raw_ingress_prefetch && packet_limit > 0 {
-            let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);
-            prefetched.clear();
+        let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);
+        prefetched.clear();
+        let mut turn = if raw_ingress_prefetch && packet_limit > 0 {
             raw_ingress.drain_raw_ingress(packet_limit, |packet| {
                 prefetched.push_back(packet);
             });
-            let mut turn = self
-                .pump_turn_with_firsts_and_transport_batch(
-                    fast_ingress,
-                    &mut prefetched,
-                    packet_limit,
-                    outbound_firsts,
-                    io,
-                )
-                .await;
-            let control_ingress = raw_ingress.take_control_ingress();
-            drop(raw_ingress);
-            turn.fmp_control_ingress = control_ingress;
-            self.empty_raw_ingress = prefetched;
-            self.direct_fsp_reassembler = direct_fsp_reassembler;
-            return turn;
-        }
-        let mut turn = self
-            .pump_turn_with_firsts_and_transport_batch(
+            self.pump_turn_with_firsts_and_transport_batch(
+                fast_ingress,
+                &mut prefetched,
+                packet_limit,
+                outbound_firsts,
+                io,
+            )
+            .await
+        } else {
+            self.pump_turn_with_firsts_and_transport_batch(
                 fast_ingress,
                 &mut raw_ingress,
                 packet_limit,
                 outbound_firsts,
                 io,
             )
-            .await;
+            .await
+        };
+        // Older deferred records may consume the entire admission allowance.
+        // Preserve every packet already removed from PacketRx, including the
+        // caller's first packet, without reading or admitting any more packets.
+        let remaining_first = usize::from(raw_ingress.first.is_some());
+        raw_ingress.drain_raw_ingress(remaining_first, |packet| {
+            prefetched.push_back(packet);
+        });
         let control_ingress = raw_ingress.take_control_ingress();
         drop(raw_ingress);
+        if !prefetched.is_empty() {
+            let deferred_at_ms = crate::time::now_ms();
+            self.deferred_raw_ingress.extend(
+                prefetched.drain(..).map(|packet| (packet.into(), deferred_at_ms)),
+            );
+            if self.has_runnable_work() {
+                self.crypto_worker.readiness_notify().notify_one();
+            }
+        }
+        self.empty_raw_ingress = prefetched;
         turn.fmp_control_ingress = control_ingress;
         self.direct_fsp_reassembler = direct_fsp_reassembler;
         turn
