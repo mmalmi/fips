@@ -765,7 +765,9 @@ impl Node {
     pub(in crate::node) async fn wait_for_dataplane_completion(&self) {
         let notify = self.dataplane.readiness_notify();
         let deadline = tokio::time::Instant::now() + DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT;
-        while !self.dataplane.has_runnable_work() {
+        // Nested sends have no raw-ingress budget. Retained handshake proofs
+        // wake the outer receive turn but cannot advance this send's receipt.
+        while !self.dataplane.has_runnable_output_work() {
             if tokio::time::Instant::now() >= deadline
                 || tokio::time::timeout_at(deadline, notify.notified())
                     .await

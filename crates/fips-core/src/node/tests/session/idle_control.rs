@@ -2,6 +2,57 @@ use super::*;
 use crate::dataplane::{ActivityTick, DataplaneLiveOutboundFirsts, FmpWireHeader};
 use crate::node::tests::spanning_tree::process_dataplane_packet;
 use crate::transport::PacketBuffer;
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
+
+#[test]
+fn retained_ingress_does_not_complete_a_nested_send_wait() {
+    run_large_stack_async_test("retained-ingress-send-wait", || async {
+        let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+        let result = AssertUnwindSafe(async {
+            drain_to_quiescence(&mut nodes).await;
+            let destination = *nodes[1].node.node_addr();
+            nodes[0]
+                .node
+                .send_dataplane_fmp_link_plaintext(
+                    &destination,
+                    &[crate::protocol::LinkMessageType::Heartbeat.to_byte()],
+                    false,
+                )
+                .await
+                .unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(1), nodes[1].packet_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            nodes[1].node.dataplane.defer_fmp_handshake_proof(packet);
+            assert!(nodes[1].node.dataplane.has_runnable_work());
+            assert!(!nodes[1].node.dataplane.has_runnable_output_work());
+
+            // Promotion retains a genuine encrypted proof before bootstrap
+            // sends. Their zero-ingress continuation must still await output
+            // readiness instead of exhausting its allowance on this proof.
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    nodes[1].node.wait_for_dataplane_completion(),
+                )
+                .await
+                .is_err(),
+                "retained raw ingress cannot satisfy an output-only wait"
+            );
+            assert!(nodes[1].node.dataplane.has_deferred_raw_ingress());
+            drain_to_quiescence(&mut nodes).await;
+            assert!(!nodes[1].node.dataplane.has_deferred_raw_ingress());
+        })
+        .catch_unwind()
+        .await;
+        cleanup_nodes(&mut nodes).await;
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    });
+}
 
 #[test]
 fn warmed_control_turns_preserve_encrypted_wire_and_send_receipts() {

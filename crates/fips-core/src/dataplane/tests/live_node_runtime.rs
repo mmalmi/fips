@@ -356,6 +356,11 @@
         assert_eq!(turn.summary().inbound_admitted(), 0);
         drop(turn);
         assert_eq!(live_node.deferred_raw_ingress.len(), 1);
+        assert!(live_node.has_runnable_work());
+        assert!(
+            !live_node.has_runnable_output_work(),
+            "a retained proof cannot advance a send with no raw-ingress budget"
+        );
         let turn = live_node
             .pump_completion_output_turn_with_transport_batch(
                 false,

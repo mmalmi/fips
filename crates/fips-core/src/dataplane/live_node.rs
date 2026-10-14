@@ -197,8 +197,12 @@ impl DataplaneLiveNode {
         !self.deferred_raw_ingress.is_empty()
     }
 
-    pub(crate) fn has_runnable_work(&self) -> bool {
+    pub(crate) fn has_runnable_output_work(&self) -> bool {
         self.driver.has_runnable_work()
+    }
+
+    pub(crate) fn has_runnable_work(&self) -> bool {
+        self.has_runnable_output_work()
             || self.deferred_raw_ingress.iter().any(|(packet, _)| match packet {
                 DataplaneDeferredIngress::Raw(packet) => {
                     packet.protocol != PacketProtocol::Fsp
