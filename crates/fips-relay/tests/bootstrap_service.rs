@@ -86,8 +86,8 @@ async fn native_quality_reports_return_from_an_unfunded_recipient() {
 }
 
 async fn one_way(return_allowance: bool) {
+    let mut root = retained_tempdir();
     tokio::time::timeout(Duration::from_secs(240), async {
-        let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -283,7 +283,9 @@ async fn one_way(return_allowance: bool) {
         }
         assert_eq!(total, 1_024);
         assert!(network.accounting().unwrap().is_conserved());
+        eprintln!("one-way bootstrap: all 1024 test sats conserved");
     })
     .await
     .expect("one-way bootstrap test deadline");
+    root.disable_cleanup(false);
 }

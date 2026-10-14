@@ -111,7 +111,7 @@ impl Bench {
         selection: Option<PriceSelectionPolicy>,
         mut configure: impl FnMut(usize, &mut ServiceConfig),
     ) -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = retained_tempdir();
         let (mut configs, mut paths, mut npubs, mut sockets) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for i in 0..5 {
@@ -186,6 +186,7 @@ impl Bench {
         )
         .await;
         bench.wait_selection_topology("startup", deadline).await;
+        bench._root.disable_cleanup(false);
         bench
     }
 

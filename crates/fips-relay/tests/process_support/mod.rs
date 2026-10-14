@@ -13,6 +13,14 @@ use tokio::process::{Child, Command};
 mod transports;
 pub use transports::{udp_bind, udp_transports};
 
+#[allow(dead_code)] // Shared fixtures compile into separate integration test targets.
+pub fn retained_tempdir() -> tempfile::TempDir {
+    let mut root = tempfile::tempdir().unwrap();
+    root.disable_cleanup(true);
+    eprintln!("test recovery directory: {}", root.path().display());
+    root
+}
+
 pub fn config(root: &Path, mint: &str) -> ServiceConfig {
     ServiceConfig {
         state_directory: root.join("state"),

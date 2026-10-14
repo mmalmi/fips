@@ -19,7 +19,7 @@ use std::{
 mod bench;
 #[path = "mixed_transport/ethernet.rs"]
 mod ethernet;
-use crate::process_support;
+use crate::process_support::{self, retained_tempdir};
 use bench::{MixedBench, SecondHop};
 #[cfg(feature = "testbench")]
 #[path = "mixed_transport/accept_barrier.rs"]
@@ -88,13 +88,6 @@ async fn mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_paid_limits() {
     mixed_daemons_preserve_paid_limits(SecondHop::WebSocketSelfSigned).await;
-}
-
-fn retained_tempdir() -> tempfile::TempDir {
-    let mut root = tempfile::tempdir().unwrap();
-    root.disable_cleanup(true);
-    eprintln!("test recovery directory: {}", root.path().display());
-    root
 }
 
 async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {

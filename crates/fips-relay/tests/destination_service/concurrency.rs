@@ -221,8 +221,8 @@ async fn warm_paid(bench: &Bench) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn paid_delivery_progresses_during_free_traffic_and_free_resumes_idle() {
+    let mut mint_root = retained_tempdir();
     tokio::time::timeout(Duration::from_secs(180), async {
-        let mint_root = tempfile::tempdir().unwrap();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let network = PaymentNetwork::new(103, 0, Arc::new(VirtualClock::new(now)));
         let mint = LocalMint::start(
@@ -246,6 +246,7 @@ async fn paid_delivery_progresses_during_free_traffic_and_free_resumes_idle() {
                 }
             },
         ).await;
+        bench._root.disable_cleanup(true);
         let free_finances = monetary_journals(&bench.configs[0]);
         let free_open = bench.open(4).await;
         assert!(free_open["purchase"].is_null());
@@ -333,5 +334,8 @@ async fn paid_delivery_progresses_during_free_traffic_and_free_resumes_idle() {
         }
         assert_eq!(total, FUNDED_SAT);
         assert!(network.accounting().unwrap().is_conserved());
+        eprintln!("free/paid concurrency: all {FUNDED_SAT} test sats conserved");
+        bench._root.disable_cleanup(false);
     }).await.expect("mixed free/paid concurrency deadline");
+    mint_root.disable_cleanup(false);
 }

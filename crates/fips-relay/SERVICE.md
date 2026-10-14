@@ -415,9 +415,10 @@ links as immediate route readiness. It does not promise seamless recovery.
 
 For failed-test diagnostics, set `FIPS_RELAY_TEST_LOG=fips_core::node=debug` and
 `FIPS_RELAY_TEST_LOG_DIR` to an existing private directory. Failed tests save only
-node logs in that directory. Mixed-transport fixtures also print their private
-temporary recovery directories and retain the original mint, wallets and daemon
-accounts when setup, traffic or settlement fails. Successful fixtures remove
+node logs in that directory. The mixed-carrier lifecycle, newcomer, one-way
+bootstrap and free/paid contention fixtures also print their private temporary
+recovery directories and retain the original mint, wallets and daemon accounts
+when setup, traffic or settlement fails. Successful fixtures remove
 their temporary state after checking final test-fund conservation. Keep failed
 financial owners intact until recovery is completed or explicitly retained;
 rerunning a test creates separate accounts and does not settle the failed ones.

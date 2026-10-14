@@ -341,7 +341,7 @@ async fn settle(bench: &mut MixedBench, retired: Retired, mint: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_paying_identity_joins_while_disconnected_buyer_retains_unsettled_funds() {
-    let root = tempfile::tempdir().unwrap();
+    let mut root = retained_tempdir();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -388,6 +388,8 @@ async fn new_paying_identity_joins_while_disconnected_buyer_retains_unsettled_fu
         bench.lock().await.failure_snapshot().await;
         Arc::try_unwrap(bench).ok().unwrap().into_inner().preserve();
         eprintln!("retained failed mint/newcomer at {}", root.keep().display());
+    } else {
+        root.disable_cleanup(false);
     }
     assert!(
         matches!(result, Ok(Ok(()))),
