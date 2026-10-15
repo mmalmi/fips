@@ -596,18 +596,28 @@ and checkpoint instrumentation uses non-overlapping spans.
 
 ## Remaining comparison work
 
-This matrix provides the repeatable clean-link baseline. It does not fulfill
-the full production-readiness benchmark. Still required: impaired links using
-the existing FIPS simulation/chaos facilities, payment-specific complete carrier
-bytes, impaired-link and long-running storage comparisons, profiler attribution outside
-the synchronous spans, and complete controlled ARM64/router/phone comparisons.
-The guarded three-router 250-ms pilot passed all four workloads and financial
-recovery. The subsequent eight-trial hardware matrix collected all windows and
-recovered all funds, but its strict clean-link gate rejected three missing
-packets out of 93,696 submitted. The failed result remains failed; the saved
-evidence does not establish the loss cause. Performance changes
-need a matched baseline with instrumentation cost held constant. No production
-default is selected solely from this loopback experiment.
+Use the [readiness checklist](../../crates/fips-relay/READINESS.md#acceptance-checklist)
+for the current candidate and outstanding acceptance. The r613 native and
+three-router comparisons qualify the untraced CPU, logical journal and local
+payment-carrier counters on runtime `1b948a688`. Both eight-trial matrices deliver
+every payload and independently conserve their original test funds. Earlier
+rejected runs remain rejected; they do not describe the latest candidate.
+
+Independent packet captures and storage syscall comparisons remain separate
+from those counters. The accepted r214 physical capture and r202 virtual Ethernet
+storage results use older runtimes; reconcile them against the final candidate
+using the existing capture drivers below. Reuse the same policies, workloads,
+financial terms and strict boundary checks. Do not repeat the untraced CPU
+matrix merely to obtain a traced measurement, or use traced CPU as its replacement.
+
+The r615 controlled phone transit check qualifies delivery and accounting through
+foreground, background and forced Doze, not a current phone cost comparison.
+Physical mobility, natural idle, power loss and the remaining resource/fault
+acceptance retain their separate requirements. Report shared CPU work and
+unattributed packets explicitly: partial counters cannot establish complete
+payment cost, physical airtime, flash wear or a throughput ceiling. Performance
+changes need a matched baseline with instrumentation cost held constant. No
+production default is selected solely from this loopback experiment.
 
 For ordinary cumulative payments, signing rewrites the SDK's client snapshot;
 receiver updates use Spilman's SQLite database. Both execute synchronously inside
