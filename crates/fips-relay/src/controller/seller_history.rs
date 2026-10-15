@@ -230,12 +230,15 @@ impl Store {
             if store.journal.history.as_ref().is_some_and(History::pending) {
                 return Ok(None);
             }
+            // One admitted payout fits the SDK handoff; retire the oldest owner first.
             let ids: Vec<_> = store
                 .journal
                 .seller_settlements
                 .iter()
                 .filter(|(_, s)| completed(&store.journal, s, timestamp))
+                .min_by_key(|(id, s)| (s.channel.refund_deadline(), *id))
                 .map(|(id, _)| id.clone())
+                .into_iter()
                 .collect();
             if ids.is_empty() {
                 return Ok(None);

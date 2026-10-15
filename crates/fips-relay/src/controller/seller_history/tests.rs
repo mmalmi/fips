@@ -6,6 +6,10 @@ mod support;
 use support::{prepare_sales, resume_sales, retire_sales};
 
 fn fixture(root: &Path) -> (Store, DurableRelay, ChannelTerms) {
+    fixture_with_channels(root, 1)
+}
+
+fn fixture_with_channels(root: &Path, max_channels: usize) -> (Store, DurableRelay, ChannelTerms) {
     let (mut store, old) = super::super::transition_tests::fixture(&root.join("controller"));
     store.journal.funding.clear();
     store.journal.outgoing.clear();
@@ -17,7 +21,7 @@ fn fixture(root: &Path) -> (Store, DurableRelay, ChannelTerms) {
     let seller = DurableRelay::create(
         &root.join("seller"),
         Limits {
-            max_channels: 1,
+            max_channels,
             ..Limits::default()
         },
         1000,
