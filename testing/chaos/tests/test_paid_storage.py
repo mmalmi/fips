@@ -28,6 +28,17 @@ def captures():
 
 
 class StorageAcceptanceTests(unittest.TestCase):
+    def test_verified_log_alias_is_literal_and_does_not_hide_other_files(self):
+        alias = "/mounted[copy]*/node?/process.log"
+        identity = {"device": 3, "inode": 7, "fd_paths": {"1": alias, "2": alias}}
+        paths = storage_paths(identity)
+        other = "/mountedc-extra/node1/process.log"
+        result = analyze([f'10 write(2<{path}>, ""..., 334) = 334\n'
+                          for path in (alias, other)], paths)["categories"]
+        self.assertEqual(result["process_log"]["write_bytes"], 334)
+        self.assertEqual(result["unmatched"]["write_bytes"], 334)
+        self.assertEqual(paths["wallet_sqlite"], storage_paths()["wallet_sqlite"])
+
     def test_both_senders_and_receiver_are_observed_without_funding_writes(self):
         summaries, lifecycles = captures()
         validate_storage(summaries, lifecycles)
@@ -262,7 +273,11 @@ class TraceContextTests(unittest.TestCase):
                         else "/tmp/bench-state/wallet/.cashu-private-example")
                 (output / "storage.trace").write_text(
                     "" if empty else f'10 write(4<{path}>, ""..., 16) = 16\n')
-                (output / "storage.ready.json").write_text(json.dumps({"threads_attached": 2}))
+                alias = f"/mounted-origin/{node}/process.log"
+                process_log = {"device": 3, "inode": 7, "fd_paths": {"1": alias, "2": alias}}
+                (output / "storage.process-log.json").write_text(json.dumps(process_log))
+                (output / "storage.ready.json").write_text(json.dumps(
+                    {"threads_attached": 2, "process_log": process_log}))
 
             def wait(description, condition, _seconds):
                 if description == "bounded tracer detach":
@@ -302,6 +317,20 @@ class TraceContextTests(unittest.TestCase):
                                  [0, 0, 0])
                 self.assertTrue(all((run.root / node / f"storage-{capture}" / "storage.stop").exists()
                                     for node in run.nodes))
+
+    def test_capture_uses_each_workers_verified_log_alias_and_saves_the_same_map(self):
+        with self.fixture(empty=True) as (run, launched):
+            record = {}
+            with run.trace(record, capture="idle", require_activity=False):
+                for node, output in zip(run.nodes, launched):
+                    identity = record["trace_ready"][node]["process_log"]
+                    self.assertEqual(json.loads((output / "storage-paths.json").read_text()),
+                                     storage_paths(identity))
+                    (output / "storage.trace").write_text(
+                        f'10 write(2<{identity["fd_paths"]["2"]}>, ""..., 334) = 334\n')
+            for summary in record["storage"].values():
+                self.assertEqual(summary["categories"]["process_log"]["write_bytes"], 334)
+                self.assertEqual(summary["categories"]["unmatched"]["write_bytes"], 0)
 
     def test_legacy_empty_capture_still_rejects_when_activity_is_optional(self):
         with self.fixture(empty=True) as (run, _), self.assertRaises(ValueError):

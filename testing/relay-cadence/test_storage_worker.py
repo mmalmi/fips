@@ -3,6 +3,7 @@
 from contextlib import ExitStack, contextmanager
 import io
 import json
+import os
 from pathlib import Path
 import signal
 import tempfile
@@ -17,6 +18,29 @@ TRACE = '11 write(3</tmp/bench-state/wallet/.cashu-private-test>, ""..., 2) = 2\
 
 
 class WorkerTests(unittest.TestCase):
+    def test_log_alias_requires_both_descriptors_to_match_the_owned_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "process.log"
+            log.write_text("owned log")
+            alias = root / "mounted[copy]" / "process.log"
+            alias.parent.mkdir()
+            os.link(log, alias)
+            descriptors = root / "proc" / "200" / "fd"
+            descriptors.mkdir(parents=True)
+            for number in ("1", "2"):
+                (descriptors / number).symlink_to(alias)
+            with patch.object(worker, "ROOT", root), patch.object(worker, "PROC", root / "proc", create=True):
+                identity = worker.process_log_identity(200)
+                self.assertEqual(identity, {"device": log.stat().st_dev, "inode": log.stat().st_ino,
+                    "fd_paths": {"1": str(alias), "2": str(alias)}})
+                other = root / "other.log"
+                other.write_text("owned log")
+                (descriptors / "2").unlink()
+                (descriptors / "2").symlink_to(other)
+                with self.assertRaisesRegex(RuntimeError, "process log"):
+                    worker.process_log_identity(200)
+
     @contextmanager
     def fixture(self, capture=None, payload=TRACE):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
@@ -35,12 +59,15 @@ class WorkerTests(unittest.TestCase):
                 return process.returncode
 
             process.wait.side_effect = finish
+            process_log = {"device": 3, "inode": 7,
+                           "fd_paths": {"1": "/mounted/log", "2": "/mounted/log"}}
 
             def launch(args, stderr):
+                self.assertEqual(json.loads((output / "storage.process-log.json").read_text()), process_log)
                 Path(args[args.index("-o") + 1]).write_text(payload)
                 return process
 
-            case = SimpleNamespace(root=root, output=output, process=process)
+            case = SimpleNamespace(root=root, output=output, process=process, process_log=process_log)
             stack.enter_context(patch.object(worker, "ROOT", root))
             stack.enter_context(patch.object(worker, "os", SimpleNamespace(
                 umask=None, pidfd_open=None, close=None)))
@@ -49,6 +76,7 @@ class WorkerTests(unittest.TestCase):
                     ("pidfd", "os.pidfd_open", {"return_value": 7, "create": True}),
                     ("close", "os.close", {}),
                     ("alive", "target_alive", {"return_value": True}),
+                    ("log_identity", "process_log_identity", {"return_value": process_log}),
                     ("threads", "tracers", {"side_effect": [[0, 0], [300, 300], [0, 0]]}),
                     ("launch", "subprocess.Popen", {"side_effect": launch}),
                     ("clock", "time.monotonic", {"side_effect": [0, 1, 2]}),
@@ -85,7 +113,8 @@ class WorkerTests(unittest.TestCase):
                 self.assertTrue(all(call.args == (200, 7) for call in case.alive.call_args_list))
                 self.assertFalse((case.root / "storage.trace").exists())
                 ready = json.loads((case.output / "storage.ready.json").read_text())
-                self.assertEqual(ready, {"target_pid": 200, "tracer_pid": 300, "threads_attached": 2})
+                self.assertEqual(ready, {"target_pid": 200, "tracer_pid": 300, "threads_attached": 2,
+                                        "process_log": case.process_log})
 
     def test_legacy_empty_capture_remains_rejected(self):
         with self.fixture(payload="") as case:
@@ -112,13 +141,15 @@ class WorkerTests(unittest.TestCase):
                 self.assertFalse(case.receipt()["accepted"])
 
     def test_empty_named_capture_cannot_hide_attachment_continuity_or_detach_failure(self):
-        for stage in ("identity", "preexisting_tracer", "attachment", "continuity", "detach",
-                      "stderr", "exit"):
+        for stage in ("identity", "preexisting_tracer", "log_file", "attachment", "continuity", "detach",
+                      "stderr", "exit", "log_changed"):
             with self.subTest(stage=stage), self.fixture("idle", payload="") as case:
                 if stage == "identity":
                     case.alive.return_value = False
                 elif stage == "preexisting_tracer":
                     case.threads.side_effect = [[88]]
+                elif stage == "log_file":
+                    case.log_identity.side_effect = RuntimeError("wrong process log")
                 elif stage == "attachment":
                     case.threads.side_effect = [[0, 0], [300, 0]]
                     case.clock.side_effect = [0, 10]
@@ -131,6 +162,8 @@ class WorkerTests(unittest.TestCase):
                         stderr.write("tracer error")
                         return case.process
                     case.launch.side_effect = noisy
+                elif stage == "log_changed":
+                    case.log_identity.side_effect = [case.process_log, dict(case.process_log, inode=8)]
                 else:
                     def failed_exit(timeout):
                         case.process.returncode = 1
@@ -139,6 +172,8 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(case.run(), 1)
                 self.assertFalse(case.receipt()["accepted"])
                 case.close.assert_called_once_with(7)
+                if stage == "log_file":
+                    case.launch.assert_not_called()
 
     def test_capture_deadline_and_size_limit_still_detach_and_reject(self):
         for bound in ("deadline", "bytes"):

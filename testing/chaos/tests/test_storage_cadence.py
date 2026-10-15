@@ -64,6 +64,18 @@ def window(name="idle"):
 
 
 class StorageWindowTests(unittest.TestCase):
+    def test_verified_log_alias_does_not_hide_idle_file_errors(self):
+        alias = "/mounted-origin/owned-node/process.log"
+        paths = storage_paths({"device": 3, "inode": 7, "fd_paths": {"1": alias, "2": alias}})
+        record = window()
+        record["storage"]["n01"] = analyze([f'10 write(2<{alias}>, ""..., 334) = 334\n'], paths)
+        self.assertEqual(summarize_window(record)["file_write_bytes"], 0)
+        self.assertEqual(record["storage"]["n01"]["categories"]["process_log"]["write_bytes"], 334)
+        for call in (f'write(2<{alias}>, ""..., 334)', f'fsync(2<{alias}>)'):
+            record["storage"]["n01"] = analyze([f'10 {call} = -1 EIO (Input/output error)\n'], paths)
+            with self.subTest(call=call), self.assertRaisesRegex(RuntimeError, "failed file operation"):
+                summarize_window(record)
+
     def test_idle_wallet_shared_memory_upkeep_is_counted_without_financial_writes(self):
         record = window()
         path = "/tmp/bench-state/wallet/cashu/wallet.sqlite"
