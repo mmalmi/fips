@@ -193,6 +193,7 @@ impl OwnerState {
         }
         if self.owner.protocol() == PacketProtocol::Fsp {
             if let Some(bytes) = fsp_application_data_len {
+                self.has_tx_data_in_epoch |= packet.send_epoch == OutboundSendEpoch::Current;
                 if let Some(next_hop) = fsp_next_hop {
                     if self.last_outbound_next_hop != Some(next_hop) {
                         self.fsp_mmp_path_changed_since_report = true;
@@ -438,6 +439,7 @@ impl OwnerState {
         }
         self.last_outbound_next_hop = Some(next_hop);
         note_activity(&mut self.last_tx_activity, tick);
+        self.has_tx_data_in_epoch = true;
         note_activity(&mut self.last_tx_data_activity, tick);
         self.first_unreported_tx_data_activity.get_or_insert(tick);
         self.data_packets_sent = self.data_packets_sent.saturating_add(1);

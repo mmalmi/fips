@@ -26,6 +26,7 @@ mod graph_fallback;
 #[cfg(feature = "sim-transport")]
 mod handshake_retention;
 mod handshake_timeout;
+mod idle_recovery;
 mod mesh_signal_replay;
 mod mtu_exceeded;
 mod mtu_notification;

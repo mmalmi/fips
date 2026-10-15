@@ -63,6 +63,7 @@ impl OwnerState {
             last_delivery_report_next_hop: None,
             last_delivery_report_cumulative_packets_recv: None,
             last_tx_activity: None,
+            has_tx_data_in_epoch: false,
             last_tx_data_activity: None,
             first_unreported_tx_data_activity: None,
             last_outbound_next_hop: None,
@@ -137,6 +138,7 @@ impl OwnerState {
         self.last_delivery_report_next_hop = None;
         self.last_delivery_report_cumulative_packets_recv = None;
         self.last_tx_data_activity = None;
+        self.has_tx_data_in_epoch = false;
         self.first_unreported_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.last_direct_path_validation_activity = None;
@@ -814,6 +816,7 @@ impl OwnerState {
                 .fsp_mmp
                 .as_ref()
                 .is_some_and(|mmp| mmp.mode() != crate::mmp::MmpMode::Minimal),
+            has_tx_data_in_epoch: self.has_tx_data_in_epoch,
             last_tx_data_activity: self.last_tx_data_activity,
             first_unreported_tx_data_activity: self.first_unreported_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,

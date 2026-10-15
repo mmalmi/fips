@@ -566,6 +566,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     last_delivery_report_next_hop: Option<NodeAddr>,
     last_delivery_report_cumulative_packets_recv: Option<u64>,
     receiver_reports_enabled: bool,
+    has_tx_data_in_epoch: bool,
     last_tx_data_activity: Option<ActivityTick>,
     first_unreported_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
@@ -653,6 +654,10 @@ impl DataplaneFspOwnerActivity {
     pub(crate) fn has_recent_outbound_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
         self.last_tx_data_activity
             .is_some_and(|tick| tick.age_ms(now_ms) <= timeout_ms)
+    }
+
+    pub(crate) fn has_tx_data_in_epoch(self) -> bool {
+        self.has_tx_data_in_epoch
     }
 
     pub(crate) fn has_recent_session_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
@@ -809,6 +814,7 @@ pub(crate) struct OwnerState {
     last_delivery_report_next_hop: Option<NodeAddr>,
     last_delivery_report_cumulative_packets_recv: Option<u64>,
     last_tx_activity: Option<ActivityTick>,
+    has_tx_data_in_epoch: bool,
     last_tx_data_activity: Option<ActivityTick>,
     first_unreported_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
