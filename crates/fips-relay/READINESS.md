@@ -600,7 +600,7 @@ the total cost of the caller below.
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; larger receiver payouts, reserved completion and concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. Whole sender calls, receiver release queue and repeated owner scans still need progress and memory acceptance on the intended routers. |
-| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces 64 KiB token/cache limits, 128 retained exports and the 4 MiB SDK send journal with completion headroom. Original send recovery, replay floors and custody remain protected. Full retained-export pressure and router reopen/acknowledgement costs still need acceptance. |
+| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614 accepts a full 128-export cache on Linux, including refusal, acknowledgement and continued spending. Router reopen/acknowledgement costs, larger payloads and aggregate store saturation still need acceptance. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay
 does not call the SDK's general startup recovery, Lightning issuance or melt
@@ -626,6 +626,27 @@ charged logical history; an unset capacity does not. These are exclusive local
 wallet commands, not anonymous forwarding requests. The 36 source bindings and
 existing tests inspected, without rerunning them, remain in
 `work/export-bounds-r612`.
+
+r614 exercises the existing opt-in export fixture on the current runtime/SDK
+graph. It retains 128 real exports, refuses a further request without changing
+the cache or spending state, acknowledges the full prefix, then exports the
+remaining balance. The whole offline reopen/acknowledgement takes 1.328 seconds
+for 65,664 cached bytes under a 16 MiB logical wallet allowance. Default mint
+request pacing remains in place; sequential setup and final checks make the test
+body take 1,564 seconds. This single Linux observation is not a hard deadline,
+router result, maximum-size token case or full wallet/journal/archive saturation.
+
+Formatting, source-size, focused build and strict lint gates pass. Independent
+auditing of five complete SQLite sets reconciles the single 256-sat grant into
+the collector, with zero unaccounted value or duplicate live proofs. The relay's
+lifetime totals record 131 requests and 256 sats debited through closed number 132,
+with no pending export or retirement work. It retires 188 coins and preserves
+21 spent coins owned by the original incoming receipt. The issuer's completed
+grant still retains 21 native `PENDING_SPENT` rows, all confirmed spent at the
+original mint; these carry no outstanding value. Original fixtures, recovery
+records, source/build bindings and the audit remain in `work/export-pressure-r614`.
+The [test-bench instructions](TESTBENCH.md#verification) give the reproducible
+command and retention rules. Production forwarding code is unchanged.
 
 See [history](HISTORY.md)
 and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts

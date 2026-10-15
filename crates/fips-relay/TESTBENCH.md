@@ -339,14 +339,29 @@ lifetime storage for every other native wallet record.
 ## Verification
 
 The regular `bench` suite uses three real exports to check custody, capacity,
-interrupted cleanup, cumulative costs and replay refusal. The same fixture has
-an explicit sustained case with 131 exports, exceeding the retained-request
-limit. Run it separately with the accepted dependency configuration:
+interrupted cleanup, cumulative costs and replay refusal. The opt-in case retains
+128 real exports at once, refuses another export without changing spending state,
+then acknowledges the full cache and exports the remaining balance. It checks
+131 completed requests and closes an unused number too, preserving lifetime
+costs and replay refusal. Run it separately with the accepted dependency
+configuration:
 
 ```sh
-cargo test -p fips-relay --all-features --test bench \
-  acknowledged_exports_outlive_the_request_limit_without_reusing_spends -- --ignored
+cargo test --locked --profile openwrt -p fips-relay \
+  --no-default-features --features testbench --test bench \
+  acknowledged_exports_outlive_the_request_limit_without_reusing_spends \
+  -- --exact --ignored --nocapture --test-threads=1
 ```
+
+`EXPORT_PRESSURE` reports the entire local wallet reopen and acknowledgement,
+including validation and cleanup. Sequential export/collection setup retains the
+default mint-request pacing and can take about 26 minutes on the recorded Linux
+fixture; that setup time is separate from the acknowledgement measurement.
+Both export cases retain their printed temporary directory on success or failure,
+including the original wallets, mint database, private recovery record and relay
+configuration. Audit and reconcile those originals before removing them; never
+replace an interrupted grant with a new issuance. The saved mint seed does not
+reconstruct the simulator's in-memory Lightning state.
 
 ```sh
 cargo test -p fips-relay --features testbench --test bench
