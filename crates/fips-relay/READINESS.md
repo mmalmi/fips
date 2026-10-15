@@ -1,7 +1,10 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-15 October 2026. Runtime `d6874c3bf` includes the r523 control idle-expiry fix.
+15 October 2026. Runtime `2aaef7cc8` includes the control idle-expiry fix and
+preserves completed renewal handovers through late expiry recovery. r599 passes
+25 focused checks and closes both original failed carrier wallets without new
+issuance or channels; all 768 test sats are accounted for.
 SDK `dad0fc3` releases the client store during wallet retirement work and permits
 unrelated active payments while cleanup is pending. r576 passes all 444 SDK tests,
 strict lint and formatting; r572 qualifies three ordinary Linux retirement cycles.
@@ -11,7 +14,8 @@ fragmented-history retirement, with all original test funds accounted for.
 The paired router observations below establish sampled lock availability, with
 higher whole-call time and process memory. Android r590/r593 qualify the updated
 build and controlled phone-transit regression, including forced Doze.
-r597 qualifies all seven supported carrier scenarios on the same updated SDK.
+r597 qualifies all seven supported carrier scenarios on SDK `dad0fc3`, before
+the handover validation fix. Current target qualification remains in progress.
 CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
 are removed and failed financial originals remain retained. Earlier hardware
 results retain their recorded graph. Final acceptance reconciliation
@@ -128,6 +132,7 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
+| r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. ARM and physical-device qualification of this fix remain open. |
 | r566/r576 sender retirement | The existing interrupted-handoff regression fails before the fix and passes with SDK `dad0fc3`: an unrelated funded channel pays successfully, and its saved balance survives resumed cleanup. All 444 workspace tests pass, with strict all-target lint and formatting. The existing lock test now allows bounded fork/exec descriptor-release latency; the earlier failed full run is retained. | Three opt-in tests remain excluded from the default suite. No new wire messages, lock files or store versions. [Paired router observations](#payments-during-sender-retirement) establish sampled availability, not live payment latency during a large cleanup. Funding and renewal still share the wallet owner. |
 | r572/r577/r578 ordinary relay | Three Linux wallet-retirement cycles conserve all 384 test sats including mint fees. The ordinary ARM64 build delivers all 2,048 paid packets across three routers, retires two sender and two receiver channels, and collects all 384 test sats. Six controller reads take 166–179 ms during SQLite writer contention; all 282 management checks pass. Original services/accounts are restored and closed profiles are archived before removal. | Small-channel forwarding and recovery on the same production SDK graph, not concurrent paid forwarding during large-history cleanup. Physical power loss and final broader target reconciliation remain open. Source/artifact/log bindings are retained in `work/retirement-relay-r572`, `work/retirement-arm-r577` and `work/retirement-router-r578`. |
 | r592 paid retirement liveness | Three ordinary Linux processes deliver all 4,609 original packets with 480 real refund coins retained. After the external writer is released, adjacent observations show new provider credit and destination deliveries during the same pending retirement plan. Independent mint/wallet checks account for all 384 test sats; the existing three-cycle case separately accounts for 384 sats including 13 in fees. Formatting, strict affected-target lint and source-size checks pass. | Linux loopback liveness, not uninterrupted native execution, signing-latency bounds, CPU attribution or router performance. Original fixtures and source/artifact/log bindings are preserved in `work/live-retirement-r592`. Funding and renewal still share the wallet owner. |
@@ -164,8 +169,10 @@ already signed whole-sat amount, bounded by the rounded local traffic evidence.
 Both corrections follow existing runtime behavior. Setup/workload/settlement
 failures retain original mint and daemon accounts; successful fixtures clean up
 only after conservation checks. The two earlier failed attempts remain rejected,
-with their original financial owners and verified archives retained. They are
-excluded from the successful-case total above. The private
+with their original financial owners and verified archives retained. r599 closes
+both owners using the corrected ordinary recovery path, conserving their separate
+768 test sats without new issuance, channel creation or identity replacement.
+They remain excluded from the successful-case total above. The private
 `work/mixed-carriers-r529` bundle binds sources, artifacts, logs and retention;
 postflight checks confirm all owned processes have stopped.
 
