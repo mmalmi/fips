@@ -1,5 +1,25 @@
 # Paid-relay cadence measurements
 
+## Current graph comparison rejected — 15 October 2026
+
+r611 runs the unchanged eight-trial native matrix on FIPS runtime `718cfe5be`,
+SDK `dad0fc3`, Spilman `669fbdd943` and CDK `04c37d5a152a`. All 285,696 payloads
+arrive, with no duplicates, invalid payloads/timestamps or missing packets.
+The strict analyzer nevertheless rejects the comparison: trial 5 (1 s) records
+`control stream ended before its record` at the end of the steady workload on
+the second node. Its payment diagnostic identifies the usage-request stage.
+Later payments advance, but six boundary samples retain that error.
+No overhead comparison or new cadence recommendation is accepted from this run.
+
+Independent audits of the original databases conserve all 40,960 test sats and
+close all 48 channels, with no unfinished mint operations or duplicate/mint-spent
+live coins. All 96 complete SQLite sets and 872 original files are retained;
+source/artifact hashes are unchanged and owned processes/file handles are absent.
+There are no retries or replacement grants. The private
+`work/cadence-final-r611/native` bundle retains the failed verdict, raw boundaries,
+archives and independent financial closure. The earlier accepted results below
+remain evidence for their recorded builds; the 500-ms default is unchanged.
+
 ## Wi-Fi matrix with the control expiry fix — 14 October 2026
 
 The r526 comparison uses the corrected runtime and SDK/CDK graph from the native
