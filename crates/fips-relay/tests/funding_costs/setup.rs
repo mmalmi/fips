@@ -157,6 +157,57 @@ pub(super) async fn load_mint_proofs(
     .map_err(|error| error.to_string())
 }
 
+pub(super) async fn verify_settled_wallets(bench: &Bench, mint: &str, expected_sat: u64) {
+    use cashu::nuts::{CheckStateRequest, State};
+    use cdk_common::database::WalletDatabase;
+    let mut live = std::collections::BTreeSet::new();
+    let mut total = 0;
+    for config in &bench.configs {
+        let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+            &config.state_directory.join("wallet"),
+        ))
+        .await
+        .unwrap();
+        assert!(db.get_incomplete_sagas().await.unwrap().is_empty());
+        let coins = db
+            .get_proofs(
+                Some(mint.parse().unwrap()),
+                Some("sat".parse().unwrap()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        if coins.is_empty() {
+            continue;
+        }
+        let states = bench
+            .mint
+            .mint()
+            .check_state(&CheckStateRequest {
+                ys: coins.iter().map(|coin| coin.y).collect(),
+            })
+            .await
+            .unwrap()
+            .states;
+        assert_eq!(states.len(), coins.len());
+        for (coin, state) in coins.iter().zip(states) {
+            assert_eq!(coin.y, state.y);
+            if coin.state == State::Unspent {
+                assert_eq!(state.state, State::Unspent);
+                assert!(live.insert(coin.y), "duplicate live original coin");
+                total += coin.proof.amount.to_u64();
+            } else {
+                // A retained sent-token record can still mark its already-spent
+                // inputs PendingSpent. It is not an additional outstanding balance.
+                assert!(matches!(coin.state, State::Spent | State::PendingSpent));
+                assert_eq!(state.state, State::Spent);
+            }
+        }
+    }
+    assert_eq!(total, expected_sat);
+}
+
 pub(super) async fn start_mint(root: &Path, seed: u64) -> (LocalMint, PaymentNetwork) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -256,18 +307,47 @@ pub(super) async fn start_configured_line(
     line: LineConfig<'_>,
     configure: impl Fn(usize, &mut ServiceConfig),
 ) -> Bench {
+    start_configured_topology(root, mint, network, mint_url, line, configure, false).await
+}
+
+/// Add an unfunded provider and destination without changing the original grants.
+pub(super) async fn start_configured_fork(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    line: LineConfig<'_>,
+    configure: impl Fn(usize, &mut ServiceConfig),
+) -> Bench {
+    assert_eq!(line.funding_limits.len(), 5);
+    start_configured_topology(root, mint, network, mint_url, line, configure, true).await
+}
+
+async fn start_configured_topology(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    line: LineConfig<'_>,
+    configure: impl Fn(usize, &mut ServiceConfig),
+    fork: bool,
+) -> Bench {
     let LineConfig {
         lifetime,
         quote_lifetime,
         funding_limits,
     } = line;
-    assert!((3..=4).contains(&funding_limits.len()));
+    assert!((3..=if fork { 5 } else { 4 }).contains(&funding_limits.len()));
     let mut configs = Vec::new();
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
     let mut sockets = Vec::new();
-    for (i, &limit) in funding_limits.iter().enumerate() {
-        let directory = root.join(format!("n{i}"));
+    for i in 0..funding_limits.len() {
+        // The fork is a line with the original source in its middle. Keep
+        // directory/term identities stable while using ordinary line readiness.
+        let index = if fork && i < 3 { 2 - i } else { i };
+        let limit = funding_limits[index];
+        let directory = root.join(format!("n{index}"));
         std::fs::create_dir(&directory).unwrap();
         let mut cfg = config(&directory, mint_url);
         cfg.terms.controller.max_funding_overhead_sat = limit
@@ -278,24 +358,26 @@ pub(super) async fn start_configured_line(
         cfg.terms.controller.channel_lifetime_secs = lifetime;
         cfg.terms.quote_lifetime_secs = quote_lifetime;
         cfg.terms.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
-        configure(i, &mut cfg);
+        configure(index, &mut cfg);
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         cfg.transports = udp_transports(socket.local_addr().unwrap());
         sockets.push(socket);
         npubs.push(RelayService::initialize(cfg.clone()).await.unwrap());
         let wallet = cfg.state_directory.join("wallet");
-        let quote = create_topup_quote(&wallet, mint_url, 128).await.unwrap();
-        network
-            .orchestrator_funding()
-            .settle_external(&quote.payment_request)
-            .unwrap();
-        assert!(
-            load_wallet_overview(&wallet, true)
-                .await
-                .unwrap()
-                .warnings
-                .is_empty()
-        );
+        if !fork || index < 3 {
+            let quote = create_topup_quote(&wallet, mint_url, 128).await.unwrap();
+            network
+                .orchestrator_funding()
+                .settle_external(&quote.payment_request)
+                .unwrap();
+            assert!(
+                load_wallet_overview(&wallet, true)
+                    .await
+                    .unwrap()
+                    .warnings
+                    .is_empty()
+            );
+        }
         paths.push(directory.join("config.json"));
         configs.push(cfg);
     }
@@ -315,6 +397,12 @@ pub(super) async fn start_configured_line(
         children.push(start(path).await);
     }
     ready(&configs, &paths, &npubs, &mut children).await;
+    if fork {
+        configs.swap(0, 2);
+        paths.swap(0, 2);
+        npubs.swap(0, 2);
+        children.swap(0, 2);
+    }
     Bench {
         mint,
         configs,

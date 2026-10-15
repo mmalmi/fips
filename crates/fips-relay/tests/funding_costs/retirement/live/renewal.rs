@@ -1,7 +1,6 @@
 //! One automatic successor crosses the existing retirement and mint boundaries.
 use super::*;
-use cashu::nuts::{CheckStateRequest, State, SwapRequest};
-use cdk_common::database::WalletDatabase;
+use cashu::nuts::SwapRequest;
 use fips_relay::controller::RenewalPolicy;
 use tokio::sync::oneshot;
 
@@ -37,18 +36,6 @@ async fn responsive(config: &ServiceConfig) -> Value {
     tokio::time::timeout(Duration::from_secs(2), status(config))
         .await
         .expect("wallet maintenance or funding blocked ordinary controller status")
-}
-
-fn credit(bench: &setup::Bench, channel: &str) -> u64 {
-    let ledger = restore::read(&bench.configs[1].state_directory.join("seller/ledger.json"));
-    ledger["ledger"]["channels"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|sale| sale["terms"]["id"] == channel)
-        .unwrap()["usage"]["paid_msat"]
-        .as_u64()
-        .unwrap()
 }
 
 fn budget(pending: u64) -> Value {
@@ -152,7 +139,7 @@ impl Check {
 
     pub(super) async fn deferred(&mut self, bench: &setup::Bench) {
         let before = self.still_deferred(bench).await;
-        let prior_credit = credit(bench, &self.active);
+        let prior_credit = credit(bench, 1, &self.active);
         // Eight seconds spans several two-second renewal scans. The predecessor
         // has room for these exact originals, although its successor is due.
         let sending = probe(bench, 3, 512, 64).await;
@@ -174,7 +161,7 @@ impl Check {
                     .as_u64()
                     .unwrap()
         );
-        assert!(credit(bench, &self.active) > prior_credit);
+        assert!(credit(bench, 1, &self.active) > prior_credit);
         self.deferred = json!({"samples": samples, "traffic": traffic,
             "before": before["payment_progress"][&self.active],
             "after": after["payment_progress"][&self.active],
@@ -211,7 +198,7 @@ impl Check {
         let before = responsive(source).await;
         self.predecessor(&held, &before);
         assert_eq!(before["funding_budget"], budget(CAPACITY));
-        let prior_credit = credit(bench, &self.active);
+        let prior_credit = credit(bench, 1, &self.active);
         let traffic = tokio::time::timeout(Duration::from_secs(20), async {
             let traffic = delivered(bench, probe(bench, 4, 512, 128).await, 512).await;
             caught_up(source, &self.active).await;
@@ -236,7 +223,7 @@ impl Check {
                 .as_u64()
                 .unwrap()
         );
-        assert!(credit(bench, &self.active) > prior_credit);
+        assert!(credit(bench, 1, &self.active) > prior_credit);
         assert!(!self.release.is_closed() && held_at.elapsed() < Duration::from_secs(25));
         self.release.send(()).unwrap();
         let (completed, state) = tokio::time::timeout(Duration::from_secs(30), async {
@@ -290,50 +277,4 @@ impl Check {
             "completed_budget":state["funding_budget"], "successor_traffic":successor_traffic,
             "original_funding_id":id, "original_wallet_operation":funded["funded"]["wallet_operation_id"]})
     }
-}
-
-pub(super) async fn verify_wallets(bench: &setup::Bench, mint: &str) {
-    let mut live = BTreeSet::new();
-    let mut total = 0;
-    for config in &bench.configs {
-        let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
-            &config.state_directory.join("wallet"),
-        ))
-        .await
-        .unwrap();
-        assert!(db.get_incomplete_sagas().await.unwrap().is_empty());
-        let coins = db
-            .get_proofs(
-                Some(mint.parse().unwrap()),
-                Some("sat".parse().unwrap()),
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        let states = bench
-            .mint
-            .mint()
-            .check_state(&CheckStateRequest {
-                ys: coins.iter().map(|coin| coin.y).collect(),
-            })
-            .await
-            .unwrap()
-            .states;
-        assert_eq!(states.len(), coins.len());
-        for (coin, state) in coins.iter().zip(states) {
-            assert_eq!(coin.y, state.y);
-            if coin.state == State::Unspent {
-                assert_eq!(state.state, State::Unspent);
-                assert!(live.insert(coin.y), "duplicate live original coin");
-                total += coin.proof.amount.to_u64();
-            } else {
-                // A retained sent-token record can still mark its already-spent
-                // inputs PendingSpent. It is not an additional outstanding balance.
-                assert!(matches!(coin.state, State::Spent | State::PendingSpent));
-                assert_eq!(state.state, State::Spent);
-            }
-        }
-    }
-    assert_eq!(total, 3 * FUNDING);
 }

@@ -14,6 +14,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[path = "live/purchase.rs"]
+mod purchase;
 #[path = "live/renewal.rs"]
 mod renewal;
 
@@ -42,6 +44,22 @@ async fn status(config: &ServiceConfig) -> Value {
     request(config, &AdminRequest::Status).await.unwrap()
 }
 
+fn credit(bench: &setup::Bench, seller: usize, channel: &str) -> u64 {
+    let ledger = restore::read(
+        &bench.configs[seller]
+            .state_directory
+            .join("seller/ledger.json"),
+    );
+    ledger["ledger"]["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|sale| sale["terms"]["id"] == channel)
+        .unwrap()["usage"]["paid_msat"]
+        .as_u64()
+        .unwrap()
+}
+
 async fn wait_until(unix: u64) {
     while now() < unix {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -49,9 +67,19 @@ async fn wait_until(unix: u64) {
 }
 
 async fn probe(bench: &setup::Bench, id: u8, count: u32, rate: u32) -> JoinHandle<Value> {
+    probe_to(bench, 2, id, count, rate).await
+}
+
+async fn probe_to(
+    bench: &setup::Bench,
+    sink: usize,
+    id: u8,
+    count: u32,
+    rate: u32,
+) -> JoinHandle<Value> {
     let stream_id = format!("{id:032x}");
     request(
-        &bench.configs[2],
+        &bench.configs[sink],
         &AdminRequest::ReceiveProbe {
             probe: ReceiveProbe {
                 source: bench.npubs[0].clone(),
@@ -67,7 +95,7 @@ async fn probe(bench: &setup::Bench, id: u8, count: u32, rate: u32) -> JoinHandl
     .await
     .unwrap();
     let config = bench.configs[0].clone();
-    let destination = bench.npubs[2].clone();
+    let destination = bench.npubs[sink].clone();
     tokio::spawn(async move {
         request(
             &config,
@@ -90,11 +118,20 @@ async fn probe(bench: &setup::Bench, id: u8, count: u32, rate: u32) -> JoinHandl
 }
 
 async fn delivered(bench: &setup::Bench, sending: JoinHandle<Value>, count: u32) -> Value {
+    delivered_to(bench, 2, sending, count).await
+}
+
+async fn delivered_to(
+    bench: &setup::Bench,
+    sink: usize,
+    sending: JoinHandle<Value>,
+    count: u32,
+) -> Value {
     let sent = sending.await.unwrap();
     let mut received = Value::Null;
     let result = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            received = status(&bench.configs[2]).await["probe"].clone();
+            received = status(&bench.configs[sink]).await["probe"].clone();
             assert_eq!(sent["stream_id"], received["stream_id"]);
             if received["unique_packets"] == count {
                 break;
@@ -210,38 +247,40 @@ async fn exercise(with_renewal: bool) {
     let url = proxy
         .as_ref()
         .map_or_else(|| mint.url().to_owned(), |proxy| proxy.url.clone());
-    let mut bench = setup::start_configured_line(
-        root.path(),
-        mint,
-        network,
-        &url,
-        setup::LineConfig {
-            lifetime: 360,
-            quote_lifetime: 180,
-            funding_limits: &[1536; 3],
-        },
-        |index, cfg| {
-            // A one-way purchase needs the bounded free session handshake.
-            cfg.terms.billing = BillingBasis::ForwardingData;
-            // This fixture owns its mint; public-mint pacing must not consume
-            // the real expiry window while preparing fragmented old channels.
-            cfg.funding_request_budget = Some(FundingRequestBudget {
-                burst: NonZeroU32::new(128).unwrap(),
-                requests_per_minute: NonZeroU32::new(60_000).unwrap(),
-            });
-            cfg.terms.controller.channel_capacity_sat = CAPACITY;
-            cfg.terms.controller.max_funding_overhead_sat = 0;
-            cfg.terms.wallet_capacity_bytes = Some(NATIVE_LIMIT);
-            cfg.terms.buyer_budget_sat = 256;
-            cfg.terms.fee_msat_per_kib = 4;
-            cfg.terms.max_rate_msat_per_kib = 4;
-            cfg.terms.quote_max_units = 6 * 1024 * 1024;
-            if with_renewal && index == 0 {
+    let line = setup::LineConfig {
+        lifetime: 360,
+        quote_lifetime: 180,
+        funding_limits: if with_renewal { &[1536; 3] } else { &[1536; 5] },
+    };
+    let configure = |index, cfg: &mut ServiceConfig| {
+        // A one-way purchase needs the bounded free session handshake.
+        cfg.terms.billing = BillingBasis::ForwardingData;
+        // This fixture owns its mint; public-mint pacing must not consume
+        // the real expiry window while preparing fragmented old channels.
+        cfg.funding_request_budget = Some(FundingRequestBudget {
+            burst: NonZeroU32::new(128).unwrap(),
+            requests_per_minute: NonZeroU32::new(60_000).unwrap(),
+        });
+        cfg.terms.controller.channel_capacity_sat = CAPACITY;
+        cfg.terms.controller.max_funding_overhead_sat = 0;
+        cfg.terms.wallet_capacity_bytes = Some(NATIVE_LIMIT);
+        cfg.terms.buyer_budget_sat = 256;
+        cfg.terms.fee_msat_per_kib = 4;
+        cfg.terms.max_rate_msat_per_kib = 4;
+        cfg.terms.quote_max_units = 6 * 1024 * 1024;
+        if index == 0 {
+            cfg.terms.controller.max_locked_sat = 2 * CAPACITY;
+            cfg.terms.controller.max_wallet_spend_sat = FUNDING;
+            if with_renewal {
                 renewal::configure(cfg);
             }
-        },
-    )
-    .await;
+        }
+    };
+    let mut bench = if with_renewal {
+        setup::start_configured_line(root.path(), mint, network, &url, line, configure).await
+    } else {
+        setup::start_configured_fork(root.path(), mint, network, &url, line, configure).await
+    };
     let buy = AdminRequest::Buy {
         destination: bench.npubs[2].clone(),
     };
@@ -349,7 +388,15 @@ async fn exercise(with_renewal: bool) {
         Some(proxy) => Some(renewal::Check::arm(&bench, proxy, &active).await),
         None => None,
     };
+    let mut purchase = if with_renewal {
+        None
+    } else {
+        Some(purchase::Check::arm(&bench, &active).await)
+    };
     let held_probe = delivered(&bench, probe(&bench, 1, 512, 128).await, 512).await;
+    if let Some(check) = &mut purchase {
+        check.rejected(&bench).await;
+    }
     let held = caught_up(source, &active).await;
     let signed_before = held["payment_progress"][&active]["authorized_sat"]
         .as_u64()
@@ -446,6 +493,9 @@ async fn exercise(with_renewal: bool) {
         "maintenance_window_us":maintenance_window_us,
         "live_probe":live_probe,"samples":samples,"final_progress":paid["payment_progress"][&active]})
     };
+    if let Some(check) = purchase {
+        observation["purchase"] = check.finish(&bench).await;
+    }
     observation["root"] = json!(root.path());
     observation["refund_coins"] = json!(refund_coins);
     observation["client_bytes"] = json!(client_bytes);
@@ -500,9 +550,7 @@ async fn exercise(with_renewal: bool) {
         3 * FUNDING,
         "the original mint and wallets conserve every test sat"
     );
-    if with_renewal {
-        renewal::verify_wallets(&bench, &url).await;
-    }
+    setup::verify_settled_wallets(&bench, &url, 3 * FUNDING).await;
     let mut result = json!({"refunded_coins":refund_coins,"conserved_test_sat":total,
         "fixture":root.path()});
     if with_renewal {
@@ -511,6 +559,7 @@ async fn exercise(with_renewal: bool) {
     } else {
         result["progressed_during_cleanup"] = observation["progressed_during_cleanup"].clone();
         result["maintenance_window_us"] = observation["maintenance_window_us"].clone();
+        result["purchase_completed"] = observation["purchase"]["completed"].clone();
         eprintln!("LIVE_RETIREMENT_RESULT {result}");
     }
     let acceptance = if with_renewal {
