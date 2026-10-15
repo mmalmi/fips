@@ -95,9 +95,13 @@ fn selected_payload(bytes: &[u8], source: NodeAddr, dest: NodeAddr, payload: &[u
         })
 }
 
-pub(super) async fn drop_msg3(receiver: &mut TestNode, sender: &NodeAddr, payload: &[u8]) {
+pub(super) async fn drop_session_payload(
+    receiver: &mut TestNode,
+    sender: &NodeAddr,
+    payload: &[u8],
+) {
     let destination = *receiver.node.node_addr();
-    // The loss is the exact retained encrypted Msg3, within the original 200 ms.
+    // Drop only the selected authenticated session record, within 200 ms.
     drop(
         capture(receiver, sender, Duration::from_millis(200), |bytes| {
             selected_payload(bytes, *sender, destination, payload)
@@ -252,7 +256,7 @@ async fn prepare_retained_msg3(nodes: &mut [TestNode]) -> (NodeAddr, NodeAddr) {
         .handshake_payload()
         .unwrap()
         .to_vec();
-    drop_msg3(&mut nodes[1], &initiator, &msg3).await;
+    drop_session_payload(&mut nodes[1], &initiator, &msg3).await;
     assert!(
         nodes[1]
             .node

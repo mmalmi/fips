@@ -7,6 +7,7 @@
 
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState, NoiseSession};
+use crate::protocol::SessionConfirm;
 use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
 use ring::aead::LessSafeKey;
@@ -96,6 +97,9 @@ pub(crate) struct SessionEntry {
     rekey_state: Option<HandshakeState>,
     /// Pending completed session awaiting K-bit cutover.
     pending_new_session: Option<NoiseSession>,
+    /// Immutable nonce-zero proof, owned by its pending/current responder epoch.
+    pending_rekey_confirmation: Option<SessionConfirm>,
+    current_rekey_confirmation: Option<SessionConfirm>,
     /// Whether we initiated the currently armed rekey handshake.
     rekey_handshake_initiator: bool,
     /// Whether we initiated the completed session awaiting K-bit cutover.
@@ -148,6 +152,8 @@ impl SessionEntry {
             drain_started_ms: 0,
             rekey_state: None,
             pending_new_session: None,
+            pending_rekey_confirmation: None,
+            current_rekey_confirmation: None,
             rekey_handshake_initiator: false,
             pending_rekey_initiator: false,
             last_peer_rekey_ms: 0,
@@ -235,6 +241,8 @@ impl SessionEntry {
         self.drain_started_ms = 0;
         self.rekey_state = None;
         self.pending_new_session = None;
+        self.pending_rekey_confirmation = None;
+        self.current_rekey_confirmation = None;
         self.rekey_handshake_initiator = false;
         self.pending_rekey_initiator = false;
         self.last_peer_rekey_ms = 0;
@@ -501,10 +509,19 @@ impl SessionEntry {
     /// Store a completed rekey session.
     pub(crate) fn set_pending_session(&mut self, session: NoiseSession) {
         self.pending_new_session = Some(session);
+        self.pending_rekey_confirmation = None;
         self.pending_rekey_initiator = self.rekey_handshake_initiator;
         self.rekey_state = None;
         self.rekey_handshake_initiator = false;
         self.clear_rekey_msg3_payload();
+    }
+
+    pub(crate) fn set_pending_rekey_confirmation(&mut self, proof: SessionConfirm) {
+        self.pending_rekey_confirmation = Some(proof);
+    }
+
+    pub(crate) fn rekey_confirmation(&self) -> Option<SessionConfirm> {
+        self.current_rekey_confirmation
     }
 
     /// Set the rekey handshake state (in-progress XK handshake).
@@ -529,6 +546,7 @@ impl SessionEntry {
 
         // Promote pending to current
         self.state = Some(EndToEndState::Established(new_session));
+        self.current_rekey_confirmation = self.pending_rekey_confirmation.take();
         self.current_k_bit = !self.current_k_bit;
         self.session_start_ms = now_ms;
         self.rekey_state = None;
@@ -614,6 +632,7 @@ impl SessionEntry {
         self.clear_handshake_payload();
         self.rekey_state = None;
         self.pending_new_session = None;
+        self.pending_rekey_confirmation = None;
         self.rekey_handshake_initiator = false;
         self.pending_rekey_initiator = false;
         self.rekey_completed_ms = 0;

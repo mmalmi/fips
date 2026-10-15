@@ -149,7 +149,7 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
 
     let msg3 = initiator_entry.handshake_payload().unwrap().to_vec();
     tokio::time::sleep(Duration::from_millis(10)).await;
-    late_ack_completion::drop_msg3(&mut nodes[1], &node0_addr, &msg3).await;
+    late_ack_completion::drop_session_payload(&mut nodes[1], &node0_addr, &msg3).await;
     assert!(
         nodes[1]
             .node
@@ -322,7 +322,7 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         .rekey_msg3_payload()
         .unwrap()
         .to_vec();
-    late_ack_completion::drop_msg3(&mut nodes[1], &node0_addr, &msg3).await;
+    late_ack_completion::drop_session_payload(&mut nodes[1], &node0_addr, &msg3).await;
     assert!(
         nodes[1]
             .node
@@ -465,6 +465,40 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
             !entry.current_k_bit() && entry.pending_new_session().is_some()
         }),
         "the initiator must retain its proven epoch until the responder sends authenticated pending-epoch traffic"
+    );
+
+    let confirmation = nodes[1]
+        .node
+        .get_session(&node0_addr)
+        .unwrap()
+        .rekey_confirmation()
+        .unwrap();
+    late_ack_completion::drop_session_payload(&mut nodes[0], &node1_addr, confirmation.as_bytes())
+        .await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_some()
+    );
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    nodes[0].node.check_session_rekey().await;
+    drain_to_quiescence(&mut nodes).await;
+    assert_eq!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .rekey_confirmation(),
+        Some(confirmation)
+    );
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            entry.current_k_bit() && entry.pending_new_session().is_none()
+        }),
+        "a retried pending probe must recover the lost empty confirmation"
     );
 
     send_endpoint_data_via_dataplane(

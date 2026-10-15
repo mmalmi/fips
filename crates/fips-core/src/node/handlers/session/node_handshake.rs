@@ -712,6 +712,12 @@ impl Node {
                 return;
             }
 
+            // Reserve the proof nonce before these keys can transmit data.
+            let Some(confirmation) = SessionConfirm::for_fresh_session(&session) else {
+                entry.abandon_handshake();
+                self.sessions.insert(*src_addr, entry);
+                return;
+            };
             let pending_epoch = session
                 .recv_cipher_clone()
                 .zip(session.send_cipher_clone())
@@ -727,6 +733,7 @@ impl Node {
                 *src_addr,
                 entry,
                 session,
+                confirmation,
                 Self::now_ms(),
             );
             if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {

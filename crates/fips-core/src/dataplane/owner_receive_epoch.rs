@@ -19,6 +19,38 @@ impl DataplaneFspSessionIngress {
 }
 
 impl OwnerState {
+    fn authenticate_fsp_confirmation(
+        &mut self,
+        proof: &crate::protocol::SessionConfirm,
+        next_k_bit: bool,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        let (Some(cipher), Some(window)) =
+            (&self.pending_fsp_open, &mut self.pending_fsp_replay_window)
+        else {
+            return false;
+        };
+        // The proof has its own phase AAD and no plaintext. Use the same replay
+        // authority as pending worker traffic; failed tags never consume nonce 0.
+        let bytes = proof.as_bytes();
+        if !window.can_accept(0)
+            || !crate::noise::open(
+                Some(cipher),
+                0,
+                &bytes[..FSP_HEADER_SIZE],
+                &bytes[FSP_HEADER_SIZE..],
+            )
+            .is_ok_and(|plaintext| plaintext.is_empty())
+            || !window.accept(0)
+        {
+            return false;
+        }
+        self.pending_fsp_authenticated_k_bits |= 1 << u8::from(next_k_bit);
+        true
+    }
+
     fn fsp_alternate_receive_epoch(
         &self,
         packet: &SocketPacket,

@@ -4,8 +4,9 @@ use crate::mmp::report::ReceiverReport;
 use crate::node::rate_limit::Msg1Class;
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
-    FSP_COMMON_PREFIX_SIZE, FSP_INNER_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1,
-    FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM, FspCommonPrefix,
+    FSP_COMMON_PREFIX_SIZE, FSP_INNER_HEADER_SIZE, FSP_PHASE_CONFIRM, FSP_PHASE_ESTABLISHED,
+    FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM,
+    FspCommonPrefix,
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
@@ -20,9 +21,9 @@ use crate::noise::{
     XK_HANDSHAKE_MSG3_SIZE,
 };
 use crate::protocol::{
-    CoordsRequired, MtuExceeded, PathBroken, PathMtuNotification, SessionAck, SessionDatagram,
-    SessionFlags, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
-    SessionSetup,
+    CoordsRequired, MtuExceeded, PathBroken, PathMtuNotification, SessionAck, SessionConfirm,
+    SessionDatagram, SessionFlags, SessionMessageType, SessionMsg3, SessionReceiverReport,
+    SessionSenderReport, SessionSetup,
 };
 use crate::transport::PacketBuffer;
 #[cfg(feature = "webrtc-transport")]
@@ -544,9 +545,11 @@ impl AuthenticatedSessionDispatch {
                 node.handle_session_path_mtu_notification(&source_addr, rest);
             }
             Some(SessionMessageType::CoordsWarmup) => {
-                // Standalone coordinate warming — coords already extracted
-                // from CP flag by transit nodes. No action needed at endpoint.
                 trace!(src = %node.peer_display_name(&source_addr), "CoordsWarmup received");
+                if self.body().is_empty() {
+                    node.send_session_confirmation(&source_addr, &self.previous_hop_addr)
+                        .await;
+                }
             }
             _ => {
                 debug!(

@@ -57,6 +57,9 @@ pub const FSP_PHASE_MSG2: u8 = 0x2;
 /// Phase value for XK message 3 (initiator's encrypted static).
 pub const FSP_PHASE_MSG3: u8 = 0x3;
 
+/// Fixed, empty responder key confirmation for a completed rekey.
+pub const FSP_PHASE_CONFIRM: u8 = 0x4;
+
 /// Size of the common packet prefix (all FSP message types).
 pub const FSP_COMMON_PREFIX_SIZE: usize = 4;
 

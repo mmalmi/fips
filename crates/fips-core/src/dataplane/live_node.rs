@@ -421,6 +421,17 @@ impl DataplaneLiveNode {
             .is_some_and(|owner| owner.confirm_fsp_pending_receive_epoch(received_k_bit))
     }
 
+    pub(crate) fn authenticate_fsp_owner_confirmation(
+        &mut self,
+        node_addr: &NodeAddr,
+        proof: &crate::protocol::SessionConfirm,
+        next_k_bit: bool,
+    ) -> bool {
+        self.driver
+            .owner_mut(OwnerId::fsp_node(*node_addr))
+            .is_some_and(|owner| owner.authenticate_fsp_confirmation(proof, next_k_bit))
+    }
+
     pub(crate) fn fmp_owner_has_pending_receive_epoch(
         &self,
         node_addr: &NodeAddr,

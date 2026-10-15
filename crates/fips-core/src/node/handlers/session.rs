@@ -9,6 +9,7 @@ include!("session/prelude_dispatch.rs");
 include!("session/receive_registry.rs");
 include!("session/node_receive.rs");
 include!("session/node_handshake.rs");
+include!("session/node_confirmation.rs");
 include!("session/node_reports_errors.rs");
 include!("session/node_send.rs");
 include!("session/node_endpoint.rs");

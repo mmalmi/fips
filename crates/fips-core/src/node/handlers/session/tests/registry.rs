@@ -286,6 +286,7 @@
         assert_eq!(entry.rekey_msg3_next_resend_ms(), 6_250);
 
         let (_, pending_session) = make_xk_session_pair(&peer, &local);
+        let confirmation = SessionConfirm::for_fresh_session(&pending_session).unwrap();
         let mut entry = established_entry(&local, &peer);
         entry.set_handshake_payload(vec![0xee], 7_050);
         assert!(
@@ -294,6 +295,7 @@
                     peer_addr,
                     entry,
                     pending_session,
+                    confirmation,
                     7_000,
                 )
                 .is_some()

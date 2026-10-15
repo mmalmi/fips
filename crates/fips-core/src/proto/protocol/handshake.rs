@@ -1,10 +1,12 @@
 //! Strict structural classification for a bounded session-bootstrap allowance.
 //! This does not verify Noise or authenticate either end-to-end address.
-use super::{SessionAck, SessionMsg3, SessionSetup};
+use super::{SessionAck, SessionConfirm, SessionMsg3, SessionSetup};
 use crate::{
     NodeAddr,
     noise::{XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE},
-    proto::fsp_wire::{FSP_COMMON_PREFIX_SIZE, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3},
+    proto::fsp_wire::{
+        FSP_COMMON_PREFIX_SIZE, FSP_PHASE_CONFIRM, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3,
+    },
 };
 
 /// A local bootstrap classification ceiling, not a general FSP wire size limit.
@@ -15,6 +17,7 @@ pub enum SessionHandshake {
     Setup,
     Ack,
     Finish,
+    Confirm,
 }
 
 impl SessionHandshake {
@@ -29,6 +32,7 @@ impl SessionHandshake {
         }
         let body = &payload[FSP_COMMON_PREFIX_SIZE..];
         match payload[0] {
+            FSP_PHASE_CONFIRM => SessionConfirm::decode(payload).map(|_| Self::Confirm),
             FSP_PHASE_MSG1 => {
                 let message = SessionSetup::decode(body).ok()?;
                 (message.handshake_payload.len() == XK_HANDSHAKE_MSG1_SIZE
@@ -81,10 +85,13 @@ mod tests {
         .with_direct_fsp_transport()
         .encode();
         let finish = SessionMsg3::new(vec![0; XK_HANDSHAKE_MSG3_SIZE]).encode();
+        let mut confirm = vec![0; 28];
+        confirm[0] = FSP_PHASE_CONFIRM;
         for (packet, phase) in [
             (setup, SessionHandshake::Setup),
             (ack, SessionHandshake::Ack),
             (finish, SessionHandshake::Finish),
+            (confirm, SessionHandshake::Confirm),
         ] {
             assert_eq!(
                 SessionHandshake::classify(&packet, source, destination),
@@ -117,7 +124,7 @@ mod tests {
                 SessionHandshake::classify(&padded, source, destination),
                 None
             );
-            if phase != SessionHandshake::Finish {
+            if matches!(phase, SessionHandshake::Setup | SessionHandshake::Ack) {
                 assert_eq!(
                     SessionHandshake::classify(&packet, destination, source),
                     None

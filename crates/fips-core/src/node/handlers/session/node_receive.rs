@@ -41,6 +41,9 @@ impl Node {
             FSP_PHASE_MSG3 => {
                 Box::pin(self.handle_session_msg3(&src_addr, &previous_hop_addr, inner)).await;
             }
+            FSP_PHASE_CONFIRM => {
+                self.handle_session_confirmation(&src_addr, &previous_hop_addr, payload);
+            }
             FSP_PHASE_ESTABLISHED if prefix.is_unencrypted() => {
                 // Plaintext error signals: read msg_type from first byte after prefix
                 if inner.is_empty() {
@@ -373,7 +376,7 @@ impl Node {
         // cannot update the newly promoted session's measurements.
         if matches!(
             SessionMessageType::from_byte(msg_type),
-            Some(SessionMessageType::SenderReport | SessionMessageType::ReceiverReport)
+            Some(SessionMessageType::SenderReport | SessionMessageType::ReceiverReport | SessionMessageType::CoordsWarmup)
         ) && (previous_epoch || pending_confirmation || self
             .sessions
             .get(&source_addr)

@@ -19,6 +19,8 @@ mod idle;
 mod process_support;
 #[path = "process_support/quality.rs"]
 mod quality;
+#[path = "bootstrap_service/rekey.rs"]
+mod rekey;
 use process_support::*;
 
 async fn statuses(configs: &[ServiceConfig]) -> Vec<Value> {
@@ -205,6 +207,18 @@ async fn one_way(return_allowance: bool) {
             quality::assert_quality(&configs[0], &npubs[4]).await;
         }
         idle::assert_idle(&configs).await;
+        let rekey = if return_allowance {
+            None
+        } else {
+            Some(rekey::after_drain(&configs, &npubs).await)
+        };
+        if let Some(observation) = &rekey {
+            std::fs::write(
+                root.path().join("one-way-rekey.json"),
+                serde_json::to_vec_pretty(observation).unwrap(),
+            )
+            .unwrap();
+        }
         let before = statuses(&configs).await;
         for child in &mut children {
             stop(child).await;
@@ -284,6 +298,23 @@ async fn one_way(return_allowance: bool) {
         assert_eq!(total, 1_024);
         assert!(network.accounting().unwrap().is_conserved());
         eprintln!("one-way bootstrap: all 1024 test sats conserved");
+        if let Some(mut observation) = rekey {
+            observation["financial_closure"] = serde_json::json!({
+                "settled_channels": settled,
+                "wallet_total_sat": total,
+                "conserved": true,
+            });
+            std::fs::write(
+                root.path().join("one-way-rekey.json"),
+                serde_json::to_vec_pretty(&observation).unwrap(),
+            )
+            .unwrap();
+            eprintln!("one-way rekey observation: {observation}");
+            assert_eq!(
+                observation["passed"], true,
+                "one-way paid delivery must survive rekey with replies disabled: {observation}"
+            );
+        }
     })
     .await
     .expect("one-way bootstrap test deadline");

@@ -94,6 +94,15 @@ mod pending_epoch_recovery {
     }
 
     async fn deliver_report(left: &Node, right: &mut Node, pending: bool) -> usize {
+        deliver_control(left, right, pending, SessionMessageType::SenderReport).await
+    }
+
+    async fn deliver_control(
+        left: &Node,
+        right: &mut Node,
+        pending: bool,
+        kind: SessionMessageType,
+    ) -> usize {
         use crate::dataplane::{DataplaneRawIngress, PacketProtocol};
         use crate::node::session_wire::{FSP_FLAG_K, build_fsp_header};
         use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
@@ -114,8 +123,12 @@ mod pending_epoch_recovery {
                 entry.current_k_bit(),
             )
         };
-        let plaintext =
-            fsp_prepend_inner_header(100, SessionMessageType::SenderReport.to_byte(), 0, &[0; 46]);
+        let body: &[u8] = if kind == SessionMessageType::CoordsWarmup {
+            &[]
+        } else {
+            &[0; 46]
+        };
+        let plaintext = fsp_prepend_inner_header(100, kind.to_byte(), 0, body);
         let header = build_fsp_header(
             counter,
             if k_bit { FSP_FLAG_K } else { 0 },
@@ -140,6 +153,15 @@ mod pending_epoch_recovery {
 
     #[tokio::test]
     async fn recovery_rekey_after_lost_cutover_confirmation_authenticates() {
+        recover_after_lost_confirmation(false).await;
+    }
+
+    #[tokio::test]
+    async fn empty_confirmation_recovers_asymmetric_key_bits() {
+        recover_after_lost_confirmation(true).await;
+    }
+
+    async fn recover_after_lost_confirmation(explicit_confirmation: bool) {
         let (mut left, mut right) = endpoints();
         let source = *left.node_addr();
         let destination = *right.node_addr();
@@ -167,6 +189,10 @@ mod pending_epoch_recovery {
         // The responder can probe first with the opposite flag. Authentication
         // must not make both endpoints swap flags and diverge a second time.
         assert_eq!(deliver_report(&right, &mut left, true).await, 0);
+        assert_eq!(
+            deliver_control(&right, &mut left, true, SessionMessageType::CoordsWarmup).await,
+            0
+        );
         assert!(
             left.sessions
                 .get(&destination)
@@ -175,7 +201,17 @@ mod pending_epoch_recovery {
                 .is_some()
         );
         assert_eq!(deliver_report(&left, &mut right, true).await, 1);
-        assert_eq!(deliver_report(&right, &mut left, false).await, 1);
+        if explicit_confirmation {
+            let proof = right
+                .sessions
+                .get(&source)
+                .unwrap()
+                .rekey_confirmation()
+                .unwrap();
+            left.handle_session_confirmation(&destination, &destination, proof.as_bytes());
+        } else {
+            assert_eq!(deliver_report(&right, &mut left, false).await, 1);
+        }
         assert!(
             left.sessions
                 .get(&destination)
@@ -198,4 +234,6 @@ mod pending_epoch_recovery {
         assert_eq!(deliver_report(&left, &mut right, false).await, 1);
         assert_eq!(deliver_report(&right, &mut left, false).await, 1);
     }
+
+    include!("key_confirmation.rs");
 }

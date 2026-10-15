@@ -26,6 +26,7 @@ pub(crate) mod filter;
 mod handshake;
 pub(crate) mod link;
 pub(crate) mod session;
+mod session_confirm;
 pub(crate) mod tree;
 
 // Re-export all public types at protocol:: level
@@ -44,6 +45,7 @@ pub use session::{
     SessionReceiverReport, SessionSenderReport, SessionSetup,
 };
 pub(crate) use session::{coords_wire_size, decode_optional_coords, encode_coords};
+pub(crate) use session_confirm::SessionConfirm;
 pub use tree::TreeAnnounce;
 
 /// Protocol version for message compatibility.

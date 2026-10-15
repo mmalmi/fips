@@ -163,9 +163,11 @@ impl crate::node::SessionRegistry {
         remote_addr: NodeAddr,
         mut entry: SessionEntry,
         session: NoiseSession,
+        confirmation: SessionConfirm,
         now_ms: u64,
     ) -> Option<SessionEntry> {
         entry.set_pending_session(session);
+        entry.set_pending_rekey_confirmation(confirmation);
         entry.set_rekey_completed_ms(now_ms);
         entry.clear_handshake_payload();
         self.insert(remote_addr, entry)
