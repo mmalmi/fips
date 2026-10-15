@@ -14,6 +14,9 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[path = "live/renewal.rs"]
+mod renewal;
+
 const CAPACITY: u64 = 32;
 const OLD_CHANNELS: usize = 15;
 const LIVE_PACKETS: u32 = 4096;
@@ -176,12 +179,12 @@ async fn hold_wallet_writer(wallet: &Path) -> Child {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "opt-in real fragmented-channel retirement with concurrent paid traffic"]
 async fn ordinary_payments_progress_during_fragmented_sender_retirement() {
-    tokio::time::timeout(Duration::from_secs(900), exercise())
+    tokio::time::timeout(Duration::from_secs(900), exercise(false))
         .await
         .unwrap();
 }
 
-async fn exercise() {
+async fn exercise(with_renewal: bool) {
     let root = retained_tempdir();
     let network = PaymentNetwork::new(9621, 0, Arc::new(VirtualClock::new(now())));
     let mint = LocalMint::start_with_limits(
@@ -199,7 +202,14 @@ async fn exercise() {
         .rotate_keyset("sat".parse().unwrap(), vec![1], 0, false, None)
         .await
         .unwrap();
-    let url = mint.url().to_owned();
+    let proxy = if with_renewal {
+        Some(MintProxy::start(mint.url()).await)
+    } else {
+        None
+    };
+    let url = proxy
+        .as_ref()
+        .map_or_else(|| mint.url().to_owned(), |proxy| proxy.url.clone());
     let mut bench = setup::start_configured_line(
         root.path(),
         mint,
@@ -210,7 +220,7 @@ async fn exercise() {
             quote_lifetime: 180,
             funding_limits: &[1536; 3],
         },
-        |_, cfg| {
+        |index, cfg| {
             // A one-way purchase needs the bounded free session handshake.
             cfg.terms.billing = BillingBasis::ForwardingData;
             // This fixture owns its mint; public-mint pacing must not consume
@@ -226,6 +236,9 @@ async fn exercise() {
             cfg.terms.fee_msat_per_kib = 4;
             cfg.terms.max_rate_msat_per_kib = 4;
             cfg.terms.quote_max_units = 6 * 1024 * 1024;
+            if with_renewal && index == 0 {
+                renewal::configure(cfg);
+            }
         },
     )
     .await;
@@ -312,6 +325,14 @@ async fn exercise() {
     let signed_warm = warm["payment_progress"][&active]["authorized_sat"]
         .as_u64()
         .unwrap();
+    if with_renewal {
+        // Settling the old channels deliberately paused this worker. Warmup
+        // must stay below its threshold before normal automatic work resumes.
+        assert!(signed_warm < renewal::DUE_SAT);
+        request(source, &AdminRequest::ResumeRenewals)
+            .await
+            .unwrap();
+    }
     assert!(
         now() < first,
         "the active channel must precede old-channel expiry"
@@ -324,6 +345,10 @@ async fn exercise() {
     })
     .await
     .unwrap();
+    let mut renewal = match &proxy {
+        Some(proxy) => Some(renewal::Check::arm(&bench, proxy, &active).await),
+        None => None,
+    };
     let held_probe = delivered(&bench, probe(&bench, 1, 512, 128).await, 512).await;
     let held = caught_up(source, &active).await;
     let signed_before = held["payment_progress"][&active]["authorized_sat"]
@@ -333,6 +358,11 @@ async fn exercise() {
         signed_before > signed_warm && pending(&journal(source)),
         "active payments must progress while maintenance waits"
     );
+    if let Some(check) = &mut renewal {
+        assert!(writer.try_wait().unwrap().is_none());
+        check.deferred(&bench).await;
+        assert!(writer.try_wait().unwrap().is_none());
+    }
     wait_until(last + 1).await;
     let before_release = caught_up(source, &active).await;
     let signed_before = before_release["payment_progress"][&active]["authorized_sat"]
@@ -340,10 +370,13 @@ async fn exercise() {
         .unwrap();
     drop(writer.stdin.take());
     assert!(writer.wait().await.unwrap().success());
-    let started = Instant::now();
-    let sending = probe(&bench, 2, LIVE_PACKETS, 1024).await;
-    let mut samples = Vec::new();
-    let after = tokio::time::timeout(Duration::from_secs(90), async {
+    let mut observation = if let Some(check) = renewal {
+        check.finish(&bench).await
+    } else {
+        let started = Instant::now();
+        let sending = probe(&bench, 2, LIVE_PACKETS, 1024).await;
+        let mut samples = Vec::new();
+        let after = tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             let j = journal(source);
             let state = status(source).await;
@@ -383,37 +416,42 @@ async fn exercise() {
     })
     .await
     .expect("old history must finish without replacing the active channel");
-    let maintenance_window_us = started.elapsed().as_micros();
-    let live_probe = delivered(&bench, sending, LIVE_PACKETS).await;
-    let paid = caught_up(source, &active).await;
-    let progressed = samples.windows(2).any(|pair| {
-        let (a, b) = (&pair[0], &pair[1]);
-        a["same_pending_plan"] == true
-            && b["same_pending_plan"] == true
-            && a["pending_through"] == b["pending_through"]
-            && b["credited_msat"].as_u64().unwrap() > a["credited_msat"].as_u64().unwrap()
-            && b["delivered"].as_u64().unwrap() > a["delivered"].as_u64().unwrap()
-    });
-    assert!(
-        after["funding"]
-            .as_object()
-            .unwrap()
-            .values()
-            .any(|v| *v == active_before)
-    );
-    assert_eq!(
-        paid["funding_budget"]["wallet_debited_sat"],
-        before_release["funding_budget"]["wallet_debited_sat"]
-    );
-    assert_eq!(
-        paid["funding_budget"]["wallet_debited_sat"],
-        (OLD_CHANNELS as u64 + 1) * CAPACITY
-    );
-    let observation = json!({"progressed_during_cleanup":progressed,"root":root.path(),
-        "refund_coins":refund_coins,"client_bytes":client_bytes,
+        let maintenance_window_us = started.elapsed().as_micros();
+        let live_probe = delivered(&bench, sending, LIVE_PACKETS).await;
+        let paid = caught_up(source, &active).await;
+        let progressed = samples.windows(2).any(|pair| {
+            let (a, b) = (&pair[0], &pair[1]);
+            a["same_pending_plan"] == true
+                && b["same_pending_plan"] == true
+                && a["pending_through"] == b["pending_through"]
+                && b["credited_msat"].as_u64().unwrap() > a["credited_msat"].as_u64().unwrap()
+                && b["delivered"].as_u64().unwrap() > a["delivered"].as_u64().unwrap()
+        });
+        assert!(
+            after["funding"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|v| *v == active_before)
+        );
+        assert_eq!(
+            paid["funding_budget"]["wallet_debited_sat"],
+            before_release["funding_budget"]["wallet_debited_sat"]
+        );
+        assert_eq!(
+            paid["funding_budget"]["wallet_debited_sat"],
+            (OLD_CHANNELS as u64 + 1) * CAPACITY
+        );
+        json!({"progressed_during_cleanup":progressed,
         "maintenance_window_us":maintenance_window_us,
-        "warmup":warmup,"held_probe":held_probe,"live_probe":live_probe,"signed_before_release_sat":signed_before,
-        "samples":samples,"final_progress":paid["payment_progress"][&active]});
+        "live_probe":live_probe,"samples":samples,"final_progress":paid["payment_progress"][&active]})
+    };
+    observation["root"] = json!(root.path());
+    observation["refund_coins"] = json!(refund_coins);
+    observation["client_bytes"] = json!(client_bytes);
+    observation["warmup"] = warmup;
+    observation["held_probe"] = held_probe;
+    observation["signed_before_release_sat"] = json!(signed_before);
     std::fs::write(
         root.path().join("live-retirement.json"),
         serde_json::to_vec(&observation).unwrap(),
@@ -430,7 +468,13 @@ async fn exercise() {
                 .iter()
                 .filter_map(|v| v.as_object())
                 .any(|entries| entries.keys().any(|id| old.contains(id)));
-            if !unfinished && !retained {
+            let sender = journal(source);
+            let sender_retained = sender["funding"].as_object().unwrap().values().any(|v| {
+                v["funded"]["terms"]["id"]
+                    .as_str()
+                    .is_some_and(|id| old.contains(id))
+            });
+            if !unfinished && !retained && !pending(&sender) && !sender_retained {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -456,14 +500,23 @@ async fn exercise() {
         3 * FUNDING,
         "the original mint and wallets conserve every test sat"
     );
-    eprintln!(
-        "LIVE_RETIREMENT_RESULT {}",
-        json!({"progressed_during_cleanup":progressed,
-        "maintenance_window_us":maintenance_window_us,"refunded_coins":refund_coins,"conserved_test_sat":total,
-        "fixture":root.path()})
-    );
-    assert!(
-        progressed,
-        "require new payment and delivery during pending retirement after writer release"
-    );
+    if with_renewal {
+        renewal::verify_wallets(&bench, &url).await;
+    }
+    let mut result = json!({"refunded_coins":refund_coins,"conserved_test_sat":total,
+        "fixture":root.path()});
+    if with_renewal {
+        result["renewal_completed"] = observation["renewal_completed"].clone();
+        eprintln!("LIVE_RETIREMENT_RENEWAL_RESULT {result}");
+    } else {
+        result["progressed_during_cleanup"] = observation["progressed_during_cleanup"].clone();
+        result["maintenance_window_us"] = observation["maintenance_window_us"].clone();
+        eprintln!("LIVE_RETIREMENT_RESULT {result}");
+    }
+    let acceptance = if with_renewal {
+        "renewal_completed"
+    } else {
+        "progressed_during_cleanup"
+    };
+    assert_eq!(observation[acceptance], true, "{acceptance}");
 }
