@@ -183,7 +183,8 @@ impl Node {
             && !peer.client_only_supported
             && !peer.client_support_sent
         {
-            eprintln!("CLIENT_TRACE first-support node={} to={} at={}",self.node_addr(),peer_addr,Self::now_ms());
+            let upstream_announced = self.tree_state.peer_coords(peer_addr).is_some();
+            eprintln!("CLIENT_TRACE first-support node={} to={} upstream_announced={} at={}",self.node_addr(),peer_addr,upstream_announced,Self::now_ms());
             // Give a capable neighbor the first announcement interval to
             // reply before advertising a temporary router/root role. Older
             // peers ignore this capability and get the ordinary declaration
@@ -197,7 +198,10 @@ impl Node {
             )
             .await?;
             if let Some(peer) = self.peers.get_mut(peer_addr) {
-                peer.client_support_sent = true;
+                // Our first bootstrap can precede the peer's receiver. Only
+                // a capability sent after its authenticated tree bootstrap
+                // starts the ordinary-router fallback interval.
+                peer.client_support_sent = upstream_announced;
                 peer.record_tree_announce_sent(Self::now_ms());
             }
             self.mark_tree_announce_pending(peer_addr);
