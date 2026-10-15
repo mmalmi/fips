@@ -1,5 +1,63 @@
 # Paid-relay cadence measurements
 
+## Wi-Fi comparison on the current graph — 15 October 2026
+
+r613 runs the unchanged eight-trial Wi-Fi comparison on the same source and
+dependency graph as the native comparison below. The ordinary ARM64 daemon uses
+core default features and no wallet simulation; only the mint simulates money.
+Three OpenWrt routers use native Ethernet over 802.11s, one paid relay and two
+funded directions. Policy order is 250/500/1000/2000/2000/1000/500/250 ms. The
+1-msat/KiB tariff, 32-sat channels, 4,000-msat durable window, 8,000-msat grace,
+workloads and three-second tail match the
+[hardware runbook](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
+
+All 93,696 payloads arrive without duplicates, invalid payloads or controller
+errors. Strict delivery, accounting, counter-continuity and cost checks pass.
+Independent audits close all 16 original channels and conserve 3,072 test sats,
+with no pending mint operations or duplicate/mint-spent live coins. The original
+736 files and 72 complete SQLite sets are archived. All 2,103 management checks
+pass; each trial restores the normal router baseline. All 24 closed profiles and
+their temporary directories are archived before exact-path removal, with baseline
+checks after cleanup. Mint originals remain retained. Source/artifact bindings,
+stopped owners, readable-reference observations and their access limits are saved
+in `work/cadence-control-r613/router`. There are no retries or replacement grants.
+
+Values average two trials per policy and sum all three service processes. Bursty,
+steady and high-rate trials deliver 512,000, 3,200,000 and 8,000,000 application
+bytes respectively. CPU is per delivered MiB; storage and traffic are per
+observation including its tail. Compare policies within each matrix: the native
+comparison has a different paid-hop count and high-rate workload.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Steady | 250 ms | 3.0 | 54.51 | 20.12 | 2.40 | 5.03 |
+| Steady | 500 ms | 3.0 | 53.46 | 20.30 | 2.40 | 5.03 |
+| Steady | 1 s | 3.0 | 53.87 | 20.24 | 2.40 | 5.03 |
+| Steady | 2 s | 3.0 | 53.27 | 20.19 | 2.40 | 5.03 |
+| High rate | 250 ms | 4.0 | 29.59 | 31.45 | 3.21 | 6.68 |
+| High rate | 500 ms | 3.0 | 22.05 | 23.86 | 2.41 | 5.04 |
+| High rate | 1 s | 2.0 | 14.46 | 14.57 | 1.60 | 3.64 |
+| High rate | 2 s | 2.0 | 14.40 | 15.04 | 1.60 | 3.64 |
+
+Idle and bursty windows record zero payment CPU, application payment requests and
+payment journal writes. The burst fits already acknowledged whole-sat credit.
+Idle local payment-carrier traffic remains 488 bytes per observation and
+whole-process CPU remains nonzero. At high rate, one second uses about 34% less
+scoped payment CPU and 28% fewer local payment-carrier bytes than 500 ms.
+Whole-process CPU averages 0.807/0.824/0.793/0.796 seconds per delivered MiB across
+the four policies. Steady traffic still uses three updates under every policy.
+Two repeats do not establish a general optimum; the 500-ms default stays unchanged.
+
+Observed high-rate goodput is 25.38–25.95 Mbps under the paced workload, which does
+not measure maximum throughput. Router clocks are not synchronized, so no one-way
+latency is reported. Endpoint samples place per-process RSS at 19.99–22.01 MiB;
+these are finite-workload observations, not peak memory at resource limits.
+Payment CPU excludes shared scheduler/core/transport work outside its spans.
+Journal bytes exclude wallet SQLite and physical storage. Local carrier bytes
+include submitted payment traffic, ACKs, retransmissions and instrumented Ethernet
+framing; they exclude opaque transit, shared traffic and physical radio overhead.
+Physical airtime, flash endurance, mobility and power loss remain separate checks.
+
 ## Native comparison on the current graph — 15 October 2026
 
 r613 qualifies FIPS runtime `1b948a688`, SDK `dad0fc3`, Spilman `669fbdd943`
@@ -57,7 +115,7 @@ Payment CPU excludes scheduler scans and shared TCP/FIPS/core work outside its
 spans. Journal bytes exclude wallet SQLite and physical storage. Local carrier
 bytes include submitted payment traffic, ACKs and retransmissions, excluding
 opaque transit, shared traffic, kernel/radio framing and airtime. This accepts
-the native comparison; current router/phone and physical-cost acceptance remain separate.
+the native comparison; phone and physical-cost acceptance remain separate.
 
 ## Rejected preceding native comparison — 15 October 2026
 

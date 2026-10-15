@@ -224,7 +224,7 @@ software checkpoint; later physical results are recorded separately in
 [READINESS.md](READINESS.md) and [CADENCE-RESULTS.md](CADENCE-RESULTS.md).
 
 The latest optimized [native comparison](CADENCE-RESULTS.md#native-comparison-on-the-current-graph--15-october-2026)
-and [Wi-Fi comparison](CADENCE-RESULTS.md#wi-fi-matrix-with-the-control-expiry-fix--14-october-2026)
+and [Wi-Fi comparison](CADENCE-RESULTS.md#wi-fi-comparison-on-the-current-graph--15-october-2026)
 cover all four 250/500/1000/2000-ms policies under idle, bursty, steady and high-rate
 workloads, keeping terms and workloads identical within each matrix. Two
 opposite-order passes verify delivery and collection of all test funds. Results
