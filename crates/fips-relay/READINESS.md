@@ -1,16 +1,22 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-15 October 2026. The candidate combines FIPS runtime `718cfe5be`, SDK `dad0fc3`,
+15 October 2026. The candidate combines FIPS runtime `1b948a688`, SDK `dad0fc3`,
 Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
 
-The latest fixes prevent individually valid receiver payouts from stalling
+The latest control fix gives the requester ownership of normal idle expiry and
+admits buffered records before capacity eviction. Both races fail under the
+previous behavior; 34 focused tests and affected lint/format/size gates pass.
+Connection limits, request deadlines and the rule against automatic replay are
+preserved. Fresh paid performance and target acceptance remain open.
+
+The preceding fixes prevent individually valid receiver payouts from stalling
 aggregate cleanup, suppress repeated idle recovery after a key change, and bound
 settlement replies to 4 MiB with a 30-second deadline per HTTP request. Original
 closing records and spending authority survive refusal and retry. SDK wallet
 retirement releases the client store so unrelated active payments can continue.
 
-r607 qualifies the combined graph with canonical dependency manifests. Ordinary
+r607 qualifies the preceding `718cfe5be` graph with canonical dependency manifests. Ordinary
 Linux and ARM64 builds pass, alongside strict affected lint and source-size
 checks. All seven native carrier scenarios pass: TCP, configured and seeded
 WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss.
@@ -141,6 +147,7 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
+| Control reuse after r611 | Runtime `1b948a688` fixes two demonstrated TCP/FIPS races: a responder's idle timer closes a connection still reusable by the requester, and connection-pressure eviction discards an already buffered request. Both fail before the fix; 18 control unit and 16 integration tests pass with strict affected lint, formatting and source-size gates. Shared setup avoids duplicating the native connection fixture. | No-money regressions; the matching stream error does not prove the exact r611 trigger. Idle entries retain the existing eight-entry/per-peer bounds, requester expiry and peer-FIN cleanup; arbitrary eviction or network failure can still fail an exchange. No transmitted request is replayed. Exact sources, failures and successful gates remain in `work/control-reuse-r611`; paid/device reconciliation is pending. |
 | r611 rejected native cadence | All 285,696 payloads arrive and independent original-state audits conserve 40,960 test sats across 48 closed channels. Sources/artifacts are unchanged; all 872 original files and 96 complete SQLite sets remain retained, with owned processes/file handles absent. | The strict analyzer rejects a usage-request stream error in trial 5. Later payment progress does not clear the historical failure. No overhead comparison is accepted; no retries, replacement grants or device runs follow. Raw evidence and closure remain in `work/cadence-final-r611/native`. |
 | r607 common graph and paid carriers | FIPS `718cfe5be`, SDK `dad0fc3` and Spilman `669fbdd943` pass all seven existing paid carrier scenarios with canonical manifests. Credit exhaustion, renewal, restart and settlement preserve the tested limits. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples; 39,899–39,914 of 42,000 payloads arrive per direction under counted every-twentieth-frame loss. Independent original mint/wallet checks conserve all 2,688 test sats, with no unfinished operations or duplicate/mint-spent live coins. Ordinary Linux/ARM64 builds, affected strict lint and size checks pass. | Linux processes and virtual links; no device, physical power-loss, mobility or throughput claim. Only the generated-CA case uses the dedicated test-root daemon. Original coin identities, all 445 archived files, source/artifact bindings and stopped processes/file owners are verified in `work/current-carriers-r607/attempt-2`; no retries or replacement funding. The earlier attempt remains an unfunded native-build-only result. |
 | r610 bounded settlement replies | Spilman `669fbdd943` shares one streaming reader across metadata, restore and swap responses. Swap success/error bodies are limited before parsing, using declared length and streamed bytes; each request has a 30-second deadline. The baseline accepts an oversized signed reply and waits beyond the test's 35-second guard. The fix passes 15 networking, closing and restore checks, including the actual deadline and preservation of original funding, payment signature and blinded outputs across retry. | Loopback HTTP and synthetic signed recovery, not a new real-mint spent-input recovery result. A full close can make several requests. Production lint is strict; unit-test lint permits only the repository's existing `unwrap` convention. The isolated test copy omits an inactive optional axum/macros resolver request; active features and all selected package versions/checksums match the accepted graph, and canonical manifests are unchanged. Setup and initial lint failures remain preserved in `work/settlement-http-r610`. r607 qualifies the common Linux paths and ARM64 build; router and phone runtime acceptance remain. |
