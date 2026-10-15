@@ -611,7 +611,7 @@ the total cost of the caller below.
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. Device renewal/new-purchase acceptance remains. |
-| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. Device costs and larger receiver payouts remain open. |
+| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. The 129-proof payout check below crosses the native retirement batch boundary. Device costs and maximum-size payouts remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; larger receiver payouts, reserved completion and concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. Whole sender calls, receiver release queue and repeated owner scans still need progress and memory acceptance on the intended routers. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
@@ -633,6 +633,17 @@ All 444 workspace tests, strict affected-package lint and formatting pass; three
 existing opt-in measurements are skipped. This checks logical admission and
 completion, not device performance or physical disk exhaustion. Private evidence
 is retained in `work/receiver-resource-r619/attempt-4`.
+
+SDK `dd47912` extends that same capacity test with a real 129-sat payout made of
+129 one-sat proofs, crossing the 128-proof retirement batch boundary. Reopen and
+import succeed at the unchanged full native limit; duplicate import credits
+nothing, the sender recovers 127 sats and the original 512 sats are conserved.
+Retirement and repetition of the same plan retain all 129 payout proofs in
+history and preserve the earned balance. The focused test, strict affected
+lint, formatting and source-size check pass. This is a test-only extension on
+the unchanged runtime graph, not a device cost or maximum-payout measurement.
+Evidence remains in `work/receiver-payout-129`; the earlier assertion-type
+compile failure is retained separately.
 
 r608 verifies the configured-mint open/balance paths against the qualified source
 inventory: at most 32 mint/unit wallets, 256 retained keysets per cache and 4 MiB
