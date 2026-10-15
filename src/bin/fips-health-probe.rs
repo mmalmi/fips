@@ -67,6 +67,83 @@ struct ProbeSuccess {
     rtt: Duration,
 }
 
+// Kept outside the timed future so cancellation cannot erase a pending query.
+// Observes only the existing peer-snapshot loop and emits no peer data.
+// Carrier flags are cumulative ever-seen values, not the latest snapshot state.
+// The successful-snapshot age measures query completion, not carrier recency.
+#[derive(Default)]
+struct InitialAuthProgress {
+    snapshots_started: u32,
+    snapshots_completed: u32,
+    snapshot_errors: u32,
+    last_snapshot_error: Option<&'static str>,
+    snapshot_started_at: Option<Instant>,
+    max_snapshot_elapsed: Duration,
+    last_successful_snapshot_at: Option<Instant>,
+    target_websocket_seen: Option<bool>,
+    target_webrtc_seen: Option<bool>,
+}
+
+impl InitialAuthProgress {
+    fn start_snapshot(&mut self) {
+        self.snapshots_started += 1;
+        self.snapshot_started_at = Some(Instant::now());
+    }
+
+    fn complete_snapshot(&mut self, result: Result<Option<&str>, &fips::FipsEndpointError>) {
+        self.snapshots_completed += 1;
+        if let Some(started) = self.snapshot_started_at.take() {
+            self.max_snapshot_elapsed = self.max_snapshot_elapsed.max(started.elapsed());
+        }
+        match result {
+            Ok(transport) => {
+                self.last_successful_snapshot_at = Some(Instant::now());
+                self.target_websocket_seen = Some(
+                    self.target_websocket_seen.unwrap_or(false) || transport == Some("websocket"),
+                );
+                self.target_webrtc_seen =
+                    Some(self.target_webrtc_seen.unwrap_or(false) || transport == Some("webrtc"));
+            }
+            Err(error) => {
+                self.snapshot_errors += 1;
+                self.last_snapshot_error = Some(match error {
+                    fips::FipsEndpointError::Timeout { .. } => "timeout",
+                    fips::FipsEndpointError::Closed => "closed",
+                    _ => "other",
+                });
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for InitialAuthProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let flag = |value| match value {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        };
+        let successful_age = self.last_successful_snapshot_at.map_or_else(
+            || "unknown".to_string(),
+            |at| at.elapsed().as_millis().to_string(),
+        );
+        write!(
+            f,
+            "snapshots_started={},snapshots_completed={},snapshot_errors={},last_snapshot_error={},max_snapshot_ms={},pending_snapshot_ms={},last_successful_snapshot_age_ms={},target_websocket_seen={},target_webrtc_seen={}",
+            self.snapshots_started,
+            self.snapshots_completed,
+            self.snapshot_errors,
+            self.last_snapshot_error.unwrap_or("none"),
+            self.max_snapshot_elapsed.as_millis(),
+            self.snapshot_started_at
+                .map_or(0, |at| at.elapsed().as_millis()),
+            successful_age,
+            flag(self.target_websocket_seen),
+            flag(self.target_webrtc_seen),
+        )
+    }
+}
+
 async fn run(args: Args) -> Result<ProbeSuccess, String> {
     if args.timeout_seconds == 0 {
         return Err("--timeout-seconds must be greater than zero".to_string());
@@ -96,22 +173,43 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     .await
     .map_err(|_| "timed out starting ephemeral FIPS endpoint".to_string())?
     .map_err(|error| format!("could not start ephemeral FIPS endpoint: {error}"))?;
-    let probe_result = match timeout_at(deadline, probe_target(&endpoint, target)).await {
+    let mut phase = "webrtc_authentication";
+    let mut auth_progress = InitialAuthProgress::default();
+    let probe_result = match timeout_at(
+        deadline,
+        probe_target(&endpoint, target, &mut phase, &mut auth_progress),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(format!(
-            "target {target_npub} did not complete WebRTC/FMP/FSP echo within {}s",
+            "target {target_npub} did not complete WebRTC/FMP/FSP echo within {}s; phase={phase}",
             args.timeout_seconds
         )),
     };
+    let probe_result = if phase == "webrtc_authentication" {
+        probe_result.map_err(|error| format!("{error}; auth_progress=[{auth_progress}]"))
+    } else {
+        probe_result
+    };
     let shutdown_result = endpoint.shutdown().await;
     settle_terminal_webrtc_cleanup().await;
-    if let Err(error) = shutdown_result {
-        return Err(format!(
-            "probe completed but endpoint shutdown failed: {error}"
-        ));
-    }
+    finish_probe_result(probe_result, shutdown_result).map(|rtt| ProbeSuccess { target_npub, rtt })
+}
 
-    probe_result.map(|rtt| ProbeSuccess { target_npub, rtt })
+fn finish_probe_result(
+    probe_result: Result<Duration, String>,
+    shutdown_result: Result<(), fips::FipsEndpointError>,
+) -> Result<Duration, String> {
+    match (probe_result, shutdown_result) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(format!(
+            "probe completed but endpoint shutdown failed: {error}"
+        )),
+        (Err(probe_error), Err(error)) => {
+            Err(format!("{probe_error}; endpoint shutdown failed: {error}"))
+        }
+    }
 }
 
 async fn settle_terminal_webrtc_cleanup() {
@@ -164,8 +262,14 @@ fn probe_config(
     config
 }
 
-async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<Duration, String> {
-    wait_for_authenticated_webrtc(endpoint, target).await?;
+async fn probe_target(
+    endpoint: &FipsEndpoint,
+    target: PeerIdentity,
+    phase: &mut &'static str,
+    auth_progress: &mut InitialAuthProgress,
+) -> Result<Duration, String> {
+    wait_for_authenticated_webrtc(endpoint, target, auth_progress).await?;
+    *phase = "fsp_echo";
 
     let nonce = *uuid::Uuid::new_v4().as_bytes();
     let identifier = u16::from_be_bytes([nonce[0], nonce[1]]);
@@ -211,15 +315,21 @@ async fn probe_target(endpoint: &FipsEndpoint, target: PeerIdentity) -> Result<D
 async fn wait_for_authenticated_webrtc(
     endpoint: &FipsEndpoint,
     target: PeerIdentity,
+    progress: &mut InitialAuthProgress,
 ) -> Result<(), String> {
     let mut poll = tokio::time::interval(PEER_POLL_INTERVAL);
     poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         poll.tick().await;
-        let peers = endpoint
-            .peers()
-            .await
-            .map_err(|error| format!("peer state query failed: {error}"))?;
+        progress.start_snapshot();
+        let snapshot = endpoint.peers().await;
+        progress.complete_snapshot(snapshot.as_ref().map(|peers| {
+            peers
+                .iter()
+                .find(|peer| peer.node_addr == *target.node_addr())
+                .and_then(|peer| peer.transport_type.as_deref())
+        }));
+        let peers = snapshot.map_err(|error| format!("peer state query failed: {error}"))?;
         if peers
             .iter()
             .any(|peer| is_authenticated_webrtc_peer(peer, &target))
@@ -325,6 +435,111 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[tokio::test]
+    async fn cancelled_peer_snapshot_remains_pending_in_failure_progress() {
+        let mut progress = InitialAuthProgress::default();
+        let result = tokio::time::timeout(Duration::from_millis(10), async {
+            progress.start_snapshot();
+            std::future::pending::<()>().await;
+            progress.complete_snapshot(Ok(None));
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(progress.snapshots_started, 1);
+        assert_eq!(progress.snapshots_completed, 0);
+        assert!(progress.snapshot_started_at.is_some());
+        assert_eq!(progress.target_websocket_seen, None);
+        assert_eq!(progress.target_webrtc_seen, None);
+        let summary = progress.to_string();
+        assert!(summary.contains("snapshots_started=1,snapshots_completed=0"));
+        assert!(summary.contains("target_websocket_seen=unknown,target_webrtc_seen=unknown"));
+    }
+
+    #[test]
+    fn completed_snapshot_and_target_carrier_progress_are_separate() {
+        let mut progress = InitialAuthProgress::default();
+        progress.start_snapshot();
+        progress.complete_snapshot(Ok(None));
+        assert_eq!(progress.snapshots_completed, 1);
+        assert!(progress.snapshot_started_at.is_none());
+        assert_eq!(progress.target_websocket_seen, Some(false));
+        assert_eq!(progress.target_webrtc_seen, Some(false));
+
+        progress.start_snapshot();
+        progress.complete_snapshot(Ok(Some("websocket")));
+        assert_eq!(progress.target_websocket_seen, Some(true));
+        assert_eq!(progress.target_webrtc_seen, Some(false));
+        progress.start_snapshot();
+        progress.complete_snapshot(Ok(Some("webrtc")));
+        assert_eq!(progress.target_websocket_seen, Some(true));
+        assert_eq!(progress.target_webrtc_seen, Some(true));
+        assert!(progress.last_successful_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn initial_auth_failure_progress_has_only_static_counts_and_flags() {
+        let progress = InitialAuthProgress::default();
+        let summary = progress.to_string();
+        assert_eq!(
+            summary,
+            "snapshots_started=0,snapshots_completed=0,snapshot_errors=0,last_snapshot_error=none,max_snapshot_ms=0,pending_snapshot_ms=0,last_successful_snapshot_age_ms=unknown,target_websocket_seen=unknown,target_webrtc_seen=unknown"
+        );
+    }
+
+    #[test]
+    fn typed_snapshot_errors_do_not_claim_target_absence() {
+        for (error, class) in [
+            (
+                fips::FipsEndpointError::Timeout {
+                    operation: "peer snapshot",
+                },
+                "timeout",
+            ),
+            (fips::FipsEndpointError::Closed, "closed"),
+        ] {
+            let mut progress = InitialAuthProgress::default();
+            progress.start_snapshot();
+            progress.complete_snapshot(Err(&error));
+            assert_eq!(progress.snapshots_started, 1);
+            assert_eq!(progress.snapshots_completed, 1);
+            assert_eq!(progress.snapshot_errors, 1);
+            assert_eq!(progress.last_snapshot_error, Some(class));
+            assert_eq!(progress.target_websocket_seen, None);
+            assert_eq!(progress.target_webrtc_seen, None);
+            assert!(progress.last_successful_snapshot_at.is_none());
+            assert!(progress.snapshot_started_at.is_none());
+        }
+    }
+
+    #[test]
+    fn authentication_progress_survives_a_shutdown_failure() {
+        let progress = InitialAuthProgress::default();
+        let probe_error = format!("phase=webrtc_authentication; auth_progress=[{progress}]");
+        let shutdown_error = fips::FipsEndpointError::Closed;
+        let expected = format!("{probe_error}; endpoint shutdown failed: {shutdown_error}");
+        assert_eq!(
+            finish_probe_result(Err(probe_error), Err(shutdown_error)),
+            Err(expected)
+        );
+    }
+
+    #[test]
+    fn successful_probe_result_and_cleanup_failure_remain_unchanged() {
+        let rtt = Duration::from_millis(7);
+        assert_eq!(finish_probe_result(Ok(rtt), Ok(())), Ok(rtt));
+        let shutdown_error = fips::FipsEndpointError::Closed;
+        let expected = format!("probe completed but endpoint shutdown failed: {shutdown_error}");
+        assert_eq!(
+            finish_probe_result(Ok(rtt), Err(shutdown_error)),
+            Err(expected)
+        );
+        assert_eq!(
+            finish_probe_result(Err("echo failed".to_string()), Ok(())),
+            Err("echo failed".to_string())
+        );
+    }
 
     #[tokio::test]
     async fn successful_probe_keeps_runtime_alive_for_detached_terminal_cleanup() {
