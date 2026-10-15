@@ -580,7 +580,7 @@ the total cost of the caller below.
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; larger receiver payouts, reserved completion and concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. Whole sender calls, receiver release queue and repeated owner scans still need progress and memory acceptance on the intended routers. |
-| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | Bounded token input and export count, original send recovery and shared native custody; aggregate retained-export pressure. |
+| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces 64 KiB token/cache limits, 128 retained exports and the 4 MiB SDK send journal with completion headroom. Original send recovery, replay floors and custody remain protected. Full retained-export pressure and router reopen/acknowledgement costs still need acceptance. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay
 does not call the SDK's general startup recovery, Lightning issuance or melt
@@ -598,6 +598,14 @@ use. This closes source coverage for these paths, not device reopen latency or
 peak memory at their limits. Existing tests were inspected, not rerun. The
 source inventory remains in `work/catalog-bounds-r608`; settlement reply bounds
 are a separate path and require their own qualification.
+
+r612 finds no violation of the reviewed local export size/custody contracts.
+Ownership scans and incomplete-operation recovery traverse retained history, so
+page limits do not bound whole-command work. Configured native capacity bounds
+charged logical history; an unset capacity does not. These are exclusive local
+wallet commands, not anonymous forwarding requests. The 36 source bindings and
+existing tests inspected, without rerunning them, remain in
+`work/export-bounds-r612`.
 
 See [history](HISTORY.md)
 and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts
