@@ -89,7 +89,7 @@ class FragmentedRetirementTests(unittest.TestCase):
             self.assertEqual(config['funding_request_budget'], {'burst': 128, 'requests_per_minute': 60_000})
             self.assertFalse(config['return_allowance'])
             self.assertIs(run.create_mint(SimpleNamespace(mint_host='configured')), mint)
-            self.assertEqual(mint.settings, {'max_issued_sat': 384, 'single_sat_keyset': True})
+            self.assertEqual(mint.settings, {'max_issued_sat': 384, 'fragmented_channel_keyset': True})
         with patch('sim.wifi_retirement.RetirementRun.create_mint') as create:
             with self.assertRaisesRegex(RuntimeError, 'requires --mint-host'):
                 run.create_mint(SimpleNamespace(mint_host=None))

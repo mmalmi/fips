@@ -31,10 +31,12 @@ Example mint configuration:
 }
 ```
 
-Small fragmentation fixtures may set `"single_sat_keyset": true` with
-`max_issued_sat` at most 512. This creates a one-sat keyset before any wallet is
-opened, so ordinary funding and refunds retain many real coins with little test
-value. The setting defaults to false. The guarded Wi-Fi
+Small fragmentation fixtures may set `"fragmented_channel_keyset": true` with
+`max_issued_sat` at most 512. This creates a keyset with denominations 1, 64 and
+128 before any wallet is opened. A 128-sat grant remains compact; ordinary 32-sat channel
+funding and refunds retain one-sat coins with little test value. Larger coins
+keep the final collection within the ordinary wallet recovery-record limit.
+The setting defaults to false. The guarded Wi-Fi
 [retirement exercise](../../testing/chaos/README.md#controller-reads-during-wallet-retirement)
 uses it to test paid forwarding during cleanup of original refund history.
 

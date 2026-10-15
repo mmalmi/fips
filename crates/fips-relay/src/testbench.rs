@@ -40,7 +40,7 @@ pub struct BenchConfig {
     pub max_issued_sat: u64,
     /// Small disposable fixtures can retain many real coins without more value.
     #[serde(default)]
-    pub single_sat_keyset: bool,
+    pub fragmented_channel_keyset: bool,
 }
 
 impl BenchConfig {
@@ -62,7 +62,7 @@ impl BenchConfig {
             || self.socket().as_os_str().len() > 100
             || self.max_issued_sat == 0
             || self.max_issued_sat > 10_000_000
-            || (self.single_sat_keyset && self.max_issued_sat > 512)
+            || (self.fragmented_channel_keyset && self.max_issued_sat > 512)
         {
             return Err("test mint requires a private/loopback bind, absolute private state path and bounded test issuance".into());
         }
@@ -132,9 +132,9 @@ impl BenchMint {
         )
         .await
         .map_err(|e| e.to_string())?;
-        if config.single_sat_keyset {
+        if config.fragmented_channel_keyset {
             mint.mint()
-                .rotate_keyset("sat".parse().unwrap(), vec![1], 0, false, None)
+                .rotate_keyset("sat".parse().unwrap(), vec![1, 64, 128], 0, false, None)
                 .await
                 .map_err(|e| e.to_string())?;
         }

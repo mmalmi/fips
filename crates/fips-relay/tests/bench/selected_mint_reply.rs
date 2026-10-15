@@ -11,7 +11,7 @@ async fn selected_inputs_hold_only_the_matching_committed_reply() {
             state_directory: root.path().join("mint"),
             bind: "127.0.0.1:0".parse().unwrap(),
             max_issued_sat: 32,
-            single_sat_keyset: false,
+            fragmented_channel_keyset: false,
         })
         .await
         .unwrap();

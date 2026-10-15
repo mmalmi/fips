@@ -79,7 +79,7 @@ class LiveRetirementRun(RetirementRun):
     def create_mint(self, args):
         require(getattr(args, 'mint_host', None), 'fragmented retirement requires --mint-host')
         mint = super().create_mint(args)
-        mint.settings['single_sat_keyset'] = True
+        mint.settings['fragmented_channel_keyset'] = True
         return mint
 
     def profile_config(self, node):

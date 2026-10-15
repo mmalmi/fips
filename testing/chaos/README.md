@@ -904,7 +904,8 @@ sats and their per-wallet distribution.
 This is controlled liveness evidence, not a benchmark of uninterrupted native
 execution or storage throughput. Use the updated disposable test-mint executable;
 the ordinary router executable needs no special testbench capability. The mint's
-`single_sat_keyset` setting defaults to false and is limited to 512 issued test sats.
+`fragmented_channel_keyset` setting defaults to false and is limited to 512
+issued test sats.
 
 ### Router load, restart and frame loss
 
