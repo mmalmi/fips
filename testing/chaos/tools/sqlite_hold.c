@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
     }
     char *end;
     unsigned long seconds = strtoul(argv[3], &end, 10);
-    if (*argv[3] == '\0' || *end != '\0' || seconds < 1 || seconds > 180 ||
+    if (*argv[3] == '\0' || *end != '\0' || seconds < 1 || seconds > 420 ||
         access(argv[2], F_OK) == 0 || errno != ENOENT) {
         fprintf(stderr, "invalid deadline or release file\n");
         return 1;

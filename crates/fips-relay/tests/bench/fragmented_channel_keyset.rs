@@ -108,7 +108,7 @@ async fn exercise(root: &Path) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    for (index, paid) in [0, 19].into_iter().enumerate() {
+    for (index, paid) in std::iter::repeat_n(0, 15).chain([19]).enumerate() {
         let wallet = CashuWalletService::open_file_backed(&buyer).await.unwrap();
         wallet.set_request_budget(128, 60_000).unwrap();
         let opened = wallet
@@ -188,26 +188,30 @@ async fn exercise(root: &Path) {
     );
     assert!(coins.iter().any(|coin| coin.proof.amount.to_u64() == 64));
     drop(db);
-    let exported = offline_wallet(
-        &cfg,
-        WalletRequest::Export {
-            id: 1,
-            amount_sat: 109,
-        },
-    )
-    .await
-    .unwrap();
-    let payment: Value =
-        serde_json::from_slice(&std::fs::read(exported["path"].as_str().unwrap()).unwrap())
-            .unwrap();
-    assert_eq!(
-        mint.handle(BenchRequest::Collect {
-            token: payment["token"].as_str().unwrap().into()
-        })
+    for (index, amount_sat) in [32, 32, 32, 13].into_iter().enumerate() {
+        let exported = offline_wallet(
+            &cfg,
+            WalletRequest::Export {
+                id: index as u64 + 1,
+                amount_sat,
+            },
+        )
         .await
-        .unwrap()["amount_sat"],
-        109
-    );
+        .unwrap();
+        let payment: Value =
+            serde_json::from_slice(&std::fs::read(exported["path"].as_str().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(payment["amount_sat"], amount_sat);
+        assert_eq!(payment["send_fee_sat"], 0);
+        assert_eq!(
+            mint.handle(BenchRequest::Collect {
+                token: payment["token"].as_str().unwrap().into()
+            })
+            .await
+            .unwrap()["amount_sat"],
+            amount_sat
+        );
+    }
     assert_eq!(
         offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"],
         0

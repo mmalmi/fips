@@ -266,12 +266,14 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
 
 
 def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, stop,
-                           export_path, fixture=None):
+                           export_path, fixture=None, max_export_sat=None):
     """Collect only after the caller has verified every channel's final settlement.
 
     This tail neither discovers funding nor relaxes the caller's financial
     checks. A promotion fixture can include a previously verified refund.
     """
+    require(max_export_sat is None or (type(max_export_sat) is int and max_export_sat > 0),
+            "maximum export amount must be a positive integer")
     issued = 384 if fixture is None else fixture.issued_sat
     for node in run.nodes:
         stop(node)
@@ -291,30 +293,34 @@ def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, sto
             expected[fixture.channel_providers[channel]] += paid
         require(balances == expected, "settled wallet distribution differs from verified payments")
     for node, balance in balances.items():
-        if balance:
-            # Each isolated wallet performs one export using the current sequence API.
-            export_id = 1
+        remaining, export_id, operations = balance, 1, set()
+        while remaining:
+            # Fragmented fixtures can bound each original transfer without
+            # changing ordinary callers' single-export behavior.
+            transfer = min(remaining, max_export_sat or remaining)
             exported = execute(node, "fips-relay", "wallet", {
-                "type": "export", "id": export_id, "amount_sat": balance})
+                "type": "export", "id": export_id, "amount_sat": transfer})
             relative = f"exports/{export_id}.json"
             require(exported["path"] == export_path(node, relative)
-                    and amount(exported["amount_sat"]) == balance,
+                    and amount(exported["amount_sat"]) == transfer,
                     "wallet export changed its reserved terms")
             payment = run.state_json(node, relative)
             require(payment["mint_url"] == mint and payment["unit"] == "sat"
-                    and amount(payment["amount_sat"]) == balance
+                    and amount(payment["amount_sat"]) == transfer
                     and amount(payment["send_fee_sat"]) == 0
                     and isinstance(exported["operation_id"], str) and bool(exported["operation_id"])
-                    and payment["operation_id"] == exported["operation_id"],
+                    and payment["operation_id"] == exported["operation_id"]
+                    and exported["operation_id"] not in operations,
                     "saved export differs from the zero-fee transfer")
             received = execute("mint", "fips-relay-test-mint", "ctl", {
                 "type": "collect", "token": payment["token"]})
             require(received["mint_url"] == mint and received["unit"] == "sat"
-                    and amount(received["amount_sat"]) == balance,
+                    and amount(received["amount_sat"]) == transfer,
                     "collector did not redeem the full export")
-            collections[node] = balance
-        else:
-            collections[node] = 0
+            operations.add(exported["operation_id"])
+            remaining -= transfer
+            export_id += 1
+        collections[node] = balance
         empty = execute(node, "fips-relay", "wallet", {"type": "balance"})
         require(empty["mint_url"] == mint and empty["unit"] == "sat"
                 and amount(empty["balance_sat"]) == 0, "node wallet is not empty")

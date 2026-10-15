@@ -24,7 +24,9 @@ class HeldWalletRouter(Router):
         return (f'if [ -f {self.temporary}/sqlite-armed ]; then '
                 f'touch {self.temporary}/sqlite-release; fi')
 
-    def hold_wallet(self, helper):
+    def hold_wallet(self, helper, seconds=150):
+        require(type(seconds) is int and 1 <= seconds <= 420, 'invalid SQLite hold deadline')
+        self.hold_seconds = seconds
         data = helper.read_bytes()
         path = self.temporary + '/sqlite-hold'
         self.guarded('umask 077; set -C; cat > ' + shlex.quote(path), data)
@@ -33,7 +35,7 @@ class HeldWalletRouter(Router):
         self.guarded(f'chmod 700 {path}\n'
                      f'touch {self.temporary}/sqlite-armed\n'
                      f'setsid {path} {self.state}/wallet/cashu/wallet.sqlite '
-                     f'{self.temporary}/sqlite-release 150 </dev/null 9>&- '
+                     f'{self.temporary}/sqlite-release {seconds} </dev/null 9>&- '
                      f'>{self.temporary}/sqlite-hold.log 2>{self.temporary}/sqlite-hold.err &')
         eventually('isolated SQLite write lock acquired', self.held, 8)
 
@@ -48,7 +50,7 @@ class HeldWalletRouter(Router):
         pid = events[0]['pid']
         require(type(pid) is int and pid > 1, 'invalid hold process')
         expected = [self.temporary + '/sqlite-hold', self.state + '/wallet/cashu/wallet.sqlite',
-                    self.temporary + '/sqlite-release', '150']
+                    self.temporary + '/sqlite-release', str(self.hold_seconds)]
         actual = self.remote(['cat', f'/proc/{pid}/cmdline']).decode().rstrip('\0').split('\0')
         return actual == expected
 
@@ -200,11 +202,12 @@ def main():
         raise TimeoutError('router retirement acceptance exceeded its bounded window')
 
     signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(1800 if args.fragmented_live else 600)
     if args.fragmented_live:
-        from .wifi_retirement_live import LiveRetirementRun
+        from .wifi_retirement_live import LiveRetirementRun, RUN_WINDOW
+        signal.alarm(RUN_WINDOW)
         LiveRetirementRun(args).execute()
     else:
+        signal.alarm(600)
         RetirementRun(args).execute()
 
 

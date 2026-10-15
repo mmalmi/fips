@@ -23,7 +23,7 @@ class SqliteHoldTests(unittest.TestCase):
                     db.execute('INSERT INTO evidence VALUES (1)')
                     db.commit()
                     child = subprocess.Popen([binary, str(database), str(release),
-                                              '1' if mode == 'deadline' else '10'],
+                                              '1' if mode == 'deadline' else '420'],
                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     try:
                         self.assertEqual(json.loads(child.stdout.readline()),
@@ -57,3 +57,11 @@ class SqliteHoldTests(unittest.TestCase):
                                          str(release), '1'], capture_output=True, timeout=5)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(database.exists())
+            release.unlink()
+            with sqlite3.connect(database):
+                pass
+            for seconds in ('0', '421', '-1', 'invalid'):
+                result = subprocess.run([os.environ['FIPS_SQLITE_HOLD'], str(database),
+                                         str(release), seconds], capture_output=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(b'locked', result.stdout)

@@ -17,11 +17,16 @@ from .wifi_retirement import RetirementRun
 
 OLD_CHANNELS = 15
 CAPACITY = 32
-LIFETIME = 900
-MAX_SPREAD = 90
+LIFETIME = 1320
+MAX_SPREAD = 300
+ACTIVE_LEAD = 60
+HOLD_LEAD = 15
+HOLD_SECONDS = MAX_SPREAD + 120
 QUOTE_UNITS = 6 * 1024 * 1024
 WALLET_LIMIT = 128
 RELEASE_WINDOW = 240
+RELEASE_MARGIN = 60
+RUN_WINDOW = 2400
 
 
 def pending(journal):
@@ -285,7 +290,7 @@ class LiveRetirementRun(RetirementRun):
         collect_settled_wallets(self, self.finances(), self.reports, owners, self.mint_url,
             execute=self.account_execute, stop=lambda name: self.nodes[name].stop(),
             export_path=lambda name, relative: self.nodes[name].state + '/' + relative,
-            fixture=fixture)
+            fixture=fixture, max_export_sat=CAPACITY)
         self.phase('all 384 original test sats collected after fragmented-history cleanup')
 
     def exercise(self):
@@ -309,11 +314,11 @@ class LiveRetirementRun(RetirementRun):
                 'refund_coins': coins, 'client_bytes': len(raw), 'client_sha256': digest(raw),
                 'first_refund_deadline': first, 'last_refund_deadline': last}
             self.phase('480 real refunded coins retained before device expiry')
-            self.until(first - 60)
+            self.until(first - ACTIVE_LEAD)
             purchase = self.buy()
             self.active = purchase['channel']['id']
             contract = purchase['contract']
-            require(contract['expires_unix'] >= last + RELEASE_WINDOW + 60
+            require(contract['expires_unix'] >= last + RELEASE_WINDOW + RELEASE_MARGIN
                     and contract['max_units'] == QUOTE_UNITS
                     and contract['price'] == {'msat': 4, 'per_bytes': 1024},
                     'active quote lacks the required lifetime or paid traffic capacity')
@@ -323,10 +328,10 @@ class LiveRetirementRun(RetirementRun):
             received(warmup['receiver'], shape, self.nodes['n01'].npub, complete=True)
             self.caught_up()
             self.evidence['fragmented']['warmup'] = warmup
-            require(time.time() < first - 15, 'active session establishment consumed the hold margin')
-            self.until(first - 15)
+            require(time.time() < first - HOLD_LEAD, 'active session establishment consumed the hold margin')
+            self.until(first - HOLD_LEAD)
             self.held_nodes.append('n01')
-            self.nodes['n01'].hold_wallet(self.args.sqlite_hold)
+            self.nodes['n01'].hold_wallet(self.args.sqlite_hold, HOLD_SECONDS)
             eventually('sender retirement durably pending behind its writer', self.pending_sender, 35)
             self.retirement_started = True
             self.traffic('held', 512, 64, held=True)

@@ -6,7 +6,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.wifi_retirement_live import (CAPACITY, LiveRetirementRun, deadlines,
+from sim.wifi_retirement_live import (ACTIVE_LEAD, CAPACITY, HOLD_LEAD, HOLD_SECONDS,
+                                     LIFETIME, MAX_SPREAD, RELEASE_MARGIN, RELEASE_WINDOW,
+                                     RUN_WINDOW, LiveRetirementRun, deadlines,
                                      maintenance_idle, overlap, refund_count)
 
 
@@ -26,11 +28,18 @@ class FragmentedRetirementTests(unittest.TestCase):
         self.assertFalse(overlap([before, {**signed, 'plan': 'other'}, after]))
 
     def test_device_deadline_bounds_preserve_hold_and_active_preparation_windows(self):
-        intents = {'first': {'refund_after_unix': 1200}, 'last': {'refund_after_unix': 1290}}
-        self.assertEqual(deadlines(intents, 1099), (1200, 1290))
-        for now, last in ((1100, 1290), (1099, 1291)):
+        last = 1200 + MAX_SPREAD
+        intents = {'first': {'refund_after_unix': 1200}, 'last': {'refund_after_unix': last}}
+        self.assertEqual(deadlines(intents, 1099), (1200, last))
+        for now, last in ((1100, last), (1099, last + 1)):
             with self.subTest(now=now, last=last), self.assertRaises(RuntimeError):
                 deadlines({**intents, 'last': {'refund_after_unix': last}}, now)
+        # Production service admission lasts half the immutable funding lifetime.
+        self.assertGreaterEqual(LIFETIME // 2 - ACTIVE_LEAD,
+                                MAX_SPREAD + RELEASE_WINDOW + RELEASE_MARGIN)
+        self.assertGreaterEqual(HOLD_SECONDS, MAX_SPREAD + HOLD_LEAD + 1 + 45 + 38 + 8)
+        self.assertLessEqual(HOLD_SECONDS, 420)
+        self.assertGreaterEqual(RUN_WINDOW, LIFETIME + MAX_SPREAD + RELEASE_WINDOW + 540)
 
     def test_release_rejects_uncredited_or_changed_held_payment_before_sending(self):
         for baseline in ({'authorized_sat': 2, 'credited_msat': 1000},
@@ -83,7 +92,8 @@ class FragmentedRetirementTests(unittest.TestCase):
                 patch('sim.wifi_retirement.RetirementRun.create_mint', return_value=mint):
             config = run.profile_config(None)
             self.assertEqual(config['terms']['billing'], 'forwarding_data')
-            self.assertEqual(config['terms']['controller']['channel_lifetime_secs'], 900)
+            self.assertEqual(config['terms']['controller']['channel_lifetime_secs'], LIFETIME)
+            self.assertEqual(config['terms']['quote_lifetime_secs'], LIFETIME // 2)
             self.assertEqual(config['terms']['controller']['max_wallet_spend_sat'], 128)
             self.assertEqual(config['terms']['wallet_capacity_bytes'], 64 * 1024 * 1024)
             self.assertEqual(config['funding_request_budget'], {'burst': 128, 'requests_per_minute': 60_000})
