@@ -64,10 +64,12 @@ session must leave this FIPS entry reachable without granting unrestricted WAN
 forwarding. Conversely, paying a FIPS relay must not open the ordinary access gate.
 
 Mint access may use the existing [HTTP-over-FIPS adapter](TESTBENCH.md#mint-http-over-fips)
-with a pinned export identity and bounded free mint requests and replies. This
-keeps funding reachable over the mesh before buying ordinary Internet. The saved
-mint URL and identity remain immutable; an outage must not select another mint
-or silently fall back to unrestricted Internet access.
+with a pinned export identity and explicitly bounded free routing for mint
+traffic. This keeps funding reachable over the mesh before buying ordinary
+Internet. The saved mint URL and identity remain immutable; an outage must not
+select another mint or silently fall back to unrestricted Internet access.
+The bridge fixes the remote endpoint; HTTP API authorization remains the mint's
+responsibility. It does not turn arbitrary mint requests into trusted control.
 
 FIPS retains its existing sender-pays model. Each relay buys onward service under
 its own configured price, capital and lifetime limits. Accepting customer funds

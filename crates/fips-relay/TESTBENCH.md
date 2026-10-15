@@ -102,6 +102,10 @@ Each adapter has eight connection slots, four TCP connections per peer, 16 KiB
 buffers per direction and a 45-second inactivity limit. Useful byte progress
 extends that limit; empty packets do not. Local sockets wait
 up to three seconds for a TCP slot before any request bytes are read.
+The bridge does not parse HTTP methods, paths or bodies; the mint retains API
+authorization. A progressing stream can outlast the inactivity limit, so these
+are buffer and connection bounds, not a whole-request size or duration limit.
+Wallet HTTP clients enforce their own response limits and request deadlines.
 Shutdown explicitly resets retained streams before stopping the native endpoint,
 so reopening the same identity does not inherit abandoned TCP connections.
 
