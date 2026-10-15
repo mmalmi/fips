@@ -119,26 +119,12 @@ mod tests {
         .await
         .is_ok()
     }
-    async fn snapshot(paths: &[String], modern: bool, phase: &str) {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        for (index,path) in paths.iter().enumerate() {
-            for command in ["show_status", "show_tree", "show_cache", "show_sessions", "show_routing"] {
-                let mut stream=tokio::net::UnixStream::connect(path).await.unwrap();
-                stream.write_all(format!("{{\"command\":\"{command}\"}}\n").as_bytes()).await.unwrap();
-                let mut response=String::new();
-                BufReader::new(stream).read_line(&mut response).await.unwrap();
-                eprintln!("LEGACY_PHASE modern={modern} phase={phase} node={index} command={command} {}",response.trim());
-            }
-        }
-    }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn old_routers_and_remote_can_reach_new_client_with_smallest_identity() {
         for modern_upstream in [false, true] {
             let mut identities: Vec<_> = (0..4).map(|_| current::Identity::generate()).collect();
             identities.sort_by_key(|i| *i.node_addr());
             let mut nodes = Vec::new();
-            let nonce=std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
-            let paths: Vec<String>=(0..4).map(|i|std::env::temp_dir().join(format!("compat-{nonce}-{i}.sock")).to_string_lossy().into_owned()).collect();
             for (index, id) in identities.iter().enumerate() {
                 let nsec = current::encode_nsec(&id.keypair().secret_key());
                 if index == 0 || (modern_upstream && index == 1) {
@@ -148,8 +134,7 @@ mod tests {
                     if index == 0 {
                         c.node.routing.mode = current::config::RoutingMode::ReplyLearned;
                     }
-                    c.node.control.enabled = true;
-                    c.node.control.socket_path = paths[index].clone();
+                    c.node.control.enabled = false;
                     c.node.discovery.lan.enabled = false;
                     c.node.discovery.local.enabled = false;
                     c.node.discovery.nostr.enabled = false;
@@ -169,8 +154,7 @@ mod tests {
                 } else {
                     let mut c = legacy::Config::new();
                     c.node.identity.nsec = Some(nsec);
-                    c.node.control.enabled = true;
-                    c.node.control.socket_path = paths[index].clone();
+                    c.node.control.enabled = false;
                     c.node.discovery.lan.enabled = false;
                     c.node.discovery.local.enabled = false;
                     c.node.discovery.nostr.enabled = false;
@@ -222,9 +206,7 @@ mod tests {
             .await
             .unwrap();
             let inbound = delivery(&nodes, 3, 0, b"legacy inbound").await;
-            snapshot(&paths, modern_upstream, "inbound").await;
             let outbound = delivery(&nodes, 0, 3, b"client outbound").await;
-            snapshot(&paths, modern_upstream, "outbound").await;
             if let Peer::Current(n) = &nodes[0] {
                 n.rebind_network_transports(None).await.unwrap();
             }
@@ -233,7 +215,6 @@ mod tests {
             for n in &nodes {
                 n.close().await;
             }
-            for path in paths { let _=std::fs::remove_file(path); }
             assert!(
                 inbound && outbound && rebind_out && rebind_in,
                 "modern_upstream={modern_upstream}: in={inbound} out={outbound} rebind_out={rebind_out} rebind_in={rebind_in}"

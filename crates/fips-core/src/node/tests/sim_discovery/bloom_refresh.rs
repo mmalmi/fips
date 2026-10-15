@@ -40,6 +40,11 @@ fn canceled_client_capability_preserves_tree_pacing_and_recovers_lost_reply() {
     run(Case::ClientCapabilityCancellation);
 }
 
+#[test]
+fn client_startup_never_advertises_a_temporary_root_to_modern_upstreams() {
+    run(Case::ClientStartup);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Case {
     Refresh,
@@ -49,6 +54,7 @@ enum Case {
     DelayedAnchor,
     RouterRefresh,
     ClientCapabilityCancellation,
+    ClientStartup,
 }
 
 fn run(case: Case) {
@@ -77,6 +83,10 @@ fn run(case: Case) {
         }
         nodes.sort_by_key(|node| *node.node.node_addr());
         let result = AssertUnwindSafe(async {
+            if matches!(case, Case::ClientStartup) {
+                nodes[0].node.config.node.leaf_only = true;
+                nodes[0].node.refresh_client_role();
+            }
             setup(&mut nodes).await;
             let owners = owners(&nodes);
             match case {
@@ -88,6 +98,13 @@ fn run(case: Case) {
                 Case::RouterRefresh => router_refresh(&mut nodes, &network).await,
                 Case::ClientCapabilityCancellation => {
                     client_capability_cancellation(&mut nodes, &network).await
+                }
+                Case::ClientStartup => {
+                    for router in &nodes[1..] {
+                        assert_eq!(router.node.stats().tree.parent_switches, 0);
+                        assert_eq!(router.node.stats().tree.parent_losses, 0);
+                        assert_eq!(router.node.tree_state.root(), router.node.node_addr());
+                    }
                 }
             }
             assert_eq!(
@@ -182,15 +199,31 @@ async fn client_capability_cancellation(nodes: &mut [TestNode], network: &SimNet
     // the neighbor has had an announcement interval to answer.
     let first_packets = network.stats().packets_sent;
     let first_tree = nodes[0].node.stats().tree.sent;
-    nodes[0].node.send_tree_announce_to_peer(&router).await.unwrap();
+    nodes[0]
+        .node
+        .send_tree_announce_to_peer(&router)
+        .await
+        .unwrap();
     assert_eq!(network.stats().packets_sent, first_packets + 1);
     assert_eq!(nodes[0].node.stats().tree.sent, first_tree);
     assert!(nodes[0].node.get_peer(&router).unwrap().client_support_sent);
     let from = nodes[1].addr.as_str().unwrap().to_string();
     let to = nodes[0].addr.as_str().unwrap().to_string();
-    network.set_directed_link(&from, &to, Some(SimLink { up: false, ..Default::default() }));
+    network.set_directed_link(
+        &from,
+        &to,
+        Some(SimLink {
+            up: false,
+            ..Default::default()
+        }),
+    );
     process_available_packets(nodes).await;
-    while !nodes[0].node.get_peer(&router).unwrap().can_send_tree_announce(Node::now_ms()) {
+    while !nodes[0]
+        .node
+        .get_peer(&router)
+        .unwrap()
+        .can_send_tree_announce(Node::now_ms())
+    {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     let previous = nodes[0]
@@ -282,6 +315,13 @@ async fn client_capability_cancellation(nodes: &mut [TestNode], network: &SimNet
             "lost capability reply must recover on the existing cadence"
         );
     }
+    // Real negotiation set this flag; ordinary role refresh retains it. The
+    // authenticated-restart reducer must clear it without replacing keys.
+    assert!(nodes[0].node.get_peer(&router).unwrap().client_support_sent);
+    nodes[0].node.refresh_client_role();
+    assert!(nodes[0].node.get_peer(&router).unwrap().client_support_sent);
+    nodes[0].node.reset_peer_routing_after_restart(&router);
+    assert!(!nodes[0].node.get_peer(&router).unwrap().client_support_sent);
 }
 
 fn owners(nodes: &[TestNode]) -> Vec<(LinkId, Option<SessionIndex>, u64)> {
@@ -325,15 +365,19 @@ async fn setup(nodes: &mut [TestNode]) {
     let mut settled = None;
     loop {
         turn(nodes).await;
+        let client = nodes[0].node.config.node.leaf_only;
         let ready = nodes[0].node.peers.len() == 2
             && [1, 2].into_iter().all(|leaf| {
-                nodes[leaf]
-                    .node
-                    .get_peer(&ids[0])
-                    .is_some_and(|peer| peer.may_reach(&ids[3 - leaf]))
+                nodes[leaf].node.get_peer(&ids[0]).is_some_and(|peer| {
+                    if client {
+                        peer.client_only
+                    } else {
+                        peer.may_reach(&ids[3 - leaf])
+                    }
+                })
             })
-            && nodes.iter().all(|node| {
-                *node.node.tree_state().root() == ids[0]
+            && nodes.iter().enumerate().all(|(index, node)| {
+                *node.node.tree_state().root() == if client { ids[index.max(1)] } else { ids[0] }
                     && node.node.peers.connection_is_empty()
                     && node.node.peers.iter().all(|(peer, active)| {
                         !node.node.bloom_state.needs_update(peer)

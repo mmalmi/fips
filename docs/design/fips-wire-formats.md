@@ -144,7 +144,8 @@ Role controls and TreeAnnounce are accepted only from the current key epoch.
 A newer valid router declaration restores router participation. Peer removal withdraws
 the dependent identity; authenticated process restart clears learned capability.
 Configured clients initiate capability negotiation before their first tree
-announcement, allowing one existing announcement interval for a response.
+announcement. Once the peer has sent its authenticated tree bootstrap, a
+completed capability send allows one existing announcement interval for a response.
 This avoids advertising a temporary root to older nodes behind a capable router.
 An unanswered capability falls back to ordinary tree participation at that
 existing deadline; it does not require a new timer.

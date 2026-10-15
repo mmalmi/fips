@@ -120,7 +120,7 @@ pub struct ActivePeer {
 
     /// Whether this authenticated peer understands ClientOnly.
     pub(crate) client_only_supported: bool,
-    /// A completed local capability send in this authenticated process epoch.
+    /// A completed capability send after this peer announced its current tree.
     pub(crate) client_support_sent: bool,
     pub(crate) client_only: bool,
     pub(crate) routing_role_sequence: Option<u64>,

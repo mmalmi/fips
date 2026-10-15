@@ -122,7 +122,6 @@ impl Node {
             return;
         }
         self.is_leaf_only = client;
-        if self.config.node.leaf_only { eprintln!("CLIENT_TRACE role node={} client={} at={}", self.node_addr(), client, Self::now_ms()); }
         self.tree_state.set_leaf_only(client);
         self.bloom_state.set_leaf_only(client);
         self.tree_state.advance_role_declaration();
@@ -184,7 +183,6 @@ impl Node {
             && !peer.client_support_sent
         {
             let upstream_announced = self.tree_state.peer_coords(peer_addr).is_some();
-            eprintln!("CLIENT_TRACE first-support node={} to={} upstream_announced={} at={}",self.node_addr(),peer_addr,upstream_announced,Self::now_ms());
             // Give a capable neighbor the first announcement interval to
             // reply before advertising a temporary router/root role. Older
             // peers ignore this capability and get the ordinary declaration
@@ -222,7 +220,6 @@ impl Node {
             message.extend_from_slice(&self.tree_state.my_declaration().sequence().to_le_bytes());
             message
         } else {
-            if self.config.node.leaf_only { eprintln!("CLIENT_TRACE tree node={} to={} root={} supported={} sent={} at={}",self.node_addr(),peer_addr,self.tree_state.root(),self.peers.get(peer_addr).unwrap().client_only_supported,self.peers.get(peer_addr).unwrap().client_support_sent,Self::now_ms()); }
             self.build_tree_announce()?
                 .encode()
                 .map_err(|e| NodeError::SendFailed {
