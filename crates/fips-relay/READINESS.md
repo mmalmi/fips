@@ -1,68 +1,30 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-15 October 2026. Runtime `718cfe5be` retires one eligible receiver channel per
-upkeep, oldest refund deadline first, so several individually valid payouts
-cannot stall cleanup by exceeding the SDK's aggregate handoff limit. It retains
-`d0a29e889`'s idle recovery suppression, bounded one-way key confirmation, control
-idle-expiry and completed-handover recovery fixes.
-Spilman `669fbdd943` bounds settlement replies to 4 MiB with a 30-second deadline
-per HTTP request, retaining the original closing record on refusal or timeout.
-The common daemon and target builds still need qualification with both fixes.
-r599 passes
-25 focused checks and closes both original failed carrier wallets without new
-issuance or channels; all 768 test sats are accounted for.
-SDK `dad0fc3` releases the client store during wallet retirement work and permits
-unrelated active payments while cleanup is pending. r576 passes all 444 SDK tests,
-strict lint and formatting; r572 qualifies three ordinary Linux retirement cycles.
-r577/r578 qualify the ordinary ARM64 build and three-router forwarding/recovery.
-r592 verifies Linux paid delivery and new provider credit during pending
-fragmented-history retirement, with all original test funds accounted for.
-r602 verifies that an automatic renewal waits through that maintenance while
-payments continue, then reserves and completes one successor without replacing
-the original funding authority. Its two native cases conserve all 768 test sats.
-r606 extends the existing payment/retirement fixture with a distinct new provider:
-new purchases reject promptly during maintenance, then exactly one new channel
-funds after cleanup while the original paid route continues. All 5,249 workload
-packets arrive. Independent wallet/mint and native authority checks close all
-384 test sats; the first attempt's final empty-wallet checker failure is also
-financially closed and remains recorded as failed.
-The paired router observations below establish sampled lock availability, with
-higher whole-call time and process memory. Android r590/r593 qualify the updated
-build and controlled phone-transit regression, including forced Doze.
-r597 qualifies all seven supported carrier scenarios on SDK `dad0fc3`, before
-the handover validation fix. r600/r601 qualify the ordinary ARM64 build, but
-r601 fails paid delivery during fragmented retirement: the destination reports
-session decryption failures. Its 15 old channels retire and all 384 test sats
-are collected; this closes its financial state, not its delivery acceptance.
-r603 reproduces that failure on a fixed UDP line with reverse allowance disabled:
-the recipient changes keys and drains its old epoch while the source retains its
-old key, losing all 16 fresh packets. The fixed runtime passes 16/16 after a real
-drain, the original restart/payment checks, and the bounded-return quality case.
-Seven focused core checks and affected lint, format and size gates pass; the
-ordinary ARM64 build is qualified for subsequent device acceptance. Successful
-native fixtures conserve 1,024 test sats each through their existing assertions.
-The two failed originals retain their verdicts and have independent financial
-audits; recovery honors signed claims without clearing unpaid grace exposure.
-r605 reproduces repeated recovery from old unanswered traffic after the full
-45-second key drain. The fix waits for application data in the new epoch before
-starting another unanswered-data recovery; delivery-quality history remains
-intact, and a fresh request still recovers and delivers. The ordinary paid test
-observes 7.026 seconds with unchanged epochs, priced usage and payment requests,
-then passes 16/16 fresh deliveries, restart/reverse boundaries and three
-settlements conserving all 1,024 test sats. This is a bounded native observation,
-not a zero long-term control-cost or hardware claim.
-r604 qualifies the earlier ordinary ARM64 runtime `4cb34fe19` on three routers:
-all 4,609 workload packets arrive, new payment credit and delivery
-advance during the same pending cleanup plan before and after writer release,
-and all 15 old channels retire. Independent checks reconcile all 384 test sats
-after collection; all 2,381 management checks pass and normal baselines are
-restored. This closes the recorded router delivery/cleanup regression, not
-physical power-loss, signing-latency or final common-artifact acceptance.
-CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
-are removed and failed financial originals remain retained. Earlier hardware
-results retain their recorded graph. Final acceptance reconciliation
-and the remaining observations below are still open.
+15 October 2026. The candidate combines FIPS runtime `718cfe5be`, SDK `dad0fc3`,
+Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
+
+The latest fixes prevent individually valid receiver payouts from stalling
+aggregate cleanup, suppress repeated idle recovery after a key change, and bound
+settlement replies to 4 MiB with a 30-second deadline per HTTP request. Original
+closing records and spending authority survive refusal and retry. SDK wallet
+retirement releases the client store so unrelated active payments can continue.
+
+r607 qualifies the combined graph with canonical dependency manifests. Ordinary
+Linux and ARM64 builds pass, alongside strict affected lint and source-size
+checks. All seven native carrier scenarios pass: TCP, configured and seeded
+WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss.
+Independent audits of the retained original mint/wallet databases account for all
+2,688 test sats without unfinished operations or duplicate/mint-spent live coins.
+This is native link qualification and an ARM64 build, not new device acceptance.
+
+Recorded router, phone and overhead results below retain their earlier binaries.
+Final device/performance reconciliation, the remaining resource and maintenance
+checks, physical power loss, physical mobility and natural Android idle remain
+open. Existing accounts are preserved; failed verdicts and original financial
+evidence remain retained. The checklist below defines the complete acceptance
+scope.
+
 Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
 including Spilman and the lockfile, rather than reconstructing it from these IDs.
@@ -113,7 +75,7 @@ closed financial recovery and the remaining observations listed here.
 | --- | --- | --- |
 | Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. Matched 250/500/1000/2000-ms comparisons in [results](CADENCE-RESULTS.md) retain spending/exposure bounds. | Qualify the final candidate under idle, bursty and high-rate traffic, including payment/renewal progress during faults; retain the same financial terms across comparisons. |
 | CPU, storage, wire and delivery costs | Separate untraced CPU, packet-capture and storage-syscall matrices; per-delivered-byte costs, counters and latency limits are reported in [measurements](MEASUREMENTS.md). | Reconcile final candidate coverage after subsequent runtime/SDK changes. Report scoped payment costs and excluded shared work explicitly; do not claim complete attribution from partial counters. |
-| Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. r597 requalifies seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS on SDK `dad0fc3`; r531/r532 close recorded-graph native quote/admission reconciliation. | Native reconciliation is complete on the recorded graphs. Final target-artifact reconciliation remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
+| Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. r607 qualifies seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS on the combined graph; r531/r532 close recorded-graph native quote/admission reconciliation. | Native reconciliation is complete on the recorded graphs. Final target-artifact reconciliation remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
 | Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
@@ -124,7 +86,7 @@ closed financial recovery and the remaining observations listed here.
 | Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. | Retain the 600-line relay/Android and 1000-line integration limits; remove superseded code/tests without losing distinct failure coverage. |
 
 Native admission reconciliation is complete for the recorded graph: r528 covers
-contract/startup boundaries, r597 supported carriers, r531 quote/free-route cases
+contract/startup boundaries, r607 supported carriers, r531 quote/free-route cases
 and r532 the four funded bootstrap, return, newcomer and contention scenarios.
 Physical mobility, resource and target acceptance remain separate requirements.
 
@@ -175,10 +137,11 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| r610 bounded settlement replies | Spilman `669fbdd943` shares one streaming reader across metadata, restore and swap responses. Swap success/error bodies are limited before parsing, using declared length and streamed bytes; each request has a 30-second deadline. The baseline accepts an oversized signed reply and waits beyond the test's 35-second guard. The fix passes 15 networking, closing and restore checks, including the actual deadline and preservation of original funding, payment signature and blinded outputs across retry. | Loopback HTTP and synthetic signed recovery, not a new real-mint spent-input recovery result. A full close can make several requests. Production lint is strict; unit-test lint permits only the repository's existing `unwrap` convention. The isolated test copy omits an inactive optional axum/macros resolver request; active features and all selected package versions/checksums match the accepted graph, and canonical manifests are unchanged. Setup and initial lint failures remain preserved in `work/settlement-http-r610`. Common daemon/router/phone qualification remains. |
+| r607 common graph and paid carriers | FIPS `718cfe5be`, SDK `dad0fc3` and Spilman `669fbdd943` pass all seven existing paid carrier scenarios with canonical manifests. Credit exhaustion, renewal, restart and settlement preserve the tested limits. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples; 39,899–39,914 of 42,000 payloads arrive per direction under counted every-twentieth-frame loss. Independent original mint/wallet checks conserve all 2,688 test sats, with no unfinished operations or duplicate/mint-spent live coins. Ordinary Linux/ARM64 builds, affected strict lint and size checks pass. | Linux processes and virtual links; no device, physical power-loss, mobility or throughput claim. Only the generated-CA case uses the dedicated test-root daemon. Original coin identities, all 445 archived files, source/artifact bindings and stopped processes/file owners are verified in `work/current-carriers-r607/attempt-2`; no retries or replacement funding. The earlier attempt remains an unfunded native-build-only result. |
+| r610 bounded settlement replies | Spilman `669fbdd943` shares one streaming reader across metadata, restore and swap responses. Swap success/error bodies are limited before parsing, using declared length and streamed bytes; each request has a 30-second deadline. The baseline accepts an oversized signed reply and waits beyond the test's 35-second guard. The fix passes 15 networking, closing and restore checks, including the actual deadline and preservation of original funding, payment signature and blinded outputs across retry. | Loopback HTTP and synthetic signed recovery, not a new real-mint spent-input recovery result. A full close can make several requests. Production lint is strict; unit-test lint permits only the repository's existing `unwrap` convention. The isolated test copy omits an inactive optional axum/macros resolver request; active features and all selected package versions/checksums match the accepted graph, and canonical manifests are unchanged. Setup and initial lint failures remain preserved in `work/settlement-http-r610`. r607 qualifies the common Linux paths and ARM64 build; router and phone runtime acceptance remain. |
 | r609 bounded receiver retirement | Three individually valid 400-proof payouts reproduce the aggregate 1,024-coin handoff refusal. Runtime `718cfe5be` starts one eligible channel per upkeep, ordered by refund deadline then ID, while preserving saved-plan recovery. All 15 seller-history checks, strict library lint, focused formatting and size gates pass; the regression preserves cumulative totals and unrelated authority through each retirement and reload. | Storage-only proof identities exercise the real controller and SDK plan validation; no mint funds or devices are involved. Existing pending plans resume unchanged. The two-second upkeep cadence adds roughly up to 32 seconds for 16 eligible channels, plus processing and retries; this is not a measured completion bound. Receiver pressure, concurrent forwarding and final target acceptance remain open. Sources and both red/green receipts remain in `work/receiver-bounds-r609`. |
 | r606 new purchase during retirement | The existing ordinary Linux fixture adds a distinct provider with no initial funds. With 480 refund coins and one pending cleanup plan, two Buy requests reject in 33/26 ms without funding, reservation or route changes; original paid delivery continues. After cleanup, exactly one new 32-sat channel funds, with both routes delivering and earning credit. All 5,249 originals arrive. Build, strict affected lint, formatting and size checks pass. Independent wallet/mint and native authority audits conserve all 384 test sats, retire 15 old channels and close both remaining channels at 21/1 sats paid and 11/31 refunded. Lifetime debit/refund remain 544/522, with zero locks, reservations or unfinished operations. | Test-only changes on runtime `4cb34fe19`, SDK `dad0fc3`; loopback links and deliberate SQLite contention. The first attempt completed behavioral and settlement checks but failed its final empty-wallet query; its failed verdict and independently closed originals are retained. The corrected helper skips only the empty query. This qualifies native contention, not hardware new purchases, physical power loss, signing latency or performance. Sources, stopped archives and both audits remain in `work/purchase-retirement-r606`. |
-| r605 idle recovery after key change | Runtime `d0a29e889` tracks whether application data used the current epoch before retrying unanswered-data recovery. Lifetime delivery history, pending exchanges and explicit decrypt-failure recovery remain intact. The real 45-second drain regression fails on the baseline and passes with the fix, including seven idle seconds and recovery/delivery after fresh demand. Ten relevant compatibility checks pass. The ordinary native paid fixture observes 7,026 ms with unchanged endpoint epochs, per-channel priced evidence and all five payment request counters; 16/16 fresh packets, restart/reverse boundaries, three settlements and 1,024-sat conservation then pass. Strict affected lint, focused formatting and size gates pass. | Native UDP qualification only; final router/phone and common-artifact reconciliation remain. The earlier accelerated-drain candidate failure remains unexplained and preserved. Full-tree formatting still differs in two untouched core test files. Successful-fixture financial evidence is source/output assertions with normal cleanup, not an independent post-success SQLite audit. The long core regression is opt-in and was explicitly run; no longer-window zero-cost claim follows. Exact sources and receipts remain in `work/idle-recovery-r605`. |
+| r605 idle recovery after key change | Runtime `d0a29e889` tracks whether application data used the current epoch before retrying unanswered-data recovery. Lifetime delivery history, pending exchanges and explicit decrypt-failure recovery remain intact. The real 45-second drain regression fails on the baseline and passes with the fix, including seven idle seconds and recovery/delivery after fresh demand. Ten relevant compatibility checks pass. The ordinary native paid fixture observes 7,026 ms with unchanged endpoint epochs, per-channel priced evidence and all five payment request counters; 16/16 fresh packets, restart/reverse boundaries, three settlements and 1,024-sat conservation then pass. Strict affected lint, focused formatting and size gates pass. | The focused regression is native UDP only; final router/phone reconciliation remains. The earlier accelerated-drain candidate failure remains unexplained and preserved. Full-tree formatting still differs in two untouched core test files. Successful-fixture financial evidence is source/output assertions with normal cleanup, not an independent post-success SQLite audit. The long core regression is opt-in and was explicitly run; no longer-window zero-cost claim follows. Exact sources and receipts remain in `work/idle-recovery-r605`. |
 | r604 router delivery during retirement | Ordinary ARM64 runtime `4cb34fe19` with SDK `dad0fc3` retains 480 real refund coins in a 1,649,458-byte client store. All 4,609 original workload packets arrive: one warmup, 512 while the writer is held and 4,096 after release. Both stages observe new authorization, provider credit and delivery during one contiguous pending retirement plan; all 15 old channels finish retiring. The original active channel closes with 19 sats paid and 13 refunded. Independent checks of all nine complete SQLite sets reconcile the original 384 sats into the collector, with no duplicate/mint-spent live funds or pending mint operations. All 2,381 management checks pass; normal baselines are restored and stopped, archived profiles are removed. | This qualifies the previously failing physical cleanup/delivery case on this exact build. It is not a physical power cut, maximum-throughput test, CPU attribution, signing-latency bound or hardware renewal/new-purchase qualification. Four completed export records retain 129 pending-spent proofs worth 192 sats, all proven spent at the original mint; they carry no outstanding value. Failed r601 evidence is preserved. Source, artifact, archive and cleanup bindings remain in `work/cudy-retirement-r604`. |
 | r603 one-way key confirmation | Runtime `4cb34fe19` adds a fixed 28-byte authenticated rekey proof within the existing handshake limits. It reserves nonce zero before exposing the new epoch and retries identical bytes, preserving replay authority and MMP counters. Seven focused core checks cover confirmation, malformed/replayed/wrong-key traffic, response gates, dropped handshake/proof retry and ordinary-report recovery. Both ordinary native fixtures pass, including 16/16 fresh packets after a real drain with `return_allowance=false`, restart, reverse-payment limits and 1,024-sat conservation per fixture. Strict affected lint, format, size and ordinary ARM64 build checks pass. | The original runtime's 0/16 failure is preserved. The first fixed fixture delivers 16/16 but fails an idle assertion placed after the new long workload; the final fixture restores the original idle check's placement and accepts a drain already in progress. Both failed originals are independently reconciled. The latter's signed payments 13/9/5 and refunds 19/23/27 are recovered into wallets `[243,260,260,261,0]`; retained grace debt is 3,012/3,008/3,004 msat. Successful-fixture evidence is source/output verification, not a post-success database audit. [Wire format and upgrade requirements](../../docs/design/fips-wire-formats.md#sessionconfirm-phase-0x4) apply; r604 separately qualifies the three-router cleanup case, and r605 qualifies a bounded idle window after full drain; mixed-version operation and longer-term control costs remain open. Exact evidence stays in `work/one-way-rekey-r603`. |
 | r602 renewal during retirement | The existing ordinary-process fixture now also makes renewal due while 15 closed channels retain 480 refund coins. Across 32 status samples, payments and delivery advance while retirement prevents new funding IDs or reservations. After release, exactly one successor reserves 32 sats; payments on the predecessor continue while its mint reply is held. The original successor completes automatically with preserved lifetime totals. The new case and original payment case pass, and independent SQLite checks conserve all 768 test sats without pending operations or duplicate/mint-spent live coins. Build, strict affected lint, formatting and size checks pass. | Test-only changes on the current ordinary Linux runtime, with `return_allowance=false`. This qualifies the recorded native renewal/retirement overlap; hardware renewal, signing-latency and performance acceptance remain separate. r606 closes native new-purchase contention; r603/r604 close the recorded session regression. Both setup-only failures are preserved with zero issuance. Sources, logs and original stopped fixtures are bound in `work/renewal-retirement-r602`. |
