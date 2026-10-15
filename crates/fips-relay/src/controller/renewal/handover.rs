@@ -38,10 +38,12 @@ impl Controller {
             .and_then(|id| j.funding.get(id));
         if r.replacements.is_none()
             || funding.is_none_or(|f| f.funded.is_none() || f.reclaim.is_some())
-            || previous.kind != SettlementKind::Cooperative
+            || (!r.completed && previous.kind != SettlementKind::Cooperative)
             || previous.usage.is_none()
             || previous.payment.is_none()
-            || (r.completed && !previous.refunded)
+            // Expiry can finish a completed handover's lost release, but its
+            // cooperative refund report must remain bound to the final payment.
+            || (r.completed && (!previous.refunded || previous.report.is_none()))
         {
             return Err("invalid funded handover".into());
         }

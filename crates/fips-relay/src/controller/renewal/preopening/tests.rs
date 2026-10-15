@@ -3,11 +3,17 @@ use super::*;
 use crate::controller::transition_tests::{fixture, reload};
 
 fn prepared(directory: &Path) -> (Store, Outgoing, RouteOffer) {
-    let (mut store, old) = fixture(directory);
+    let (mut store, mut old) = fixture(directory);
+    old.offer.billing = crate::ledger::BillingBasis::ForwardingAttempt;
+    old.purchase.contract = contract_from_offer(&old.offer, &old.purchase.channel).unwrap();
     let mut offer = old.offer.clone();
     offer.id = "successor-offer".into();
     store
         .change(|j| {
+            j.outgoing.clear();
+            j.outgoing
+                .insert(old.purchase.contract.id.clone(), old.clone());
+            j.requested.insert(old.offer.id.clone(), old.offer.clone());
             j.policy.max_locked_sat = 64;
             Controller::reserve_renewal(j, old.purchase.channel.id.clone())?;
             j.renewals
@@ -334,5 +340,126 @@ fn funded_handover_retains_both_capital_owners_through_restart_and_acceptance() 
             assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
         }
     }
-    reload(store);
+    store = reload(store);
+    completed_handover_expiry(store, old, successor, root.path());
+}
+
+fn completed_handover_expiry(mut store: Store, old: Outgoing, successor: Outgoing, root: &Path) {
+    let id = &old.purchase.channel.id;
+    let buyer = BuyerAuthorizer::create(
+        &root.join("buyer"),
+        store.journal.local,
+        1024,
+        crate::ledger::Limits::default(),
+    )
+    .unwrap();
+    let seller =
+        DurableRelay::create(&root.join("seller"), crate::ledger::Limits::default(), 1000).unwrap();
+    for outgoing in [&old, &successor] {
+        buyer
+            .accept_channel(
+                outgoing.purchase.provider,
+                outgoing.purchase.channel.clone(),
+                0,
+            )
+            .unwrap();
+        buyer
+            .accept_quote(outgoing.purchase.contract.clone())
+            .unwrap();
+        if outgoing.purchase.channel.id == *id {
+            buyer.close_channel(id).unwrap();
+        }
+    }
+    store
+        .change(|j| {
+            let previous = j.buyer_settlements.get_mut(id).unwrap();
+            previous.report = Some(SettlementReport {
+                channel_id: id.clone(),
+                value_after_stage1_sat: 32,
+                signed_sat: 0,
+                paid_sat: 0,
+                receiver_fee_reserve_sat: 0,
+                refunded_sat: 32,
+                fee_sat: 0,
+            });
+            previous.refunded = true;
+            previous.wallet_refund_sat = Some(32);
+            j.renewals.get_mut(id).unwrap().completed = true;
+            Ok(())
+        })
+        .unwrap();
+    store = reload(store);
+    let before = serde_json::to_value(&store.journal).unwrap();
+    let capital = Controller::capital(&store.journal).unwrap();
+    let funding = store.journal.funding[&old.funding_id].clone();
+    let deadline = funding.refund_deadline().unwrap();
+    assert!(
+        store
+            .prepare_expiry_refund(&buyer, &funding, deadline)
+            .is_err()
+    );
+    assert_eq!(serde_json::to_value(&store.journal).unwrap(), before);
+    // A lost provider release may outlive a completed handover. Its already
+    // recovered refund becomes terminal at expiry without changing the payment.
+    store
+        .prepare_expiry_refund(&buyer, &funding, deadline + 1)
+        .unwrap();
+    store = reload(store);
+    let expired = serde_json::to_value(&store.journal).unwrap();
+    assert_eq!(expired["buyer_settlements"][id]["kind"], "expiry");
+    let mut expected = before["buyer_settlements"].clone();
+    expected[id]["kind"] = "expiry".into();
+    assert_eq!(expired["buyer_settlements"], expected);
+    for field in ["funding", "next_funding", "renewals", "outgoing"] {
+        assert_eq!(expired[field], before[field]);
+    }
+    assert_eq!(Controller::capital(&store.journal).unwrap(), capital);
+    for case in 0..9 {
+        assert!(
+            store
+                .change(|j| {
+                    let previous = j.buyer_settlements.get_mut(id).unwrap();
+                    match case {
+                        0 => j.renewals.get_mut(id).unwrap().completed = false,
+                        1 => {
+                            previous.refunded = false;
+                            previous.wallet_refund_sat = None;
+                        }
+                        2 => previous.wallet_refund_sat = None,
+                        3 => previous.wallet_refund_sat = Some(31),
+                        4 => previous.payment = None,
+                        5 => previous.usage = None,
+                        6 => previous.report = None,
+                        7 => previous.report.as_mut().unwrap().signed_sat += 1,
+                        _ => previous.report.as_mut().unwrap().refunded_sat -= 1,
+                    }
+                    Controller::validate_journal(j, &j.policy, j.local)
+                })
+                .is_err(),
+            "case {case}"
+        );
+        assert_eq!(serde_json::to_value(&store.journal).unwrap(), expired);
+    }
+    assert_eq!(
+        store.retire_routes(&buyer, &seller, deadline + 1).unwrap(),
+        1
+    );
+    store = reload(store);
+    assert!(store.journal.renewals.is_empty());
+    assert!(
+        !store
+            .journal
+            .outgoing
+            .contains_key(&old.purchase.contract.id)
+    );
+    assert!(store.journal.outgoing[&successor.purchase.contract.id].accepted);
+    assert_eq!(
+        store.journal.next_funding,
+        before["next_funding"].as_u64().unwrap()
+    );
+    assert_eq!(Controller::capital(&store.journal).unwrap(), capital);
+    assert_eq!(
+        serde_json::to_value(&store.journal.buyer_settlements).unwrap(),
+        expected
+    );
 }
