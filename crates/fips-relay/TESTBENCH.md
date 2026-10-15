@@ -346,6 +346,12 @@ terms or missing files. Unknown files are never deleted. No spending limit reset
 This bounds export cache and send-request retention; it does not establish bounded
 lifetime storage for every other native wallet record.
 
+Offline acknowledgement does not contact the mint to reconcile the last send.
+Its native pending record and acknowledged custody references can remain after
+collection; subsequent online wallet reconciliation releases eligible originals.
+Retain the original mint and collector evidence when distinguishing that local
+bookkeeping from an uncollected token.
+
 ## Verification
 
 The regular `bench` suite uses three real exports to check custody, capacity,

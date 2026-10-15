@@ -605,7 +605,7 @@ the total cost of the caller below.
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; larger receiver payouts, reserved completion and concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. Whole sender calls, receiver release queue and repeated owner scans still need progress and memory acceptance on the intended routers. |
-| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614 accepts a full 128-export cache on Linux, including refusal, acknowledgement and continued spending. Router reopen/acknowledgement costs, larger payloads and aggregate store saturation still need acceptance. |
+| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay
 does not call the SDK's general startup recovery, Lightning issuance or melt
@@ -648,10 +648,36 @@ lifetime totals record 131 requests and 256 sats debited through closed number 1
 with no pending export or retirement work. It retires 188 coins and preserves
 21 spent coins owned by the original incoming receipt. The issuer's completed
 grant still retains 21 native `PENDING_SPENT` rows, all confirmed spent at the
-original mint; these carry no outstanding value. Original fixtures, recovery
-records, source/build bindings and the audit remain in `work/export-pressure-r614`.
+original mint; these carry no outstanding value. This fixture explicitly runs
+online startup recovery and 64 collection passes before the final audit; its
+native-history result is not a promise made by offline acknowledgement alone.
+Original fixtures, recovery records, source/build bindings and the audit remain
+in `work/export-pressure-r614`.
 The [test-bench instructions](TESTBENCH.md#verification) give the reproducible
 command and retention rules. Production forwarding code is unchanged.
+
+r616 exercises the ordinary wallet commands on one ARM64 router with the same
+runtime graph and a recoverable test mint. Its 128-file cache holds 67,200 bytes;
+the next export is refused without changing the cached tokens or request prefix.
+Whole local acknowledgement takes 29.75 seconds, including reopen, validation
+and cleanup. Balance takes 0.12 seconds and full-cache refusal 0.28 seconds, at
+10 ms clock resolution. Paced setup takes 1,924 seconds; the complete run takes
+2,008 seconds. These are single wall-time observations, not CPU/RSS, saturated
+throughput, maximum-size tokens, full filesystem or physical power-loss results.
+
+Independent auditing of 11 complete SQLite sets accounts for all 256 test sats
+in the original collector. The empty export cache/request journal retains
+lifetime totals of 129 requests and 256 sats debited through closed number 130.
+Acknowledgement retires 127 earlier outgoing records; the next export's normal
+online reconciliation releases the previous last send. The final send remains
+locally pending with three mint-spent coins and one acknowledged custody page,
+all matched to its completed collector receipt. There is no unresolved value,
+but native storage is not empty. Charged logical storage falls from 1,153,482 to
+204,763 bytes within the unchanged 16 MiB allowance. The original failed audit
+assumed zero native owners; its preserved amendment checks their exact ownership
+and progress instead. Original archives, recovery records and the amended audit
+remain in `work/router-export-pressure-r616`. All recorded test processes stop
+and normal router baselines remain intact; device scratch cleanup is separate.
 
 See [history](HISTORY.md)
 and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts
