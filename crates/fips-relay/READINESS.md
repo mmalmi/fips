@@ -48,12 +48,15 @@ clocks; all 93,696 payloads arrive and 2,616 management checks pass. Independent
 original-state audits close 16 channels and conserve all 3,072 test sats across
 72 SQLite sets. This closes captured local payment-service byte attribution;
 opaque/shared traffic remains unattributed, and radio airtime remains unqualified.
-The tracing run is not a CPU comparison. The ARM64 storage comparison has four
-accepted forward trials; its fifth trial rejects an unrecognized process-log
-alias. All five trials' 1,920 test sats are independently accounted for. The
-harness now verifies exact log aliases, with 66 focused checks passing; the
-reverse pass remains open. The [failed storage attempts](CADENCE-RESULTS.md#rejected-storage-comparison--16-october-2026)
-retain their verdicts and original evidence.
+The tracing run is not a CPU comparison. The [ARM64 storage comparison](CADENCE-RESULTS.md#storage-syscalls-on-the-current-graph--16-october-2026)
+now accepts four forward and four reverse observations, reproducing all 96 traces
+with their original path maps. All 93,696 payloads arrive; eight independent
+audits close 16 channels and account for all 3,072 test sats across 72 SQLite sets.
+All 32 original archives are verified and retained containers are stopped. The
+[failed storage attempts](CADENCE-RESULTS.md#rejected-storage-comparison--16-october-2026)
+remain rejected and separately accounted for. The comparison reports file
+syscalls, including transient SQLite shared memory, without claiming physical
+media writes, CPU/timing performance or an optimal cadence.
 
 The same runtime/dependency graph passes r615 phone transit: 4 MiB delivered
 through foreground, background and 47.95 seconds of forced Doze, with the same
@@ -70,8 +73,8 @@ exclusions; USB power and unequal idle tails prevent battery or optimum-rate
 claims. The archived temporary app and router profiles are removed, with original
 accounts and normal network baselines preserved.
 
-Remaining storage reconciliation, the resource and maintenance checks,
-physical power loss, physical mobility and natural Android idle remain
+The remaining resource and maintenance checks, physical power loss,
+physical mobility and natural Android idle remain
 open. Physical power cuts require someone on site with the ordinarily powered
 routers; remote process or VM interruption does not substitute for that check.
 r615's archived test profiles and temporary app are also removed. Failed verdicts
@@ -127,7 +130,7 @@ closed financial recovery and the remaining observations listed here.
 | Requirement | Existing evidence and canonical contract | Required to close v1 |
 | --- | --- | --- |
 | Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. Matched 250/500/1000/2000-ms comparisons in [results](CADENCE-RESULTS.md) retain spending/exposure bounds. | Qualify the final candidate under idle, bursty and high-rate traffic, including payment/renewal progress during faults; retain the same financial terms across comparisons. |
-| CPU, storage, wire and delivery costs | Separate untraced CPU, packet-capture and storage-syscall matrices; per-delivered-byte costs, counters and latency limits are reported in [measurements](MEASUREMENTS.md). | Reconcile final candidate coverage after subsequent runtime/SDK changes. Report scoped payment costs and excluded shared work explicitly; do not claim complete attribution from partial counters. |
+| CPU, storage, wire and delivery costs | Current-graph native/Wi-Fi CPU, local payment-service packet captures, ARM64 storage syscalls and controlled phone-rate costs are reconciled in [results](CADENCE-RESULTS.md); [measurements](MEASUREMENTS.md) defines attribution limits. | Complete for these recorded scopes. Requalify affected observations if runtime/SDK changes; retain excluded shared work, physical-media/airtime and battery limitations rather than claiming complete attribution. |
 | Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. r613 qualifies seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS on the current graph; r531/r532 close recorded-graph native quote/admission reconciliation. | Native reconciliation is complete on the recorded graphs. Final target-artifact reconciliation remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |

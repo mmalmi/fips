@@ -1,5 +1,57 @@
 # Paid-relay cadence measurements
 
+## Storage syscalls on the current graph — 16 October 2026
+
+r622's four accepted forward observations and r623's four reverse observations
+complete the 250/500/1000/2000-ms comparison on the current ordinary ARM64 build.
+Three Linux containers run the same binaries, workload, financial terms and
+three-second tail in both passes. The only intervening harness change verifies
+process-log aliases before classifying their writes; each capture retains its
+original path map and source bindings. The rejected fifth r622 trial remains
+excluded and rejected, with its 384 test sats separately accounted for.
+
+All 93,696 payloads arrive. Saved-data analysis reproduces all 96 traces and
+32 workload windows, including tracer lifecycle, strict timing-boundary,
+accounting and idle checks. Eight independent original-state audits close all
+16 channels and account for all 3,072 test sats across 72 complete SQLite sets
+and 40 wallets. All 32 original archives remain verified; a fresh inspection
+finds all 32 retained containers stopped. No workload or financial operation is
+retried. A failed saved-data analysis used the wrong schema for the previously
+rejected trial; its corrected copy changes only that assertion and output names,
+preserving the original analysis, execution bindings and rejected verdict.
+
+Values average the forward and reverse observation for each policy, summing
+three processes. Steady and high-rate observations deliver 3,200,000 and
+8,000,000 application bytes respectively. File bytes include relay journals,
+SDK snapshots, wallet/receiver SQLite and SQLite shared-memory writes. Syncs
+include those files and their directories; process logs are excluded.
+
+| Workload | Maximum age | Updates | Written KiB | File/directory syncs | Written bytes / delivered byte |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | 250 ms | 3 | 128.40 | 36 | 0.041087 |
+| Steady | 500 ms | 3 | 128.31 | 36 | 0.041058 |
+| Steady | 1 s | 3 | 128.64 | 36 | 0.041165 |
+| Steady | 2 s | 3 | 128.29 | 36 | 0.041053 |
+| High rate | 250 ms | 4 | 160.38 | 49 | 0.020528 |
+| High rate | 500 ms | 3 | 126.23 | 40 | 0.016158 |
+| High rate | 1 s | 2 | 87.43 | 30 | 0.011191 |
+| High rate | 2 s | 2 | 87.61 | 30 | 0.011213 |
+
+Idle and bursty windows have no payment updates or syncs. Their 112–128 and
+264–272 written bytes respectively are exclusively SQLite's transient shared
+memory; financial file writes and payment counters remain unchanged. At high
+rate, one second uses about 31% fewer observed file bytes and 25% fewer syncs
+than 500 ms. Steady traffic uses three updates and 36 syncs under every policy.
+
+These are observed write-like syscalls and sync calls, not physical media bytes,
+flash endurance or committed SQLite changes. Tracing changes scheduling, so no
+CPU/timing comparison is made and these observations are not combined with the
+untraced CPU or separate packet captures. Two observations per policy are
+descriptive; they do not establish an optimum. The 500-ms default is unchanged.
+Original traces, two separately bound passes, audits and root acceptance remain
+in `work/measurement-reconciliation-r622/storage` and
+`work/measurement-reconciliation-r623/storage`.
+
 ## Phone transit costs on the current graph — 16 October 2026
 
 r621 uses the qualified r615 Android build and the same runtime/dependency graph
@@ -80,9 +132,10 @@ Classification uses those exact paths with literal matching. Failed log writes
 or syncs, unmatched file operations and financial-idle activity still reject.
 All 66 focused storage checks pass. This changes measurement classification,
 not runtime, workload or financial terms. The four accepted forward trials keep
-their original path maps; a separately bound reverse pass is still required.
-Neither pass supports CPU/timing comparisons under tracing or statistical
-claims about the optimal cadence.
+their original path maps. The separately bound r623 reverse pass completes the
+[descriptive comparison above](#storage-syscalls-on-the-current-graph--16-october-2026)
+without including the failed trial. Neither pass supports CPU/timing comparisons
+under tracing or statistical claims about the optimal cadence.
 
 ## Router packet capture on the current graph — 15 October 2026
 
@@ -127,7 +180,7 @@ The other 214,301,294 captured bytes remain explicitly unattributed; they includ
 application, opaque transit and shared traffic, and are not subtracted as a
 baseline. This measures captured local payment-service traffic, not complete
 end-to-end payment overhead, uncaptured physical framing or radio airtime.
-Storage syscalls and phone costs require separate reconciliation. Private raw
+Storage syscalls and phone costs are reconciled separately above. Private raw
 captures, analysis, original-state audits and acceptance remain in
 `work/measurement-reconciliation-r620/wire`; the controller bookkeeping failure
 is retained separately and did not repeat any completed archive or audit.
