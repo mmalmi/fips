@@ -1,5 +1,52 @@
 # Paid-relay cadence measurements
 
+## Phone transit costs on the current graph — 16 October 2026
+
+r621 uses the qualified r615 Android build and the same runtime/dependency graph
+as the current native and router comparisons. The phone forwards between two
+endpoints with its app hidden. After unpaid rejection and a 1-MiB paid warmup,
+two 300-second background windows each deliver 4 MiB per direction, first at
+32 KiB/s and then at 256 KiB/s per direction. All 17 MiB arrive, the phone records
+no local application deliveries, and all 1,248 management checks pass. Each
+background window has 53 observations; the process and four original channels
+remain continuous. This is one ordered pair of rates, not a cadence sweep.
+
+Independent audits of 11 complete SQLite sets, including four receiver stores
+and six wallets, close the four channels and account for all 512 test sats in
+the collector. There is no unaccounted value, duplicate/spent live proof or
+pending mint operation. Five retained send records contain 94 `PENDING_SPENT`
+rows, all verified spent at the original mint; they are not reported as locally
+completed. The original mint recovery identity and all financial archives are
+retained. No workload or financial operation is retried.
+
+Owned test processes have stopped; the archived temporary app and router
+profiles are removed. Independent postflight preserves the original accounts,
+normal Wi-Fi and router baselines.
+
+Each column below describes the phone over one complete 300-second window,
+including its idle tail, divided where indicated by 8 MiB delivered in total.
+
+| Observation | 32 KiB/s per direction | 256 KiB/s per direction |
+| --- | ---: | ---: |
+| Completion rate per direction, KiB/s | 31.947–31.952 | 254.563–254.827 |
+| Whole-process CPU, ms / delivered MiB | 12,788.66 | 6,048.18 |
+| Scoped payment CPU, ms / delivered MiB | 144.17 | 79.14 |
+| Logical payment journal bytes | 122,024 | 86,755 |
+| Payment journal syncs | 94 | 60 |
+| Sent payment record bytes | 10,567 | 6,672 |
+
+Whole-window CPU includes ACK pumping, diagnostics and different idle tails.
+The harness paces writes every 10 ms, so write sizes also differ between rates;
+endpoint receive/ACK pumping continues after payload completion. These are not
+isolated measurements of the cost of changing the offered rate.
+Scoped payment CPU excludes shared scheduling, TCP/FIPS/core and transport work
+outside its spans. Journal bytes exclude wallet SQLite and physical storage;
+record bytes exclude carrier framing and shared traffic. These observations do
+not establish an optimal rate or cadence, a throughput ceiling, battery cost or
+natural deep-idle behavior. The phone is USB-powered, and the 500-ms default
+remains unchanged. Strict analysis, original-state audits and source/artifact
+bindings remain in `work/phone-cost-current-r621`.
+
 ## Rejected storage comparison — 16 October 2026
 
 The r620 ARM64 storage pilot passes all four workloads and independently
@@ -16,9 +63,26 @@ second, requires unchanged payment/durability counters and reconciled credit,
 and performs no retry at strict workload boundaries. The existing boundary
 regression fails with sequential reads and passes with concurrent reads; all
 41 focused storage checks pass. Runtime binaries, workloads, financial terms
-and timing limits are unchanged. A new comparison is still required; neither
-the pilot nor this rejected attempt establishes the full cadence comparison.
+and timing limits are unchanged. Neither the pilot nor this rejected attempt
+establishes the full cadence comparison.
 Original evidence remains in `work/measurement-reconciliation-r620/storage`.
+
+r622 then passes the four forward trials at 250/500/1000/2000 ms. The fifth
+trial stops in idle because one 334-byte stderr write uses a host-mounted alias
+of the owned process log, which the original path map does not recognize.
+The failed trial remains rejected. Independent audits close all five funded
+trials and account for all 1,920 test sats; original state and traces are retained
+in `work/measurement-reconciliation-r622/storage`.
+
+The harness now records stdout/stderr aliases only after verifying both against
+the owned log's device/inode, then checks the same identity after capture.
+Classification uses those exact paths with literal matching. Failed log writes
+or syncs, unmatched file operations and financial-idle activity still reject.
+All 66 focused storage checks pass. This changes measurement classification,
+not runtime, workload or financial terms. The four accepted forward trials keep
+their original path maps; a separately bound reverse pass is still required.
+Neither pass supports CPU/timing comparisons under tracing or statistical
+claims about the optimal cadence.
 
 ## Router packet capture on the current graph — 15 October 2026
 

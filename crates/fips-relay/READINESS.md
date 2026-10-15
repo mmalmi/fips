@@ -1,7 +1,7 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-15 October 2026. The candidate combines FIPS runtime `1b948a688`, SDK `dad0fc3`,
+16 October 2026. The candidate combines FIPS runtime `1b948a688`, SDK `dad0fc3`,
 Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
 
 The latest control fix gives the requester ownership of normal idle expiry and
@@ -47,19 +47,36 @@ router graph. Packet fingerprints and service counters reconcile without shared
 clocks; all 93,696 payloads arrive and 2,616 management checks pass. Independent
 original-state audits close 16 channels and conserve all 3,072 test sats across
 72 SQLite sets. This closes captured local payment-service byte attribution;
-opaque/shared traffic remains unattributed, and radio airtime, storage syscalls
-and phone cost reconciliation remain open. The tracing run is not a CPU comparison.
+opaque/shared traffic remains unattributed, and radio airtime remains unqualified.
+The tracing run is not a CPU comparison. The ARM64 storage comparison has four
+accepted forward trials; its fifth trial rejects an unrecognized process-log
+alias. All five trials' 1,920 test sats are independently accounted for. The
+harness now verifies exact log aliases, with 66 focused checks passing; the
+reverse pass remains open. The [failed storage attempts](CADENCE-RESULTS.md#rejected-storage-comparison--16-october-2026)
+retain their verdicts and original evidence.
+
 The same runtime/dependency graph passes r615 phone transit: 4 MiB delivered
 through foreground, background and 47.95 seconds of forced Doze, with the same
 process and four original channels. All 512 test sats are independently accounted
 for and all 594 management checks pass. The separately qualified r617 test mint
 retains its recovery identity; it does not change the phone or router runtime.
-Final performance reconciliation, the remaining resource and maintenance checks,
+
+r621's [phone cost comparison](CADENCE-RESULTS.md#phone-transit-costs-on-the-current-graph--16-october-2026)
+uses that qualified build for two 300-second background windows at different
+offered rates. All 17 MiB arrive and all 1,248 management checks pass. Independent
+audits close the four original channels and account for all 512 test sats.
+Scoped CPU, logical journal and payment-record costs are reported with their
+exclusions; USB power and unequal idle tails prevent battery or optimum-rate
+claims. The archived temporary app and router profiles are removed, with original
+accounts and normal network baselines preserved.
+
+Remaining storage reconciliation, the resource and maintenance checks,
 physical power loss, physical mobility and natural Android idle remain
-open. Original accounts, normal Wi-Fi and router baselines are preserved; r615's
-archived test profiles and temporary app are removed. Failed verdicts and original
-financial evidence remain retained. The checklist below defines the complete
-acceptance scope.
+open. Physical power cuts require someone on site with the ordinarily powered
+routers; remote process or VM interruption does not substitute for that check.
+r615's archived test profiles and temporary app are also removed. Failed verdicts
+and original financial evidence remain retained. The checklist below defines the
+complete acceptance scope.
 
 Use the complete
 [source-bundle procedure](FUNDING-COSTS.md#portable-development-source-bundle),
