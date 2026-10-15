@@ -177,6 +177,22 @@ async fn client_capability_cancellation(nodes: &mut [TestNode], network: &SimNet
     {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    // First contact sends capability alone. A lost reply may require the
+    // ordinary router fallback, but cannot advertise a transient root before
+    // the neighbor has had an announcement interval to answer.
+    let first_packets = network.stats().packets_sent;
+    let first_tree = nodes[0].node.stats().tree.sent;
+    nodes[0].node.send_tree_announce_to_peer(&router).await.unwrap();
+    assert_eq!(network.stats().packets_sent, first_packets + 1);
+    assert_eq!(nodes[0].node.stats().tree.sent, first_tree);
+    assert!(nodes[0].node.get_peer(&router).unwrap().client_support_sent);
+    let from = nodes[1].addr.as_str().unwrap().to_string();
+    let to = nodes[0].addr.as_str().unwrap().to_string();
+    network.set_directed_link(&from, &to, Some(SimLink { up: false, ..Default::default() }));
+    process_available_packets(nodes).await;
+    while !nodes[0].node.get_peer(&router).unwrap().can_send_tree_announce(Node::now_ms()) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     let previous = nodes[0]
         .node
         .get_peer(&router)
@@ -214,8 +230,6 @@ async fn client_capability_cancellation(nodes: &mut [TestNode], network: &SimNet
 
     // Drop the first router response, including its capability. Delivery is
     // recovered by the existing periodic announcement, with no new timer.
-    let from = nodes[1].addr.as_str().unwrap().to_string();
-    let to = nodes[0].addr.as_str().unwrap().to_string();
     network.set_directed_link(
         &from,
         &to,

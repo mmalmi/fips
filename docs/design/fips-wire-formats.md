@@ -143,8 +143,12 @@ ClientOnly also implies ClientSupport.
 Role controls and TreeAnnounce are accepted only from the current key epoch.
 A newer valid router declaration restores router participation. Peer removal withdraws
 the dependent identity; authenticated process restart clears learned capability.
-Configured clients initiate capability negotiation after their tree announcement;
-routers reply immediately to the first authenticated capability and retry on
+Configured clients initiate capability negotiation before their first tree
+announcement, allowing one existing announcement interval for a response.
+This avoids advertising a temporary root to older nodes behind a capable router.
+An unanswered capability falls back to ordinary tree participation at that
+existing deadline; it does not require a new timer.
+Routers reply immediately to the first authenticated capability and retry on
 the existing announcement cadence. Routers
 do not send unsolicited capabilities on ordinary or legacy router adjacencies.
 ClientOnly confirms capability receipt, so an active client and its upstream

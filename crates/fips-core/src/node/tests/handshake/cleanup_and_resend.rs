@@ -300,7 +300,6 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
     use crate::{ReceivedPacket, SimNetwork};
 
     let mut responder = make_node();
-    responder.config.node.leaf_only = true;
     let initiator = Identity::generate();
     let initiator_peer = PeerIdentity::from_pubkey_full(initiator.pubkey_full());
     let initiator_addr = *initiator_peer.node_addr();
@@ -368,7 +367,7 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
     let mut msg2 = None;
     let mut established = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.len() < 2) {
+    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.len() < 1) {
         let packet = tokio::time::timeout(Duration::from_millis(100), initiator_packet_rx.recv())
             .await
             .ok()
@@ -390,10 +389,8 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
         .read_message_2(&msg2[msg2_header.noise_msg2_offset..])
         .unwrap();
     let mut session = initiator_handshake.into_session().unwrap();
-    // The simulated carrier may reorder the routing announcement and the
-    // additive capability record. Authenticate both without replacing one
-    // with whichever record happens to arrive last while waiting for Msg2.
-    assert_eq!(established.len(), 2, "successful retry must run bootstrap");
+    // Authenticate the router bootstrap on the complementary FMP session.
+    assert_eq!(established.len(), 1, "successful retry must run bootstrap");
     let mut message_types = Vec::new();
     for established in established {
         let header = FmpWireHeader::parse(&established).unwrap();
@@ -409,10 +406,7 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
     message_types.sort_unstable();
     assert_eq!(
         message_types,
-        [
-            LinkMessageType::TreeAnnounce.to_byte(),
-            LinkMessageType::ClientSupport.to_byte(),
-        ]
+        [LinkMessageType::TreeAnnounce.to_byte()]
     );
     assert!(responder.bloom_state.needs_update(&initiator_addr));
     assert_eq!(responder.index_allocator.count(), 1);

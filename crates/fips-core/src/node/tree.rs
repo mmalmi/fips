@@ -165,6 +165,30 @@ impl Node {
             return Ok(());
         }
 
+        if self.config.node.leaf_only
+            && !peer.client_only_supported
+            && !peer.client_support_sent
+        {
+            // Give a capable neighbor the first announcement interval to
+            // reply before advertising a temporary router/root role. Older
+            // peers ignore this capability and get the ordinary declaration
+            // at the existing rate-limit deadline. No additional timer is
+            // needed, and an incomplete send retains pending negotiation.
+            self.mark_tree_announce_pending(peer_addr);
+            self.send_dataplane_fmp_link_plaintext(
+                peer_addr,
+                &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
+                false,
+            )
+            .await?;
+            if let Some(peer) = self.peers.get_mut(peer_addr) {
+                peer.client_support_sent = true;
+                peer.record_tree_announce_sent(Self::now_ms());
+            }
+            self.mark_tree_announce_pending(peer_addr);
+            return Ok(());
+        }
+
         // Clients initiate negotiation. Routers reply only to a capable peer
         // until its client declaration confirms receipt. Ordinary router and
         // legacy adjacencies keep their existing single announcement send.

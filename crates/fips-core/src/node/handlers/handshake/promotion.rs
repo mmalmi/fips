@@ -551,6 +551,7 @@ impl Node {
         if let Some(active) = self.peers.get_mut(peer) {
             active.clear_filter();
             active.client_only_supported = false;
+            active.client_support_sent = false;
             active.client_only = false;
             active.routing_role_sequence = None;
         }
