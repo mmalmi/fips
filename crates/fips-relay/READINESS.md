@@ -11,6 +11,9 @@ strict lint and formatting; r572 qualifies three ordinary Linux retirement cycle
 r577/r578 qualify the ordinary ARM64 build and three-router forwarding/recovery.
 r592 verifies Linux paid delivery and new provider credit during pending
 fragmented-history retirement, with all original test funds accounted for.
+r602 verifies that an automatic renewal waits through that maintenance while
+payments continue, then reserves and completes one successor without replacing
+the original funding authority. Its two native cases conserve all 768 test sats.
 The paired router observations below establish sampled lock availability, with
 higher whole-call time and process memory. Android r590/r593 qualify the updated
 build and controlled phone-transit regression, including forced Doze.
@@ -19,7 +22,11 @@ the handover validation fix. r600/r601 qualify the ordinary ARM64 build, but
 r601 fails paid delivery during fragmented retirement: the destination reports
 session decryption failures. Its 15 old channels retire and all 384 test sats
 are collected; this closes its financial state, not its delivery acceptance.
-Current target qualification remains in progress.
+r603 reproduces the one-way session failure on a fixed UDP line with reverse
+allowance disabled, after the recipient changes keys and drains its old epoch.
+The source retains its old key; all 16 fresh packets fail delivery. Its original
+1,024 test sats are conserved. The protocol fix and target qualification remain
+in progress.
 CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
 are removed and failed financial originals remain retained. Earlier hardware
 results retain their recorded graph. Final acceptance reconciliation
@@ -136,7 +143,9 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| r601 fragmented-router attempt | The ordinary ARM64 build includes runtime `2aaef7cc8` and SDK `dad0fc3`. Corrected fixture qualification passes six native mint cases, 43 harness checks and strict affected lint/format/size checks. Three routers retain 480 original refund coins, then submit 512 paid packets while cleanup is held. Signing and provider credit advance, but all six receiver samples report zero delivery and the destination reports session decryption failures. Normal closure retires all 15 old channels and collects all 384 original test sats; independent checks cover all nine databases and preserve lifetime debits/refunds. | **Delivery acceptance failed; post-release traffic was not reached.** One warmup packet arrived. The 2,354 management checks pass, normal services/accounts are restored, and closed profiles are archived before removal. Session recovery needs a minimal reproduction; the observations do not yet establish its cause or a payment regression. Failed results and exact source/artifact/archive bindings remain in `work/cudy-retirement-r601`. |
+| r603 one-way session reproduction | The unchanged ordinary runtime on five UDP nodes reproduces divergent key epochs with `return_allowance=false`: the recipient rotates and finishes draining its old key, while the source keeps its old key. All 16 fresh packets submit and none arrive. This needs no radio change, topology filtering or wallet maintenance. The test fails after settling its three original forward channels; independent checks of 11 databases conserve all 1,024 test sats with no pending operations or duplicate/mint-spent live coins. | **A reproduced protocol failure, not acceptance.** The encrypted key confirmation cannot cross the unpaid reverse path. The fix must retain dropped-handshake recovery and bounded free control without exempting application traffic. Original failure, source/artifact/log hashes and financial archives remain in `work/one-way-rekey-r603/attempt-1`. |
+| r602 renewal during retirement | The existing ordinary-process fixture now also makes renewal due while 15 closed channels retain 480 refund coins. Across 32 status samples, payments and delivery advance while retirement prevents new funding IDs or reservations. After release, exactly one successor reserves 32 sats; payments on the predecessor continue while its mint reply is held. The original successor completes automatically with preserved lifetime totals. The new case and original payment case pass, and independent SQLite checks conserve all 768 test sats without pending operations or duplicate/mint-spent live coins. Build, strict affected lint, formatting and size checks pass. | Test-only changes on the current ordinary Linux runtime, with `return_allowance=false`. This qualifies the recorded renewal/retirement overlap; it does not close the separate r601 session failure, hardware renewal, new-purchase contention, signing-latency or performance acceptance. Both setup-only failures are preserved with zero issuance. Sources, logs and original stopped fixtures are bound in `work/renewal-retirement-r602`. |
+| r601 fragmented-router attempt | The ordinary ARM64 build includes runtime `2aaef7cc8` and SDK `dad0fc3`. Corrected fixture qualification passes six native mint cases, 43 harness checks and strict affected lint/format/size checks. Three routers retain 480 original refund coins, then submit 512 paid packets while cleanup is held. Signing and provider credit advance, but all six receiver samples report zero delivery and the destination reports session decryption failures. Normal closure retires all 15 old channels and collects all 384 original test sats; independent checks cover all nine databases and preserve lifetime debits/refunds. | **Delivery acceptance failed; post-release traffic was not reached.** One warmup packet arrived. The 2,354 management checks pass, normal services/accounts are restored, and closed profiles are archived before removal. r603 separately reproduces the session failure without wallet maintenance; this is not evidence that payment signing caused it. Failed results and exact source/artifact/archive bindings remain in `work/cudy-retirement-r601`. |
 | r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. r600/r601 qualify its ordinary ARM64 build; final physical acceptance remains open. |
 | r566/r576 sender retirement | The existing interrupted-handoff regression fails before the fix and passes with SDK `dad0fc3`: an unrelated funded channel pays successfully, and its saved balance survives resumed cleanup. All 444 workspace tests pass, with strict all-target lint and formatting. The existing lock test now allows bounded fork/exec descriptor-release latency; the earlier failed full run is retained. | Three opt-in tests remain excluded from the default suite. No new wire messages, lock files or store versions. [Paired router observations](#payments-during-sender-retirement) establish sampled availability, not live payment latency during a large cleanup. Funding and renewal still share the wallet owner. |
 | r572/r577/r578 ordinary relay | Three Linux wallet-retirement cycles conserve all 384 test sats including mint fees. The ordinary ARM64 build delivers all 2,048 paid packets across three routers, retires two sender and two receiver channels, and collects all 384 test sats. Six controller reads take 166–179 ms during SQLite writer contention; all 282 management checks pass. Original services/accounts are restored and closed profiles are archived before removal. | Small-channel forwarding and recovery on the same production SDK graph, not concurrent paid forwarding during large-history cleanup. Physical power loss and final broader target reconciliation remain open. Source/artifact/log bindings are retained in `work/retirement-relay-r572`, `work/retirement-arm-r577` and `work/retirement-router-r578`. |
@@ -381,10 +390,12 @@ wallets, no unfinished wallet operations and no duplicate or mint-spent original
 
 The 1.341-second observed maintenance window includes release, status sampling,
 scheduling and multiple retirement calls. A pending plan does not prove continuous
-native execution, and this is not a CPU or throughput measurement. Concurrent
-router forwarding, signing delays and new funding/renewal during large maintenance
-remain open. Wallet ownership still serializes maintenance and funding; this
-change promises neither constant-time work nor uninterrupted traffic.
+native execution, and this is not a CPU or throughput measurement. r602 adds
+native automatic renewal across the same maintenance boundary and a held mint
+reply. Concurrent router forwarding, signing delays, new-purchase contention
+and hardware renewal remain open. Wallet ownership still serializes maintenance
+and funding; this change promises neither constant-time work nor uninterrupted
+traffic.
 
 r601 reaches the corresponding physical fixture with 480 real refund coins in a
 1,649,458-byte client store. Its held traffic fails delivery before the release
@@ -555,7 +566,7 @@ the total cost of the caller below.
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | Retained mint/keyset catalog limits and SQLite balance sums; device reopen cost under retained history. |
-| Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. |
+| Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; new-purchase contention and device renewal remain. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | Original payout/refund preservation, mint-reply bounds and reserved completion. Sender refund profiles pass r562/r565; larger receiver payouts and concurrent forwarding remain. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | Whole sender calls, receiver release queue and repeated owner scans; progress and memory on the intended routers. |
