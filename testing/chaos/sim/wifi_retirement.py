@@ -190,6 +190,8 @@ def main():
     for name in ('inventory', 'binary', 'mint-binary', 'mint-host', 'sqlite-hold', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--mint-address', required=True)
+    parser.add_argument('--fragmented-live', action='store_true',
+                        help='paid traffic during cleanup of 480 original one-sat refund coins')
     args = parser.parse_args()
     args.mint_ssh_forward = False
     os.umask(0o077)
@@ -198,8 +200,12 @@ def main():
         raise TimeoutError('router retirement acceptance exceeded its bounded window')
 
     signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(600)
-    RetirementRun(args).execute()
+    signal.alarm(1800 if args.fragmented_live else 600)
+    if args.fragmented_live:
+        from .wifi_retirement_live import LiveRetirementRun
+        LiveRetirementRun(args).execute()
+    else:
+        RetirementRun(args).execute()
 
 
 if __name__ == '__main__':

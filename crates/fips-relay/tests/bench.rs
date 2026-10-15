@@ -20,12 +20,61 @@ fn config(root: &Path, mint: &str) -> ServiceConfig {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn single_sat_test_keyset_is_opt_in_and_preserves_capped_value() {
+    use std::str::FromStr;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut cfg: BenchConfig = serde_json::from_value(json!({
+        "state_directory": root.path().join("mint"),
+        "bind": "127.0.0.1:0", "max_issued_sat": 513
+    }))
+    .unwrap();
+    assert!(!cfg.single_sat_keyset);
+    cfg.single_sat_keyset = true;
+    assert!(BenchMint::start(cfg.clone()).await.is_err());
+    assert!(!cfg.state_directory.exists());
+    cfg.max_issued_sat = 32;
+    let mut mint = BenchMint::start(cfg).await.unwrap();
+    let grant = mint
+        .handle(BenchRequest::Issue {
+            id: "fragmented".into(),
+            amount_sat: 32,
+        })
+        .await
+        .unwrap();
+    let payment: Value =
+        serde_json::from_slice(&std::fs::read(grant["path"].as_str().unwrap()).unwrap()).unwrap();
+    let token = payment["token"].as_str().unwrap();
+    assert_eq!(
+        cashu::nuts::Token::from_str(token)
+            .unwrap()
+            .token_secrets()
+            .len(),
+        32
+    );
+    assert_eq!(
+        mint.handle(BenchRequest::Collect {
+            token: token.into()
+        })
+        .await
+        .unwrap()["amount_sat"],
+        32
+    );
+    let report = mint.handle(BenchRequest::Report).await.unwrap();
+    assert_eq!(report["issued_sat"], 32);
+    assert_eq!(report["collected_sat"], 32);
+    assert_eq!(report["conserved"], true);
+    mint.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
     let root = tempfile::tempdir().unwrap();
     let mint_config = BenchConfig {
         state_directory: root.path().join("mint"),
         bind: "127.0.0.1:0".parse().unwrap(),
         max_issued_sat: 256,
+        single_sat_keyset: false,
     };
     let mut mint = BenchMint::start(mint_config.clone()).await.unwrap();
     assert!(BenchMint::start(mint_config).await.is_err());
@@ -368,6 +417,7 @@ async fn test_mint_refuses_public_or_wildcard_binding() {
             state_directory: root.path().join("mint"),
             bind: address.parse().unwrap(),
             max_issued_sat: 10,
+            single_sat_keyset: false,
         };
         assert!(BenchMint::start(cfg).await.is_err());
         assert!(!root.path().join("mint").exists());
@@ -406,6 +456,7 @@ async fn check_export_retirement(exports: u64) {
         state_directory: root.path().join("mint"),
         bind: "127.0.0.1:0".parse().unwrap(),
         max_issued_sat: 256,
+        single_sat_keyset: false,
     })
     .await
     .unwrap();
@@ -680,6 +731,7 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
             state_directory: root.path().join("mint"),
             bind: "127.0.0.1:0".parse().unwrap(),
             max_issued_sat: 16,
+            single_sat_keyset: false,
         };
         let path = root.path().join("mint.json");
         std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();

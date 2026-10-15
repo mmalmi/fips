@@ -31,6 +31,13 @@ Example mint configuration:
 }
 ```
 
+Small fragmentation fixtures may set `"single_sat_keyset": true` with
+`max_issued_sat` at most 512. This creates a one-sat keyset before any wallet is
+opened, so ordinary funding and refunds retain many real coins with little test
+value. The setting defaults to false. The guarded Wi-Fi
+[retirement exercise](../../testing/chaos/README.md#controller-reads-during-wallet-retirement)
+uses it to test paid forwarding during cleanup of original refund history.
+
 Create the parent directory, then run:
 
 ```sh

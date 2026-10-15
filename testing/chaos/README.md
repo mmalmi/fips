@@ -883,6 +883,29 @@ Run from `testing/chaos`. Use a fresh output directory and a test-only mint;
 normal router accounts are never used. This measures bounded controller response
 under SQLite contention, not storage throughput or physical power-loss recovery.
 
+Add `--fragmented-live` to exercise paid forwarding during cleanup instead. This
+opt-in mode uses a fresh test mint with a one-sat keyset, creates and fully refunds
+fifteen ordinary 32-sat channels, and verifies the resulting 480 original refund
+coins occupy over 1 MiB of client history. It then buys a separate active channel
+and establishes its session before holding the source wallet writer. Exact fresh
+payloads, signed payments and provider credit must advance during the hold and
+again after release, within contiguous observations bracketed by the same pending
+retirement plan. The held-window payment must be acknowledged and credited before
+the post-release baseline. Payloads are never replayed to hide loss.
+
+The device mode uses 15-minute funding lifetimes, at most 90 seconds of old-channel
+deadline spread, and the existing 150-second writer guard. Setup must finish with
+time to establish the active channel. Its 450-second quote must remain valid for
+at least five minutes after the last old refund deadline; post-release traffic
+and cleanup together have four minutes. A setup that misses these bounds fails
+and retains its diagnostics. All original sender and seller retirement must
+finish before final settlement. The shared collector verifies the original 384
+sats and their per-wallet distribution.
+This is controlled liveness evidence, not a benchmark of uninterrupted native
+execution or storage throughput. Use the updated disposable test-mint executable;
+the ordinary router executable needs no special testbench capability. The mint's
+`single_sat_keyset` setting defaults to false and is limited to 512 issued test sats.
+
 ### Router load, restart and frame loss
 
 `sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped
