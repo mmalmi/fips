@@ -912,6 +912,17 @@ the ordinary router executable needs no special testbench capability. The mint's
 `fragmented_channel_keyset` setting defaults to false and is limited to 512
 issued test sats.
 
+Add `--retirement-renewal` together with `--fragmented-live` to check automatic
+renewal at two signed sats. While retirement is pending, another 512-packet stream
+must advance payment and delivery on the selected predecessor without a new
+funding reservation. After release, this mode requires exactly one automatic
+successor and 64 delivered successor packets, replacing the default mode's
+4,096-packet post-release overlap check. It keeps the same deadlines, wallet and
+spending limits, and original 384-sat grant. Reused refunds fund 17 channels in
+total; the final audit must account for both recent channels and 544 sats of
+lifetime debits, with the same 15 retired channels. This optional case remains
+unqualified on hardware until its run and independent original-state audit pass.
+
 ### Router load, restart and frame loss
 
 `sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped

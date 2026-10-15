@@ -194,7 +194,11 @@ def main():
     parser.add_argument('--mint-address', required=True)
     parser.add_argument('--fragmented-live', action='store_true',
                         help='paid traffic during cleanup of 480 original one-sat refund coins')
+    parser.add_argument('--retirement-renewal', action='store_true',
+                        help='one automatic successor deferred by fragmented retirement')
     args = parser.parse_args()
+    if args.retirement_renewal and not args.fragmented_live:
+        parser.error('--retirement-renewal requires --fragmented-live')
     args.mint_ssh_forward = False
     os.umask(0o077)
 
@@ -205,7 +209,11 @@ def main():
     if args.fragmented_live:
         from .wifi_retirement_live import LiveRetirementRun, RUN_WINDOW
         signal.alarm(RUN_WINDOW)
-        LiveRetirementRun(args).execute()
+        if args.retirement_renewal:
+            from .wifi_retirement_renewal import RenewalRetirementRun
+            RenewalRetirementRun(args).execute()
+        else:
+            LiveRetirementRun(args).execute()
     else:
         signal.alarm(600)
         RetirementRun(args).execute()

@@ -76,6 +76,7 @@ def refund_count(client, channels):
 
 class LiveRetirementRun(RetirementRun):
     quote_max_units = QUOTE_UNITS
+    completion_phase = 'new paid delivery overlapped the original pending cleanup before and after release'
 
     @property
     def buyer_budget(self):
@@ -112,6 +113,9 @@ class LiveRetirementRun(RetirementRun):
     def buy(self):
         self.ctl('n01', 'buy', destination=self.nodes['n03'].npub)
         purchase, = self.ctl('n01', 'status')['purchases']
+        return self.record_purchase(purchase)
+
+    def record_purchase(self, purchase):
         channel = purchase['channel']['id']
         require(channel not in self.intents, 'purchase reused an original channel')
         journal = self.journal()
@@ -150,6 +154,9 @@ class LiveRetirementRun(RetirementRun):
                               and ack >= max(progress['authorized_sat'] * 1000,
                                              progress['evidence_msat'])) else None
         return eventually('active ordinary payment acknowledged', ready, 30)
+
+    def active_ready(self):
+        return self.caught_up()
 
     def sample(self, shape, held):
         if held:
@@ -326,7 +333,7 @@ class LiveRetirementRun(RetirementRun):
             shape = {'stream_id': warmup['sender']['stream_id'], 'packet_count': 1, 'payload_bytes': 1000}
             submitted(warmup['sender'], shape)
             received(warmup['receiver'], shape, self.nodes['n01'].npub, complete=True)
-            self.caught_up()
+            self.active_ready()
             self.evidence['fragmented']['warmup'] = warmup
             require(time.time() < first - HOLD_LEAD, 'active session establishment consumed the hold margin')
             self.until(first - HOLD_LEAD)
@@ -346,7 +353,7 @@ class LiveRetirementRun(RetirementRun):
             require(any(row == self.intents[self.active] for row in after['funding'].values()),
                     'cleanup replaced or changed the active funded channel')
             self.verify_shortcuts()
-            self.phase('new paid delivery overlapped the original pending cleanup before and after release')
+            self.phase(self.completion_phase)
         except Exception as error:
             self.evidence['fragmented']['failure'] = str(error)
             self.save()
