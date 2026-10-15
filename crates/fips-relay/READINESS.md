@@ -15,7 +15,11 @@ The paired router observations below establish sampled lock availability, with
 higher whole-call time and process memory. Android r590/r593 qualify the updated
 build and controlled phone-transit regression, including forced Doze.
 r597 qualifies all seven supported carrier scenarios on SDK `dad0fc3`, before
-the handover validation fix. Current target qualification remains in progress.
+the handover validation fix. r600/r601 qualify the ordinary ARM64 build, but
+r601 fails paid delivery during fragmented retirement: the destination reports
+session decryption failures. Its 15 old channels retire and all 384 test sats
+are collected; this closes its financial state, not its delivery acceptance.
+Current target qualification remains in progress.
 CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
 are removed and failed financial originals remain retained. Earlier hardware
 results retain their recorded graph. Final acceptance reconciliation
@@ -132,7 +136,8 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. ARM and physical-device qualification of this fix remain open. |
+| r601 fragmented-router attempt | The ordinary ARM64 build includes runtime `2aaef7cc8` and SDK `dad0fc3`. Corrected fixture qualification passes six native mint cases, 43 harness checks and strict affected lint/format/size checks. Three routers retain 480 original refund coins, then submit 512 paid packets while cleanup is held. Signing and provider credit advance, but all six receiver samples report zero delivery and the destination reports session decryption failures. Normal closure retires all 15 old channels and collects all 384 original test sats; independent checks cover all nine databases and preserve lifetime debits/refunds. | **Delivery acceptance failed; post-release traffic was not reached.** One warmup packet arrived. The 2,354 management checks pass, normal services/accounts are restored, and closed profiles are archived before removal. Session recovery needs a minimal reproduction; the observations do not yet establish its cause or a payment regression. Failed results and exact source/artifact/archive bindings remain in `work/cudy-retirement-r601`. |
+| r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. r600/r601 qualify its ordinary ARM64 build; final physical acceptance remains open. |
 | r566/r576 sender retirement | The existing interrupted-handoff regression fails before the fix and passes with SDK `dad0fc3`: an unrelated funded channel pays successfully, and its saved balance survives resumed cleanup. All 444 workspace tests pass, with strict all-target lint and formatting. The existing lock test now allows bounded fork/exec descriptor-release latency; the earlier failed full run is retained. | Three opt-in tests remain excluded from the default suite. No new wire messages, lock files or store versions. [Paired router observations](#payments-during-sender-retirement) establish sampled availability, not live payment latency during a large cleanup. Funding and renewal still share the wallet owner. |
 | r572/r577/r578 ordinary relay | Three Linux wallet-retirement cycles conserve all 384 test sats including mint fees. The ordinary ARM64 build delivers all 2,048 paid packets across three routers, retires two sender and two receiver channels, and collects all 384 test sats. Six controller reads take 166–179 ms during SQLite writer contention; all 282 management checks pass. Original services/accounts are restored and closed profiles are archived before removal. | Small-channel forwarding and recovery on the same production SDK graph, not concurrent paid forwarding during large-history cleanup. Physical power loss and final broader target reconciliation remain open. Source/artifact/log bindings are retained in `work/retirement-relay-r572`, `work/retirement-arm-r577` and `work/retirement-router-r578`. |
 | r592 paid retirement liveness | Three ordinary Linux processes deliver all 4,609 original packets with 480 real refund coins retained. After the external writer is released, adjacent observations show new provider credit and destination deliveries during the same pending retirement plan. Independent mint/wallet checks account for all 384 test sats; the existing three-cycle case separately accounts for 384 sats including 13 in fees. Formatting, strict affected-target lint and source-size checks pass. | Linux loopback liveness, not uninterrupted native execution, signing-latency bounds, CPU attribution or router performance. Original fixtures and source/artifact/log bindings are preserved in `work/live-retirement-r592`. Funding and renewal still share the wallet owner. |
@@ -380,6 +385,26 @@ native execution, and this is not a CPU or throughput measurement. Concurrent
 router forwarding, signing delays and new funding/renewal during large maintenance
 remain open. Wallet ownership still serializes maintenance and funding; this
 change promises neither constant-time work nor uninterrupted traffic.
+
+r601 reaches the corresponding physical fixture with 480 real refund coins in a
+1,649,458-byte client store. Its held traffic fails delivery before the release
+phase; the destination reports decryption failures and evicts the session.
+Financial closure succeeds with the original 16 channel identities: 15 retire,
+the active channel settles for 3 sats, lifetime debits/refunds remain 512/509,
+and the remaining buyer budget is 253 sats. All 384 original sats are collected.
+Retained export bookkeeping is checked against the original mint's spent proofs.
+This is a failed forwarding test with verified cleanup, not router liveness
+qualification or evidence that payment signing caused the session failure.
+
+Earlier r595/r600 device setup attempts fail respectively at the durable token
+size bound and the old setup-time/export assumptions. Their original 128/384
+test sats are recovered and collected without new issuance or identities.
+The corrected fixture uses bounded grants/exports and measured setup margins;
+production storage and mint-output limits are unchanged. The first failed r600
+native grant fixture separately retains 128 uncollected test sats in its archived
+original issuer/export state; its in-process mint is gone. It is not counted as
+successful collection. Original failed verdicts remain preserved in their named
+private bundles.
 
 Five interrupted setup/probe fixtures retain their failed verdicts. Normal expiry
 recovery and settlement close their original financial state without replacement
