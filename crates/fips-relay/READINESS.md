@@ -591,8 +591,9 @@ capture-scoped reuse. r541/r549 measure sender refunds through full retirement,
 including saturation of native and client admission budgets. r562/r565 qualify
 both aggregate profiles on one ARM64 router. r592 verifies Linux paid progress
 during fragmented retirement, and r604 verifies that overlap on three routers.
-Other reachable workflows, receiver-store pressure and physical-storage
-acceptance remain open.
+The paired receiver admission check below covers logical storage pressure;
+device costs, other reachable workflows and physical-storage acceptance remain
+open.
 
 The remaining resource audit follows these production entry points. Shared SDK
 limits apply on every wallet open; a bounded record or page does not establish
@@ -602,7 +603,7 @@ the total cost of the caller below.
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. Device renewal/new-purchase acceptance remains. |
-| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
+| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. Device costs and larger receiver payouts remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; larger receiver payouts, reserved completion and concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. Whole sender calls, receiver release queue and repeated owner scans still need progress and memory acceptance on the intended routers. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
@@ -611,6 +612,19 @@ These are the relay's wallet entry points, not every generic SDK API. The relay
 does not call the SDK's general startup recovery, Lightning issuance or melt
 commands. Their retained native owners still matter whenever shared recovery or
 collection encounters them; existing owner-preservation coverage remains required.
+
+r619 strengthens the existing SDK receiver-retirement regression in `c079bde`;
+production code and dependencies are unchanged. A receiver-store refusal leaves
+the wallet's original reservation and admission journal intact. The admitted
+channel then updates, closes and imports its 3-sat payout after wallet reopen at
+the unchanged full native limit, with the sender recovering 29 sats. Retirement
+releases receiver capacity but retains earned coins and their history: a new
+paired admission still lacks native space and is safely refused. A separate
+receiver-only, zero-paid admission checks reuse of the retired receiver space.
+All 444 workspace tests, strict affected-package lint and formatting pass; three
+existing opt-in measurements are skipped. This checks logical admission and
+completion, not device performance or physical disk exhaustion. Private evidence
+is retained in `work/receiver-resource-r619/attempt-4`.
 
 r608 verifies the configured-mint open/balance paths against the qualified source
 inventory: at most 32 mint/unit wallets, 256 retained keysets per cache and 4 MiB
