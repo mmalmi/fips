@@ -365,9 +365,9 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
         .await;
 
     let mut msg2 = None;
-    let mut established = None;
+    let mut established = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.is_none()) {
+    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.len() < 2) {
         let packet = tokio::time::timeout(Duration::from_millis(100), initiator_packet_rx.recv())
             .await
             .ok()
@@ -378,7 +378,7 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
         if Msg2Header::parse(packet.data.as_slice()).is_some() {
             msg2 = Some(packet.data.as_slice().to_vec());
         } else if FmpWireHeader::parse(packet.data.as_slice()).is_ok() {
-            established = Some(packet.data.as_slice().to_vec());
+            established.push(packet.data.as_slice().to_vec());
         }
     }
 
@@ -389,18 +389,29 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
         .read_message_2(&msg2[msg2_header.noise_msg2_offset..])
         .unwrap();
     let mut session = initiator_handshake.into_session().unwrap();
-    let established = established.expect("successful Msg2 retry must run tree bootstrap");
-    let header = FmpWireHeader::parse(&established).unwrap();
-    let plaintext = session
-        .decrypt_with_replay_check_and_aad(
-            &established[crate::node::wire::ESTABLISHED_HEADER_SIZE..],
-            header.counter(),
-            &established[..crate::node::wire::ESTABLISHED_HEADER_SIZE],
-        )
-        .expect("post-auth tree bootstrap must use the complementary FMP session");
+    // The simulated carrier may reorder the routing announcement and the
+    // additive capability record. Authenticate both without replacing one
+    // with whichever record happens to arrive last while waiting for Msg2.
+    assert_eq!(established.len(), 2, "successful retry must run bootstrap");
+    let mut message_types = Vec::new();
+    for established in established {
+        let header = FmpWireHeader::parse(&established).unwrap();
+        let plaintext = session
+            .decrypt_with_replay_check_and_aad(
+                &established[crate::node::wire::ESTABLISHED_HEADER_SIZE..],
+                header.counter(),
+                &established[..crate::node::wire::ESTABLISHED_HEADER_SIZE],
+            )
+            .expect("post-auth bootstrap must use the complementary FMP session");
+        message_types.push(*plaintext.get(4).expect("link message type"));
+    }
+    message_types.sort_unstable();
     assert_eq!(
-        plaintext.get(4).copied(),
-        Some(LinkMessageType::TreeAnnounce.to_byte())
+        message_types,
+        [
+            LinkMessageType::TreeAnnounce.to_byte(),
+            LinkMessageType::ClientSupport.to_byte(),
+        ]
     );
     assert!(responder.bloom_state.needs_update(&initiator_addr));
     assert_eq!(responder.index_allocator.count(), 1);
