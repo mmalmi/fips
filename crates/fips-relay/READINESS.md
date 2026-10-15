@@ -1,8 +1,10 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-15 October 2026. Runtime `d0a29e889` suppresses repeated idle recovery after a
-successful key change, retaining bounded one-way key confirmation, control
+15 October 2026. Runtime `718cfe5be` retires one eligible receiver channel per
+upkeep, oldest refund deadline first, so several individually valid payouts
+cannot stall cleanup by exceeding the SDK's aggregate handoff limit. It retains
+`d0a29e889`'s idle recovery suppression, bounded one-way key confirmation, control
 idle-expiry and completed-handover recovery fixes.
 r599 passes
 25 focused checks and closes both original failed carrier wallets without new
@@ -170,6 +172,7 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
+| r609 bounded receiver retirement | Three individually valid 400-proof payouts reproduce the aggregate 1,024-coin handoff refusal. Runtime `718cfe5be` starts one eligible channel per upkeep, ordered by refund deadline then ID, while preserving saved-plan recovery. All 15 seller-history checks, strict library lint, focused formatting and size gates pass; the regression preserves cumulative totals and unrelated authority through each retirement and reload. | Storage-only proof identities exercise the real controller and SDK plan validation; no mint funds or devices are involved. Existing pending plans resume unchanged. The two-second upkeep cadence adds roughly up to 32 seconds for 16 eligible channels, plus processing and retries; this is not a measured completion bound. Receiver pressure, concurrent forwarding and final target acceptance remain open. Sources and both red/green receipts remain in `work/receiver-bounds-r609`. |
 | r606 new purchase during retirement | The existing ordinary Linux fixture adds a distinct provider with no initial funds. With 480 refund coins and one pending cleanup plan, two Buy requests reject in 33/26 ms without funding, reservation or route changes; original paid delivery continues. After cleanup, exactly one new 32-sat channel funds, with both routes delivering and earning credit. All 5,249 originals arrive. Build, strict affected lint, formatting and size checks pass. Independent wallet/mint and native authority audits conserve all 384 test sats, retire 15 old channels and close both remaining channels at 21/1 sats paid and 11/31 refunded. Lifetime debit/refund remain 544/522, with zero locks, reservations or unfinished operations. | Test-only changes on runtime `4cb34fe19`, SDK `dad0fc3`; loopback links and deliberate SQLite contention. The first attempt completed behavioral and settlement checks but failed its final empty-wallet query; its failed verdict and independently closed originals are retained. The corrected helper skips only the empty query. This qualifies native contention, not hardware new purchases, physical power loss, signing latency or performance. Sources, stopped archives and both audits remain in `work/purchase-retirement-r606`. |
 | r605 idle recovery after key change | Runtime `d0a29e889` tracks whether application data used the current epoch before retrying unanswered-data recovery. Lifetime delivery history, pending exchanges and explicit decrypt-failure recovery remain intact. The real 45-second drain regression fails on the baseline and passes with the fix, including seven idle seconds and recovery/delivery after fresh demand. Ten relevant compatibility checks pass. The ordinary native paid fixture observes 7,026 ms with unchanged endpoint epochs, per-channel priced evidence and all five payment request counters; 16/16 fresh packets, restart/reverse boundaries, three settlements and 1,024-sat conservation then pass. Strict affected lint, focused formatting and size gates pass. | Native UDP qualification only; final router/phone and common-artifact reconciliation remain. The earlier accelerated-drain candidate failure remains unexplained and preserved. Full-tree formatting still differs in two untouched core test files. Successful-fixture financial evidence is source/output assertions with normal cleanup, not an independent post-success SQLite audit. The long core regression is opt-in and was explicitly run; no longer-window zero-cost claim follows. Exact sources and receipts remain in `work/idle-recovery-r605`. |
 | r604 router delivery during retirement | Ordinary ARM64 runtime `4cb34fe19` with SDK `dad0fc3` retains 480 real refund coins in a 1,649,458-byte client store. All 4,609 original workload packets arrive: one warmup, 512 while the writer is held and 4,096 after release. Both stages observe new authorization, provider credit and delivery during one contiguous pending retirement plan; all 15 old channels finish retiring. The original active channel closes with 19 sats paid and 13 refunded. Independent checks of all nine complete SQLite sets reconcile the original 384 sats into the collector, with no duplicate/mint-spent live funds or pending mint operations. All 2,381 management checks pass; normal baselines are restored and stopped, archived profiles are removed. | This qualifies the previously failing physical cleanup/delivery case on this exact build. It is not a physical power cut, maximum-throughput test, CPU attribution, signing-latency bound or hardware renewal/new-purchase qualification. Four completed export records retain 129 pending-spent proofs worth 192 sats, all proven spent at the original mint; they carry no outstanding value. Failed r601 evidence is preserved. Source, artifact, archive and cleanup bindings remain in `work/cudy-retirement-r604`. |
@@ -600,17 +603,29 @@ the total cost of the caller below.
 
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
-| Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | Retained mint/keyset catalog limits and SQLite balance sums; device reopen cost under retained history. |
+| Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. Device renewal/new-purchase acceptance remains. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | Paired receiver/native reservations; recurring payments reuse admitted funding. Reconcile receiver-store pressure separately from sender pressure. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | Original payout/refund preservation, mint-reply bounds and reserved completion. Sender refund profiles pass r562/r565; larger receiver payouts and concurrent forwarding remain. |
-| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | Whole sender calls, receiver release queue and repeated owner scans; progress and memory on the intended routers. |
+| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. Whole sender calls, receiver release queue and repeated owner scans still need progress and memory acceptance on the intended routers. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | Bounded token input and export count, original send recovery and shared native custody; aggregate retained-export pressure. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay
 does not call the SDK's general startup recovery, Lightning issuance or melt
 commands. Their retained native owners still matter whenever shared recovery or
 collection encounters them; existing owner-preservation coverage remains required.
+
+r608 verifies the configured-mint open/balance paths against the qualified source
+inventory: at most 32 mint/unit wallets, 256 retained keysets per cache and 4 MiB
+metadata projections before SQL decoding. Receiver refresh uses one configured
+mint, at most 64 active keysets and a shared 1 MiB response/snapshot budget, with
+the relay's 10-second outer deadline and one-second retry cache. Balance uses an
+indexed SQL sum without decoding the proof inventory; its work still grows with
+unspent rows. An unset wallet capacity does not bound total inventory or disk
+use. This closes source coverage for these paths, not device reopen latency or
+peak memory at their limits. Existing tests were inspected, not rerun. The
+source inventory remains in `work/catalog-bounds-r608`; settlement reply bounds
+are a separate path and require their own qualification.
 
 See [history](HISTORY.md)
 and the matching SDK's `docs/wallet-history.md` for exact ownership/limit contracts
