@@ -1,5 +1,25 @@
 # Paid-relay cadence measurements
 
+## Rejected storage comparison — 16 October 2026
+
+The r620 ARM64 storage pilot passes all four workloads and independently
+accounts for its 384 test sats. The subsequent eight-trial comparison stops
+in the first idle window: the two rounds of sequential node-status reads take
+2,323 ms, exceeding the unchanged 2,000-ms observation limit. Its three complete
+traces and failed verdict are retained; independent original-state audits close
+both channels and account for all 384 test sats across nine SQLite sets.
+No workload or financial operation is retried.
+
+The measurement harness now collects the three independent node-status reads
+concurrently within each round. It still completes the first round before the
+second, requires unchanged payment/durability counters and reconciled credit,
+and performs no retry at strict workload boundaries. The existing boundary
+regression fails with sequential reads and passes with concurrent reads; all
+41 focused storage checks pass. Runtime binaries, workloads, financial terms
+and timing limits are unchanged. A new comparison is still required; neither
+the pilot nor this rejected attempt establishes the full cadence comparison.
+Original evidence remains in `work/measurement-reconciliation-r620/storage`.
+
 ## Router packet capture on the current graph — 15 October 2026
 
 r620 repeats the eight-trial Wi-Fi workload below with the same ordinary ARM64

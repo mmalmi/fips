@@ -1,6 +1,7 @@
 """Measure payment storage syscalls in a separate, isolated paid Ethernet run."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import json
@@ -108,8 +109,9 @@ class StorageRun(PaidRelayRun):
         def snapshot():
             result = {}
             reconciled = True
-            for node in self.nodes:
-                status = self.ctl(node, "status")
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                statuses = list(pool.map(lambda node: self.ctl(node, "status"), self.nodes))
+            for node, status in zip(self.nodes, statuses):
                 channels = finances[node]["signed"]
                 if status["last_error"] is not None or set(status["payment_progress"]) != set(channels):
                     raise RuntimeError("payment boundary changed original channels or has an error")

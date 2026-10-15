@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
 
@@ -135,11 +136,21 @@ class PaymentBoundaryTests(unittest.TestCase):
 
     def test_strict_boundary_samples_each_node_twice_without_retry(self):
         run, statuses, finances = self.fixture()
-        run.ctl = Mock(side_effect=lambda node, _kind: statuses[node])
+        rendezvous = Barrier(3, timeout=2)
+        calls = []
+
+        def status(node, _kind):
+            calls.append(node)
+            rendezvous.wait()
+            return statuses[node]
+
+        run.ctl = status
         with patch("sim.paid_storage.eventually") as retry:
             result = run.boundary(finances, wait=False)
         retry.assert_not_called()
-        self.assertEqual(run.ctl.call_count, 6)
+        self.assertEqual(len(calls), 6)
+        for round_calls in (calls[:3], calls[3:]):
+            self.assertCountEqual(round_calls, run.nodes)
         self.assertEqual(result["guard"], result["sample"])
 
     def test_strict_boundary_retains_background_usage_with_unchanged_credit(self):
@@ -155,7 +166,9 @@ class PaymentBoundaryTests(unittest.TestCase):
         result = run.boundary(finances, wait=False)
         self.assertEqual(result["guard"]["n01"]["progress"]["evidence_msat"], 999)
         self.assertEqual(result["sample"]["n01"]["progress"]["evidence_msat"], 1000)
-        self.assertEqual(calls, list(run.nodes) * 2)
+        self.assertEqual(len(calls), 6)
+        for round_calls in (calls[:3], calls[3:]):
+            self.assertCountEqual(round_calls, run.nodes)
 
     def test_strict_boundary_rejects_unreconciled_or_changed_double_sample(self):
         for pending in (False, True):
@@ -176,7 +189,9 @@ class PaymentBoundaryTests(unittest.TestCase):
                 with patch("sim.paid_storage.eventually") as retry, self.assertRaises(RuntimeError):
                     run.boundary(finances, wait=False)
                 retry.assert_not_called()
-                self.assertEqual(calls, list(run.nodes) * 2)
+                self.assertEqual(len(calls), 6)
+                for round_calls in (calls[:3], calls[3:]):
+                    self.assertCountEqual(round_calls, run.nodes)
 
     def test_strict_boundary_includes_durable_work_in_every_operation_bucket(self):
         for operation in ("other", "window_checkpoint"):
@@ -194,7 +209,9 @@ class PaymentBoundaryTests(unittest.TestCase):
                 run.ctl = status
                 with self.assertRaises(RuntimeError):
                     run.boundary(finances, wait=False)
-                self.assertEqual(calls, list(run.nodes) * 2)
+                self.assertEqual(len(calls), 6)
+                for round_calls in (calls[:3], calls[3:]):
+                    self.assertCountEqual(round_calls, run.nodes)
 
     def test_durability_requires_all_original_operation_buckets_and_natural_counters(self):
         run, _, finances = self.fixture()
