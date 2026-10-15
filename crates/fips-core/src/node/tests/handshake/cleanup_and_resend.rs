@@ -367,7 +367,7 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
     let mut msg2 = None;
     let mut established = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.len() < 1) {
+    while tokio::time::Instant::now() < deadline && (msg2.is_none() || established.is_empty()) {
         let packet = tokio::time::timeout(Duration::from_millis(100), initiator_packet_rx.recv())
             .await
             .ok()

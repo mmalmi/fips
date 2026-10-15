@@ -125,6 +125,19 @@ impl Node {
         self.tree_state.set_leaf_only(client);
         self.bloom_state.set_leaf_only(client);
         self.tree_state.advance_role_declaration();
+        if client {
+            // A router's declaration can precede its capability response.
+            // Reuse that authenticated ancestry now: a later duplicate will
+            // correctly be rejected as stale, so waiting for one would leave
+            // the newly active client at its obsolete self root.
+            let peer_costs = self.dataplane_fmp_peer_costs();
+            if let Some(parent) = self.tree_state.evaluate_parent(&peer_costs) {
+                let sequence = self.tree_state.my_declaration().sequence();
+                self.tree_state.set_parent(parent, sequence, crate::time::now_secs());
+                self.tree_state.recompute_coords();
+                self.stats_mut().tree.parent_switches += 1;
+            }
+        }
         if let Err(error) = self.tree_state.sign_declaration(&self.identity) {
             warn!(%error, "Failed to sign declaration after client role change");
         }
