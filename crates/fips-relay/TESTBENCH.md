@@ -60,6 +60,12 @@ resumed. Keep this mint process alive across the relay restart tests. Settle and
 collect the run's balances before ending it. SIGTERM/Ctrl-C ends the fixture;
 this tool does not claim production mint restart support.
 
+Before startup succeeds, each mint saves a private `recovery.json` containing
+its seed, original URL, database path and public keyset. Preserve this record
+with the original mint database and wallets after interruption; it supports
+reviewed recovery of existing funds, not reissuance or restoration of the
+simulator's in-memory Lightning state.
+
 ### Interrupt a committed mint reply
 
 The private administrator socket can hold the next successful swap response

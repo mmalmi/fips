@@ -103,7 +103,7 @@ impl BenchMint {
     pub async fn start(config: BenchConfig) -> Result<Self, String> {
         let entropy = Identity::generate();
         let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
-        Self::start_with_seed(config, seed).await
+        Self::start_seeded(config, seed).await
     }
 
     /// Retain the disposable mint's seed and public keys for reviewed recovery.

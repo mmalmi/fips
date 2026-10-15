@@ -32,8 +32,7 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
         max_issued_sat: 256,
         fragmented_channel_keyset: false,
     };
-    let mut mint = BenchMint::start(mint_config.clone()).await.unwrap();
-    assert!(BenchMint::start(mint_config).await.is_err());
+    let mut mint = BenchMint::start(mint_config).await.unwrap();
     let mut cfg = config(root.path(), mint.url());
     cfg.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024);
     RelayService::initialize(cfg.clone()).await.unwrap();
@@ -362,7 +361,11 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
 
 #[tokio::test]
 async fn test_mint_refuses_public_or_wildcard_binding() {
-    let root = tempfile::tempdir().unwrap();
+    use cashu_service::simulation::{PaymentNetwork, VirtualClock};
+    use std::sync::Arc;
+
+    let root = tempfile::tempdir().unwrap().keep();
+    eprintln!("test mint startup fixture: {}", root.display());
     for address in [
         "0.0.0.0:30338",
         "8.8.8.8:30338",
@@ -370,14 +373,65 @@ async fn test_mint_refuses_public_or_wildcard_binding() {
         "224.0.0.1:30338",
     ] {
         let cfg = BenchConfig {
-            state_directory: root.path().join("mint"),
+            state_directory: root.join("mint"),
             bind: address.parse().unwrap(),
             max_issued_sat: 10,
             fragmented_channel_keyset: false,
         };
         assert!(BenchMint::start(cfg).await.is_err());
-        assert!(!root.path().join("mint").exists());
+        assert!(!root.join("mint").exists());
     }
+    let cfg = BenchConfig {
+        state_directory: root.join("mint"),
+        bind: "127.0.0.1:0".parse().unwrap(),
+        max_issued_sat: 10,
+        fragmented_channel_keyset: false,
+    };
+    let mut mint = BenchMint::start(cfg.clone()).await.unwrap();
+    let recovery_path = cfg.state_directory.join("recovery.json");
+    let recovery_bytes = std::fs::read(&recovery_path).unwrap();
+    let recovery: Value = serde_json::from_slice(&recovery_bytes).unwrap();
+    assert_eq!(
+        std::fs::metadata(&recovery_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(recovery["test_only"], true);
+    assert_eq!(recovery["url"], mint.url());
+    assert_eq!(recovery["mint_id"], "hardware-bench");
+    assert_eq!(recovery["state_directory"], json!(cfg.state_directory));
+    let network = PaymentNetwork::new(
+        recovery["seed"].as_u64().unwrap(),
+        0,
+        Arc::new(VirtualClock::new(0)),
+    );
+    let stem: String = network.derive_seed("hardware-bench")[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let database = cfg
+        .state_directory
+        .join("mints")
+        .join(format!("{stem}.sqlite"));
+    assert!(database.is_file());
+    assert_eq!(recovery["database_path"], json!(database));
+    let keyset = cashu_service::fetch_spilman_keyset_info_json(mint.url(), "sat", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovery["keyset"],
+        serde_json::from_str::<Value>(&keyset).unwrap()
+    );
+    let report = mint.handle(BenchRequest::Report).await.unwrap();
+    assert_eq!(report["issued_sat"], 0);
+    assert_eq!(report["collected_sat"], 0);
+    assert_eq!(report["conserved"], true);
+    mint.shutdown().await;
+    assert!(BenchMint::start(cfg).await.is_err());
+    assert!(std::fs::read(recovery_path).unwrap() == recovery_bytes);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
