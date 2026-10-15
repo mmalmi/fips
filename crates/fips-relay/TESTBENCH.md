@@ -66,6 +66,15 @@ with the original mint database and wallets after interruption; it supports
 reviewed recovery of existing funds, not reissuance or restoration of the
 simulator's in-memory Lightning state.
 
+The r620 ARM64 musl build also passes one unfunded startup, metadata/report and
+graceful shutdown check on an OpenWrt router. The private recovery record matches
+the original database identity and live mint keys; copies of all three original
+SQLite sets pass integrity checks and contain no financial operations. The
+configured ceiling is one test sat, with zero issued. Normal services on all
+three routers remain intact. This qualifies ARM startup, not paid operation,
+mint restart or physical power-loss recovery. Source/artifact bindings and saved
+originals remain in `work/measurement-reconciliation-r620/arm-mint`.
+
 ### Interrupt a committed mint reply
 
 The private administrator socket can hold the next successful swap response
