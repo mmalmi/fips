@@ -1,8 +1,69 @@
 use fips_core::config::{PeerConfig, TransportInstances};
 use fips_core::{Config, FipsEndpoint, Identity, PeerIdentity, UdpConfig, encode_nsec};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<FipsEndpoint> {
+#[derive(Debug, Default)]
+struct InitialHandshakes(Mutex<Vec<(fips_core::NodeAddr, Vec<u8>)>>);
+
+impl fips_core::node::OriginatedSessionObserver for InitialHandshakes {
+    fn observe(&self, request: &fips_core::node::OriginatedSessionRequest<'_>) -> Option<u64> {
+        // MSG1 has a four-byte common prefix. Observe the real wire payload
+        // without supplying a route, handshake, or timing state to the node.
+        if request.session_payload.first() == Some(&0x01) {
+            let setup =
+                fips_core::protocol::SessionSetup::decode(&request.session_payload[4..]).unwrap();
+            let mut handshakes = self.0.lock().unwrap();
+            assert!(handshakes.len() < 16, "bounded first-contact attempts");
+            handshakes.push((request.destination, setup.handshake_payload));
+        }
+        None
+    }
+
+    fn complete(&self, _: u64, _: fips_core::node::ForwardingOutcome) {
+        panic!("passive observation has no accounting reservation");
+    }
+}
+
+struct TestEndpoint {
+    endpoint: FipsEndpoint,
+    control: String,
+    handshakes: Arc<InitialHandshakes>,
+    _directory: tempfile::TempDir,
+}
+impl std::ops::Deref for TestEndpoint {
+    type Target = FipsEndpoint;
+    fn deref(&self) -> &Self::Target {
+        &self.endpoint
+    }
+}
+
+async fn query(node: &TestEndpoint, command: &str) -> serde_json::Value {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    #[cfg(unix)]
+    let mut stream = tokio::net::UnixStream::connect(&node.control)
+        .await
+        .unwrap();
+    #[cfg(windows)]
+    let mut stream =
+        tokio::net::TcpStream::connect(("127.0.0.1", node.control.parse::<u16>().unwrap()))
+            .await
+            .unwrap();
+    stream
+        .write_all(format!("{{\"command\":\"{command}\"}}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .await
+        .unwrap();
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["status"], "ok");
+    response["data"].clone()
+}
+
+async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<TestEndpoint> {
     // Force the client to have the smallest address: it must still follow a
     // router's coordinate root without ever becoming the mesh root itself.
     let mut identities: Vec<_> = (0..count).map(|_| Identity::generate()).collect();
@@ -15,7 +76,22 @@ async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<FipsE
         if reply_learned {
             config.node.routing.mode = fips_core::config::RoutingMode::ReplyLearned;
         }
-        config.node.control.enabled = false;
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let control = directory
+            .path()
+            .join("control.sock")
+            .to_string_lossy()
+            .into_owned();
+        #[cfg(windows)]
+        let control = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+            .to_string();
+        config.node.control.enabled = true;
+        config.node.control.socket_path = control.clone();
         config.node.discovery.lan.enabled = false;
         config.node.discovery.local.enabled = false;
         config.node.discovery.nostr.enabled = false;
@@ -23,19 +99,26 @@ async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<FipsE
             bind_addr: Some("127.0.0.1:0".into()),
             ..UdpConfig::default()
         });
+        let handshakes = Arc::new(InitialHandshakes::default());
         let node = FipsEndpoint::builder()
             .config(config)
+            .originated_session_observer(handshakes.clone())
             .without_system_tun()
             .bind()
             .await
             .unwrap();
         node.register_service(44_000).await.unwrap();
-        nodes.push(node);
+        nodes.push(TestEndpoint {
+            endpoint: node,
+            control,
+            handshakes,
+            _directory: directory,
+        });
     }
     nodes
 }
 
-async fn connect(nodes: &[FipsEndpoint], edges: &[(usize, usize)]) {
+async fn connect(nodes: &[TestEndpoint], edges: &[(usize, usize)], client: bool) {
     let mut addresses = Vec::new();
     for node in nodes {
         addresses.push(node.bound_udp_listen_addrs().await.unwrap()[0]);
@@ -64,13 +147,40 @@ async fn connect(nodes: &[FipsEndpoint], edges: &[(usize, usize)]) {
                     .count();
             }
             if count == edges.len() * 2 {
-                break;
+                if !client {
+                    break;
+                }
+                // Authentication precedes capability and role negotiation. Do
+                // not mistake the required legacy-compatible router phase for
+                // an active client, or prewarm an FSP session before this gate.
+                let status = query(&nodes[0], "show_status").await;
+                let tree = query(&nodes[0], "show_tree").await;
+                let identity = hex::encode(nodes[0].node_addr().as_bytes());
+                let mut advertised = true;
+                for &(left, right) in edges {
+                    let upstream = if left == 0 {
+                        right
+                    } else if right == 0 {
+                        left
+                    } else {
+                        continue;
+                    };
+                    let bloom = query(&nodes[upstream], "show_bloom").await;
+                    advertised &= bloom["leaf_dependents"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|peer| peer.as_str() == Some(identity.as_str()));
+                }
+                if status["is_leaf_only"] == true && tree["is_root"] == false && advertised {
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("authenticated adjacencies");
+    .expect("authenticated adjacencies and negotiated client routing");
 }
 
 async fn delivered(source: &FipsEndpoint, dest: &FipsEndpoint, payload: &[u8]) -> bool {
@@ -100,18 +210,33 @@ async fn delivered(source: &FipsEndpoint, dest: &FipsEndpoint, payload: &[u8]) -
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_only_remains_reachable_through_each_upstream_and_after_rebind() {
-    reachable(false).await;
-    reachable(true).await;
+    reachable(false, false).await;
+    reachable(true, false).await;
 }
 
-async fn reachable(reply_learned: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn negotiated_client_remains_reachable_through_each_upstream_and_after_rebind() {
+    reachable(false, true).await;
+    reachable(true, true).await;
+}
+
+async fn reachable(reply_learned: bool, wait_for_client: bool) {
     for upstreams in [vec![1], vec![2], vec![1, 2]] {
         let nodes = endpoints(4, true, reply_learned).await;
         let mut edges = vec![(1, 2), (2, 3)];
         edges.extend(upstreams.iter().map(|upstream| (0, *upstream)));
-        connect(&nodes, &edges).await;
+        connect(&nodes, &edges, wait_for_client).await;
         // New sessions in both directions, with no supplied remote route.
         let inbound = delivered(&nodes[3], &nodes[0], b"first inbound").await;
+        {
+            let attempts = nodes[3].handshakes.0.lock().unwrap();
+            let first = attempts.first().expect("a real initial Noise handshake");
+            assert_eq!(first.0, *nodes[0].node_addr());
+            assert!(
+                attempts.iter().all(|attempt| attempt == first),
+                "route recovery must retain the original Noise msg1"
+            );
+        }
         let outbound = delivered(&nodes[0], &nodes[3], b"first outbound").await;
         nodes[0].rebind_network_transports(None).await.unwrap();
         let rebound_out = delivered(&nodes[0], &nodes[3], b"rebound outbound").await;
@@ -130,7 +255,7 @@ async fn reachable(reply_learned: bool) {
 async fn client_only_cannot_bridge_unrelated_sessions_but_router_can() {
     for client in [false, true] {
         let nodes = endpoints(3, client, true).await;
-        connect(&nodes, &[(1, 0), (0, 2)]).await;
+        connect(&nodes, &[(1, 0), (0, 2)], client).await;
         let own = delivered(&nodes[0], &nodes[1], b"client's own session").await;
         let transit = delivered(&nodes[1], &nodes[2], b"unrelated transit").await;
         for node in &nodes {

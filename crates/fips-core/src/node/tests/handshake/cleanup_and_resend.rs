@@ -300,6 +300,7 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
     use crate::{ReceivedPacket, SimNetwork};
 
     let mut responder = make_node();
+    responder.config.node.leaf_only = true;
     let initiator = Identity::generate();
     let initiator_peer = PeerIdentity::from_pubkey_full(initiator.pubkey_full());
     let initiator_addr = *initiator_peer.node_addr();

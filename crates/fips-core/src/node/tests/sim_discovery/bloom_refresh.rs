@@ -30,6 +30,16 @@ fn anchor_filter_waits_for_delayed_recipient_acceptance() {
     run(Case::DelayedAnchor);
 }
 
+#[test]
+fn router_refresh_does_not_repeat_client_negotiation() {
+    run(Case::RouterRefresh);
+}
+
+#[test]
+fn canceled_client_capability_preserves_tree_pacing_and_recovers_lost_reply() {
+    run(Case::ClientCapabilityCancellation);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Case {
     Refresh,
@@ -37,6 +47,8 @@ enum Case {
     FastCancellation,
     TreeCancellation,
     DelayedAnchor,
+    RouterRefresh,
+    ClientCapabilityCancellation,
 }
 
 fn run(case: Case) {
@@ -73,6 +85,10 @@ fn run(case: Case) {
                 Case::FastCancellation => fast_cancellation(&mut nodes, &network, false).await,
                 Case::TreeCancellation => fast_cancellation(&mut nodes, &network, true).await,
                 Case::DelayedAnchor => delayed_anchor(&mut nodes, &network).await,
+                Case::RouterRefresh => router_refresh(&mut nodes, &network).await,
+                Case::ClientCapabilityCancellation => {
+                    client_capability_cancellation(&mut nodes, &network).await
+                }
             }
             assert_eq!(
                 self::owners(&nodes),
@@ -91,6 +107,167 @@ fn run(case: Case) {
             std::panic::resume_unwind(panic);
         }
     });
+}
+
+async fn router_refresh(nodes: &mut [TestNode], network: &SimNetwork) {
+    let peer = *nodes[1].node.node_addr();
+    let previous = nodes[0]
+        .node
+        .get_peer(&peer)
+        .unwrap()
+        .last_tree_announce_sent_ms();
+    while !nodes[0]
+        .node
+        .get_peer(&peer)
+        .unwrap()
+        .can_send_tree_announce(Node::now_ms())
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let sent = nodes[0].node.stats().tree.sent;
+    let packets = network.stats().packets_sent;
+    // One real encrypted send completes inside this budget; two sequential
+    // sends cannot. No protocol timer or successful-send history is rewritten.
+    network.set_node_send_completion_delay(nodes[0].addr.as_str().unwrap(), 30);
+    let completed = tokio::time::timeout(
+        Duration::from_millis(45),
+        nodes[0].node.send_tree_announce_to_peer(&peer),
+    )
+    .await;
+    network.set_node_send_completion_delay(nodes[0].addr.as_str().unwrap(), 0);
+    assert!(
+        completed.is_ok(),
+        "ordinary router refresh exceeded a one-send budget; packets={}",
+        network.stats().packets_sent - packets
+    );
+    completed.unwrap().unwrap();
+    assert_eq!(nodes[0].node.stats().tree.sent, sent + 1);
+    assert!(
+        nodes[0]
+            .node
+            .get_peer(&peer)
+            .unwrap()
+            .last_tree_announce_sent_ms()
+            > previous
+    );
+    assert_eq!(network.stats().packets_sent, packets + 1);
+    process_available_packets(nodes).await;
+}
+
+async fn client_capability_cancellation(nodes: &mut [TestNode], network: &SimNetwork) {
+    let client = *nodes[0].node.node_addr();
+    let router = *nodes[1].node.node_addr();
+    assert!(
+        nodes[0]
+            .node
+            .peers
+            .values()
+            .all(|peer| !peer.client_only_supported)
+    );
+    // Opt an already authenticated router into client mode. Learned peer
+    // capabilities, key epochs and successful-send history remain untouched.
+    nodes[0].node.config.node.leaf_only = true;
+    nodes[0].node.refresh_client_role();
+    assert!(!nodes[0].node.is_leaf_only);
+    while !nodes[0]
+        .node
+        .get_peer(&router)
+        .unwrap()
+        .can_send_tree_announce(Node::now_ms())
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let previous = nodes[0]
+        .node
+        .get_peer(&router)
+        .unwrap()
+        .last_tree_announce_sent_ms();
+    let sent = nodes[0].node.stats().tree.sent;
+    let packets = network.stats().packets_sent;
+    network.set_node_send_completion_delay(nodes[0].addr.as_str().unwrap(), 30);
+    let result = tokio::time::timeout(
+        Duration::from_millis(45),
+        nodes[0].node.send_tree_announce_to_peer(&router),
+    )
+    .await;
+    network.set_node_send_completion_delay(nodes[0].addr.as_str().unwrap(), 0);
+    assert!(
+        result.is_err(),
+        "cancel the unfinished capability after its completed tree send"
+    );
+    assert_eq!(network.stats().packets_sent, packets + 2);
+    assert_eq!(nodes[0].node.stats().tree.sent, sent + 1);
+    let peer = nodes[0].node.get_peer(&router).unwrap();
+    assert!(peer.last_tree_announce_sent_ms() > previous);
+    assert!(peer.has_pending_tree_announce());
+    assert!(!peer.can_send_tree_announce(Node::now_ms()));
+    nodes[0]
+        .node
+        .send_tree_announce_to_peer(&router)
+        .await
+        .unwrap();
+    assert_eq!(
+        network.stats().packets_sent,
+        packets + 2,
+        "cancellation must not replay the tree before its rate limit"
+    );
+
+    // Drop the first router response, including its capability. Delivery is
+    // recovered by the existing periodic announcement, with no new timer.
+    let from = nodes[1].addr.as_str().unwrap().to_string();
+    let to = nodes[0].addr.as_str().unwrap().to_string();
+    network.set_directed_link(
+        &from,
+        &to,
+        Some(SimLink {
+            up: false,
+            ..Default::default()
+        }),
+    );
+    process_available_packets(nodes).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_peer(&client)
+            .unwrap()
+            .client_only_supported
+    );
+    while !nodes[1]
+        .node
+        .get_peer(&client)
+        .unwrap()
+        .can_send_tree_announce(Node::now_ms())
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    nodes[1]
+        .node
+        .send_tree_announce_to_peer(&client)
+        .await
+        .unwrap();
+    assert!(
+        !nodes[0]
+            .node
+            .get_peer(&router)
+            .unwrap()
+            .client_only_supported
+    );
+    network.set_directed_link(&from, &to, Some(SimLink::default()));
+    let until = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        turn(nodes).await;
+        if nodes[0].node.is_leaf_only
+            && nodes[1..]
+                .iter()
+                .all(|node| node.node.get_peer(&client).unwrap().client_only)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < until,
+            "lost capability reply must recover on the existing cadence"
+        );
+    }
 }
 
 fn owners(nodes: &[TestNode]) -> Vec<(LinkId, Option<SessionIndex>, u64)> {

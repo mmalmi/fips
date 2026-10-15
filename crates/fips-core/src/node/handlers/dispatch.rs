@@ -68,7 +68,7 @@ impl Node {
                 self.handle_client_only(&source_addr, payload);
             }
             0x53 => {
-                self.handle_client_support(&source_addr, payload);
+                self.handle_client_support(&source_addr, payload).await;
             }
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
@@ -76,15 +76,31 @@ impl Node {
         }
     }
 
-    fn handle_client_support(&mut self, from: &NodeAddr, payload: &[u8]) {
+    async fn handle_client_support(&mut self, from: &NodeAddr, payload: &[u8]) {
         if !payload.is_empty() {
             return;
         }
         if let Some(peer) = self.peers.get_mut(from)
             && !peer.client_only_supported
         {
+            let reply = !self.config.node.leaf_only && !peer.client_only;
             peer.client_only_supported = true;
             self.refresh_client_role();
+            self.mark_tree_announce_pending(from);
+            // Complete first-contact negotiation without waiting for another
+            // tree announcement. Only the first authenticated capability gets
+            // this reply; periodic announcements recover a lost response.
+            if reply
+                && let Err(error) = self
+                    .send_dataplane_fmp_link_plaintext(
+                        from,
+                        &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
+                        false,
+                    )
+                    .await
+            {
+                debug!(%error, "Client capability reply remains pending");
+            }
         }
     }
 
@@ -106,7 +122,8 @@ impl Node {
         }
         peer.routing_role_sequence = Some(sequence);
         peer.client_only = true;
-        self.handle_client_support(from, &[]);
+        peer.client_only_supported = true;
+        self.refresh_client_role();
         let changed = !self.bloom_state.leaf_dependents().contains(from);
         self.bloom_state.add_leaf_dependent(*from);
         if changed {

@@ -165,6 +165,13 @@ impl Node {
             return Ok(());
         }
 
+        // Clients initiate negotiation. Routers reply only to a capable peer
+        // until its client declaration confirms receipt. Ordinary router and
+        // legacy adjacencies keep their existing single announcement send.
+        let send_support = !self.is_leaf_only
+            && !peer.client_only
+            && (self.config.node.leaf_only || peer.client_only_supported);
+
         // Every neighbor of an active client can withdraw its old tree role.
         // Older-only and mixed-adjacency networks retain ordinary routing.
         let encoded = if self.is_leaf_only {
@@ -189,25 +196,29 @@ impl Node {
             return Err(e);
         }
 
-        // Keep the existing routing announcement first during bootstrap.
-        // Repeat capability on its existing cadence so a lost packet recovers.
-        if let Err(error) = self
-            .send_dataplane_fmp_link_plaintext(
-                peer_addr,
-                &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
-                false,
-            )
-            .await
-        {
-            self.stats_mut().tree.send_failed += 1;
-            return Err(error);
-        }
-
         self.stats_mut().tree.sent += 1;
-
-        // Record send time
         if let Some(peer) = self.peers.get_mut(peer_addr) {
             peer.record_tree_announce_sent(now_ms);
+        }
+
+        if send_support {
+            // Commit the successful tree send before awaiting capability. A
+            // canceled reply stays pending but cannot replay that tree early.
+            self.mark_tree_announce_pending(peer_addr);
+            if let Err(error) = self
+                .send_dataplane_fmp_link_plaintext(
+                    peer_addr,
+                    &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
+                    false,
+                )
+                .await
+            {
+                self.stats_mut().tree.send_failed += 1;
+                return Err(error);
+            }
+            if let Some(peer) = self.peers.get_mut(peer_addr) {
+                peer.record_tree_announce_sent(now_ms);
+            }
         }
 
         trace!(peer = %self.peer_display_name(peer_addr), "Sent TreeAnnounce");

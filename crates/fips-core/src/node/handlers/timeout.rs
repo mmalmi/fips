@@ -479,10 +479,25 @@ impl Node {
             .due_session_handshake_resends(now_ms, max_resends);
 
         for candidate in candidates {
-            use crate::protocol::SessionDatagram;
+            use crate::node::session_wire::FSP_COMMON_PREFIX_SIZE;
+            use crate::protocol::{SessionDatagram, SessionSetup};
 
             let mut datagram =
                 SessionDatagram::new(my_addr, candidate.dest_addr, candidate.payload).with_ttl(ttl);
+            if self
+                .sessions
+                .get(&candidate.dest_addr)
+                .is_some_and(|entry| entry.is_initiating())
+                && let Some(inner) = datagram.payload.get(FSP_COMMON_PREFIX_SIZE..)
+                && let Ok(mut setup) = SessionSetup::decode(inner)
+            {
+                // Coordinates describe the current route, not the Noise
+                // generation. A root withdrawal must not keep advertising
+                // an obsolete return path in every retry of the same msg1.
+                setup.src_coords = self.tree_state.my_coords().clone();
+                setup.dest_coords = self.get_dest_coords(&candidate.dest_addr);
+                datagram.payload = setup.encode();
+            }
             let sent = match self.send_session_datagram(&mut datagram).await {
                 Ok(_) => true,
                 Err(e) => {
@@ -491,6 +506,20 @@ impl Node {
                         error = %e,
                         "Session handshake resend failed"
                     );
+                    // A tree change can remove the route after msg1 was
+                    // emitted. Keep that Noise generation and queued demand,
+                    // but rediscover coordinates instead of waiting for the
+                    // entire handshake to expire. Only locally initiated
+                    // first contact can request this bounded discovery.
+                    if self
+                        .sessions
+                        .get(&candidate.dest_addr)
+                        .is_some_and(|entry| entry.is_initiating())
+                        && self.pending_session_traffic.has_traffic_for(&candidate.dest_addr)
+                        && self.find_next_hop(&candidate.dest_addr).is_none()
+                    {
+                        self.maybe_initiate_lookup(&candidate.dest_addr).await;
+                    }
                     false
                 }
             };
