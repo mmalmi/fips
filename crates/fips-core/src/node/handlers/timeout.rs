@@ -515,7 +515,9 @@ impl Node {
                         .sessions
                         .get(&candidate.dest_addr)
                         .is_some_and(|entry| entry.is_initiating())
-                        && self.pending_session_traffic.has_traffic_for(&candidate.dest_addr)
+                        && self
+                            .pending_session_traffic
+                            .has_traffic_for(&candidate.dest_addr)
                         && self.find_next_hop(&candidate.dest_addr).is_none()
                     {
                         self.maybe_initiate_lookup(&candidate.dest_addr).await;

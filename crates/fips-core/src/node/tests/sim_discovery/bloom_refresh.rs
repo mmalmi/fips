@@ -197,6 +197,24 @@ async fn client_capability_cancellation(nodes: &mut [TestNode], network: &SimNet
     // First contact sends capability alone. A lost reply may require the
     // ordinary router fallback, but cannot advertise a transient root before
     // the neighbor has had an announcement interval to answer.
+    let previous = nodes[0]
+        .node
+        .get_peer(&router)
+        .unwrap()
+        .last_tree_announce_sent_ms();
+    network.set_node_send_completion_delay(nodes[0].addr.as_str().unwrap(), 30);
+    let canceled = tokio::time::timeout(
+        Duration::from_millis(10),
+        nodes[0].node.send_tree_announce_to_peer(&router),
+    )
+    .await;
+    network.set_node_send_completion_delay(nodes[0].addr.as_str().unwrap(), 0);
+    assert!(canceled.is_err());
+    let peer = nodes[0].node.get_peer(&router).unwrap();
+    assert!(!peer.client_support_sent);
+    assert_eq!(peer.last_tree_announce_sent_ms(), previous);
+    assert!(peer.has_pending_tree_announce());
+    assert!(peer.can_send_tree_announce(Node::now_ms()));
     let first_packets = network.stats().packets_sent;
     let first_tree = nodes[0].node.stats().tree.sent;
     nodes[0]

@@ -133,7 +133,8 @@ impl Node {
             let peer_costs = self.dataplane_fmp_peer_costs();
             if let Some(parent) = self.tree_state.evaluate_parent(&peer_costs) {
                 let sequence = self.tree_state.my_declaration().sequence();
-                self.tree_state.set_parent(parent, sequence, crate::time::now_secs());
+                self.tree_state
+                    .set_parent(parent, sequence, crate::time::now_secs());
                 self.tree_state.recompute_coords();
                 self.stats_mut().tree.parent_switches += 1;
             }
@@ -178,10 +179,7 @@ impl Node {
             return Ok(());
         }
 
-        if self.config.node.leaf_only
-            && !peer.client_only_supported
-            && !peer.client_support_sent
-        {
+        if self.config.node.leaf_only && !peer.client_only_supported && !peer.client_support_sent {
             let upstream_announced = self.tree_state.peer_coords(peer_addr).is_some();
             // Give a capable neighbor the first announcement interval to
             // reply before advertising a temporary router/root role. Older

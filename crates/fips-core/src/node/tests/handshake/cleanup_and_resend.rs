@@ -404,10 +404,7 @@ async fn owned_msg2_send_failure_retries_without_index_leak_and_bootstraps() {
         message_types.push(*plaintext.get(4).expect("link message type"));
     }
     message_types.sort_unstable();
-    assert_eq!(
-        message_types,
-        [LinkMessageType::TreeAnnounce.to_byte()]
-    );
+    assert_eq!(message_types, [LinkMessageType::TreeAnnounce.to_byte()]);
     assert!(responder.bloom_state.needs_update(&initiator_addr));
     assert_eq!(responder.index_allocator.count(), 1);
     assert!(responder.get_peer(&initiator_addr).is_some());
