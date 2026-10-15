@@ -438,6 +438,7 @@ protocol version, session lifecycle phase, per-packet flags, and payload length.
 | 0x1 | Handshake msg1 | SessionSetup (Noise XK msg1) |
 | 0x2 | Handshake msg2 | SessionAck (Noise XK msg2) |
 | 0x3 | Handshake msg3 | SessionMsg3 (Noise XK msg3) |
+| 0x4 | Rekey confirmation | SessionConfirm (empty authenticated proof) |
 
 ### FSP Flags (Established Phase Only)
 
@@ -448,7 +449,7 @@ protocol version, session lifecycle phase, per-packet flags, and payload length.
 | 2 | U (unencrypted) | Payload is plaintext (error signals) |
 | 3-7 | — | Reserved (must be zero) |
 
-Flags must be zero in handshake packets (phase 0x1, 0x2, and 0x3).
+Flags must be zero in handshake packets (phase 0x1 through 0x4).
 
 ### FSP Encrypted Message (phase 0x0, U flag clear)
 
@@ -584,6 +585,41 @@ Encoded with FSP prefix: ver=0, phase=0x3, flags=0, payload_len.
 
 SessionMsg3 does not carry coordinates — both endpoints already have each
 other's coordinates from SessionSetup (msg1) and SessionAck (msg2).
+
+### SessionConfirm (phase 0x4)
+
+A responder confirms rekey cutover after authenticating an empty CoordsWarmup
+under the new epoch and promoting that epoch. This lets a one-way paid route
+complete rekeying even when ordinary reverse traffic has no purchased allowance.
+
+| Offset | Field | Size | Required value |
+| ------ | ----- | ---- | -------------- |
+| 0 | version and phase | 1 byte | 0x04 |
+| 1 | flags | 1 byte | 0 |
+| 2 | payload_len | 2 bytes LE | 0 (empty plaintext) |
+| 4 | counter | 8 bytes LE | 0 |
+| 12 | AEAD tag | 16 bytes | Tag for empty plaintext, with bytes 0–11 as AAD |
+
+The complete message is exactly **28 bytes**. It has no K bit, coordinates,
+inner header, application payload, or extensions. The responder reserves nonce
+zero before exposing the fresh epoch to transmission, caches the proof with
+that epoch, and resends identical bytes when existing probes trigger a retry.
+This leaves ordinary traffic counters contiguous for MMP loss measurement.
+
+Only the rekey initiator accepts the proof, using its exact pending receive key
+and the dataplane owner's replay window. There is no current-key or old-key
+fallback. Success promotes the pending epoch; it does not acknowledge application
+delivery or contribute packet counts to MMP. Old or draining warmups and
+unpromoted pending traffic cannot trigger a confirmation.
+
+Strictly shaped confirmations share the existing bounded handshake allowance,
+including its minimum charge and aggregate and per-neighbor limits. Endpoint
+responses also share the coordinate-response and established-handshake rate
+limits. Data, measurement reports, and price requests retain their usual pricing.
+
+For an unfunded reverse path, both endpoints and transit relays must understand
+phase 0x4. Older relays do not classify it for the handshake allowance; this
+extension does not make mixed-version one-way paid routes reliable.
 
 ### Data (0x10) — DataPacket Port Multiplexing
 
@@ -862,6 +898,7 @@ endpoint session keys).
 | SessionSetup | ~170 bytes | Depth-dependent (XK msg1 = 33 bytes) |
 | SessionAck | ~190 bytes | Depth-dependent, carries both endpoints' coords (XK msg2 = 57 bytes) |
 | SessionMsg3 | ~80 bytes | Fixed (XK msg3 = 73 bytes, no coords) |
+| SessionConfirm | 28 bytes | Fixed rekey proof, empty plaintext |
 | Data (minimal) | 12 + 6 + 4 + payload + 16 bytes | Steady state (port header included) |
 | Data (with coords) | 12 + ~130 + 6 + 4 + payload + 16 bytes | Warmup/recovery (port header included) |
 | SenderReport | 12 + 6 + 46 + 16 bytes | MMP metrics |

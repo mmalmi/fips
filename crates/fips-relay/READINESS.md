@@ -1,8 +1,9 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-15 October 2026. Runtime `2aaef7cc8` includes the control idle-expiry fix and
-preserves completed renewal handovers through late expiry recovery. r599 passes
+15 October 2026. Runtime `4cb34fe19` adds bounded key confirmation for one-way paid
+routes and retains the control idle-expiry and completed-handover recovery fixes.
+r599 passes
 25 focused checks and closes both original failed carrier wallets without new
 issuance or channels; all 768 test sats are accounted for.
 SDK `dad0fc3` releases the client store during wallet retirement work and permits
@@ -22,11 +23,18 @@ the handover validation fix. r600/r601 qualify the ordinary ARM64 build, but
 r601 fails paid delivery during fragmented retirement: the destination reports
 session decryption failures. Its 15 old channels retire and all 384 test sats
 are collected; this closes its financial state, not its delivery acceptance.
-r603 reproduces the one-way session failure on a fixed UDP line with reverse
-allowance disabled, after the recipient changes keys and drains its old epoch.
-The source retains its old key; all 16 fresh packets fail delivery. Its original
-1,024 test sats are conserved. The protocol fix and target qualification remain
-in progress.
+r603 reproduces that failure on a fixed UDP line with reverse allowance disabled:
+the recipient changes keys and drains its old epoch while the source retains its
+old key, losing all 16 fresh packets. The fixed runtime passes 16/16 after a real
+drain, the original restart/payment checks, and the bounded-return quality case.
+Seven focused core checks and affected lint, format and size gates pass; the
+ordinary ARM64 build is qualified for subsequent device acceptance. Successful
+native fixtures conserve 1,024 test sats each through their existing assertions.
+The two failed originals retain their verdicts and have independent financial
+audits; recovery honors signed claims without clearing unpaid grace exposure.
+One-way paths without delivery feedback can still trigger later recovery rekeys
+and priced probes during long idle periods. The short idle check does not qualify
+zero long-term control cost. Hardware acceptance of this fix remains open.
 CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
 are removed and failed financial originals remain retained. Earlier hardware
 results retain their recorded graph. Final acceptance reconciliation
@@ -143,7 +151,7 @@ Reuse the existing harness for admission, rollback and reserved completion check
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| r603 one-way session reproduction | The unchanged ordinary runtime on five UDP nodes reproduces divergent key epochs with `return_allowance=false`: the recipient rotates and finishes draining its old key, while the source keeps its old key. All 16 fresh packets submit and none arrive. This needs no radio change, topology filtering or wallet maintenance. The test fails after settling its three original forward channels; independent checks of 11 databases conserve all 1,024 test sats with no pending operations or duplicate/mint-spent live coins. | **A reproduced protocol failure, not acceptance.** The encrypted key confirmation cannot cross the unpaid reverse path. The fix must retain dropped-handshake recovery and bounded free control without exempting application traffic. Original failure, source/artifact/log hashes and financial archives remain in `work/one-way-rekey-r603/attempt-1`. |
+| r603 one-way key confirmation | Runtime `4cb34fe19` adds a fixed 28-byte authenticated rekey proof within the existing handshake limits. It reserves nonce zero before exposing the new epoch and retries identical bytes, preserving replay authority and MMP counters. Seven focused core checks cover confirmation, malformed/replayed/wrong-key traffic, response gates, dropped handshake/proof retry and ordinary-report recovery. Both ordinary native fixtures pass, including 16/16 fresh packets after a real drain with `return_allowance=false`, restart, reverse-payment limits and 1,024-sat conservation per fixture. Strict affected lint, format, size and ordinary ARM64 build checks pass. | The original runtime's 0/16 failure is preserved. The first fixed fixture delivers 16/16 but fails an idle assertion placed after the new long workload; the final fixture restores the original idle check's placement and accepts a drain already in progress. Both failed originals are independently reconciled. The latter's signed payments 13/9/5 and refunds 19/23/27 are recovered into wallets `[243,260,260,261,0]`; retained grace debt is 3,012/3,008/3,004 msat. Successful-fixture evidence is source/output verification, not a post-success database audit. [Wire format and upgrade requirements](../../docs/design/fips-wire-formats.md#sessionconfirm-phase-0x4) apply; hardware acceptance and long-idle probe costs remain open. Exact evidence stays in `work/one-way-rekey-r603`. |
 | r602 renewal during retirement | The existing ordinary-process fixture now also makes renewal due while 15 closed channels retain 480 refund coins. Across 32 status samples, payments and delivery advance while retirement prevents new funding IDs or reservations. After release, exactly one successor reserves 32 sats; payments on the predecessor continue while its mint reply is held. The original successor completes automatically with preserved lifetime totals. The new case and original payment case pass, and independent SQLite checks conserve all 768 test sats without pending operations or duplicate/mint-spent live coins. Build, strict affected lint, formatting and size checks pass. | Test-only changes on the current ordinary Linux runtime, with `return_allowance=false`. This qualifies the recorded renewal/retirement overlap; it does not close the separate r601 session failure, hardware renewal, new-purchase contention, signing-latency or performance acceptance. Both setup-only failures are preserved with zero issuance. Sources, logs and original stopped fixtures are bound in `work/renewal-retirement-r602`. |
 | r601 fragmented-router attempt | The ordinary ARM64 build includes runtime `2aaef7cc8` and SDK `dad0fc3`. Corrected fixture qualification passes six native mint cases, 43 harness checks and strict affected lint/format/size checks. Three routers retain 480 original refund coins, then submit 512 paid packets while cleanup is held. Signing and provider credit advance, but all six receiver samples report zero delivery and the destination reports session decryption failures. Normal closure retires all 15 old channels and collects all 384 original test sats; independent checks cover all nine databases and preserve lifetime debits/refunds. | **Delivery acceptance failed; post-release traffic was not reached.** One warmup packet arrived. The 2,354 management checks pass, normal services/accounts are restored, and closed profiles are archived before removal. r603 separately reproduces the session failure without wallet maintenance; this is not evidence that payment signing caused it. Failed results and exact source/artifact/archive bindings remain in `work/cudy-retirement-r601`. |
 | r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. r600/r601 qualify its ordinary ARM64 build; final physical acceptance remains open. |
