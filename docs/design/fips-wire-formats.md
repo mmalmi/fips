@@ -117,6 +117,40 @@ the 1-byte message type and message-specific fields.
 | 0x31 | LookupResponse | Coordinate discovery response |
 | 0x50 | Disconnect | Orderly link teardown |
 | 0x51 | Heartbeat | Link liveness probe |
+| 0x52 | ClientOnly | Authenticated client role; u64 LE declaration sequence |
+| 0x53 | ClientSupport | Client role capability; no payload |
+
+### Client role negotiation (0x52, 0x53)
+
+Both are authenticated link control messages. ClientSupport contains only its
+type byte; ClientOnly carries the sender's declaration sequence as an eight-byte
+little-endian integer.
+`ClientSupport` (0x53) announces support without declaring a routing role. A node
+configured with `node.leaf_only = true` activates client-only routing only when
+all of its sendable neighbors have announced support. Until then, and whenever
+a legacy neighbor joins, it retains normal routing and TreeAnnounce behavior.
+This preserves first-contact reachability in older-only networks.
+
+An active client sends `ClientOnly` (0x52) instead of TreeAnnounce. It names only
+the identity authenticated by that link; payloads other than eight bytes are
+invalid. Role changes advance the declaration sequence. Receivers reject stale
+roles, including a delayed router declaration after a newer client role. A receiver
+withdraws that peer's tree position and advertises its identity in its own Bloom
+filter, excluding the client from unrelated discovery and transit routes. The
+client answers its own lookups and receives its own session datagrams normally.
+ClientOnly also implies ClientSupport.
+
+Role controls and TreeAnnounce are accepted only from the current key epoch.
+A newer valid router declaration restores router participation. Peer removal withdraws
+the dependent identity; authenticated process restart clears learned capability.
+Capabilities and roles are repeated using the existing tree announce cadence,
+so losing or reordering a capability retains ordinary routing until recovery.
+No existing handshake, tree, lookup or session record encoding changes.
+
+Older peers ignore the unknown controls without closing their links. A client
+therefore falls back to router mode for a direct legacy adjacency. Older peers
+elsewhere in a mixed mesh can discover a client through a supporting upstream's
+ordinary Bloom advertisements and use unchanged lookup/session records.
 
 ### Noise IK Message 1 (phase 0x1)
 

@@ -724,7 +724,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub identity: IdentityConfig,
 
-    /// Leaf-only mode (`node.leaf_only`).
+    /// Prefer client-only routing (`node.leaf_only`) when every live neighbor
+    /// supports it. Legacy adjacencies retain ordinary router behavior.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub leaf_only: bool,
 

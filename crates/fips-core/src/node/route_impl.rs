@@ -117,7 +117,10 @@ impl Node {
     /// non-local destination.
     pub fn find_next_hop(&mut self, dest_node_addr: &NodeAddr) -> Option<&ActivePeer> {
         if let Some(next) = self.source_routes.get(dest_node_addr) {
-            return self.peers.get(next).filter(|p| p.can_send());
+            return self
+                .peers
+                .get(next)
+                .filter(|p| p.can_send() && (next == dest_node_addr || !p.client_only));
         }
         self.find_native_next_hop(dest_node_addr)
     }
@@ -226,10 +229,9 @@ impl Node {
                         self.session_direct_path_exclusive_trust_timeout_ms(),
                     )
                     && !failed_learned_routes.contains(&next_hop)
-                    && self
-                        .peers
-                        .get(&next_hop)
-                        .is_some_and(|peer| peer.is_healthy() && peer.can_send()))
+                    && self.peers.get(&next_hop).is_some_and(|peer| {
+                        peer.is_healthy() && peer.can_send() && !peer.client_only
+                    }))
                 .then_some(next_hop)
             })
             .flatten();
@@ -257,7 +259,7 @@ impl Node {
             if addr == dest_node_addr {
                 direct_payload_eligible
             } else {
-                peer.is_healthy() && !failed_learned_routes.contains(addr)
+                peer.is_healthy() && !peer.client_only && !failed_learned_routes.contains(addr)
             }
         };
 
@@ -436,7 +438,9 @@ impl Node {
             let sendable = self
                 .peers
                 .iter()
-                .filter(|(addr, peer)| *addr != previous_hop && peer.is_healthy())
+                .filter(|(addr, peer)| {
+                    *addr != previous_hop && peer.is_healthy() && !peer.client_only
+                })
                 .map(|(addr, _)| *addr)
                 .collect::<HashSet<_>>();
             if let Some(next_hop_addr) =
@@ -577,7 +581,7 @@ impl Node {
                 if !direct_payload_eligible {
                     continue;
                 }
-            } else if !peer.is_healthy() {
+            } else if !peer.is_healthy() || peer.client_only {
                 continue;
             }
 
@@ -755,9 +759,11 @@ impl Node {
             current_next_hop,
             now_ms,
             |next_hop| {
-                self.peers
-                    .get(next_hop)
-                    .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+                self.peers.get(next_hop).is_some_and(|peer| {
+                    peer.is_healthy()
+                        && peer.can_send()
+                        && (next_hop == destination || !peer.client_only)
+                })
             },
         )
     }
@@ -822,7 +828,9 @@ impl Node {
         let mut best: Option<(&ActivePeer, f64, usize)> = None;
 
         for &candidate in candidates {
-            if !candidate.can_send() {
+            if !candidate.can_send()
+                || (candidate.client_only && candidate.node_addr() != dest_coords.node_addr())
+            {
                 continue;
             }
 

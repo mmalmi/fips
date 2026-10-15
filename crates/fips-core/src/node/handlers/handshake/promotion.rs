@@ -550,7 +550,11 @@ impl Node {
     pub(in crate::node) fn reset_peer_routing_after_restart(&mut self, peer: &NodeAddr) {
         if let Some(active) = self.peers.get_mut(peer) {
             active.clear_filter();
+            active.client_only_supported = false;
+            active.client_only = false;
+            active.routing_role_sequence = None;
         }
+        self.refresh_client_role();
         self.handle_peer_removal_tree_cleanup(peer);
         self.coord_cache.invalidate_via_node(peer);
         self.refresh_tree_application_routes();

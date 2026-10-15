@@ -8,7 +8,7 @@ use crate::NodeAddr;
 /// One immutable input view for a recipient fanout. Shared bits survive the
 /// exclusion of any one peer, including overlap with our local identities.
 pub(crate) struct OutgoingBloomFilters<'a> {
-    peers: &'a HashMap<NodeAddr, BloomFilter>,
+    peers: Option<&'a HashMap<NodeAddr, BloomFilter>>,
     combined: Vec<u8>,
     shared: Vec<u8>,
     hash_count: u8,
@@ -16,7 +16,7 @@ pub(crate) struct OutgoingBloomFilters<'a> {
 
 impl OutgoingBloomFilters<'_> {
     fn excluded(&self, peer: &NodeAddr) -> Option<&BloomFilter> {
-        self.peers
+        self.peers?
             .get(peer)
             .filter(|filter| filter.num_bytes() == self.combined.len())
     }
@@ -100,6 +100,10 @@ impl BloomState {
         let mut state = Self::new(own_node_addr);
         state.is_leaf_only = true;
         state
+    }
+
+    pub(crate) fn set_leaf_only(&mut self, leaf_only: bool) {
+        self.is_leaf_only = leaf_only;
     }
 
     /// Get the node's own ID.
@@ -285,6 +289,7 @@ impl BloomState {
     /// Remove stored filter state for a peer that was removed.
     pub fn remove_peer_state(&mut self, peer_id: &NodeAddr) {
         let previous = self.pending_peer_deadline_ms(peer_id);
+        self.leaf_dependents.remove(peer_id);
         self.last_sent_filters.remove(peer_id);
         self.last_update_sent.remove(peer_id);
         self.pending_updates.remove(peer_id);
@@ -328,7 +333,7 @@ impl BloomState {
         let mut shared = vec![0; combined.len()];
         for filter in peer_filters
             .values()
-            .filter(|filter| filter.num_bits() == base.num_bits())
+            .filter(|filter| !self.is_leaf_only && filter.num_bits() == base.num_bits())
         {
             for ((all, shared), incoming) in
                 combined.iter_mut().zip(&mut shared).zip(filter.as_bytes())
@@ -338,7 +343,7 @@ impl BloomState {
             }
         }
         OutgoingBloomFilters {
-            peers: peer_filters,
+            peers: (!self.is_leaf_only).then_some(peer_filters),
             combined,
             shared,
             hash_count: base.hash_count(),
@@ -359,6 +364,9 @@ impl BloomState {
         exclude_peer: &NodeAddr,
         peer_filters: &HashMap<NodeAddr, BloomFilter>,
     ) -> BloomFilter {
+        if self.is_leaf_only {
+            return self.base_filter();
+        }
         let mut filter = BloomFilter::new();
 
         // Always include ourselves
@@ -384,8 +392,10 @@ impl BloomState {
     pub fn base_filter(&self) -> BloomFilter {
         let mut filter = BloomFilter::new();
         filter.insert(&self.own_node_addr);
-        for dep in &self.leaf_dependents {
-            filter.insert(dep);
+        if !self.is_leaf_only {
+            for dep in &self.leaf_dependents {
+                filter.insert(dep);
+            }
         }
         filter
     }

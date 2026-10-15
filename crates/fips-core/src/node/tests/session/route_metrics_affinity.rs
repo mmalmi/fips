@@ -121,14 +121,13 @@ async fn test_path_broken_matches_last_outbound_branch_after_wrap_route_moves() 
     // last transmitted payload and its explicit error are still on the old
     // branch. A newer authenticated handshake ingress may already pin the
     // replacement branch, but it did not carry that outbound payload.
-    node.learned_routes
-        .quarantine_failed_next_hop(
-            remote_addr,
-            old_fallback,
-            Node::now_ms(),
-            node.config.node.routing.learned_ttl_secs,
-            node.config.node.routing.max_learned_routes_per_dest,
-        );
+    node.learned_routes.quarantine_failed_next_hop(
+        remote_addr,
+        old_fallback,
+        Node::now_ms(),
+        node.config.node.routing.learned_ttl_secs,
+        node.config.node.routing.max_learned_routes_per_dest,
+    );
     node.learn_reverse_route(remote_addr, old_fallback);
     assert!(node.sync_dataplane_fsp_owner_from_current_session_via(
         &remote_addr,
@@ -218,6 +217,18 @@ fn test_active_fallback_affinity_keeps_user_payload_on_fallback() {
             fallback_next_hop,
         ],
         "fallback affinity should not spend user payloads on direct probes"
+    );
+    // Negotiated client mode overrides both an established flow's affinity
+    // and cached tree coordinates. The peer's own endpoint stays reachable.
+    node.get_peer_mut(&fallback_next_hop).unwrap().client_only = true;
+    assert_eq!(
+        node.find_next_hop(&remote_addr).map(|p| *p.node_addr()),
+        Some(remote_addr)
+    );
+    assert_eq!(
+        node.find_next_hop(&fallback_next_hop)
+            .map(|p| *p.node_addr()),
+        Some(fallback_next_hop)
     );
 }
 

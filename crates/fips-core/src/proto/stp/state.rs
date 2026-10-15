@@ -16,6 +16,8 @@ use crate::{Identity, NodeAddr};
 pub struct TreeState {
     /// This node's NodeAddr.
     my_node_addr: NodeAddr,
+    /// Endpoint coordinates follow a router, but are never advertised as a tree.
+    leaf_only: bool,
     /// This node's current parent declaration.
     my_declaration: ParentDeclaration,
     /// This node's current coordinates (computed from declaration chain).
@@ -58,6 +60,7 @@ impl TreeState {
 
         Self {
             my_node_addr,
+            leaf_only: false,
             my_declaration,
             my_coords,
             root: my_node_addr,
@@ -73,6 +76,21 @@ impl TreeState {
             flap_window: Duration::from_secs(60),
             flap_dampening_duration: Duration::from_secs(120),
         }
+    }
+
+    pub(crate) fn set_leaf_only(&mut self, leaf_only: bool) {
+        self.leaf_only = leaf_only;
+    }
+
+    /// Advance a routing role without recording a spurious parent flap.
+    pub(crate) fn advance_role_declaration(&mut self) {
+        self.my_declaration = ParentDeclaration::new(
+            self.my_node_addr,
+            *self.my_declaration.parent_id(),
+            self.my_declaration.sequence() + 1,
+            crate::time::now_secs(),
+        );
+        self.recompute_coords();
     }
 
     /// Get this node's NodeAddr.
@@ -188,7 +206,7 @@ impl TreeState {
         let parent_id = self.my_declaration.parent_id();
         if let Some(parent_coords) = self.peer_ancestry.get(parent_id) {
             let parent_root = *parent_coords.root_id();
-            if self.my_node_addr <= parent_root {
+            if !self.leaf_only && self.my_node_addr <= parent_root {
                 // Prepending self would put a smaller-or-equal node at depth 0,
                 // breaking the "advertised root = min path entry" invariant.
                 // Demote to self-root rather than emit a path peers will reject.
@@ -221,7 +239,7 @@ impl TreeState {
     /// or our NodeAddr is `<=` every visible root.
     pub fn should_be_root(&self) -> bool {
         match self.smallest_visible_root() {
-            Some(sr) => self.my_node_addr <= sr,
+            Some(sr) => !self.leaf_only && self.my_node_addr <= sr,
             None => true,
         }
     }
@@ -371,7 +389,7 @@ impl TreeState {
         // `self` to that peer's ancestry would put `self` at depth 0 and the
         // peer's larger root at the tail — violating "advertised root = min path
         // entry" and getting rejected by recipients' `validate_semantics`.
-        if self.my_node_addr <= smallest_root {
+        if !self.leaf_only && self.my_node_addr <= smallest_root {
             return None;
         }
 

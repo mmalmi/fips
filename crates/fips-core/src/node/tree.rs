@@ -108,6 +108,36 @@ impl Node {
         Ok(TreeAnnounce::new(decl, ancestry))
     }
 
+    /// A legacy adjacency cannot withdraw a formerly advertised tree role or
+    /// advertise a client dependent. Preserve router behavior until every live
+    /// neighbor supports the explicit role; never strand older-only networks.
+    pub(in crate::node) fn refresh_client_role(&mut self) {
+        let client = self.config.node.leaf_only
+            && self
+                .peers
+                .values()
+                .filter(|peer| peer.can_send())
+                .all(|peer| peer.client_only_supported);
+        if client == self.is_leaf_only {
+            return;
+        }
+        self.is_leaf_only = client;
+        self.tree_state.set_leaf_only(client);
+        self.bloom_state.set_leaf_only(client);
+        self.tree_state.advance_role_declaration();
+        if let Err(error) = self.tree_state.sign_declaration(&self.identity) {
+            warn!(%error, "Failed to sign declaration after client role change");
+        }
+        self.invalidate_tree_coordinates();
+        self.mark_all_tree_announces_pending();
+        self.bloom_state
+            .mark_all_updates_needed(self.peers.keys().copied());
+        info!(
+            client_only = client,
+            "Updated negotiated client routing role"
+        );
+    }
+
     /// Send a TreeAnnounce to a specific peer, respecting rate limits.
     ///
     /// If the peer is rate-limited, the announce is marked pending for
@@ -116,6 +146,7 @@ impl Node {
         &mut self,
         peer_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
+        self.refresh_client_role();
         let now_ms = Self::now_ms();
 
         // Check rate limit
@@ -134,12 +165,20 @@ impl Node {
             return Ok(());
         }
 
-        // Build and encode
-        let announce = self.build_tree_announce()?;
-        let encoded = announce.encode().map_err(|e| NodeError::SendFailed {
-            node_addr: *peer_addr,
-            reason: format!("encode failed: {}", e),
-        })?;
+        // Every neighbor of an active client can withdraw its old tree role.
+        // Older-only and mixed-adjacency networks retain ordinary routing.
+        let encoded = if self.is_leaf_only {
+            let mut message = vec![crate::protocol::LinkMessageType::ClientOnly.to_byte()];
+            message.extend_from_slice(&self.tree_state.my_declaration().sequence().to_le_bytes());
+            message
+        } else {
+            self.build_tree_announce()?
+                .encode()
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *peer_addr,
+                    reason: format!("encode failed: {}", e),
+                })?
+        };
 
         // Send
         if let Err(e) = self
@@ -148,6 +187,20 @@ impl Node {
         {
             self.stats_mut().tree.send_failed += 1;
             return Err(e);
+        }
+
+        // Keep the existing routing announcement first during bootstrap.
+        // Repeat capability on its existing cadence so a lost packet recovers.
+        if let Err(error) = self
+            .send_dataplane_fmp_link_plaintext(
+                peer_addr,
+                &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
+                false,
+            )
+            .await
+        {
+            self.stats_mut().tree.send_failed += 1;
+            return Err(error);
         }
 
         self.stats_mut().tree.sent += 1;
@@ -300,6 +353,23 @@ impl Node {
             return;
         }
 
+        let peer = self.peers.get_mut(from).expect("authenticated tree peer");
+        let sequence = announce.declaration.sequence();
+        if peer
+            .routing_role_sequence
+            .is_some_and(|last| sequence < last || (sequence == last && peer.client_only))
+        {
+            return;
+        }
+        peer.routing_role_sequence = Some(sequence);
+        peer.client_only = false;
+
+        // A valid router declaration also permits a peer that restarted in
+        // router mode to leave its former client role.
+        if self.bloom_state.remove_leaf_dependent(from) {
+            let peers = self.peers.keys().copied().collect::<Vec<_>>();
+            self.bloom_state.mark_all_updates_needed(peers);
+        }
         let was_tree_peer = self.is_tree_peer(from);
 
         // Update peer's tree state in ActivePeer

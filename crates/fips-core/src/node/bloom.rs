@@ -20,7 +20,8 @@ impl Node {
     pub(super) fn peer_inbound_filters(&self) -> HashMap<NodeAddr, BloomFilter> {
         let mut filters = HashMap::new();
         for (addr, peer) in &self.peers {
-            if self.is_tree_peer(addr)
+            if !self.is_leaf_only
+                && self.is_tree_peer(addr)
                 && let Some(filter) = peer.inbound_filter()
             {
                 filters.insert(*addr, filter.clone());

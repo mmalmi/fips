@@ -139,13 +139,19 @@ impl Node {
             };
             if matches!(
                 LinkMessageType::from_byte(msg_type),
-                Some(LinkMessageType::SenderReport | LinkMessageType::ReceiverReport)
+                Some(
+                    LinkMessageType::SenderReport
+                        | LinkMessageType::ReceiverReport
+                        | LinkMessageType::ClientOnly
+                        | LinkMessageType::ClientSupport
+                        | LinkMessageType::TreeAnnounce
+                )
             ) && !self.authenticated_fmp_uses_current_epoch(fmp)
             {
                 debug!(
                     src = %self.peer_display_name(fmp.source_node_addr()),
                     msg_type,
-                    "Ignoring link report from a draining key epoch"
+                    "Ignoring link control from a draining key epoch"
                 );
                 continue;
             }
@@ -382,6 +388,10 @@ impl Node {
             return PreparedSessionDatagram::Done;
         }
         let new_ttl = datagram_ref.ttl - 1;
+
+        if self.is_leaf_only && datagram_ref.dest_addr != *self.node_addr() {
+            return PreparedSessionDatagram::Done;
+        }
 
         // Coordinate cache warming from plaintext session-layer headers
         // — works directly on the ref, no allocation.

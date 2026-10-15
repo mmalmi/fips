@@ -58,6 +58,12 @@ impl Node {
             }
         };
 
+        // A client answers only requests addressed to itself. Do not allocate
+        // reverse paths, sign or forward unrelated public-mesh discovery.
+        if self.is_leaf_only && request.target != *self.node_addr() {
+            return;
+        }
+
         // Reject before dedup: the same request can still arrive on a route
         // whose links are large enough to carry the requested record.
         if self.lookup_peer_mtu(from) < request.min_mtu {
@@ -803,7 +809,7 @@ impl Node {
             .iter()
             .map(|(addr, peer)| LookupPeerCandidate {
                 addr: *addr,
-                can_send: peer.can_send(),
+                can_send: peer.can_send() && (addr == target || !peer.client_only),
                 is_healthy: peer.is_healthy(),
                 is_tree_peer: self.is_tree_peer(addr),
                 may_reach_target: peer

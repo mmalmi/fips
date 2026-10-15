@@ -101,6 +101,12 @@ pub enum LinkMessageType {
     /// Periodic heartbeat for link liveness detection.
     /// No payload — the msg_type byte alone is sufficient.
     Heartbeat = 0x51,
+    /// Authenticated endpoint-only role: u64 LE declaration sequence.
+    /// Old peers ignore this unknown message.
+    /// Replaces TreeAnnounce so this peer can never become a transit parent.
+    ClientOnly = 0x52,
+    /// Support for ClientOnly, without declaring the sender a client. No payload.
+    ClientSupport = 0x53,
 }
 
 impl LinkMessageType {
@@ -116,6 +122,8 @@ impl LinkMessageType {
             0x31 => Some(LinkMessageType::LookupResponse),
             0x50 => Some(LinkMessageType::Disconnect),
             0x51 => Some(LinkMessageType::Heartbeat),
+            0x52 => Some(LinkMessageType::ClientOnly),
+            0x53 => Some(LinkMessageType::ClientSupport),
             _ => None,
         }
     }
@@ -138,6 +146,8 @@ impl fmt::Display for LinkMessageType {
             LinkMessageType::LookupResponse => "LookupResponse",
             LinkMessageType::Disconnect => "Disconnect",
             LinkMessageType::Heartbeat => "Heartbeat",
+            LinkMessageType::ClientOnly => "ClientOnly",
+            LinkMessageType::ClientSupport => "ClientSupport",
         };
         write!(f, "{}", name)
     }

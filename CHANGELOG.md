@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.102] - 2026-10-15
+
+### Added
+
+- Negotiate client-only routing for endpoints that should remain reachable
+  without forwarding unrelated mesh discovery or session traffic. Supporting
+  routers advertise the authenticated client's identity and exclude it from
+  transit paths. Older direct neighbors retain normal routing compatibility.
+- Authenticate and sequence client role changes across packet reordering,
+  connection restarts, and draining key epochs.
+
 ## [0.4.101] - 2026-10-14
 
 ### Fixed

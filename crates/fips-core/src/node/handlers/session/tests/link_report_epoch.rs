@@ -3,6 +3,7 @@ use crate::protocol::LinkMessageType;
 struct LinkReportEpochFixture {
     node: Node,
     remote: NodeAddr,
+    remote_identity: Identity,
     old_sender: NoiseSession,
     new_sender: NoiseSession,
 }
@@ -53,6 +54,7 @@ impl LinkReportEpochFixture {
         Self {
             node,
             remote: remote_addr,
+            remote_identity: remote,
             old_sender,
             new_sender,
         }
@@ -231,4 +233,175 @@ async fn draining_link_epoch_carries_late_application_data() {
         before,
         "delivered old-key application data must not contaminate current link counters"
     );
+}
+
+#[tokio::test]
+async fn client_only_role_is_bound_to_identity_epoch_and_declaration_order() {
+    let mut fixture = LinkReportEpochFixture::new();
+    fixture
+        .receive(true, &[LinkMessageType::Heartbeat.to_byte()])
+        .await;
+    let mut role = vec![LinkMessageType::ClientOnly.to_byte()];
+    role.extend_from_slice(&2_u64.to_le_bytes());
+    assert_eq!(role, vec![0x52, 2, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(fixture.receive(false, &role).await, 0);
+    assert!(fixture.node.bloom_state.leaf_dependents().is_empty());
+
+    // The payload cannot claim another identity or append reachability.
+    let mut invalid = role.clone();
+    invalid.extend(Identity::generate().node_addr().as_bytes());
+    fixture.receive(true, &invalid).await;
+    fixture
+        .receive(true, &[LinkMessageType::ClientOnly.to_byte()])
+        .await;
+    assert!(fixture.node.bloom_state.leaf_dependents().is_empty());
+    fixture.receive(true, &role).await;
+    assert_eq!(fixture.node.bloom_state.leaf_dependents().len(), 1);
+    assert!(
+        fixture
+            .node
+            .bloom_state
+            .leaf_dependents()
+            .contains(&fixture.remote)
+    );
+    assert!(
+        fixture
+            .node
+            .bloom_state
+            .base_filter()
+            .contains(&fixture.remote)
+    );
+    assert!(
+        fixture
+            .node
+            .tree_state
+            .peer_coords(&fixture.remote)
+            .is_none()
+    );
+
+    let mut declaration = crate::tree::ParentDeclaration::self_root(fixture.remote, 3, 100);
+    declaration.sign(&fixture.remote_identity).unwrap();
+    let announce = crate::protocol::TreeAnnounce::new(
+        declaration,
+        crate::tree::TreeCoordinate::root_with_meta(fixture.remote, 3, 100),
+    )
+    .encode()
+    .unwrap();
+    assert_eq!(fixture.receive(false, &announce).await, 0);
+    assert!(
+        fixture
+            .node
+            .bloom_state
+            .leaf_dependents()
+            .contains(&fixture.remote)
+    );
+    fixture.receive(true, &announce).await;
+    assert!(
+        !fixture
+            .node
+            .bloom_state
+            .leaf_dependents()
+            .contains(&fixture.remote)
+    );
+    assert!(
+        fixture
+            .node
+            .tree_state
+            .peer_coords(&fixture.remote)
+            .is_some()
+    );
+    // Same-epoch role messages can arrive out of order across carriers.
+    fixture.receive(true, &role).await;
+    assert!(!fixture.node.peers.get(&fixture.remote).unwrap().client_only);
+    role[1..].copy_from_slice(&4_u64.to_le_bytes());
+    fixture.receive(true, &role).await;
+    assert!(
+        fixture
+            .node
+            .tree_state
+            .peer_coords(&fixture.remote)
+            .is_none()
+    );
+    fixture.receive(true, &announce).await;
+    assert!(fixture.node.peers.get(&fixture.remote).unwrap().client_only);
+    assert!(
+        fixture
+            .node
+            .tree_state
+            .peer_coords(&fixture.remote)
+            .is_none()
+    );
+    fixture.node.remove_active_peer(&fixture.remote);
+    assert!(fixture.node.bloom_state.leaf_dependents().is_empty());
+}
+
+#[tokio::test]
+async fn client_only_discards_unrelated_lookup_before_reverse_path_allocation() {
+    let mut fixture = LinkReportEpochFixture::new();
+    fixture.node.is_leaf_only = true;
+    let request = crate::protocol::LookupRequest::new(
+        42,
+        *Identity::generate().node_addr(),
+        fixture.remote,
+        crate::tree::TreeCoordinate::root(fixture.remote),
+        5,
+        0,
+    );
+    fixture.receive(true, &request.encode()).await;
+    assert_eq!(fixture.node.stats().discovery.req_received, 1);
+    assert!(fixture.node.recent_requests.is_empty());
+    assert_eq!(fixture.node.stats().discovery.req_forwarded, 0);
+}
+
+#[tokio::test]
+async fn client_only_negotiation_retains_router_behavior_for_legacy_neighbors() {
+    let mut fixture = LinkReportEpochFixture::new();
+    fixture.node.config.node.leaf_only = true;
+    fixture.node.refresh_client_role();
+    assert!(!fixture.node.is_leaf_only);
+    fixture
+        .receive(true, &[LinkMessageType::Heartbeat.to_byte()])
+        .await;
+    fixture
+        .receive(false, &[LinkMessageType::ClientSupport.to_byte()])
+        .await;
+    assert!(!fixture.node.is_leaf_only);
+    fixture
+        .receive(true, &[LinkMessageType::ClientSupport.to_byte(), 1])
+        .await;
+    assert!(!fixture.node.is_leaf_only);
+    fixture
+        .receive(true, &[LinkMessageType::ClientSupport.to_byte()])
+        .await;
+    assert!(fixture.node.is_leaf_only);
+
+    let legacy = Identity::generate();
+    let legacy_addr = *legacy.node_addr();
+    let (_, receive) = make_xk_session_pair(&legacy, fixture.node.identity());
+    let peer = crate::peer::ActivePeer::with_session(
+        PeerIdentity::from_pubkey_full(legacy.pubkey_full()),
+        crate::transport::LinkId::new(2),
+        Node::now_ms(),
+        crate::peer::ActivePeerSession {
+            session: receive,
+            our_index: crate::utils::index::SessionIndex::new(10),
+            their_index: crate::utils::index::SessionIndex::new(11),
+            transport_id: crate::transport::TransportId::new(1),
+            current_addr: crate::transport::TransportAddr::from_string("192.0.2.2:2121"),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: false,
+            remote_epoch: None,
+        },
+    );
+    assert!(peer.can_send());
+    fixture
+        .node
+        .peers
+        .insert_with_current_session_index(legacy_addr, peer);
+    fixture.node.refresh_client_role();
+    assert!(!fixture.node.is_leaf_only);
+    assert!(!fixture.node.bloom_state.is_leaf_only());
+    fixture.node.remove_active_peer(&legacy_addr);
+    assert!(fixture.node.is_leaf_only);
+    assert!(fixture.node.bloom_state.is_leaf_only());
 }

@@ -692,44 +692,38 @@ When traffic resumes:
 3. Coordinates: discovery may be needed if cache has expired
 4. SessionSetup re-warms transit caches on the new path
 
-## Leaf-Only Operation *(under development)*
+## Client-Only Operation
 
-Leaf-only operation is an optimization for resource-constrained nodes
-(sensors, battery-powered devices). The core infrastructure exists (config
-flag, node constructor, bloom filter support) but is not yet enabled in
-normal operation.
+`node.leaf_only = true` requests client-only routing while keeping the node's
+own end-to-end connections and identity. It may connect to multiple upstreams
+and direct destinations. Normal link/session health, transport recovery and
+routing of locally originated traffic remain enabled.
 
-### Concept
+Client mode activates after every sendable neighbor advertises `ClientSupport`
+(0x53). Otherwise the node keeps normal router behavior, preserving older-only
+network reachability. Adding a legacy neighbor restores router behavior; losing
+the last legacy adjacency permits client mode again. CPU savings therefore
+require supporting adjacent peers, rather than only a phone upgrade.
 
-A leaf-only node connects to a single upstream peer that handles all routing
-on its behalf:
+An active client sends authenticated `ClientOnly` (0x52) with its declaration
+sequence instead
+of TreeAnnounce. It never offers itself as a root or parent and does not forward
+unrelated lookups or session datagrams. It consumes router declarations to derive
+endpoint coordinates, even when its identity sorts before the routing root.
+These coordinates appear in ordinary lookup replies and sessions, never as a
+router declaration. Its outgoing Bloom filter contains only its own identity.
 
-- **No bloom filter storage or processing**: The upstream peer includes the
-  leaf's identity in its own outbound bloom filters
-- **No spanning tree participation**: The leaf does not offer itself as a
-  potential parent to other nodes
-- **Simplified routing**: All traffic tunnels through the upstream peer
-- **Minimal resource usage**: Suitable for ESP32-class devices (~500KB RAM)
+A supporting upstream removes the client's old tree position and includes its
+authenticated identity in ordinary Bloom advertisements. It excludes the client
+from unrelated lookup fanout and transit routes, but still forwards lookups and
+packets addressed to that client. Each upstream advertises the client independently;
+disconnection withdraws it. Clients sign their own discovery replies and keep
+their own end-to-end encryption keys.
 
-### Upstream Peer Responsibilities
-
-The upstream peer:
-
-- Includes the leaf's identity in its outbound bloom filters
-- Forwards all traffic addressed to the leaf
-- Handles discovery responses on behalf of the leaf
-- Maintains the link session with the leaf
-
-### What the Leaf Retains
-
-Even as a leaf-only node, it still:
-
-- Maintains its own Noise IK link session with the upstream peer (FMP layer)
-- Can establish end-to-end FSP sessions with arbitrary destinations
-- Has its own identity (npub, node_addr)
-
-The optimization is purely at the routing/mesh layer — the leaf delegates
-routing decisions but retains its own end-to-end encryption and identity.
+Compatibility coverage uses the published core 0.4.101 alongside current code:
+`cargo test --locked --manifest-path tests/client-only-compat/Cargo.toml`.
+It covers first inbound contact, outbound sessions, network rebind, an all-legacy
+adjacency set, and a new upstream with legacy routers and remote endpoints.
 
 ## Packet Type Summary
 

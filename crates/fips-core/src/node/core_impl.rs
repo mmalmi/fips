@@ -84,6 +84,7 @@ impl Node {
 
         // Initialize tree state with signed self-declaration
         let mut tree_state = TreeState::new(node_addr);
+        tree_state.set_leaf_only(is_leaf_only);
         tree_state.set_parent_hysteresis(config.node.tree.parent_hysteresis);
         tree_state.set_hold_down(config.node.tree.hold_down_secs);
         tree_state.set_flap_dampening(
@@ -234,6 +235,7 @@ impl Node {
     pub fn with_identity(identity: Identity, config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let node_addr = *identity.node_addr();
+        let is_leaf_only = config.is_leaf_only();
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -246,6 +248,7 @@ impl Node {
 
         // Initialize tree state with signed self-declaration
         let mut tree_state = TreeState::new(node_addr);
+        tree_state.set_leaf_only(is_leaf_only);
         tree_state.set_parent_hysteresis(config.node.tree.parent_hysteresis);
         tree_state.set_hold_down(config.node.tree.hold_down_secs);
         tree_state.set_flap_dampening(
@@ -257,7 +260,11 @@ impl Node {
             .sign_declaration(&identity)
             .expect("signing own declaration should never fail");
 
-        let mut bloom_state = BloomState::new(node_addr);
+        let mut bloom_state = if is_leaf_only {
+            BloomState::leaf_only(node_addr)
+        } else {
+            BloomState::new(node_addr)
+        };
         bloom_state.set_update_debounce_ms(config.node.bloom.update_debounce_ms);
 
         let coord_cache = CoordCache::new(
@@ -284,7 +291,7 @@ impl Node {
             config,
             host_network: None,
             state: NodeState::Created,
-            is_leaf_only: false,
+            is_leaf_only,
             tree_state,
             bloom_state,
             coord_cache,
@@ -387,12 +394,10 @@ impl Node {
         })
     }
 
-    /// Create a leaf-only node (simplified state).
-    pub fn leaf_only(config: Config) -> Result<Self, NodeError> {
-        let mut node = Self::new(config)?;
-        node.is_leaf_only = true;
-        node.bloom_state = BloomState::leaf_only(*node.identity.node_addr());
-        Ok(node)
+    /// Create a node that negotiates client-only routing with capable peers.
+    pub fn leaf_only(mut config: Config) -> Result<Self, NodeError> {
+        config.node.leaf_only = true;
+        Self::new(config)
     }
 
     pub(super) fn host_map_and_peer_acl(config: &Config) -> (Arc<HostMap>, acl::PeerAclReloader) {

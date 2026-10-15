@@ -118,6 +118,11 @@ pub struct ActivePeer {
     /// completed the handshake.
     preferred_send_addr: Option<TransportAddr>,
 
+    /// Whether this authenticated peer understands ClientOnly.
+    pub(crate) client_only_supported: bool,
+    pub(crate) client_only: bool,
+    pub(crate) routing_role_sequence: Option<u64>,
+
     // === Spanning Tree ===
     /// Their latest parent declaration.
     declaration: Option<ParentDeclaration>,
@@ -249,6 +254,9 @@ impl ActivePeer {
             tree_announce_min_interval_ms: 500,
             last_tree_announce_sent_ms: 0,
             pending_tree_announce: false,
+            client_only_supported: false,
+            client_only: false,
+            routing_role_sequence: None,
             inbound_filter: None,
             filter_sequence: 0,
             filter_received_at: 0,
@@ -330,6 +338,9 @@ impl ActivePeer {
             tree_announce_min_interval_ms: 500,
             last_tree_announce_sent_ms: 0,
             pending_tree_announce: false,
+            client_only_supported: false,
+            client_only: false,
+            routing_role_sequence: None,
             inbound_filter: None,
             filter_sequence: 0,
             filter_received_at: 0,

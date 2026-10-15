@@ -64,8 +64,59 @@ impl Node {
                 // Heartbeat — no-op, last_recv_time already updated by record_recv()
                 trace!(peer = %self.peer_display_name(&source_addr), "Received heartbeat");
             }
+            0x52 => {
+                self.handle_client_only(&source_addr, payload);
+            }
+            0x53 => {
+                self.handle_client_support(&source_addr, payload);
+            }
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
+            }
+        }
+    }
+
+    fn handle_client_support(&mut self, from: &NodeAddr, payload: &[u8]) {
+        if !payload.is_empty() {
+            return;
+        }
+        if let Some(peer) = self.peers.get_mut(from)
+            && !peer.client_only_supported
+        {
+            peer.client_only_supported = true;
+            self.refresh_client_role();
+        }
+    }
+
+    /// The authenticated carrier supplies the identity: no claimed address or
+    /// transit reachability is accepted from the client.
+    fn handle_client_only(&mut self, from: &NodeAddr, payload: &[u8]) {
+        let Ok(sequence_bytes) = <[u8; 8]>::try_from(payload) else {
+            return;
+        };
+        let sequence = u64::from_le_bytes(sequence_bytes);
+        let Some(peer) = self.peers.get_mut(from) else {
+            return;
+        };
+        if peer
+            .routing_role_sequence
+            .is_some_and(|last| sequence < last || (sequence == last && !peer.client_only))
+        {
+            return;
+        }
+        peer.routing_role_sequence = Some(sequence);
+        peer.client_only = true;
+        self.handle_client_support(from, &[]);
+        let changed = !self.bloom_state.leaf_dependents().contains(from);
+        self.bloom_state.add_leaf_dependent(*from);
+        if changed {
+            if self.handle_peer_removal_tree_cleanup(from) {
+                self.mark_all_tree_announces_pending();
+            }
+            let peers = self.peers.keys().copied().collect::<Vec<_>>();
+            self.bloom_state.mark_all_updates_needed(peers);
+            for destination in self.dataplane.fsp_owner_destinations() {
+                self.refresh_dataplane_fsp_owner_routes(&destination);
             }
         }
     }
@@ -264,6 +315,8 @@ impl Node {
         if let Some(transport_id) = transport_id {
             self.cleanup_bootstrap_transport_if_unused(transport_id);
         }
+
+        self.refresh_client_role();
 
         // Tree state cleanup
         let tree_changed = self.handle_peer_removal_tree_cleanup(node_addr);

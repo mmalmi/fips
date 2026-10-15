@@ -1,0 +1,10 @@
+[package]
+name = "fips-client-only-compat"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+current = { package = "nvpn-fips-core", path = "../../crates/fips-core" }
+legacy = { package = "nvpn-fips-core", version = "=0.4.101" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
