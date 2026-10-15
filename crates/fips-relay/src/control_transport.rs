@@ -266,24 +266,32 @@ async fn run(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let now = started.elapsed().as_millis() as u64;
-        tokio::select! {
+        let connection_limited = tokio::select! {
             command = commands.recv(), if pending.len() < QUEUE_SIZE => {
                 let Some(command) = command else { break; };
                 if command.response.is_closed() { continue; }
                 let check = AdmissionCheck::start(admission.clone(), command.peer, true);
                 pending.push_back(PendingCommand { command, admission: check, rechecking: false });
+                false
             }
             result = tcp.receive_report(now) => {
                 let Ok(report) = result else { break; };
-                if report.connection_limited > 0 { idle.evict(&mut tcp, None, now).await; }
+                report.connection_limited > 0
             }
             _ = ticker.tick() => {
                 if tcp.poll(now).await.is_err() { break; }
+                false
             }
-        }
+        };
         let now = started.elapsed().as_millis() as u64;
         for (id, exchange) in idle
-            .ready(&mut tcp, admission.clone(), now, &statistics)
+            .ready(
+                &mut tcp,
+                admission.clone(),
+                now,
+                &statistics,
+                connection_limited,
+            )
             .await
         {
             exchanges.insert(id, exchange);

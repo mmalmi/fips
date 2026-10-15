@@ -95,6 +95,7 @@ impl IdleStreams {
         admission: Arc<ControlAdmission>,
         now: u64,
         statistics: &ControlStatistics,
+        connection_limited: bool,
     ) -> Vec<(ConnectionId, Exchange)> {
         let ids: Vec<_> = self.streams.keys().copied().collect();
         let mut requests = Vec::new();
@@ -127,9 +128,12 @@ impl IdleStreams {
                     ));
                 }
                 Ok(bytes) if bytes.is_empty() => {
-                    // Buffered requests end idleness before the deadline check;
-                    // a delayed service poll must not discard accepted bytes.
-                    if tcp.is_read_closed(id) || stream.since.elapsed() >= IDLE_TIMEOUT {
+                    // The requester owns idle expiry. A responder parks before
+                    // its reply arrives; its timer could otherwise send FIN
+                    // while the requester still considers this stream reusable.
+                    if tcp.is_read_closed(id)
+                        || (stream.outbound && stream.since.elapsed() >= IDLE_TIMEOUT)
+                    {
                         let _ = tcp.close(id, now).await;
                     } else {
                         self.streams.insert(id, stream);
@@ -139,6 +143,11 @@ impl IdleStreams {
                     let _ = tcp.abort(id).await;
                 }
             }
+        }
+        // A limited batch may also contain accepted records. Promote those
+        // before choosing a genuinely idle stream to release under pressure.
+        if connection_limited {
+            self.evict(tcp, None, now).await;
         }
         requests
     }

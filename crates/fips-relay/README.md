@@ -90,12 +90,15 @@ including unsigned 64-bit values that exceed floating-point integer precision.
 
 Completed exchanges may reuse their TCP connection for a later request. Each
 service port retains at most eight idle connections, with one per peer and
-direction, for up to five seconds. Clients serialize requests on a reused stream.
+direction. The request initiator expires its idle connection after five seconds;
+the responder releases it on peer FIN, capacity eviction or transport closure.
+Clients serialize requests on a reused stream. Connection and record deadlines
+remain bounded independently of idle reuse.
 Every request acquires fresh admission and revalidates membership; completion
 releases its record buffers and admission permit. Idle eviction closes TCP
-gracefully so an unacknowledged response is not discarded. A queued request enters
-fresh admission before idle expiry is considered. A failed exchange is reported
-without replaying a transmitted request.
+gracefully so an unacknowledged response is not discarded. A buffered request enters
+fresh admission before idle expiry or connection-pressure eviction is considered.
+A failed exchange is reported without replaying a transmitted request.
 
 These three services do not negotiate a wire version or capabilities. Acceptance
 uses matching software builds; independent clients and mixed-version upgrades
