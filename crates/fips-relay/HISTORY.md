@@ -703,6 +703,31 @@ cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-feature
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs
 ```
 
+The opt-in fragmented-retirement case uses three ordinary processes and a local
+mint with one-sat denominations. It settles 15 channels, retaining 480 refund
+coins, then buys a separate active channel before the old refund deadlines.
+`ForwardingData` permits the bounded session handshake in both directions; a
+single original packet establishes delivery before contention begins.
+An external SQLite writer holds retirement without changing rows. The test
+requires paid delivery while that writer is held, releases it, and observes new
+provider credit and destination deliveries while the same retirement plan is
+still pending. It finally checks retirement, the unchanged active funding record,
+lifetime debits and conservation of all 384 test sats.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay \
+  --no-default-features --features measurements --test funding_costs \
+  retirement::live::ordinary_payments_progress_during_fragmented_sender_retirement \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+This Unix fixture requires Python 3 with SQLite and waits for six-minute real
+expiry times, with a 15-minute overall limit. Its owned mint uses the existing
+[funding request budget](FUNDING-COSTS.md#funding-request-pacing); financial limits
+remain enforced. Original wallets, mint and observations remain in the printed
+recovery directory even after failure. Pending-plan overlap measures liveness
+during retirement, not uninterrupted native execution or isolated CPU cost.
+
 Seller tests cycle 64 completed channels through a single retained slot and
 restart after each cleanup. They verify exact debt, crash-window retention,
 non-netting of unrelated overpayments, buyer/mint isolation, bounds under distinct

@@ -1,14 +1,16 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-14 October 2026. Runtime `d6874c3bf` includes the r523 control idle-expiry fix.
+15 October 2026. Runtime `d6874c3bf` includes the r523 control idle-expiry fix.
 SDK `dad0fc3` releases the client store during wallet retirement work and permits
 unrelated active payments while cleanup is pending. r576 passes all 444 SDK tests,
 strict lint and formatting; r572 qualifies three ordinary Linux retirement cycles.
 r577/r578 qualify the ordinary ARM64 build and three-router forwarding/recovery.
+r592 verifies Linux paid delivery and new provider credit during pending
+fragmented-history retirement, with all original test funds accounted for.
 The paired router observations below establish sampled lock availability, with
-higher whole-call time and process memory. Android r559 remains on the earlier
-SDK `6a025d0` graph and needs a build/regression for this change.
+higher whole-call time and process memory. Android r590 qualifies the updated
+build; physical r559 remains on SDK `6a025d0` and needs a device regression.
 CDK stays at `04c37d5a152a`. Original accounts are preserved, closed test resources
 are removed and failed financial originals remain retained. Earlier carrier and
 hardware results retain their recorded graph. Final acceptance reconciliation
@@ -44,8 +46,8 @@ Current implementation and deployment boundaries:
   emulation nor process interruption establishes physical flash power-loss safety.
 - The Android app embeds the same service and has customer and transit evidence.
   It remains an arm64 bench app, not a production wallet or general Internet VPN.
-  The r559 phone qualifies the earlier SDK graph; the sender-retirement change
-  still needs its Android build and regression. Outstanding acceptance below
+  The r559 phone qualifies the earlier SDK graph; r590 builds the sender-retirement
+  change, whose device regression remains open. Outstanding acceptance below
   prevents treating it as a qualified production release.
 - Acceptance uses fresh profiles and test money. Legacy profile migration is
   outside this greenfield scope. Existing operator accounts must be preserved.
@@ -127,6 +129,8 @@ Reuse the existing harness for admission, rollback and reserved completion check
 | --- | --- | --- |
 | r566/r576 sender retirement | The existing interrupted-handoff regression fails before the fix and passes with SDK `dad0fc3`: an unrelated funded channel pays successfully, and its saved balance survives resumed cleanup. All 444 workspace tests pass, with strict all-target lint and formatting. The existing lock test now allows bounded fork/exec descriptor-release latency; the earlier failed full run is retained. | Three opt-in tests remain excluded from the default suite. No new wire messages, lock files or store versions. [Paired router observations](#payments-during-sender-retirement) establish sampled availability, not live payment latency during a large cleanup. Funding and renewal still share the wallet owner. |
 | r572/r577/r578 ordinary relay | Three Linux wallet-retirement cycles conserve all 384 test sats including mint fees. The ordinary ARM64 build delivers all 2,048 paid packets across three routers, retires two sender and two receiver channels, and collects all 384 test sats. Six controller reads take 166–179 ms during SQLite writer contention; all 282 management checks pass. Original services/accounts are restored and closed profiles are archived before removal. | Small-channel forwarding and recovery on the same production SDK graph, not concurrent paid forwarding during large-history cleanup. Android, physical power loss and final broader target reconciliation remain open. Source/artifact/log bindings are retained in `work/retirement-relay-r572`, `work/retirement-arm-r577` and `work/retirement-router-r578`. |
+| r592 paid retirement liveness | Three ordinary Linux processes deliver all 4,609 original packets with 480 real refund coins retained. After the external writer is released, adjacent observations show new provider credit and destination deliveries during the same pending retirement plan. Independent mint/wallet checks account for all 384 test sats; the existing three-cycle case separately accounts for 384 sats including 13 in fees. Formatting, strict affected-target lint and source-size checks pass. | Linux loopback liveness, not uninterrupted native execution, signing-latency bounds, CPU attribution or router performance. Original fixtures and source/artifact/log bindings are preserved in `work/live-retirement-r592`. Funding and renewal still share the wallet owner. |
+| r590 Android build | The SDK `dad0fc3` graph passes native release build, strict target lint, ten Java tests, Android lint, signature and packaged-native checks. Its ordinary defaults include measurements and exclude wallet simulation. | Build-only qualification; the current physical phone evidence remains r559 on the earlier SDK. Source/dependency inventories and raw/packaged native hashes are retained in `work/android-retirement-r590`. |
 | r529 paid carriers | Runtime `d6874c3bf` passes seven existing native scenarios: mixed UDP/TCP, configured and URL-seeded WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss. Paid/unpaid boundaries, exhaustion, renewal, restart and final conservation pass; successful cases recover 2,688 test sats. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples. Strict service lint, formatting and source-size checks pass. | Linux process/virtual-link evidence with unchanged runtime and accepted dependencies. Ethernet runs in an isolated namespace. CA injection is limited to the generated-CA fixture. Loss tests deliver 39,895–39,914 of 42,000 payloads per direction while counting every-twentieth-frame loss; they do not measure maximum throughput or physical mobility. |
 | r531 quotes and free routes | Six existing cases pass on their recorded graph: paid/free quote composition over native neighbor control, an explicitly free destination across three relays, arbitrary free destinations, free price-selection recovery and rejection of a paid prefix under a zero-price ceiling. The ordinary daemon's free-route cases preserve monetary journals through restart and make no mint requests. | Unchanged production and test source. Linux loopback evidence without funded wallets; it does not replace the four funded admission scenarios above. Artifact/log hashes, stopped processes and removal of successful temporary state are verified in the private `work/admission-current-r531` bundle. |
 | r532 funded admission | Both unfunded-recipient bootstrap/earned-return cases, fresh paying-neighbor admission under full-wallet pressure, and mixed free/paid contention pass on the current ordinary runtime. All 2,816 test sats are conserved. The contention case delivers all 24 paid payloads and reconciles payment while the free stream is active; background-queue overflow is observed and free traffic resumes after refill. Strict affected-target lint, formatting and source-size checks pass. | Test-state retention is shared and extended; runtime unchanged. Linux loopback contention is pinned to two CPUs with mandatory observed background pressure. This establishes local scheduling, not Wi-Fi airtime or unrestricted-identity fairness. Sources/artifacts/logs and successful cleanup are verified in `work/funded-admission-r532`. |
@@ -195,8 +199,9 @@ SDK `dad0fc3` releases the client-store lock during wallet reads, capture and
 cutoff work. [Payment signing](src/controller/payments.rs) can use unrelated
 active channels even with a pending sender intent. Each retirement write reloads
 and validates current state, preserving payments saved in between. Client loads,
-validation and writes still hold the lock; the observations below do not establish
-signing latency or delivery during large-history maintenance.
+validation and writes still hold the lock. r592 demonstrates Linux delivery and
+payment progress during pending retirement; signing-latency bounds and concurrent
+forwarding during large-history router maintenance remain unqualified.
 
 The physical helper takes an actual SQLite writer transaction without changing
 rows. Its deadline, signal handler and independent device guard release it.
@@ -332,10 +337,30 @@ wallet operations or duplicate live coins. Originals are archived and the
 stopped temporary fixtures removed after baseline checks.
 
 The SDK regression separately demonstrates an accepted payment during an
-interrupted durable handoff and retention of that balance after recovery. Actual
-paid forwarding, signing delays and new funding/renewal during large maintenance
-remain to be measured. Wallet ownership still serializes maintenance and funding;
-this change promises neither constant-time work nor uninterrupted traffic.
+interrupted durable handoff and retention of that balance after recovery. The
+[ordinary-process regression](HISTORY.md) adds real paid forwarding in r592:
+15 settled channels retain 480 one-sat refund coins in a 1,641,733-byte client
+store, while a separate active channel carries traffic. All 512 packets arrive
+and payments are acknowledged while an external SQLite writer holds cleanup.
+After release, all 4,096 further packets arrive; two adjacent observations within
+the same pending plan add 60 deliveries and 3,000 msat of provider credit.
+Including the single prerequisite packet, all 4,609 originals arrive. Cleanup
+finishes without replacing the active funding record or resetting lifetime
+debits. Independent accounting finds 109 / 147 / 128 test sats in the original
+wallets, no unfinished wallet operations and no duplicate or mint-spent originals.
+
+The 1.341-second observed maintenance window includes release, status sampling,
+scheduling and multiple retirement calls. A pending plan does not prove continuous
+native execution, and this is not a CPU or throughput measurement. Concurrent
+router forwarding, signing delays and new funding/renewal during large maintenance
+remain open. Wallet ownership still serializes maintenance and funding; this
+change promises neither constant-time work nor uninterrupted traffic.
+
+Five interrupted setup/probe fixtures retain their failed verdicts. Normal expiry
+recovery and settlement close their original financial state without replacement
+funding or new identities; independent checks account for all 7,680 issued test
+sats. Failed originals and recovered archives remain in `work/recover-live-r588`
+and `work/recover-live-r591`. This does not close other historical failures.
 
 The earlier r570/r573 observers failed to find the hidden fixture directory and
 to use the router's supported sleep interval respectively. Their failed verdicts
@@ -469,8 +494,9 @@ and operation scans, decoded large originals and shared capture. r534/r535 measu
 actual native sender retirement and reduce repeated source authorization through
 capture-scoped reuse. r541/r549 measure sender refunds through full retirement,
 including saturation of native and client admission budgets. r562/r565 qualify
-both aggregate profiles on one ARM64 router. Other reachable workflows,
-concurrent payment progress and physical-storage acceptance remain open.
+both aggregate profiles on one ARM64 router. r592 verifies Linux paid progress
+during fragmented retirement. Other reachable workflows, concurrent payment
+progress on routers and physical-storage acceptance remain open.
 
 The remaining resource audit follows these production entry points. Shared SDK
 limits apply on every wallet open; a bounded record or page does not establish

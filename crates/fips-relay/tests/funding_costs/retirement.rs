@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(feature = "measurements")]
+#[path = "retirement/live.rs"]
+mod live;
+
 const WALLET_CAPACITY: u64 = 16 * 1024 * 1024;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
