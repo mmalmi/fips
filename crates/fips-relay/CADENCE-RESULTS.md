@@ -1,5 +1,53 @@
 # Paid-relay cadence measurements
 
+## Router packet capture on the current graph — 15 October 2026
+
+r620 repeats the eight-trial Wi-Fi workload below with the same ordinary ARM64
+relay and runtime/dependency graph, adding payment-service packet tracing and
+independent outgoing Ethernet captures. All 93,696 payloads arrive. The strict
+analyzer accepts all 24 complete, zero-drop captures and 32 workload windows,
+matching encrypted packet fingerprints to service counters without relying on
+synchronized router clocks. All 2,616 management checks pass.
+
+Independent audits of 72 complete SQLite sets close all 16 original channels
+and account for all 3,072 test sats, with no unaccounted value, duplicate/spent
+live proofs or pending mint operations. Original recovery identities and all
+financial state remain retained. Local export records that still say pending
+are verified spent at the original mint; they are not counted as outstanding
+value or reported as locally completed. Controllers and test processes have
+stopped. No workload or monetary operation is retried.
+
+Values below average two high-rate observations per policy and sum the three
+routers. Each observation delivers 8,000,000 application bytes and includes the
+same three-second tail. Captured bytes include the observed Ethernet framing.
+
+| Maximum age | Updates | Payment-service packets | Captured payment-service bytes | Bytes / delivered byte |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 3.5 | 51 | 6,713.5 | 0.000839 |
+| 500 ms | 2.5 | 37 | 4,844.5 | 0.000606 |
+| 1 s | 2.0 | 34 | 4,208.0 | 0.000526 |
+| 2 s | 2.0 | 34 | 4,208.0 | 0.000526 |
+
+Every steady observation uses three updates and 5,770 captured payment-service
+bytes for 3,200,000 delivered bytes. Bursty observations use no payment-service
+packets. Idle observations have no application payment requests or payment
+journal writes but still capture eight carrier ACK/keepalive packets, totaling
+600 bytes. One second uses about 13% fewer captured high-rate payment bytes than
+500 ms in this matrix. Tracing changes timing and update counts, so these costs
+must not be combined with the untraced CPU observations below. Two repeats do
+not establish an optimum; the 500-ms default remains unchanged.
+
+Through the final measurement guard, including setup and earlier guards, 1,142
+local payment-service packets match exactly, accounting for 139,558 captured bytes.
+The other 214,301,294 captured bytes remain explicitly unattributed; they include
+application, opaque transit and shared traffic, and are not subtracted as a
+baseline. This measures captured local payment-service traffic, not complete
+end-to-end payment overhead, uncaptured physical framing or radio airtime.
+Storage syscalls and phone costs require separate reconciliation. Private raw
+captures, analysis, original-state audits and acceptance remain in
+`work/measurement-reconciliation-r620/wire`; the controller bookkeeping failure
+is retained separately and did not repeat any completed archive or audit.
+
 ## Wi-Fi comparison on the current graph — 15 October 2026
 
 r613 runs the unchanged eight-trial Wi-Fi comparison on the same source and

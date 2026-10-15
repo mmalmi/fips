@@ -41,6 +41,14 @@ delivers all 93,696 payloads, closes 16 original channels and independently
 accounts for all 3,072 test sats. All 2,103 management checks pass; normal router
 baselines are restored and the archived test profiles are removed. Scoped payment
 costs are reported with their exclusions, and the 500-ms default remains unchanged.
+The r620 [packet-capture comparison](CADENCE-RESULTS.md#router-packet-capture-on-the-current-graph--15-october-2026)
+accepts 24 complete, zero-drop captures across 32 workload windows on the same
+router graph. Packet fingerprints and service counters reconcile without shared
+clocks; all 93,696 payloads arrive and 2,616 management checks pass. Independent
+original-state audits close 16 channels and conserve all 3,072 test sats across
+72 SQLite sets. This closes captured local payment-service byte attribution;
+opaque/shared traffic remains unattributed, and radio airtime, storage syscalls
+and phone cost reconciliation remain open. The tracing run is not a CPU comparison.
 The same runtime/dependency graph passes r615 phone transit: 4 MiB delivered
 through foreground, background and 47.95 seconds of forced Doze, with the same
 process and four original channels. All 512 test sats are independently accounted
