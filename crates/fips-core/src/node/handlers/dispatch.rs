@@ -77,7 +77,7 @@ impl Node {
     }
 
     async fn handle_client_support(&mut self, from: &NodeAddr, payload: &[u8]) {
-        if self.config.node.leaf_only { eprintln!("CLIENT_TRACE received-support node={} from={} at={}",self.node_addr(),from,Self::now_ms()); }
+        eprintln!("CLIENT_TRACE received-support node={} from={} leaf={} at={}",self.node_addr(),from,self.config.node.leaf_only,Self::now_ms());
         if !payload.is_empty() {
             return;
         }

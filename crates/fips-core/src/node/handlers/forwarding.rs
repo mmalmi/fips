@@ -148,6 +148,7 @@ impl Node {
                 )
             ) && !self.authenticated_fmp_uses_current_epoch(fmp)
             {
+                if msg_type == LinkMessageType::ClientSupport.to_byte() { eprintln!("CLIENT_TRACE rejected-support node={} from={} at={}",self.node_addr(),fmp.source_node_addr(),Self::now_ms()); }
                 debug!(
                     src = %self.peer_display_name(fmp.source_node_addr()),
                     msg_type,
