@@ -1,6 +1,65 @@
 # Paid-relay cadence measurements
 
-## Current graph comparison rejected — 15 October 2026
+## Native comparison on the current graph — 15 October 2026
+
+r613 qualifies FIPS runtime `1b948a688`, SDK `dad0fc3`, Spilman `669fbdd943`
+and CDK `04c37d5a152a`, built from source `6ddbadc33` and the recorded dependency
+bundle. The ordinary daemon has core default features and no wallet simulation;
+only the mint simulates money. The unchanged eight-trial comparison uses five
+processes, three paid hops and two funded directions over UDP loopback in a
+two-core scope. Policy order is 250/500/1000/2000/2000/1000/500/250 ms; financial
+terms, workloads and the three-second tail match the [runbook](../../testing/relay-cadence/README.md).
+
+All 285,696 payloads arrive without duplicates, invalid payloads/timestamps or
+controller errors. Strict delivery, accounting, counter-continuity and cost
+checks pass. Independent audits close all 48 original channels and conserve
+40,960 test sats, with no pending mint operations or duplicate/mint-spent live
+coins. All 96 complete SQLite sets and 872 original files remain archived;
+source/artifact hashes are unchanged and owned processes have stopped. Private
+evidence is retained in `work/cadence-control-r613/native`. No trial is retried
+or given replacement funds. The rejected r611 result below remains rejected;
+this pass does not identify the precise cause of its intermittent stream error.
+
+Values average two trials per policy and sum all five processes. Each bursty,
+steady and high-rate trial delivers 512,000, 3,200,000 and 32,000,000 application
+bytes respectively. CPU is per delivered MiB; traffic and logical journal sizes
+are per observation including its tail.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bursty | 250 ms | 2.0 | 20.16 | 13.35 | 1.60 | 3.67 |
+| Bursty | 500 ms | 2.0 | 24.68 | 13.31 | 1.60 | 3.67 |
+| Bursty | 1 s | 2.0 | 22.47 | 13.31 | 1.60 | 3.44 |
+| Bursty | 2 s | 2.0 | 22.40 | 13.30 | 1.60 | 3.44 |
+| Steady | 250 ms | 19.0 | 34.61 | 131.44 | 15.19 | 30.70 |
+| Steady | 500 ms | 19.0 | 34.77 | 130.64 | 15.19 | 30.52 |
+| Steady | 1 s | 14.0 | 24.51 | 97.11 | 11.19 | 23.13 |
+| Steady | 2 s | 10.0 | 18.57 | 70.34 | 8.00 | 16.77 |
+| High rate | 250 ms | 59.5 | 10.81 | 429.56 | 47.94 | 95.12 |
+| High rate | 500 ms | 44.0 | 7.92 | 313.92 | 35.46 | 70.35 |
+| High rate | 1 s | 40.0 | 7.37 | 280.05 | 32.24 | 63.96 |
+| High rate | 2 s | 40.0 | 7.20 | 282.35 | 32.24 | 63.96 |
+
+Idle windows record zero payment requests, payment CPU and payment journal
+writes; local payment-carrier traffic remains 1.36 KiB per observation and
+whole-process CPU remains nonzero. Bursty/steady p95 latency falls in the 500-µs
+bucket; high-rate p95 falls in the 1-ms bucket, using the shared host clock.
+High-rate goodput is 31.912–31.916 Mbps; the paced workload is not a throughput ceiling.
+
+Relative to 500 ms, one second reduces measured payment CPU by about 30% at the
+steady rate and 7% at high rate, with 24% and 9% fewer local payment-carrier bytes.
+High-rate whole-process CPU averages 0.173/0.166/0.170/0.167 seconds per delivered
+MiB across the four policies: lower payment CPU does not establish lower total
+CPU. One and two seconds both average 40 high-rate updates. Two repetitions do
+not establish a general optimum, so the 500-ms default remains unchanged.
+
+Payment CPU excludes scheduler scans and shared TCP/FIPS/core work outside its
+spans. Journal bytes exclude wallet SQLite and physical storage. Local carrier
+bytes include submitted payment traffic, ACKs and retransmissions, excluding
+opaque transit, shared traffic, kernel/radio framing and airtime. This accepts
+the native comparison; current router/phone and physical-cost acceptance remain separate.
+
+## Rejected preceding native comparison — 15 October 2026
 
 r611 runs the unchanged eight-trial native matrix on FIPS runtime `718cfe5be`,
 SDK `dad0fc3`, Spilman `669fbdd943` and CDK `04c37d5a152a`. All 285,696 payloads

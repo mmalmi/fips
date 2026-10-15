@@ -8,7 +8,7 @@ The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
 previous behavior; 34 focused tests and affected lint/format/size gates pass.
 Connection limits, request deadlines and the rule against automatic replay are
-preserved. Fresh paid performance and target acceptance remain open.
+preserved. Current native performance is accepted; target acceptance remains open.
 
 The preceding fixes prevent individually valid receiver payouts from stalling
 aggregate cleanup, suppress repeated idle recovery after a key change, and bound
@@ -16,18 +16,24 @@ settlement replies to 4 MiB with a 30-second deadline per HTTP request. Original
 closing records and spending authority survive refusal and retry. SDK wallet
 retirement releases the client store so unrelated active payments can continue.
 
-r607 qualifies the preceding `718cfe5be` graph with canonical dependency manifests. Ordinary
-Linux and ARM64 builds pass, alongside strict affected lint and source-size
-checks. All seven native carrier scenarios pass: TCP, configured and seeded
+r613 qualifies the current graph with canonical dependency manifests. Ordinary
+Linux and ARM64 builds and strict carrier/cadence lint pass. All seven native
+carrier scenarios pass: TCP, configured and seeded
 WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss.
 Independent audits of the retained original mint/wallet databases account for all
 2,688 test sats without unfinished operations or duplicate/mint-spent live coins.
+Both five-minute loss cases complete three channel renewals per direction and
+deliver about 95% of their payloads with every twentieth carrier frame dropped;
+their periodic connectivity samples record no disconnects.
 This is native link qualification and an ARM64 build, not new device acceptance.
 
 The r611 native cadence comparison is rejected after a payment-control stream
 error, despite full payload delivery and independently closed original finances.
-Its [failed result](CADENCE-RESULTS.md#current-graph-comparison-rejected--15-october-2026)
-remains separate from the earlier accepted performance measurements.
+Its [failed result](CADENCE-RESULTS.md#rejected-preceding-native-comparison--15-october-2026)
+remains separate from r613's accepted [current native comparison](CADENCE-RESULTS.md#native-comparison-on-the-current-graph--15-october-2026):
+all 285,696 payloads arrive, the strict analyzer passes, and independent original
+database audits conserve all 40,960 test sats and close 48 channels. The same
+workloads and financial terms are retained without retries or replacement grants.
 Recorded router and phone results below retain their earlier binaries.
 Final device/performance reconciliation, the remaining resource and maintenance
 checks, physical power loss, physical mobility and natural Android idle remain
@@ -85,7 +91,7 @@ closed financial recovery and the remaining observations listed here.
 | --- | --- | --- |
 | Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. Matched 250/500/1000/2000-ms comparisons in [results](CADENCE-RESULTS.md) retain spending/exposure bounds. | Qualify the final candidate under idle, bursty and high-rate traffic, including payment/renewal progress during faults; retain the same financial terms across comparisons. |
 | CPU, storage, wire and delivery costs | Separate untraced CPU, packet-capture and storage-syscall matrices; per-delivered-byte costs, counters and latency limits are reported in [measurements](MEASUREMENTS.md). | Reconcile final candidate coverage after subsequent runtime/SDK changes. Report scoped payment costs and excluded shared work explicitly; do not claim complete attribution from partial counters. |
-| Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. r607 qualifies seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS on the combined graph; r531/r532 close recorded-graph native quote/admission reconciliation. | Native reconciliation is complete on the recorded graphs. Final target-artifact reconciliation remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
+| Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. r613 qualifies seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS on the current graph; r531/r532 close recorded-graph native quote/admission reconciliation. | Native reconciliation is complete on the recorded graphs. Final target-artifact reconciliation remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
 | Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
@@ -96,7 +102,7 @@ closed financial recovery and the remaining observations listed here.
 | Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. | Retain the 600-line relay/Android and 1000-line integration limits; remove superseded code/tests without losing distinct failure coverage. |
 
 Native admission reconciliation is complete for the recorded graph: r528 covers
-contract/startup boundaries, r607 supported carriers, r531 quote/free-route cases
+contract/startup boundaries, r613 supported carriers, r531 quote/free-route cases
 and r532 the four funded bootstrap, return, newcomer and contention scenarios.
 Physical mobility, resource and target acceptance remain separate requirements.
 
@@ -178,7 +184,7 @@ Reuse the existing harness for admission, rollback and reserved completion check
 | r527/r530 collection pressure | The existing native SQLite benchmark now covers receipts, unfinished-operation ownership and large plain-secret originals. SDK `d7ac1a7` adds only test/fixture changes; all 22 r530 profiles pass alongside the earlier 12 receipt profiles. Protected originals and exact owners survive full logical capacity; eligible originals collect without raising limits or resetting lifetime totals. Required workspace verification passes 443 tests (two opt-in tests ignored), plus strict all-target lint. | At the 16 MiB admission limit, full unfinished-operation histories take 363–464 ms per call with reported VmHWM below 30 MiB. Near-4-MiB plain-secret profiles peak at 65.70 MiB. These are finite x86-64 wall-time/kernel observations, not CPU attribution, hard heap bounds, parsed-condition expansion, full-capture, router or physical-storage qualification. Private evidence remains in `work/history-resources-r530`. |
 | r528 accounting paths | The recorded runtime/dependency graph passes 58 core forwarding/admission checks, 336 relay unit checks, 37 bootstrap/buyer/ledger/durable checks and five service-startup checks. Failed-bind, replay, completion, source authority and bounded-wait coverage are checked by exact test names. The stale buyer fixture now gives its history/pending checks a 20-sat channel while retaining the 10-sat spending budget; strict affected lint, formatting and source-size checks pass. | Runtime unchanged. The original 11-pass/one-failure buyer run remains rejected; only its fixture needed correction. This covers contract/startup paths, not the complete mixed paid-carrier or physical acceptance matrix. |
 | r526 Wi-Fi cadence | The corrected `d6874c3bf` ARM64 build passes all eight trials over native Ethernet/802.11s: all 93,696 payloads arrive, all 16 channels settle, all 3,072 test sats are collected and 2,109 management checks pass. Strict delivery/accounting/cost validation and independent restoration/archive checks pass. [Current radio costs](CADENCE-RESULTS.md#wi-fi-matrix-with-the-control-expiry-fix--14-october-2026) cover all four policies. | Two repeats per policy on three stationary routers with one paid relay. Scoped CPU, logical journal writes and local carrier bytes exclude shared/physical costs. No one-way latency, maximum-throughput or power-cut claim. |
-| r524 native cadence | Runtime `d6874c3bf` passes the unchanged eight-trial comparison and strict delivery/accounting/cost validation. All 285,696 payloads arrive and all 40,960 test sats are collected. Processes stop and original settled profiles are retained. [Current native costs](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026) cover idle, bursty, steady and high-rate workloads. | Two repeats per policy on clean Linux loopback links. Scoped CPU, logical relay writes and local payment-service transport counters exclude shared/physical costs. |
+| r524 native cadence | Runtime `d6874c3bf` passes the unchanged eight-trial comparison and strict delivery/accounting/cost validation. All 285,696 payloads arrive and all 40,960 test sats are collected. Processes stop and original settled profiles are retained. [Recorded native costs](CADENCE-RESULTS.md#native-matrix-with-the-control-expiry-fix--14-october-2026) cover idle, bursty, steady and high-rate workloads. | Two repeats per policy on clean Linux loopback links. Scoped CPU, logical relay writes and local payment-service transport counters exclude shared/physical costs. |
 | r523 control expiry | A native TCP/FIPS regression fails on the old code when idle expiry discards a queued request. The fix passes 17 control unit and 16 integration tests, strict affected-target lint, formatting, source-size checks and an ordinary Linux build. Empty expired streams still close. | Fixes the demonstrated buffered-request race; does not prove it caused the r522 failure. The r525 hardware pilot and full r526 Wi-Fi comparison pass. |
 | r515, runtime `711b68a3d` | 335 relay unit checks, strict all-target lint, three real wallet-retirement cycles and an ordinary ARM64 build. Three regressions fail under the prior controller locking; stale receiver planning is revalidated. | Wallet work remains serialized; pending retirement still fences journal mutations. |
 | r519 SDK/CDK | Native custody reservations pass 443 SDK workspace tests (one existing ignored), 198 SQL wallet tests, strict affected-target lint and a three-cycle FIPS wallet lifecycle. Interrupted and full-capacity captures preserve their original coins, checkpoints and promised space. | Logical storage accounting; unrelated workflows and physical storage retain their separate acceptance requirements. The full CDK workspace was not run. |
