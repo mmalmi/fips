@@ -101,6 +101,31 @@ pub struct BenchMint {
 
 impl BenchMint {
     pub async fn start(config: BenchConfig) -> Result<Self, String> {
+        let entropy = Identity::generate();
+        let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
+        Self::start_with_seed(config, seed).await
+    }
+
+    /// Retain the disposable mint's seed and public keys for reviewed recovery.
+    /// Like `start`, this only creates fresh state; it never resumes or reissues.
+    pub async fn start_seeded(config: BenchConfig, seed: u64) -> Result<Self, String> {
+        let service = Self::start_with_seed(config, seed).await?;
+        let keyset =
+            cashu_service::fetch_spilman_keyset_info_json(&service.url, "sat", None).await?;
+        private_new(
+            &service.config.state_directory.join("recovery.json"),
+            &serde_json::to_vec(&json!({
+                "test_only": true, "seed": seed, "mint_id": service._mint.id(),
+                "url": service.url, "state_directory": service.config.state_directory,
+                "database_path": service._mint.database_path(),
+                "keyset": serde_json::from_str::<Value>(&keyset).map_err(|e| e.to_string())?,
+            }))
+            .unwrap(),
+        )?;
+        Ok(service)
+    }
+
+    async fn start_with_seed(config: BenchConfig, seed: u64) -> Result<Self, String> {
         config.validate()?;
         // Simulation keeps its Lightning network state in memory. Never imply
         // a fresh process can safely resume it from only the mint SQLite file.
@@ -114,8 +139,6 @@ impl BenchMint {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_secs();
-        let entropy = Identity::generate();
-        let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
         let network = PaymentNetwork::new(
             seed,
             0,
