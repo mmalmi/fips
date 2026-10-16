@@ -77,6 +77,7 @@ class FragmentedRetirementTests(unittest.TestCase):
                         {'seller': {'pending': {'x': 1}}}):
             self.assertFalse(maintenance_idle({'history': history}))
         run = object.__new__(LiveRetirementRun)
+        run.nodes = {'n01': object()}
         run.held_nodes, run.retirement_started = ['n01'], True
         run.release_holds, run.old_retired, run.ctl = Mock(), Mock(), Mock()
         with patch('sim.wifi_retirement_live.eventually', side_effect=RuntimeError('still pending')):

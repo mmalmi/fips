@@ -924,6 +924,17 @@ total; the final audit must account for both recent channels and 544 sats of
 lifetime debits, with the same 15 retired channels. This optional case remains
 unqualified on hardware until its run and independent original-state audit pass.
 
+Alternatively, add `--retirement-purchase` with `--fragmented-live`. The original
+route uses native radio; a distinct provider and destination use management-LAN
+UDP through two guarded auxiliary profiles. Exactly 384 initial test sats cover
+all five profiles: 128 per original profile and zero for each auxiliary. Two new
+purchase attempts must reject during held cleanup without changing funding or
+route authority, while existing paid forwarding progresses. After cleanup, one
+new 32-sat channel must fund and both routes must deliver 512 fresh packets with
+new provider credit. All five wallets enter the same final conservation check.
+This mixed-link case keeps the existing deadlines and needs its own hardware run
+and independent audit; it does not qualify a second radio route or performance.
+
 ### Router load, restart and frame loss
 
 `sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped

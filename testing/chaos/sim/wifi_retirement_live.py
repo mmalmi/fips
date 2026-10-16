@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import signal
 import time
+from types import SimpleNamespace
 
 from . import wifi_probes as probes
+from .paid_finances import financial_snapshot
 from .paid_relay import eventually
 from .paid_settlement import (SettlementFixture, collect_settled_wallets, require,
                               validate_report, verified_refund)
@@ -27,6 +29,13 @@ WALLET_LIMIT = 128
 RELEASE_WINDOW = 240
 RELEASE_MARGIN = 60
 RUN_WINDOW = 2400
+
+
+def funding_budget(extra=0):
+    return {'wallet_debited_sat': (OLD_CHANNELS + 1) * CAPACITY + extra,
+            'wallet_refunded_sat': OLD_CHANNELS * CAPACITY,
+            'locked_sat': CAPACITY + extra, 'exposure_sat': CAPACITY + extra,
+            'pending_reserved_sat': 0}
 
 
 def pending(journal):
@@ -115,7 +124,7 @@ class LiveRetirementRun(RetirementRun):
         purchase, = self.ctl('n01', 'status')['purchases']
         return self.record_purchase(purchase)
 
-    def record_purchase(self, purchase):
+    def record_purchase(self, purchase, provider='n02'):
         channel = purchase['channel']['id']
         require(channel not in self.intents, 'purchase reused an original channel')
         journal = self.journal()
@@ -127,6 +136,7 @@ class LiveRetirementRun(RetirementRun):
                 and intent['funded']['wallet_cost']['swap_fee_sat'] == 0,
                 'ordinary funding changed the fixed zero-fee capacity')
         self.intents[channel] = intent
+        self.providers[channel] = provider
         self.evidence['fragmented']['funded_channels'] = len(self.intents)
         self.save()
         return purchase
@@ -145,10 +155,12 @@ class LiveRetirementRun(RetirementRun):
         self.save()
         self.until(self.intents[channel]['created_unix'] + 1)
 
-    def caught_up(self):
+    def caught_up(self, channel=None):
+        channel = self.active if channel is None else channel
+
         def ready():
             status = self.ctl('n01', 'status', operation_timeout=8)
-            progress = status['payment_progress'][self.active]
+            progress = status['payment_progress'][channel]
             ack = progress['acknowledged_msat']
             return status if (not progress['in_flight'] and ack is not None
                               and ack >= max(progress['authorized_sat'] * 1000,
@@ -176,10 +188,7 @@ class LiveRetirementRun(RetirementRun):
             require(journal['policy']['max_wallet_spend_sat'] == WALLET_LIMIT
                     and any(row == self.intents[self.active] for row in journal['funding'].values()),
                     'traffic replaced the original active channel or spending policy')
-        require(status['funding_budget'] == {
-                    'wallet_debited_sat': (OLD_CHANNELS + 1) * CAPACITY,
-                    'wallet_refunded_sat': OLD_CHANNELS * CAPACITY,
-                    'locked_sat': CAPACITY, 'exposure_sat': CAPACITY, 'pending_reserved_sat': 0}
+        require(status['funding_budget'] == funding_budget()
                 and progress['authorized_sat'] <= CAPACITY
                 and sale['usage']['paid_msat'] <= CAPACITY * 1000,
                 'traffic changed original funding or exceeded the active payment capacity')
@@ -248,14 +257,15 @@ class LiveRetirementRun(RetirementRun):
         return source
 
     def close(self):
+        accounts = self.participants()
         self.release_holds(self.held_nodes)
         if self.retirement_started:
             eventually('original sender and seller retirement finished', self.old_retired, 240)
         else:
             eventually('pending maintenance finished before settlement', lambda:
-                       all(maintenance_idle(self.journal(name)) for name in self.nodes), 240)
+                       all(maintenance_idle(self.journal(name)) for name in accounts), 240)
         # Reject an unknown or unfinished opening rather than issuing a replacement.
-        for name in self.nodes:
+        for name in accounts:
             journal = self.journal(name)
             for intent in journal['funding'].values():
                 require(name == 'n01' and intent['funded'] is not None
@@ -278,7 +288,7 @@ class LiveRetirementRun(RetirementRun):
                 continue
             require(verified_refund(source, channel, intent['funded']['terms']) == self.reports[channel],
                     'original refund lacks durable wallet confirmation')
-            seller = self.journal('n02')['seller_settlements'][channel]
+            seller = self.journal(self.providers[channel])['seller_settlements'][channel]
             require(seller['released'] and validate_report(seller['report']) == self.reports[channel],
                     'provider settlement differs from the verified buyer refund')
         status = self.ctl('n01', 'status')
@@ -291,17 +301,27 @@ class LiveRetirementRun(RetirementRun):
                 and status['remaining_budget_sat'] == self.buyer_budget - paid,
                 'settlement or retirement changed lifetime capital/spending bounds')
         owners = dict.fromkeys(self.intents, 'n01')
-        fixture = SettlementFixture(dict.fromkeys(self.nodes, 128),
-                                    dict.fromkeys(self.nodes, self.buyer_budget), CAPACITY,
-                                    owners, dict.fromkeys(self.intents, 'n02'))
-        collect_settled_wallets(self, self.finances(), self.reports, owners, self.mint_url,
-            execute=self.account_execute, stop=lambda name: self.nodes[name].stop(),
-            export_path=lambda name, relative: self.nodes[name].state + '/' + relative,
+        fixture = SettlementFixture(self.initial_balances(),
+                                    dict.fromkeys(accounts, self.buyer_budget), CAPACITY,
+                                    owners, self.providers)
+        view = SimpleNamespace(nodes=accounts, ctl=self.ctl, state_json=self.state_json,
+                               evidence=self.evidence)
+        collect_settled_wallets(view, financial_snapshot(view, wallet=None), self.reports, owners, self.mint_url,
+            execute=self.account_execute, stop=lambda name: accounts[name].stop(),
+            export_path=lambda name, relative: accounts[name].state + '/' + relative,
             fixture=fixture, max_export_sat=CAPACITY)
         self.phase('all 384 original test sats collected after fragmented-history cleanup')
 
+    def initial_balances(self):
+        return dict.fromkeys(self.nodes, 128)
+
+    def after_retirement(self, journal):
+        require(any(row == self.intents[self.active] for row in journal['funding'].values()),
+                'cleanup replaced or changed the active funded channel')
+
     def exercise(self):
         self.intents, self.reports, self.old, self.held_nodes = {}, {}, set(), []
+        self.providers = {}
         self.retirement_started = False
         self.evidence['harness_sha256']['wifi_retirement_live.py'] = digest(Path(__file__).read_bytes())
         self.evidence.update(sqlite_hold_sha256=digest(self.args.sqlite_hold.read_bytes()),
@@ -349,9 +369,8 @@ class LiveRetirementRun(RetirementRun):
             remaining = deadline - time.monotonic()
             require(remaining > 0, 'post-release traffic exceeded the active cleanup window')
             after = eventually('old sender and provider history retired', self.old_retired, remaining)
-            require(time.monotonic() < deadline, 'post-release cleanup exceeded its bounded window')
-            require(any(row == self.intents[self.active] for row in after['funding'].values()),
-                    'cleanup replaced or changed the active funded channel')
+            self.after_retirement(after)
+            require(time.monotonic() < deadline, 'post-release cleanup and workload exceeded its bounded window')
             self.verify_shortcuts()
             self.phase(self.completion_phase)
         except Exception as error:
