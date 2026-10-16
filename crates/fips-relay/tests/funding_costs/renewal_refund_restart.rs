@@ -30,7 +30,6 @@ async fn renewal_recovers_refund_and_replaces_once_after_repeated_restart() {
 }
 
 async fn scenario(root: &Path) {
-    const WALLET_CAPACITY: u64 = 16 * 1024 * 1024;
     let (mint, network) = setup::start_mint(root, 9627).await;
     let proxy = MintProxy::start(mint.url()).await;
     let setup::Bench {
@@ -50,7 +49,7 @@ async fn scenario(root: &Path) {
             funding_limits: &[80, 40, 40],
         },
         |index, config| {
-            config.terms.wallet_capacity_bytes = Some(WALLET_CAPACITY);
+            config.terms.wallet_capacity_bytes = Some(MIXED_ROLE_CAPACITY);
             if index == 0 {
                 config.terms.controller.max_locked_sat = 40;
                 config.terms.controller.max_funding_overhead_sat = 8;
@@ -158,8 +157,8 @@ async fn scenario(root: &Path) {
         recovered_balance
     );
     let capacity = wallet_db.storage_capacity().await.unwrap().unwrap();
-    assert_eq!(capacity.maximum_bytes, WALLET_CAPACITY);
-    assert!(capacity.charged_bytes <= WALLET_CAPACITY);
+    assert_eq!(capacity.maximum_bytes, MIXED_ROLE_CAPACITY);
+    assert!(capacity.charged_bytes <= MIXED_ROLE_CAPACITY);
     kill(&mut children[0]).await;
     assert_eq!(read(&journals[0]), recovered);
 
@@ -315,8 +314,8 @@ async fn scenario(root: &Path) {
         384
     );
     let capacity = wallet_db.storage_capacity().await.unwrap().unwrap();
-    assert_eq!(capacity.maximum_bytes, WALLET_CAPACITY);
-    assert!(capacity.charged_bytes <= WALLET_CAPACITY);
+    assert_eq!(capacity.maximum_bytes, MIXED_ROLE_CAPACITY);
+    assert!(capacity.charged_bytes <= MIXED_ROLE_CAPACITY);
     eprintln!(
         "renewal wallet capacity: maximum={}, final_charged={}, full-capacity recovery checkpoints=2",
         capacity.maximum_bytes, capacity.charged_bytes

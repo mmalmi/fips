@@ -414,4 +414,4 @@ async fn start_configured_topology(
 
 #[path = "../process_support/wallet_capacity.rs"]
 mod wallet_capacity;
-pub(super) use wallet_capacity::fill_wallet_capacity;
+pub(super) use wallet_capacity::{MIXED_ROLE_CAPACITY, fill_wallet_capacity};

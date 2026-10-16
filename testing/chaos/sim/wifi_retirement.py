@@ -77,7 +77,7 @@ class RetirementRun(PaidWifiRun):
         config = super().profile_config(node)
         config['terms'].update(fee_msat_per_kib=1, max_rate_msat_per_kib=1,
                                quote_max_units=QUOTE_UNITS, quote_lifetime_secs=30,
-                               wallet_capacity_bytes=16 * 1024 * 1024)
+                               wallet_capacity_bytes=20 * 1024 * 1024)
         config['terms']['controller']['channel_lifetime_secs'] = 60
         config['return_allowance'] = False
         return config

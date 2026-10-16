@@ -852,7 +852,8 @@ tests.test_wifi_restart` from `testing/chaos`.
 ### Controller reads during wallet retirement
 
 `sim.wifi_retirement` uses the same guarded three-router lifecycle and capped test
-mint. Each fresh wallet enables a 16 MiB logical storage limit. It sends 1,024
+mint. Each fresh wallet enables a 20 MiB logical storage limit, including the
+shared receiver history reserve. It sends 1,024
 paid packets in each direction, settles the original channels, then holds SQLite
 write transactions on two isolated wallets. Once sender history
 retirement is durably pending, six controller reads must each complete within two

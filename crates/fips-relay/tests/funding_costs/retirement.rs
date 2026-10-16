@@ -4,8 +4,6 @@ use super::*;
 #[path = "retirement/live.rs"]
 mod live;
 
-const WALLET_CAPACITY: u64 = 16 * 1024 * 1024;
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spending() {
     tokio::time::timeout(Duration::from_secs(400), async {
@@ -18,7 +16,7 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
                 lifetime: 60, quote_lifetime: 30, funding_limits: &[48, 40, 40],
             },
             |_, cfg| {
-                cfg.terms.wallet_capacity_bytes = Some(WALLET_CAPACITY);
+                cfg.terms.wallet_capacity_bytes = Some(MIXED_ROLE_CAPACITY);
                 cfg.terms.controller.max_funding_overhead_sat = 8;
                 cfg.terms.controller.max_locked_sat = 40;
             },
@@ -37,8 +35,8 @@ async fn service_retires_real_wallet_channels_after_expiry_without_resetting_spe
                 let path = cashu_service::cashu_wallet_db_path(&cfg.state_directory.join("wallet"));
                 let db = cdk_sqlite::WalletSqliteDatabase::new(&path).await.unwrap();
                 let capacity = db.storage_capacity().await.unwrap().unwrap();
-                assert_eq!(capacity.maximum_bytes, WALLET_CAPACITY);
-                assert!(capacity.charged_bytes <= WALLET_CAPACITY);
+                assert_eq!(capacity.maximum_bytes, MIXED_ROLE_CAPACITY);
+                assert!(capacity.charged_bytes <= MIXED_ROLE_CAPACITY);
                 eprintln!("retirement round={round} node={node} charged_bytes={} database_bytes={} cumulative_debit_sat={debit}",
                     capacity.charged_bytes, std::fs::metadata(path).unwrap().len());
             }

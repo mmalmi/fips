@@ -366,7 +366,7 @@ async fn new_paying_identity_joins_while_disconnected_buyer_retains_unsettled_fu
             cfg.terms.controller.max_locked_sat = 64;
             cfg.terms.controller.max_wallet_spend_sat = 128;
             cfg.terms.controller.renewal = None;
-            cfg.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024);
+            cfg.terms.wallet_capacity_bytes = Some(wallet_capacity::MIXED_ROLE_CAPACITY);
         })
         .await;
     let bench = Arc::new(tokio::sync::Mutex::new(bench));

@@ -6,7 +6,6 @@ use sha2::{Digest, Sha256};
 async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charges() {
     tokio::time::timeout(Duration::from_secs(180), async {
         let root = tempfile::tempdir().unwrap();
-        const MAXIMUM: u64 = 16 * 1024 * 1024;
         let (mint, network) = setup::start_mint(root.path(), 9618).await;
         let url = mint.url().to_owned();
         let setup::Bench {
@@ -27,7 +26,7 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
             },
             |index, config| {
                 if index == 1 {
-                    config.terms.wallet_capacity_bytes = Some(MAXIMUM);
+                    config.terms.wallet_capacity_bytes = Some(MIXED_ROLE_CAPACITY);
                 }
             },
         )
@@ -360,7 +359,7 @@ async fn paid_service_settlement_preserves_redemption_reserves_and_signed_charge
                 .unwrap()
                 .unwrap()
                 .maximum_bytes,
-            MAXIMUM
+            MIXED_ROLE_CAPACITY
         );
     })
     .await

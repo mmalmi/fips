@@ -1,8 +1,12 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-16 October 2026. The candidate combines FIPS runtime `1b948a688`, SDK `dad0fc3`,
-Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
+16 October 2026. The device-qualified graph combines FIPS runtime `1b948a688`,
+SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
+The updated SDK `ef294e5` reserves receiver history completion space before
+accepting funding. Its native maximum-payout regression and workspace checks
+pass, as does the isolated ARM64 receiver resource check below. Final relay
+acceptance of this updated dependency graph remains open.
 
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
@@ -648,8 +652,8 @@ the total cost of the caller below.
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; device new-purchase acceptance remains. |
-| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. The 129-proof payout check below crosses the native retirement batch boundary. Device costs and maximum-size payouts remain open. |
-| Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; larger receiver payouts, reserved completion and concurrent forwarding still need resource reconciliation. |
+| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
+| Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
 
@@ -671,16 +675,51 @@ existing opt-in measurements are skipped. This checks logical admission and
 completion, not device performance or physical disk exhaustion. Private evidence
 is retained in `work/receiver-resource-r619/attempt-4`.
 
-SDK `dd47912` extends that same capacity test with a real 129-sat payout made of
-129 one-sat proofs, crossing the 128-proof retirement batch boundary. Reopen and
-import succeed at the unchanged full native limit; duplicate import credits
-nothing, the sender recovers 127 sats and the original 512 sats are conserved.
-Retirement and repetition of the same plan retain all 129 payout proofs in
-history and preserve the earned balance. The focused test, strict affected
-lint, formatting and source-size check pass. This is a test-only extension on
-the unchanged runtime graph, not a device cost or maximum-payout measurement.
-Evidence remains in `work/receiver-payout-129`; the earlier assertion-type
-compile failure is retained separately.
+The same parameterized capacity test covers 129 one-sat proofs across the
+128-proof retirement boundary and the maximum 1,024-proof payout. The maximum
+case exposed missing completion space: retirement stalled during its fourth
+batch after 384 proofs were queued. SDK `ef294e5` reserves the existing 4 MiB
+proof-history journal allowance once per wallet before accepting receiver
+funding. That shared allowance remains charged for later retirements; a budget
+too small for it rejects new funding. The native maximum is not enlarged.
+All payout cases now preserve exact coins, earned balance and original funds
+through full-capacity reopen, duplicate import and repeated retirement.
+
+The SDK workspace gate covers all 55 targets: 444 tests pass, three existing
+opt-in measurements are ignored and no unignored tests are filtered. After a
+test-only pressure-fixture correction, nine unchanged completed targets were
+reused and the edited target plus all remaining targets were run. Documentation
+targets, strict all-target lint, formatting and size checks pass. Failed runs
+remain retained in `work/receiver-payout-limit`; the earlier 129-proof evidence
+remains in `work/receiver-payout-129`.
+
+Ordinary Linux and ARM64 relay builds with SDK `ef294e5` pass. The mixed-role
+16 MiB fixture refused an outgoing reclaim reservation after charging 12,689,211
+bytes: its remaining space was smaller than the next 4 MiB keyset allowance.
+The shared test setup now allows 20 MiB for both roles, while pressure stages
+still fill every unreserved byte. Four ordinary-daemon checks pass: restart at
+full capacity, paid-fee settlement, three expiry/retirement cycles and paying
+newcomer admission. The separate fault-hook renewal/refund/restart case also
+passes, with strict affected-target lint, formatting, size checks and 11 Python
+harness tests. Relay production code and spending limits are unchanged. Source
+bindings and original failures remain in `work/receiver-history-relay`.
+
+r628 runs the same four payout cases in one fresh ARM64 router process, with a
+test-only change retaining its original files. The whole test takes 95.49 seconds
+wall time and 93.74 seconds CPU time, with maximum RSS of 52,772 KiB. This includes
+the in-process simulated mint/proxy and all setup, import and retirement work;
+it does not isolate the 1,024-proof case. No memory-limit or OOM events occur
+under the 192 MiB guard. All 20 management checks pass and normal baselines stay
+unchanged. Independent checks of the four original fixtures account for all
+2,688 test sats and preserve the 1,024 distinct earned coins. One sender
+`token_created` record remains: its three exact, operation-owned originals are
+already spent at the original mint, with no unspent external proof obligation.
+Receiver wallets have no unfinished operations. This qualifies receiver payout
+resource use, not sender retirement, concurrent forwarding or physical flash
+recovery. The initial audit's zero-saga assumption and the corrected audit remain
+with the original archives in `work/receiver-payout-arm64`. The stopped test
+files are removed, recovering 42.1 MiB; original router accounts and normal
+network baselines remain unchanged.
 
 r608 verifies the configured-mint open/balance paths against the qualified source
 inventory: at most 32 mint/unit wallets, 256 retained keysets per cache and 4 MiB

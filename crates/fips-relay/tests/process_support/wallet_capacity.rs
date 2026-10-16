@@ -1,5 +1,9 @@
 use fips_relay::service::ServiceConfig;
 
+// Admit sending and receiving, including the shared 4 MiB receiver history reserve.
+// Pressure tests still fill every unreserved byte after channel admission.
+pub const MIXED_ROLE_CAPACITY: u64 = 20 * 1024 * 1024;
+
 /// Occupy only unreserved space; admitted refunds and payouts retain their allowance.
 pub async fn fill_wallet_capacity(config: &ServiceConfig) -> cdk_sqlite::WalletSqliteDatabase {
     use cdk_common::database::WalletDatabase;

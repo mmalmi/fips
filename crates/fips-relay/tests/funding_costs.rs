@@ -49,7 +49,7 @@ use cashu_service::{
 use fips_core::config::PeerConfig;
 use fips_relay::service::{AdminRequest, RelayService, request};
 use process_support::*;
-use setup::load_mint_balance;
+use setup::{MIXED_ROLE_CAPACITY, load_mint_balance};
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -83,7 +83,7 @@ async fn shared_wallet_recovery(volume: Option<&filesystem_exhaustion::Volume>) 
                 funding_limits: &[40, 40, 40, 40],
             },
             |index, config| {
-                config.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024);
+                config.terms.wallet_capacity_bytes = Some(MIXED_ROLE_CAPACITY);
                 if index == 1
                     && let Some(volume) = volume
                 {
