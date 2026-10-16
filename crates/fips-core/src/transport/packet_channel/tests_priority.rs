@@ -380,3 +380,110 @@ async fn stream_control_capacity_cannot_be_stolen_from_an_older_waiter() {
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x22);
     assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
 }
+
+#[tokio::test]
+async fn stream_control_is_not_starved_by_native_datagram_refill() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (tx, mut rx) = packet_channel(1);
+    for _ in 0..64 {
+        tx.send(forged_priority(0x11)).unwrap();
+    }
+    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    poll_fn(|cx| {
+        assert!(reader.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+
+    // UDP can refill a released control slot before the notified WebSocket
+    // reader runs. Repeated arrivals must not indefinitely deny that reader
+    // admission even while the consumer keeps making progress.
+    let mut admitted = false;
+    for _ in 0..128 {
+        rx.try_recv().unwrap();
+        tx.send(forged_priority(0x33)).unwrap();
+        admitted = poll_fn(|cx| {
+            Poll::Ready(match reader.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    result.unwrap();
+                    true
+                }
+                Poll::Pending => false,
+            })
+        })
+        .await;
+        if admitted {
+            break;
+        }
+    }
+    assert!(
+        admitted,
+        "native datagrams starved a waiting stream despite 128 consumed control packets"
+    );
+}
+
+#[tokio::test]
+async fn native_batch_keeps_one_credit_for_waiting_stream() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (tx, mut rx) = packet_channel(1);
+    tx.send_packet_batch(packet_batch(
+        (0..64).map(|_| forged_priority(0x11)).collect(),
+    ))
+    .unwrap();
+    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    poll_fn(|cx| {
+        assert!(reader.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    for _ in 0..8 {
+        rx.try_recv().unwrap();
+    }
+    tx.send_packet_batch(packet_batch(
+        (0..8).map(|_| forged_priority(0x33)).collect(),
+    ))
+    .unwrap();
+    // Native traffic can use all but the waiting reader's single credit.
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 63);
+    tokio::time::timeout(std::time::Duration::from_secs(1), reader)
+        .await
+        .unwrap()
+        .unwrap();
+    for _ in 0..56 {
+        assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    }
+    for _ in 0..7 {
+        assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
+    }
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x22);
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 0);
+}
+
+#[tokio::test]
+async fn cancelling_stream_restores_full_native_capacity() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (tx, mut rx) = packet_channel(1);
+    for _ in 0..64 {
+        tx.send(forged_priority(0x11)).unwrap();
+    }
+    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    poll_fn(|cx| {
+        assert!(reader.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    rx.try_recv().unwrap();
+    drop(reader);
+    tx.send(forged_priority(0x33)).unwrap();
+    for _ in 0..63 {
+        assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    }
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
+    assert_eq!(tx.priority_reserved_packets.load(Relaxed), 0);
+}

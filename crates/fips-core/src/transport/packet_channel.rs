@@ -491,7 +491,13 @@ impl PacketQueueTx {
 
     fn capacity(self, owner: &PacketTx) -> usize {
         match self {
-            Self::Priority => TRANSPORT_PRIORITY_PACKET_CAPACITY,
+            Self::Priority => {
+                // A stream reader holds its turn while waiting for space.
+                // Keep one credit for it so native datagrams cannot refill
+                // every released slot before the notified reader runs.
+                TRANSPORT_PRIORITY_PACKET_CAPACITY
+                    - usize::from(owner.priority_stream_turn.try_lock().is_err())
+            }
             Self::Bulk => owner.bulk_packet_capacity,
         }
     }
