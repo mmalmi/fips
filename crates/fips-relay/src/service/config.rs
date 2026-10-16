@@ -29,7 +29,7 @@ pub struct ServiceTerms {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
     /// Logical wallet bytes, including completion reservations; not filesystem space.
-    /// Set only before initialization. Omission preserves an unconfigured wallet.
+    /// Required before initialization; missing saved limits are never inferred.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_capacity_bytes: Option<u64>,
     pub buyer_budget_sat: u64,
@@ -90,6 +90,22 @@ pub struct ServiceConfig {
     /// Omission retains CDK defaults; use only within the mint operator's limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub funding_request_budget: Option<crate::controller::FundingRequestBudget>,
+}
+
+impl ServiceTerms {
+    /// Example allowance for a wallet that both sends and receives payments.
+    /// This is not a filesystem reservation or a measured device sizing limit.
+    pub const DEFAULT_WALLET_CAPACITY_BYTES: u64 = 20 * 1024 * 1024;
+
+    pub(crate) fn wallet_capacity(&self) -> Result<u64, String> {
+        let maximum = self
+            .wallet_capacity_bytes
+            .ok_or("wallet storage maximum is required in saved terms; uncapped accounts need explicit recovery")?;
+        if maximum == 0 || maximum > i64::MAX as u64 {
+            return Err("wallet storage maximum is out of range".into());
+        }
+        Ok(maximum)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,11 +212,7 @@ impl ServiceConfig {
             .channel_capacity_sat
             .checked_mul(1_000)
             .ok_or("capacity overflow")?;
-        if t.wallet_capacity_bytes
-            .is_some_and(|maximum| maximum == 0 || maximum > i64::MAX as u64)
-        {
-            return Err("wallet storage maximum is out of range".into());
-        }
+        t.wallet_capacity()?;
         if t.buyer_budget_sat == 0
             || t.window_msat == 0
             || t.window_msat > t.grace_msat

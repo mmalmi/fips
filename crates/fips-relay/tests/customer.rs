@@ -32,7 +32,8 @@ fn profile(entry: &str, address: String, destination: &str, mint: &str) -> Custo
     serde_json::from_value(json!({
         "version":1, "test_only":true, "entry_npub":entry, "entry_address":address,
         "destination_npub":destination, "mint_url":mint,
-        "budget_sat":128, "channel_capacity_sat":32, "max_rate_msat_per_kib":8192
+        "budget_sat":128, "channel_capacity_sat":32, "max_rate_msat_per_kib":8192,
+        "wallet_capacity_bytes":fips_relay::service::ServiceTerms::DEFAULT_WALLET_CAPACITY_BYTES
     }))
     .unwrap()
 }
@@ -494,6 +495,8 @@ fn customer_profiles_reject_unbounded_or_non_test_configuration() {
         ("test_only", json!(false)),
         ("budget_sat", json!(513)),
         ("channel_capacity_sat", json!(0)),
+        ("wallet_capacity_bytes", json!(0)),
+        ("wallet_capacity_bytes", json!(u64::MAX)),
         ("max_rate_msat_per_kib", json!(0)),
         ("mint_url", json!("https://mint.example.com")),
         ("entry_address", json!("0.0.0.0:0")),
@@ -508,4 +511,10 @@ fn customer_profiles_reject_unbounded_or_non_test_configuration() {
             "invalid profile field: {field}"
         );
     }
+    let mut missing = serde_json::to_value(&good).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("wallet_capacity_bytes");
+    assert!(serde_json::from_value::<CustomerProfile>(missing).is_err());
 }

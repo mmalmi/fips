@@ -227,12 +227,11 @@ impl RelayService {
         let root = &config.state_directory;
         if create {
             let directory = root.join("wallet");
-            let wallet = match config.terms.wallet_capacity_bytes {
-                Some(maximum) => {
-                    CashuWalletService::create_file_backed_with_capacity(&directory, maximum).await
-                }
-                None => CashuWalletService::open_file_backed(&directory).await,
-            }
+            let wallet = CashuWalletService::create_file_backed_with_capacity(
+                &directory,
+                config.terms.wallet_capacity()?,
+            )
+            .await
             .map_err(|e| e.to_string())?;
             wallet
                 .load_mint_balance(&config.terms.controller.mint_url)

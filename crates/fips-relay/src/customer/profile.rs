@@ -25,6 +25,8 @@ pub struct CustomerProfile {
     pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
     pub budget_sat: u64,
     pub channel_capacity_sat: u64,
+    /// Explicit logical wallet limit, saved unchanged with the account terms.
+    pub wallet_capacity_bytes: u64,
     pub max_rate_msat_per_kib: u64,
     /// Immutable route tariff. Missing saved values retain the original mode.
     #[serde(default = "original_billing")]
@@ -68,11 +70,15 @@ impl CustomerProfile {
             || self.budget_sat > 512
             || !(8..=128).contains(&self.channel_capacity_sat)
             || self.channel_capacity_sat > self.budget_sat
+            || self.wallet_capacity_bytes == 0
+            || self.wallet_capacity_bytes > i64::MAX as u64
             || !(1..=8192).contains(&self.max_rate_msat_per_kib)
             || !local_address(self.entry_address.ip())
             || self.entry_address.port() == 0
         {
-            return Err("invalid test profile identities, local entry or spending limits".into());
+            return Err(
+                "invalid test profile identities, local entry, spending or wallet limits".into(),
+            );
         }
         let mint = url::Url::parse(&self.mint_url).map_err(|_| "invalid test mint URL")?;
         let ip = match mint.host() {
@@ -144,7 +150,7 @@ impl CustomerProfile {
                         before_expiry_secs: 30,
                     }),
                 },
-                wallet_capacity_bytes: None,
+                wallet_capacity_bytes: Some(self.wallet_capacity_bytes),
                 buyer_budget_sat: self.budget_sat,
                 window_msat: 4000,
                 grace_msat: 8000,

@@ -18,7 +18,7 @@ from .paid_phone_checks import (
     scenario,
 )
 from .paid_phone_finances import check_mint, validate_settled, validate_reopened
-from .paid_relay import eventually, relay_config
+from .paid_relay import WALLET_CAPACITY_BYTES, eventually, relay_config
 from .paid_settlement import require, validate_report
 from .phone_customer import PhoneCustomer, LABELS, save
 from .phone_restart import force_stop, process
@@ -151,6 +151,7 @@ class PaidPhoneRun(WifiRun):
             'destination_npub': self.nodes['n03'].npub,
             'mint_url': self.mint_url, 'budget_sat': 64,
             'channel_capacity_sat': 32, 'max_rate_msat_per_kib': 8192,
+            'wallet_capacity_bytes': WALLET_CAPACITY_BYTES,
         }
 
     def expected_edges(self):

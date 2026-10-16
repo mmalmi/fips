@@ -490,13 +490,17 @@ async fn explicit_initialization_cannot_reset_missing_state_or_raise_saved_limit
         .await
         .unwrap();
     let mut cfg = config(root.path(), mint.url());
-    for invalid in [0, u64::MAX] {
-        cfg.terms.wallet_capacity_bytes = Some(invalid);
+    for (invalid, error) in [
+        (None, "required in saved terms"),
+        (Some(0), "out of range"),
+        (Some(u64::MAX), "out of range"),
+    ] {
+        cfg.terms.wallet_capacity_bytes = invalid;
         assert!(
             fips_relay::service::RelayService::initialize(cfg.clone())
                 .await
                 .unwrap_err()
-                .contains("out of range")
+                .contains(error)
         );
         assert!(!cfg.state_directory.exists());
     }

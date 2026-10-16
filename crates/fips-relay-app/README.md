@@ -103,6 +103,7 @@ mint's backing. Example shape (replace identities and addresses before use):
   "mint_url": "http://192.168.77.1:30338",
   "budget_sat": 128,
   "channel_capacity_sat": 32,
+  "wallet_capacity_bytes": 20971520,
   "max_rate_msat_per_kib": 8192
 }
 ```
@@ -111,6 +112,12 @@ The entry and mint require explicit numeric local addresses; the mint uses a
 root HTTP URL. Profile limits are 512 test sats lifetime spending, 8–128 sats per
 channel and at most 8,192 msat/KiB. A maximum of twice the channel capacity may be
 locked. Loading funds never resets spending history or those limits.
+The positive `wallet_capacity_bytes` value is also immutable. It bounds native
+wallet records and reserved completion space, not filesystem use. The example
+uses the shared 20 MiB mixed-role setting; it is not measured device sizing.
+Missing limits are rejected. Existing uncapped accounts remain unchanged and
+require their original compatible executable for recovery; editing the profile
+does not convert them. See [service storage limits](../fips-relay/SERVICE.md#initialization-and-configuration).
 
 For mint access through FIPS, use `forwarding_data` billing, replace `mint_url`
 in a **fresh** profile with the mint's agreed loopback URL, and add its pinned

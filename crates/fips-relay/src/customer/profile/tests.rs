@@ -9,7 +9,8 @@ fn saved_original() -> Value {
         "entry_address": "127.0.0.1:2121",
         "destination_npub": Identity::generate().npub(),
         "mint_url": "http://127.0.0.1:3338", "budget_sat": 128,
-        "channel_capacity_sat": 32, "max_rate_msat_per_kib": 8192
+        "channel_capacity_sat": 32, "max_rate_msat_per_kib": 8192,
+        "wallet_capacity_bytes": ServiceTerms::DEFAULT_WALLET_CAPACITY_BYTES
     })
 }
 
@@ -107,6 +108,18 @@ async fn rejected_service_configuration_does_not_save_or_lock_customer_profile()
         profile.mint_url = format!("http://{}/", mint.local_addr().unwrap());
         profile.validate().unwrap();
         let mut client = CustomerClient::open(&directory).unwrap();
+        for maximum in [0, u64::MAX] {
+            let mut invalid = profile.clone();
+            invalid.wallet_capacity_bytes = maximum;
+            assert!(
+                client
+                    .execute(CustomerCommand::Setup { profile: invalid })
+                    .await
+                    .is_err()
+            );
+            assert!(!directory.join("profile.json").exists());
+            assert!(!directory.join("state").exists());
+        }
         let preview = client
             .execute(CustomerCommand::Preview {
                 profile: profile.clone(),
@@ -152,6 +165,20 @@ async fn rejected_service_configuration_does_not_save_or_lock_customer_profile()
             .unwrap();
         assert_eq!(ready["configured"], true);
         assert_eq!(ready["profile"]["budget_sat"], 96);
+        let wallet_directory = directory.join("state/wallet");
+        let wallet = cashu_service::CashuWalletService::open_file_backed(&wallet_directory)
+            .await
+            .unwrap();
+        assert_eq!(
+            wallet
+                .storage_capacity()
+                .await
+                .unwrap()
+                .unwrap()
+                .maximum_bytes,
+            profile.wallet_capacity_bytes
+        );
+        drop(wallet);
         drop(client);
         let mut reopened = CustomerClient::open(&directory).unwrap();
         let after = reopened
@@ -162,6 +189,19 @@ async fn rejected_service_configuration_does_not_save_or_lock_customer_profile()
             .unwrap();
         assert_eq!(ready["npub"], after["npub"]);
         assert_eq!(ready["profile"], after["profile"]);
+        let original = std::fs::read(directory.join("profile.json")).unwrap();
+        let mut changed = profile.clone();
+        changed.wallet_capacity_bytes *= 2;
+        assert!(
+            reopened
+                .execute(CustomerCommand::Setup { profile: changed })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.join("profile.json")).unwrap(),
+            original
+        );
         profile.budget_sat += 1;
         assert!(
             reopened

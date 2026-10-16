@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.paid_phone import PaidPhoneRun
+from sim.paid_relay import WALLET_CAPACITY_BYTES, relay_config
 from sim.wifi_discovery import WifiRun
 
 
@@ -162,6 +163,11 @@ class PaidPhoneTests(unittest.TestCase):
                 self.run.before_launch()
         self.run.mint.grant.assert_not_called()
         self.run.phone.open_setup.assert_not_called()
+        self.run.entry_address = '192.0.2.1:41235'
+        profile = self.run.customer_profile()
+        self.assertEqual(profile['wallet_capacity_bytes'], WALLET_CAPACITY_BYTES)
+        self.assertEqual(profile['wallet_capacity_bytes'],
+                         relay_config(['mesh0'], self.run.mint_url)['terms']['wallet_capacity_bytes'])
 
 
 if __name__ == "__main__":

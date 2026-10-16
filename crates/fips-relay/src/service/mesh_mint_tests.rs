@@ -97,6 +97,7 @@ async fn empty_wallet_funds_and_settles_over_mesh_without_a_direct_mint_url() {
             "destination_npub": identities[1].npub(), "mint_url": url,
             "mint_mesh": {"npub": identities[2].npub(), "service_port": PORT},
             "budget_sat": 16, "channel_capacity_sat": 8,
+            "wallet_capacity_bytes": ServiceTerms::DEFAULT_WALLET_CAPACITY_BYTES,
             "max_rate_msat_per_kib": 8_192, "billing": "forwarding_data"
         }))
         .unwrap();

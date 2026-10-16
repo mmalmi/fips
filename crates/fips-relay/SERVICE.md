@@ -82,11 +82,12 @@ On OpenWrt, use persistent storage; `/tmp` and `/var` may disappear on reboot.
 Restored forwarding remains gated until all service components have loaded and
 validated, so a failed startup cannot briefly expose an old allowance.
 
-For an explicitly limited fresh wallet, set `terms.wallet_capacity_bytes` before
-initialization (for example, `20971520` selects 20 MiB). The limit covers native
+Every service requires a positive `terms.wallet_capacity_bytes` before
+initialization (the example uses `20971520`, or 20 MiB). The limit covers native
 SQLite logical records and reserved completion space for admitted operations.
 It does not reserve filesystem/WAL space or bound the separate controller and
-channel files. Omission leaves native wallet capacity unconfigured.
+channel files. Missing limits are rejected before initialization or recovery;
+there is no implicit capacity or automatic conversion of uncapped accounts.
 Receiver admission includes one shared 4 MiB proof-history allowance per wallet;
 a node that also funds outgoing channels needs room for both roles' reservations.
 
@@ -94,6 +95,8 @@ The maximum is saved with the account terms and in the wallet. Startup and offli
 wallet commands require both to agree; changing or removing the configured limit
 cannot resize or convert an existing account. A too-small limit can reject
 initialization or new work; retain partial state and existing financial evidence.
+An older uncapped account needs its original compatible executable for recovery;
+this service does not change its saved terms or database policy.
 See [readiness](READINESS.md) for the tested workloads and remaining deployment
 requirements. A 20 MiB test setting is not a measured router sizing recommendation.
 

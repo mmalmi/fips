@@ -201,8 +201,8 @@ completed handoffs write neither buyer nor controller journals.
 
 The payment controller pairs its receiver with the original wallet directory.
 Automatic acceptance verifies the agreement and uses SDK wallet admission.
-When native capacity accounting is enabled, the
-SDK reserves the complete payout and shared bookkeeping before retaining funding.
+Services require native capacity accounting, so the SDK reserves the complete
+payout and shared bookkeeping before retaining funding.
 Updates and final settlement require the original complete funding record; they
 cannot reconstruct it from a later signed payment. Ordinary updates do not open
 the wallet. Admission, payout import and retirement share the controller's wallet
@@ -226,7 +226,7 @@ reconstruction retains its existing repair of signatures and spending authorizat
 When capacity accounting is enabled, import also requires the original wallet
 allowance. Authenticated receiver retirement removes the corresponding wallet
 admission only after the original payout handoff.
-These are logical storage reservations. Fresh services can explicitly configure
+These are logical storage reservations. Fresh services must explicitly configure
 native wallet capacity before initialization; [service setup](SERVICE.md) describes
 the fixed policy. Other wallet paths/stores and physical recovery still need
 separate deployment acceptance.
