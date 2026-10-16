@@ -21,7 +21,7 @@ settlement replies to 4 MiB with a 30-second deadline per HTTP request. Original
 closing records and spending authority survive refusal and retry. SDK wallet
 retirement releases the client store so unrelated active payments can continue.
 
-r613 qualifies the current graph with canonical dependency manifests. Ordinary
+r613 qualifies the device graph named above with canonical dependency manifests. Ordinary
 Linux and ARM64 builds and strict carrier/cadence lint pass. All seven native
 carrier scenarios pass: TCP, configured and seeded
 WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss.
@@ -586,7 +586,7 @@ an RF anti-jamming guarantee.
 The Pixel has acted as both customer and transit router using the shared service.
 Recorded cases include background traffic, route/socket loss and rebind,
 renewal, corrupted/lost traffic, and forced Doze with continuing payments.
-The latest phone checkpoint is r593 above. Natural deep idle, battery cost and
+The latest phone checks are r615 and r621 above. Natural deep idle, battery cost and
 actual moving-radio behavior remain unqualified. The production-wallet/VPN
 capabilities of a phone app are not supplied by the bench UI.
 
@@ -647,6 +647,16 @@ open.
 The remaining resource audit follows these production entry points. Shared SDK
 limits apply on every wallet open; a bounded record or page does not establish
 the total cost of the caller below.
+
+Receiver cleanup selects one oldest eligible channel per upkeep. Its SDK handoff
+admits at most 1,024 payout proofs and releases them in batches of 128 into a
+1,024-entry queue. Each release is preceded by collection and also collects within
+the release call. Unspent coins stay queued without scanning receipt/operation
+owners; deleting spent coins requires those paged owner scans. Thus r628's unspent
+maximum payout does not measure the worst spent-history scan cost. A full queue
+retains the saved retirement plan for retry; it does not authorize deletion of
+unspent coins or reset earned balances. Concurrent forwarding and aggregate scan
+cost remain separate acceptance work.
 
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
