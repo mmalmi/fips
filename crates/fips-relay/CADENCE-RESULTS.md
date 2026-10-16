@@ -99,6 +99,16 @@ natural deep-idle behavior. The phone is USB-powered, and the 500-ms default
 remains unchanged. Strict analysis, original-state audits and source/artifact
 bindings remain in `work/phone-cost-current-r621`.
 
+The r625 follow-up did not qualify native CPU profiling. Its unfunded capability
+probes first exposed recorder permission problems; a corrected 20-second capture
+contained 290 samples with no reported loss but no FIPS native call chains. A
+subsequent recorder-readiness probe exceeded its fixed preview time allowance.
+These observations do not identify the source of the whole-process CPU cost or
+show that native profiling is unsupported. No paid profiling trial ran. Original
+recordings are retained, all temporary apps and sampler files are removed, and
+original accounts and Wi-Fi are preserved. The r621 measurements and their
+limits above remain unchanged.
+
 ## Rejected storage comparison — 16 October 2026
 
 The r620 ARM64 storage pilot passes all four workloads and independently
