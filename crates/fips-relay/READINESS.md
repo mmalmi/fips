@@ -3,10 +3,12 @@
 **Status: active; production readiness is not established.** Reviewed on
 16 October 2026. The device-qualified graph combines FIPS runtime `1b948a688`,
 SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
-The updated SDK `ef294e5` reserves receiver history completion space before
-accepting funding. Its native maximum-payout regression and workspace checks
-pass, as does the isolated ARM64 receiver resource check below. Final relay
-acceptance of this updated dependency graph remains open.
+SDK `9626cd1` retains the receiver-history reservation added in `ef294e5` and
+also completes the original funding claim before retiring a fully paid channel
+with no refund. All 444 workspace tests, strict lint and focused ownership checks
+pass; three existing optional measurements are ignored. Ordinary Linux/ARM64
+builds and three native relay restart/retirement scenarios pass on this exact
+SDK. Device acceptance of the updated dependency graph remains open.
 
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
@@ -208,6 +210,16 @@ Reuse the existing harness for admission, rollback and reserved completion check
    accidental claims or silently disappearing from the assessment.
 
 ## Current verified checkpoint
+
+The zero-refund fix reproduces a fully paid channel whose original native send
+remains nonterminal after settlement. The SDK now verifies and completes that
+exact send before retirement; partial-refund behavior and original ownership
+checks remain covered. The native relay regression conserves all 384 test sats,
+retires 480 refund coins and observes paid progress through cleanup. Two new
+purchase attempts are refused during the held plan, then exactly one purchase
+succeeds after cleanup. These are native results, not device or power-loss
+qualification. The affected relay format, size and strict-lint gates pass;
+whole-workspace formatting still reports unrelated changes in two core tests.
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
@@ -473,7 +485,8 @@ native automatic renewal across the same maintenance boundary and a held mint
 reply; r604 qualifies the recorded router forwarding/cleanup overlap below.
 r606 also verifies native new-purchase rejection during the same pending plan,
 then one successful purchase after cleanup with original route payments intact.
-Signing delays and hardware renewal/new-purchase acceptance remain open.
+Signing delays and hardware new-purchase acceptance remain open; r626 qualifies
+the recorded hardware renewal case.
 Wallet ownership still serializes maintenance
 and funding; this change promises neither constant-time work nor uninterrupted
 traffic.

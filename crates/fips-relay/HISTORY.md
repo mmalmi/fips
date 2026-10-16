@@ -397,6 +397,13 @@ completed refunds still require
 the original refund proofs, including an explicit empty list for a zero refund.
 No additional FIPS journal or wire message is introduced.
 
+After checking expiry, settlement and original costs, the SDK completes any
+remaining native claim for the exact original funding send. This handles fully
+paid channels with no refund import to trigger claim recovery. Pending claims
+require the mint to confirm that every original token proof was spent; failure
+retains the records for retry. Already-terminal sends need no mint contact.
+Unrelated wallet operations are not recovered by this step.
+
 A cancelled preparation retains its exact operation identity until ordinary
 numbered-prefix retirement, using SDK client-store version 12 for the original
 preparation identity. The SDK records cancellation before acknowledging
