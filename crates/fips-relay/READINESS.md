@@ -20,6 +20,14 @@ builds are bound to the integrated SDK sources. Recovery of the original failed
 purchase is independently accepted as described under [wallet bounds](#wallet-bounds-and-recovery).
 This does not requalify older device or performance observations on the new SDK.
 
+FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
+customer profiles. Generators save the existing 20 MiB example value; missing
+limits fail without changing existing accounts. Ten focused Rust checks and 22
+harness checks, strict lint, formatting and source-size gates pass against SDK
+`1a558a9`. The rebuilt ordinary Linux daemon exercises initialization, reopen and
+paid customer transit. ARM64/Android artifacts for this configuration change
+remain to be qualified; the phone expiry evidence below uses the preceding build.
+
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
 previous behavior; 34 focused tests and affected lint/format/size gates pass.
@@ -680,12 +688,13 @@ native storage admission and reserved completion capacity. Three real lifecycle
 cycles check reopen, retirement and refusal of a further purchase at the original
 lifetime limit. They do not prove a whole-wallet storage plateau indefinitely.
 
-Native capacity is still optional, and generated customer profiles currently omit
-it. Those profiles are not resource-qualified: the bounded deployment profile
-must require a positive saved capacity, including for generated customers. Existing
-initialization checks already reject changing or removing a configured limit.
-Adding that default and validating it is an outstanding configuration change;
-existing accounts must not be silently reconfigured.
+Native capacity is required in saved service and customer profiles. Missing,
+zero and oversized limits are rejected before initialization; fresh wallets always
+use the bounded constructor. Profile, service terms and database capacity must
+agree when reopening. Existing uncapped accounts are rejected without conversion.
+The 20 MiB example value is explicit in generated profiles, not inferred from
+missing saved data. These are logical storage reservations; filesystem/WAL
+headroom and physical power-loss acceptance remain separate requirements.
 
 Custody archive format 5 reserves its pages, native ownership metadata and maximum
 cursor growth in the same transaction as its exact registry checkpoint. Other
