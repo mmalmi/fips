@@ -626,19 +626,29 @@ an RF anti-jamming guarantee.
 The Pixel has acted as both customer and transit router using the shared service.
 Recorded cases include background traffic, route/socket loss and rebind,
 renewal, corrupted/lost traffic, and forced Doze with continuing payments.
-The latest phone checks are r615 and r621 above. Natural deep idle, battery cost and
+The latest controlled expiry check uses SDK `1a558a9` on the phone and all three
+routers. Unpaid transit is denied; all 2 MiB of paid duplex traffic arrive across
+foreground and background windows. The original channels recover their refunds
+after a controlled app stop and reopen, without replacement purchases. All 753
+management checks pass. Independent original-state audits reconcile four channels
+and all 512 test sats into the collector, preserving original accounts and normal
+Wi-Fi. Native receiver-history retirement, natural deep idle, battery cost and
 actual moving-radio behavior remain unqualified. The production-wallet/VPN
 capabilities of a phone app are not supplied by the bench UI.
+The archived temporary app and closed router test profiles have been removed;
+the original app, accounts and mint recovery evidence remain preserved.
 
-The SDK `9626cd1` Android candidate passes all seven build checks: native build,
-ordinary feature audit, strict Android Rust lint, Java tests and package lint,
-stripped-library identity, signature and package verification. All ten Java tests
-pass and the three rendered screens match r615. The APK contains the verified
-ARM64 library, with no SDK simulation or testbench features. Original sources,
-artifacts, logs and stopped build owners are independently reconciled in
-`work/android-current-sdk9626`; the initial evidence-path setup failure is
-retained separately. This is build acceptance only: the candidate has not been
-installed on the phone or qualified for physical payment/background operation.
+The ordinary Android build passes native/feature/lint checks, ten Java tests,
+package and signature verification, and embedded-library identity checks. The
+three rendered screens match r615. Sources and build owners are reconciled in
+`work/android-rejected-funding`; the phone originals and acceptance evidence are
+in `work/phone-expiry-rejected-funding`. An app restart lost the local supervisor's
+exit status; the original runner continued once, and its terminal result, device
+closure and process absence were verified separately. The original postflight
+also rejected a retained expired-route fence. A separate validator proves it
+belongs to the one original settled purchase, with unchanged funding and an
+inactive quote; the failed check remains preserved. Neither issue caused the
+funded workload to be repeated.
 
 ## Cheapest routes that work
 
@@ -738,7 +748,14 @@ native operation are terminal; one inert withdrawn routing marker remains for
 the next ordinary upkeep. The failed forwarding verdict remains unchanged.
 The corrected fixture reserves a second ordinary large coin without changing
 send limits or the receiver's 1,023-coin payout. Its forwarding acceptance is
-still pending. Original failures, recovery and source bindings remain in
+still pending. Its fourth attempt reached the cleanup boundary but failed waiting
+for a saved receiver plan while holding the wallet writer. Preparation itself
+opens the wallet before saving that plan, so the held writer prevents reaching
+the expected step. The failure retains all original funds: 2,016 sats in wallets
+and 1,056 in two original channels. The fixture must instead verify preservation
+of the eligible closed payout during blocked preparation, then observe cleanup
+after releasing the writer. No runtime relaxation or performance acceptance follows.
+Original failures, recovery and source bindings remain in
 `work/spent-payout-native` and `work/rejected-funding-retirement`; no receiver
 performance claim follows from recovery.
 
