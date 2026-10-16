@@ -25,8 +25,10 @@ customer profiles. Generators save the existing 20 MiB example value; missing
 limits fail without changing existing accounts. Ten focused Rust checks and 22
 harness checks, strict lint, formatting and source-size gates pass against SDK
 `1a558a9`. The rebuilt ordinary Linux daemon exercises initialization, reopen and
-paid customer transit. ARM64/Android artifacts for this configuration change
-remain to be qualified; the phone expiry evidence below uses the preceding build.
+paid customer transit. Matching ordinary ARM64 and Android builds pass on the
+same qualified dependencies without simulation features; all ten Java lifecycle
+checks and Android lint/package gates pass. Device acceptance of these rebuilt
+artifacts remains open; the phone expiry evidence uses the preceding build.
 
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
@@ -760,10 +762,14 @@ send limits or the receiver's 1,023-coin payout. Its forwarding acceptance is
 still pending. Its fourth attempt reached the cleanup boundary but failed waiting
 for a saved receiver plan while holding the wallet writer. Preparation itself
 opens the wallet before saving that plan, so the held writer prevents reaching
-the expected step. The failure retains all original funds: 2,016 sats in wallets
-and 1,056 in two original channels. The fixture must instead verify preservation
-of the eligible closed payout during blocked preparation, then observe cleanup
-after releasing the writer. No runtime relaxation or performance acceptance follows.
+the expected step. One ordinary recovery starts the original mint and sellers
+before the payer, with issuance and melt disabled and no new funding. Independent
+stopped-state audits account for all 3,072 original sats in wallets, with no
+remaining financial owners or pending plans. The exact 31 unspent payout coins
+survive, 992 spent originals retire, and lifetime accounting remains unchanged.
+The corrected fixture verifies the same eligible closed payout and paid progress
+while the wallet writer is held, then observes cleanup after release. Its
+forwarding acceptance remains open; recovery does not establish performance.
 Original failures, recovery and source bindings remain in
 `work/spent-payout-native` and `work/rejected-funding-retirement`; no receiver
 performance claim follows from recovery.
@@ -847,17 +853,17 @@ metadata projections before SQL decoding. Receiver refresh uses one configured
 mint, at most 64 active keysets and a shared 1 MiB response/snapshot budget, with
 the relay's 10-second outer deadline and one-second retry cache. Balance uses an
 indexed SQL sum without decoding the proof inventory; its work still grows with
-unspent rows. An unset wallet capacity does not bound total inventory or disk
-use. This closes source coverage for these paths, not device reopen latency or
-peak memory at their limits. Existing tests were inspected, not rerun. The
-source inventory remains in `work/catalog-bounds-r608`; settlement reply bounds
-are a separate path and require their own qualification.
+unspent rows. Current saved profiles require native capacity; its logical bound
+does not reserve filesystem space. This closes source coverage for these paths,
+not device reopen latency or peak memory at their limits. Existing tests were
+inspected, not rerun. The source inventory remains in `work/catalog-bounds-r608`;
+settlement reply bounds are a separate path and require their own qualification.
 
 r612 finds no violation of the reviewed local export size/custody contracts.
 Ownership scans and incomplete-operation recovery traverse retained history, so
-page limits do not bound whole-command work. Configured native capacity bounds
-charged logical history; an unset capacity does not. These are exclusive local
-wallet commands, not anonymous forwarding requests. The 36 source bindings and
+page limits do not bound whole-command work. Required native capacity bounds
+charged logical history. These are exclusive local wallet commands, not anonymous
+forwarding requests. The 36 source bindings and
 existing tests inspected, without rerunning them, remain in
 `work/export-bounds-r612`.
 
