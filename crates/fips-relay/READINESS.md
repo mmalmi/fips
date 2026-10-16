@@ -9,7 +9,8 @@ with no refund. All 444 workspace tests, strict lint and focused ownership check
 pass; three existing optional measurements are ignored. Ordinary Linux/ARM64
 builds and three native relay restart/retirement scenarios pass on this exact
 SDK. Its ordinary ARM64 build also passes the three-router new-purchase case
-below; final target reconciliation remains open.
+below. The Android candidate builds on the same graph and passes its focused
+checks; physical phone acceptance and final target reconciliation remain open.
 
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
@@ -620,6 +621,16 @@ renewal, corrupted/lost traffic, and forced Doze with continuing payments.
 The latest phone checks are r615 and r621 above. Natural deep idle, battery cost and
 actual moving-radio behavior remain unqualified. The production-wallet/VPN
 capabilities of a phone app are not supplied by the bench UI.
+
+The SDK `9626cd1` Android candidate passes all seven build checks: native build,
+ordinary feature audit, strict Android Rust lint, Java tests and package lint,
+stripped-library identity, signature and package verification. All ten Java tests
+pass and the three rendered screens match r615. The APK contains the verified
+ARM64 library, with no SDK simulation or testbench features. Original sources,
+artifacts, logs and stopped build owners are independently reconciled in
+`work/android-current-sdk9626`; the initial evidence-path setup failure is
+retained separately. This is build acceptance only: the candidate has not been
+installed on the phone or qualified for physical payment/background operation.
 
 ## Cheapest routes that work
 
