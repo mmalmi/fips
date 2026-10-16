@@ -1,7 +1,7 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-16 October 2026. Recorded carrier, cadence and phone acceptance uses FIPS runtime `1b948a688`,
+16 October 2026. Earlier carrier, cadence and phone acceptance use FIPS runtime `1b948a688`,
 SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
 SDK `9626cd1` retains the receiver-history reservation added in `ef294e5` and
 also completes the original funding claim before retiring a fully paid channel
@@ -10,7 +10,7 @@ pass; three existing optional measurements are ignored. Ordinary Linux/ARM64
 builds and three native relay restart/retirement scenarios pass on this exact
 SDK. Its ordinary ARM64 build also passes the three-router new-purchase case
 below. The Android candidate builds on the same graph and passes its focused
-checks; physical phone acceptance and final target reconciliation remain open.
+checks; the newer common graph and its device acceptance are described below.
 
 SDK `1a558a9` additionally recovers an outgoing purchase refused before wallet
 preparation when failed-send cleanup has already removed its admission record.
@@ -27,8 +27,26 @@ harness checks, strict lint, formatting and source-size gates pass against SDK
 `1a558a9`. The rebuilt ordinary Linux daemon exercises initialization, reopen and
 paid customer transit. Matching ordinary ARM64 and Android builds pass on the
 same qualified dependencies without simulation features; all ten Java lifecycle
-checks and Android lint/package gates pass. Device acceptance of these rebuilt
-artifacts remains open; the phone expiry evidence uses the preceding build.
+checks and Android lint/package gates pass. These exact ARM64 and Android
+artifacts now pass the controlled phone transit case below; the earlier expiry,
+Doze and performance observations retain their original build scope.
+
+The current capacity-limited app and three routers deliver all 2 MiB through
+foreground and background transit, reject unpaid traffic, and settle four original
+channels. All 516 management checks pass. The empty phone profile reopens with
+its original identity; all four saved profiles, service terms and stopped wallet
+databases retain the same 20 MiB logical limit. Independent audits of 11 complete
+SQLite sets conserve and collect all 512 test sats with original funding and
+spending authority unchanged. Five retained export records have their exact coins
+spent at the original mint; export-history retirement is not claimed. Normal
+network settings and original app/accounts are restored. The temporary app and
+three test profiles are removed after archival; original mint/account evidence
+remains in `work/phone-bounded-capacity-attempt2`. This is
+functional acceptance, not natural idle, mobility, power loss or performance.
+The preceding attempt stopped before funding because its validator omitted CDK's
+fixed 64-byte accounting charge. Its zero-funded originals and failed verdict
+remain preserved; the corrected validator is checked against the actual archived
+database and refuses incorrect totals or capacity violations.
 
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
@@ -43,7 +61,8 @@ settlement replies to 4 MiB with a 30-second deadline per HTTP request. Original
 closing records and spending authority survive refusal and retry. SDK wallet
 retirement releases the client store so unrelated active payments can continue.
 
-r613 qualifies the device graph named above with canonical dependency manifests. Ordinary
+r613 qualifies the recorded `1b948a688` / SDK `dad0fc3` carrier graph with canonical
+dependency manifests. Ordinary
 Linux and ARM64 builds and strict carrier/cadence lint pass. All seven native
 carrier scenarios pass: TCP, configured and seeded
 WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss.
@@ -154,7 +173,8 @@ Current implementation and deployment boundaries:
   emulation nor process interruption establishes physical flash power-loss safety.
 - The Android app embeds the same service and has customer and transit evidence.
   It remains an arm64 bench app, not a production wallet or general Internet VPN.
-  The r615 build and controlled phone regression qualify the current graph.
+  The rebuilt capacity-limited app passes controlled foreground/background transit
+  on the current graph; earlier Doze/cost observations retain their original builds.
   Natural idle and physical mobility remain open. Outstanding acceptance below
   prevents treating it as a qualified production release.
 - Acceptance uses fresh profiles and test money. Legacy profile migration is
@@ -733,8 +753,9 @@ the release call. Unspent coins stay queued without scanning receipt/operation
 owners; deleting spent coins requires those paged owner scans. Thus r628's unspent
 maximum payout does not measure the worst spent-history scan cost. A full queue
 retains the saved retirement plan for retry; it does not authorize deletion of
-unspent coins or reset earned balances. Concurrent forwarding and aggregate scan
-cost remain separate acceptance work.
+unspent coins or reset earned balances. The native case below verifies paid
+progress while the wallet writer is held and exact spent-coin ownership through
+cleanup; aggregate scan cost at maximum retained history remains open.
 
 The existing full-queue regression preserves the saved handoff and original coins
 across reopen, then resumes after entries become collectible. This is safe
@@ -742,37 +763,43 @@ backpressure: a completed payout does not imply that all history can immediately
 retire while its coins remain unspent or owned by another operation. Repeating
 larger finite histories would not remove that condition.
 
-The spent-payout forwarding fixture's third attempt completed 30 outgoing channel
-retirements, then the source's second purchase exceeded the ordinary send-input
-byte limit before measurement began. Failed-send cleanup removed its SDK
-admission while retaining an unprepared send request. SDK `1a558a9` now requires
-that exact request, matching channel metadata and absence of a native operation
-before durably cancelling it; missing or conflicting evidence remains unresolved.
-The regression covers an interrupted cancellation write, reopen, replay refusal,
-retirement and original-fund conservation.
+The [spent-payout forwarding fixture](HISTORY.md) now passes on FIPS `7e2c481a3`
+and SDK `1a558a9`. A genuine incoming payout supplies 1,023 one-sat coins to the
+relay. Cleanup removes 960 spent originals in eight batches, preserves 32 still
+owned by an active outgoing channel until its retirement, and leaves 31 unspent
+originals unchanged. Both hops advance payment authorization and provider credit
+while the wallet writer is held; all 128 held-writer and 512 released-writer
+probe packets arrive. Independent stopped-copy audits conserve all 3,072 test sats
+with no unfinished native operations, pending controller plans or open financial
+obligations. One completed channel remains as ordinary expiry history, with its
+687-sat payout and 337-sat refund imported and unspent.
 
-One ordinary startup of the original payer then cancels and retires the failed
-purchase. An independent stopped-state audit accounts for all 2,048 original test
-sats, with original unspent coins, the mint and other accounts unchanged. No new
-funding or mint server is used. The original funding reservation, SDK send and
-native operation are terminal; one inert withdrawn routing marker remains for
-the next ordinary upkeep. The failed forwarding verdict remains unchanged.
-The corrected fixture reserves a second ordinary large coin without changing
-send limits or the receiver's 1,023-coin payout. Its forwarding acceptance is
-still pending. Its fourth attempt reached the cleanup boundary but failed waiting
-for a saved receiver plan while holding the wallet writer. Preparation itself
-opens the wallet before saving that plan, so the held writer prevents reaching
-the expected step. One ordinary recovery starts the original mint and sellers
-before the payer, with issuance and melt disabled and no new funding. Independent
-stopped-state audits account for all 3,072 original sats in wallets, with no
-remaining financial owners or pending plans. The exact 31 unspent payout coins
-survive, 992 spent originals retire, and lifetime accounting remains unchanged.
-The corrected fixture verifies the same eligible closed payout and paid progress
-while the wallet writer is held, then observes cleanup after release. Its
-forwarding acceptance remains open; recovery does not establish performance.
-Original failures, recovery and source bindings remain in
-`work/spent-payout-native` and `work/rejected-funding-retirement`; no receiver
-performance claim follows from recovery.
+Release to collection takes 0.719 seconds and 0.89 process CPU-seconds; sampled
+RSS peaks at about 82 MiB. These observations include the whole relay process on
+a shared Linux host, not isolated cleanup work. Neither recorded overlap check
+observes payment progress inside the released cleanup interval. The actual wallet
+charge is 14,743,653 of 67,108,864 bytes (21.97%), with one active receipt/operation;
+this is neither history saturation nor a device resource bound. The regression
+and reproducibility instructions are integrated in `5902b17f8`; original evidence
+and both audits remain in `work/spent-payout-native/attempt-5`.
+
+Earlier failed attempts retain their verdicts and original evidence. The third
+exposed a refused purchase whose failed-send cleanup removed SDK admission while
+retaining an unprepared request. SDK `1a558a9` requires that exact request,
+matching channel metadata and no native operation before durable cancellation;
+missing/conflicting evidence stays unresolved. Its regression covers interrupted
+write, reopen, replay refusal, retirement and conservation. One original startup
+recovers all 2,048 test sats without new funding or mint startup; one inert
+withdrawn routing marker remains for ordinary upkeep.
+
+The fourth attempt waited for a saved receiver plan while holding the wallet
+writer, which also blocks preparation before the plan is saved. Original recovery
+conserves all 3,072 sats, retains the exact 31 unspent coins and retires 992 spent
+originals with no pending financial owners. Issuance and melt are disabled, with
+no replacement funding. The accepted fixture instead checks the original eligible
+settlement and coin custody during the hold. Recovery alone does not establish
+forwarding or performance acceptance. These failed/recovered originals remain in
+`work/spent-payout-native` and `work/rejected-funding-retirement`.
 
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
@@ -780,7 +807,7 @@ performance claim follows from recovery.
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; the SDK `9626cd1` router case above closes new-purchase refusal/resumption on its recorded candidate. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
-| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
+| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The current native spent-payout case preserves exact active/unspent owners and makes paid progress with a held wallet writer. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay
