@@ -700,6 +700,17 @@ retains the saved retirement plan for retry; it does not authorize deletion of
 unspent coins or reset earned balances. Concurrent forwarding and aggregate scan
 cost remain separate acceptance work.
 
+The spent-payout forwarding fixture has not passed. Its third attempt completed
+30 outgoing channel retirements, then the source's second purchase exceeded the
+ordinary send-input byte limit before measurement began. Original-state recovery
+returned the remaining channel refund, but the rejected purchase still retains
+a relay reservation: failed-send cleanup removed its SDK admission while keeping
+an unprepared send request, so recovery cannot yet prove terminal cancellation.
+This boundary needs a fix and original-state recovery before acceptance. The
+corrected fixture reserves a second ordinary large coin without changing send
+limits or the receiver's 1,023-coin payout. Original failures and recovery evidence
+remain in `work/spent-payout-native`; no receiver performance claim follows.
+
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
