@@ -16,6 +16,9 @@ use tokio::{
 
 #[path = "live/purchase.rs"]
 mod purchase;
+#[path = "live/receiver.rs"]
+#[cfg(target_os = "linux")]
+mod receiver;
 #[path = "live/renewal.rs"]
 mod renewal;
 
@@ -77,15 +80,28 @@ async fn probe_to(
     count: u32,
     rate: u32,
 ) -> JoinHandle<Value> {
+    probe_between(bench, 0, sink, u64::from(id), count, rate, 1000).await
+}
+
+#[allow(clippy::too_many_arguments)] // Both endpoints share the exact ordinary probe shape.
+async fn probe_between(
+    bench: &setup::Bench,
+    source: usize,
+    sink: usize,
+    id: u64,
+    count: u32,
+    rate: u32,
+    payload_bytes: usize,
+) -> JoinHandle<Value> {
     let stream_id = format!("{id:032x}");
     request(
         &bench.configs[sink],
         &AdminRequest::ReceiveProbe {
             probe: ReceiveProbe {
-                source: bench.npubs[0].clone(),
+                source: bench.npubs[source].clone(),
                 stream_id: stream_id.clone(),
                 packet_count: count,
-                payload_bytes: 1000,
+                payload_bytes,
                 lifetime_secs: Some(90),
                 measure_one_way_latency: false,
                 reflect: false,
@@ -94,7 +110,7 @@ async fn probe_to(
     )
     .await
     .unwrap();
-    let config = bench.configs[0].clone();
+    let config = bench.configs[source].clone();
     let destination = bench.npubs[sink].clone();
     tokio::spawn(async move {
         request(
@@ -104,7 +120,7 @@ async fn probe_to(
                     destination,
                     stream_id,
                     packet_count: count,
-                    payload_bytes: 1000,
+                    payload_bytes,
                     packets_per_second: rate,
                     max_duration_secs: Some(60),
                     measure_round_trip: false,

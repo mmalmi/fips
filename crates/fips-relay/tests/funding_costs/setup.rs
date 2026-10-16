@@ -307,7 +307,31 @@ pub(super) async fn start_configured_line(
     line: LineConfig<'_>,
     configure: impl Fn(usize, &mut ServiceConfig),
 ) -> Bench {
-    start_configured_topology(root, mint, network, mint_url, line, configure, false).await
+    start_configured_topology(root, mint, network, mint_url, line, configure, false, None).await
+}
+
+#[cfg(all(feature = "measurements", target_os = "linux"))]
+pub(super) async fn start_funded_line(
+    root: &Path,
+    mint: LocalMint,
+    network: PaymentNetwork,
+    mint_url: &str,
+    line: LineConfig<'_>,
+    grants: &[u64],
+    configure: impl Fn(usize, &mut ServiceConfig),
+) -> Bench {
+    assert_eq!(grants.len(), line.funding_limits.len());
+    start_configured_topology(
+        root,
+        mint,
+        network,
+        mint_url,
+        line,
+        configure,
+        false,
+        Some(grants),
+    )
+    .await
 }
 
 /// Add an unfunded provider and destination without changing the original grants.
@@ -320,9 +344,10 @@ pub(super) async fn start_configured_fork(
     configure: impl Fn(usize, &mut ServiceConfig),
 ) -> Bench {
     assert_eq!(line.funding_limits.len(), 5);
-    start_configured_topology(root, mint, network, mint_url, line, configure, true).await
+    start_configured_topology(root, mint, network, mint_url, line, configure, true, None).await
 }
 
+#[allow(clippy::too_many_arguments)] // One existing topology initializer owns all setup paths.
 async fn start_configured_topology(
     root: &Path,
     mint: LocalMint,
@@ -331,6 +356,7 @@ async fn start_configured_topology(
     line: LineConfig<'_>,
     configure: impl Fn(usize, &mut ServiceConfig),
     fork: bool,
+    grants: Option<&[u64]>,
 ) -> Bench {
     let LineConfig {
         lifetime,
@@ -364,8 +390,9 @@ async fn start_configured_topology(
         sockets.push(socket);
         npubs.push(RelayService::initialize(cfg.clone()).await.unwrap());
         let wallet = cfg.state_directory.join("wallet");
-        if !fork || index < 3 {
-            let quote = create_topup_quote(&wallet, mint_url, 128).await.unwrap();
+        let grant = grants.map_or(if !fork || index < 3 { 128 } else { 0 }, |g| g[index]);
+        if grant > 0 {
+            let quote = create_topup_quote(&wallet, mint_url, grant).await.unwrap();
             network
                 .orchestrator_funding()
                 .settle_external(&quote.payment_request)

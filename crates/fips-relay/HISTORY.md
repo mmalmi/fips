@@ -735,6 +735,28 @@ remain enforced. Original wallets, mint and observations remain in the printed
 recovery directory even after failure. Pending-plan overlap measures liveness
 during retirement, not uninterrupted native execution or isolated CPU cost.
 
+The Linux spent-payout case gives a relay 1,023 one-sat coins through a genuine
+incoming settlement. Thirty subsequent channels spend 960 of those originals;
+another active channel still owns 32, and 31 remain spendable. At the incoming
+channel's real expiry, a held wallet writer must preserve the original settlement
+and coins while both forwarding hops continue earning payment. Releasing the
+writer permits eight cleanup batches to remove the 960 eligible spent coins,
+preserving the active channel's originals until its own retirement and keeping
+the 31 spendable coins unchanged. All 3,072 original test sats must be conserved.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay \
+  --no-default-features --features measurements --test funding_costs \
+  retirement::live::receiver::spent_receiver_payout_retires_during_paid_forwarding \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+This case also requires Python 3 with SQLite, waits for twelve-minute real expiry
+and has a twenty-minute limit. Its retained `spent-payout.json` reports actual
+delivery/payment overlap and whole-process CPU/RSS observations. Cleanup may
+finish between payment cadences; the recorded overlap is not assumed. These
+observations neither isolate cleanup cost nor establish maximum-history capacity.
+
 Seller tests cycle 64 completed channels through a single retained slot and
 restart after each cleanup. They verify exact debt, crash-window retention,
 non-netting of unrelated overpayments, buyer/mint isolation, bounds under distinct
