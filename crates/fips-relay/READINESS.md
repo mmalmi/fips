@@ -12,6 +12,14 @@ SDK. Its ordinary ARM64 build also passes the three-router new-purchase case
 below. The Android candidate builds on the same graph and passes its focused
 checks; physical phone acceptance and final target reconciliation remain open.
 
+SDK `1a558a9` additionally recovers an outgoing purchase refused before wallet
+preparation when failed-send cleanup has already removed its admission record.
+All 444 workspace tests, strict lint, formatting and size checks pass; the three
+existing optional measurements remain ignored. Ordinary Linux, ARM64 and Android
+builds are bound to the integrated SDK sources. Recovery of the original failed
+purchase is independently accepted as described under [wallet bounds](#wallet-bounds-and-recovery).
+This does not requalify older device or performance observations on the new SDK.
+
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
 previous behavior; 34 focused tests and affected lint/format/size gates pass.
@@ -662,6 +670,13 @@ native storage admission and reserved completion capacity. Three real lifecycle
 cycles check reopen, retirement and refusal of a further purchase at the original
 lifetime limit. They do not prove a whole-wallet storage plateau indefinitely.
 
+Native capacity is still optional, and generated customer profiles currently omit
+it. Those profiles are not resource-qualified: the bounded deployment profile
+must require a positive saved capacity, including for generated customers. Existing
+initialization checks already reject changing or removing a configured limit.
+Adding that default and validating it is an outstanding configuration change;
+existing accounts must not be silently reconfigured.
+
 Custody archive format 5 reserves its pages, native ownership metadata and maximum
 cursor growth in the same transaction as its exact registry checkpoint. Other
 writes cannot consume an admitted capture's remaining allowance. A failed write
@@ -700,16 +715,32 @@ retains the saved retirement plan for retry; it does not authorize deletion of
 unspent coins or reset earned balances. Concurrent forwarding and aggregate scan
 cost remain separate acceptance work.
 
-The spent-payout forwarding fixture has not passed. Its third attempt completed
-30 outgoing channel retirements, then the source's second purchase exceeded the
-ordinary send-input byte limit before measurement began. Original-state recovery
-returned the remaining channel refund, but the rejected purchase still retains
-a relay reservation: failed-send cleanup removed its SDK admission while keeping
-an unprepared send request, so recovery cannot yet prove terminal cancellation.
-This boundary needs a fix and original-state recovery before acceptance. The
-corrected fixture reserves a second ordinary large coin without changing send
-limits or the receiver's 1,023-coin payout. Original failures and recovery evidence
-remain in `work/spent-payout-native`; no receiver performance claim follows.
+The existing full-queue regression preserves the saved handoff and original coins
+across reopen, then resumes after entries become collectible. This is safe
+backpressure: a completed payout does not imply that all history can immediately
+retire while its coins remain unspent or owned by another operation. Repeating
+larger finite histories would not remove that condition.
+
+The spent-payout forwarding fixture's third attempt completed 30 outgoing channel
+retirements, then the source's second purchase exceeded the ordinary send-input
+byte limit before measurement began. Failed-send cleanup removed its SDK
+admission while retaining an unprepared send request. SDK `1a558a9` now requires
+that exact request, matching channel metadata and absence of a native operation
+before durably cancelling it; missing or conflicting evidence remains unresolved.
+The regression covers an interrupted cancellation write, reopen, replay refusal,
+retirement and original-fund conservation.
+
+One ordinary startup of the original payer then cancels and retires the failed
+purchase. An independent stopped-state audit accounts for all 2,048 original test
+sats, with original unspent coins, the mint and other accounts unchanged. No new
+funding or mint server is used. The original funding reservation, SDK send and
+native operation are terminal; one inert withdrawn routing marker remains for
+the next ordinary upkeep. The failed forwarding verdict remains unchanged.
+The corrected fixture reserves a second ordinary large coin without changing
+send limits or the receiver's 1,023-coin payout. Its forwarding acceptance is
+still pending. Original failures, recovery and source bindings remain in
+`work/spent-payout-native` and `work/rejected-funding-retirement`; no receiver
+performance claim follows from recovery.
 
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
