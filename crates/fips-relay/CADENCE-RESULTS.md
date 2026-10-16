@@ -184,6 +184,9 @@ Storage syscalls and phone costs are reconciled separately above. Private raw
 captures, analysis, original-state audits and acceptance remain in
 `work/measurement-reconciliation-r620/wire`; the controller bookkeeping failure
 is retained separately and did not repeat any completed archive or audit.
+The eight closed runs' temporary and persistent router profiles have been
+archived and removed; original financial evidence and normal services remain
+preserved. Cleanup verification is retained with `work/retirement-current-r624`.
 
 ## Wi-Fi comparison on the current graph — 15 October 2026
 
