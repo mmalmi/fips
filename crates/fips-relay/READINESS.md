@@ -1,14 +1,15 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-16 October 2026. The device-qualified graph combines FIPS runtime `1b948a688`,
+16 October 2026. Recorded carrier, cadence and phone acceptance uses FIPS runtime `1b948a688`,
 SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
 SDK `9626cd1` retains the receiver-history reservation added in `ef294e5` and
 also completes the original funding claim before retiring a fully paid channel
 with no refund. All 444 workspace tests, strict lint and focused ownership checks
 pass; three existing optional measurements are ignored. Ordinary Linux/ARM64
 builds and three native relay restart/retirement scenarios pass on this exact
-SDK. Device acceptance of the updated dependency graph remains open.
+SDK. Its ordinary ARM64 build also passes the three-router new-purchase case
+below; final target reconciliation remains open.
 
 The latest control fix gives the requester ownership of normal idle expiry and
 admits buffered records before capacity eviction. Both races fail under the
@@ -90,8 +91,10 @@ the hold, and exactly one successor funds after cleanup. Independent audits of
 nine complete SQLite sets account for all 384 test sats and all 17 original
 channels. All 2,395 management checks pass and normal baselines are restored.
 The original archives are retained and the stopped test profiles are removed.
-Device new purchases, aggregate resource limits and physical power loss remain
-open; this run does not hold the successor's mint reply.
+This renewal run does not hold the successor's mint reply. The newer SDK also
+passes [new purchases during router cleanup](#payments-during-sender-retirement),
+with both original routes delivering and all original test funds accounted for.
+Aggregate resource limits and physical power loss remain open.
 
 The remaining resource and maintenance checks, physical power loss,
 physical mobility and natural Android idle remain
@@ -485,11 +488,26 @@ native automatic renewal across the same maintenance boundary and a held mint
 reply; r604 qualifies the recorded router forwarding/cleanup overlap below.
 r606 also verifies native new-purchase rejection during the same pending plan,
 then one successful purchase after cleanup with original route payments intact.
-Signing delays and hardware new-purchase acceptance remain open; r626 qualifies
-the recorded hardware renewal case.
+Signing delays remain open; r626 qualifies the recorded hardware renewal case.
 Wallet ownership still serializes maintenance
 and funding; this change promises neither constant-time work nor uninterrupted
 traffic.
+
+The hardware new-purchase case on SDK `9626cd1` delivers all 5,633 original
+packets. Signing, provider credit and delivery advance during both held-writer
+and released-writer cleanup of 480 refund coins. Two new purchases refuse while
+the original plan is pending; exactly one 32-sat channel funds afterward, and
+both routes deliver fresh traffic. The original route uses the three routers'
+radio links; the second provider and destination are separate profiles using
+management-LAN UDP. This does not qualify a second all-radio route or performance.
+Independent checks of 13 complete SQLite sets and seven wallets account for all
+384 test sats and 17 channels, with 15 old channels retired. All 2,434 management
+checks pass. Five retained export records remain nonterminal bookkeeping, with
+their exact proofs spent at the original mint; export retirement is not claimed.
+The postflight validator's renewal-state expectation was corrected to match
+ordinary settlement, which pauses renewal. The original failed check is retained;
+the device run was not repeated. Normal baselines are restored, stopped test
+profiles removed, and original archives retained in `work/retirement-purchase`.
 
 r601 reaches the corresponding physical fixture with 480 real refund coins in a
 1,649,458-byte client store. Its held traffic fails delivery before the release
@@ -674,7 +692,7 @@ cost remain separate acceptance work.
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
-| Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; device new-purchase acceptance remains. |
+| Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; the SDK `9626cd1` router case above closes new-purchase refusal/resumption on its recorded candidate. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
