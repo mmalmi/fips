@@ -20,6 +20,13 @@ builds are bound to the integrated SDK sources. Recovery of the original failed
 purchase is independently accepted as described under [wallet bounds](#wallet-bounds-and-recovery).
 This does not requalify older device or performance observations on the new SDK.
 
+SDK `954c955` now shares a receipt reader that retries aggregate byte-limit
+failures with smaller pages at the same cursor. Individually oversized or corrupt
+originals still fail without being skipped. All 444 workspace tests, strict lint
+and four native storage-pressure profiles pass on the exact source. Matching
+ARM64 storage tests pass below; these do not requalify earlier daemon or Android
+runs on the new SDK. Saturated operation scans remain too slow for readiness.
+
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
 limits fail without changing existing accounts. Ten focused Rust checks and 22
@@ -755,13 +762,52 @@ maximum payout does not measure the worst spent-history scan cost. A full queue
 retains the saved retirement plan for retry; it does not authorize deletion of
 unspent coins or reset earned balances. The native case below verifies paid
 progress while the wallet writer is held and exact spent-coin ownership through
-cleanup; aggregate scan cost at maximum retained history remains open.
+cleanup. The saturated profiles below measure selected aggregate scan costs;
+total maintenance work and interference with active payments remain open.
 
 The existing full-queue regression preserves the saved handoff and original coins
 across reopen, then resumes after entries become collectible. This is safe
 backpressure: a completed payout does not imply that all history can immediately
 retire while its coins remain unspent or owned by another operation. Repeating
 larger finite histories would not remove that condition.
+
+**Saturated owner scans.** SDK `954c955` fixes an aggregate receipt-page failure
+reproduced with valid retained rows: a 128-row page exceeded the database's 4 MiB
+limit and prevented cleanup. The shared reader also preserves continuation after
+a full reduced page. Existing owner, incoming and outgoing lifecycle regressions
+cover the fix; no database limit is enlarged.
+
+The extended existing storage fixture fills 20/64 MiB profiles until native
+admission refuses another record, then tightens the collection limit to charged
+bytes so cleanup starts with zero spare capacity. One guarded collection retires
+one of 1,024 candidates. After explicit owner release, eight calls retire the
+other 1,023; every unrelated owner remains exact and the lifetime count stays
+1,033. Native and ARM64 cases all pass on the same SDK/CDK/Spilman source graph.
+These are synthetic storage records, without financial value or mint traffic.
+
+| Router profile / retained owners | Owner rows | First call, s | Eight-call drain, s | Test cgroup peak, MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 20 MiB / receipts | 8,200 | 2.346 | 10.565 | 51.01 |
+| 20 MiB / operations | 6,719 | 9.969 | 70.709 | 43.59 |
+| 64 MiB / receipts | 26,744 | 4.575 | 28.416 | 135.51 |
+| 64 MiB / operations | 22,130 | 29.479 | 228.464 | 111.79 |
+
+These single-router wall times cover only collection calls; cgroup memory covers
+fixture construction, temporary storage and measurement together. All cases stay
+inside the 192 MiB guard without memory-limit events. All 108 recorded management
+checks pass; original network/accounts and cgroup settings are verified restored,
+and archived temporary files are removed. `/tmp` measurements do not qualify
+flash endurance, power loss, daemon forwarding interference or worst-case cost
+for every admitted record shape. Raw evidence is in `work/receipt-pages`.
+
+A separate diagnostic clone of the same source times one 20 MiB operation case.
+Across its eight-call drain, 53,744 individual saga reads and decoding take
+57.10 of 71.74 seconds (79.6%); reference extraction takes 7.66 seconds (10.7%).
+All custody assertions and 22 management checks pass; temporary files are removed
+and original baselines restored. These are wall-time components, not CPU costs
+or an optimization result. Instrumentation is excluded from production source.
+Bounded batching of saga payload reads is the next candidate to measure; mutable
+proof-owner fields cannot replace recovery-checkpoint ownership checks.
 
 The [spent-payout forwarding fixture](HISTORY.md) now passes on FIPS `7e2c481a3`
 and SDK `1a558a9`. A genuine incoming payout supplies 1,023 one-sat coins to the
