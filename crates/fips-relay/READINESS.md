@@ -43,15 +43,29 @@ custody refuses completion. All 446 workspace tests, strict lint, formatting and
 affected source-size checks pass; three existing optional measurements remain
 ignored. The regression fails against the preceding SDK. Evidence and the two
 corrected fault-injection/restoration attempts remain in `work/receiver-handoff`.
-This qualifies native SDK logical capacity and injected failures. Ordinary FIPS,
-ARM64, Android and device acceptance still need the new SDK; the earlier results
-retain their recorded graph. Version-4 queue journals require fresh profiles.
-A sender regression now reproduces a separate completion-capacity failure on
-this SDK: after a completed refund, ordinary writes refill the original 16 MiB
-wallet limit and the saved retirement handoff fails its native capacity check.
-Only the test changes; the original runtime is unchanged. Evidence is retained
-in `work/sender-handoff/red-1`. The sender fix and physical power-cut acceptance
-remain open.
+This qualifies native SDK logical capacity and injected failures. Version-4 queue
+journals require fresh profiles; earlier device results retain their recorded graph.
+
+SDK `1770996` also reserves sender proof custody before spending and channel refund
+custody before funding. Capture transfers the exact original promises into retained
+pages; missing admission refuses completion. A regression reproduces the preceding
+failure, then passes after ordinary writes refill the original 16 MiB wallet limit.
+Shared-admission checks also preserve later promises through interruption and retry.
+All 446 workspace tests and strict lint pass; three optional measurements remain
+ignored. A shared test-helper lint annotation is the only change after the full
+workspace run. The original failed lint verdict and the corrected pass remain in
+`work/sender-handoff`, alongside the behavioral reproduction and source inventories.
+Version-6 custody archives require fresh profiles. Matching ordinary Linux, ARM64
+and Android builds pass. Native checks pass 338 relay unit, 19 funding, nine
+retirement and two mint-harness tests; five existing optional cases remain ignored.
+One expiry test initially allowed a valid successor to recover before its intended
+crash. Moving the offline wait after process interruption preserves the original
+expiry, refund and conservation assertions and passes the focused retry. Only test
+timing changes; the runtime artifacts are unchanged. Evidence remains in
+`work/native-sender-handoff`; Android additionally passes five Rust profile and
+ten Java lifecycle checks, packaging and lint. Physical device acceptance on this
+SDK remains open. These reservations cover logical payload capacity, not filesystem
+blocks or flash-journal headroom.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing

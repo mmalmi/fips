@@ -491,30 +491,34 @@ storage allowances. Separate service-configured metadata limits bound ordinary
 initial key-cache reads before SQL projection and check the cumulative cache size
 as each keyset is loaded.
 
-The version-5 custody registry caps retained pages plus unfinished capture
-reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
-original owners to reserve its full serialized proof size plus 16 KiB per nonempty
-page. Appending transfers that allowance to retained pages; retries use the same
-reservation, and acknowledgment releases unused allowance only after the client
-financial commit. Older archives and unfinished redo logs require a fresh profile.
+The version-6 custody registry caps retained pages, unfinished captures and promised
+future custody at 64 MiB by default. Capacity-enabled wallets reserve native send
+custody before a saved plan authorizes spending, and a separate refund component
+before channel funding. Both use the existing authenticated registry and native
+storage owner. Older archives and unfinished redo logs require a fresh profile.
 `CashuWalletService::configure_proof_archive_capacity` persists a different limit
 but rejects shrinking below retained and reserved usage. It never evicts evidence.
 
-On pressure, retirement visits at most one previously acknowledged page before
-rejecting a new capture. Repeated retries can therefore free eligible spent
-history even when retirement precedes ordinary upkeep collection. Unspent or
-otherwise owned coins remain charged. The original plan and native owners remain
-until the complete capture fits and is sealed. The same transaction commits page
-changes and byte counters, checking every original record before replacement.
+Capture atomically converts only the exact prefix's native and refund promises
+into its measured page reservation. Original request bindings, proof ownership and
+the native storage owner must match. Missing or changed admission refuses completion;
+retry does not create another allowance. Unrelated writes cannot consume reserved
+space, including after refund import releases its separate completion allowance.
+Scope metadata, future checkpoints and maximum escaped cursors are reserved too.
+Ordinary send acknowledgment releases only native custody; channel refunds keep
+their own promise. Proven cancellation releases only its unused components.
 
-When native wallet capacity is configured, admission also reserves the complete
-capture in that wallet's storage ledger. A single wallet-local archive owner covers
-retained pages, unfinished captures, native ownership metadata and maximum escaped
-capture cursors. Reservation changes and exact custody checkpoints commit together;
-unrelated writes cannot consume the space promised to an admitted capture. Scope
-and mint framing must fit before admission. Appends and acknowledgment can then
-finish at full native capacity; rejected new captures retain their original owners.
-This is a logical payload reservation, not reserved filesystem blocks.
+Appending transfers the capture allowance to retained pages. Acknowledgment releases
+unused space only after the client financial commit; unspent or otherwise owned
+coins remain charged. The same transaction commits page changes, exact custody and
+byte counters, checking original records before replacement. New work can refuse
+admission while already admitted handoffs finish at full logical capacity.
+
+Unbounded wallets retain best-effort admission at retirement, including token
+funding without an existing capacity-enabled wallet. That path visits at most one
+previously acknowledged page before refusing a capture that cannot fit. Enabling
+capacity after funding does not retroactively reserve old obligations. These are
+logical payload reservations, not reserved filesystem blocks.
 
 This is a logical page limit. Registry metadata has its separate 1 MiB bound and
 each page is limited to 4 MiB plus 16 KiB. Encoding reserves bounded whitespace
