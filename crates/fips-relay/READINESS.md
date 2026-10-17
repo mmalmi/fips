@@ -135,9 +135,22 @@ both pass; audits reconcile their 768 original test sats. The receiver case
 fails during setup when settlement overlaps an older seller-history handoff.
 The buyer retains its exact signed settlement intent, but the receiver reports
 temporary journal suspension as a permanent rejection. Its 3,072 test sats are
-accounted for as 3,040 spendable and 32 in the original channel; recovery and
-the response-classification fix remain open. The failed verdict and immutable
-originals remain in `work/relay-live-send-journal/attempt-1`.
+fully recovered by restarting the original runtime and resuming ordinary upkeep,
+without another funding or settlement command. The recovery helper inadvertently
+activates a new denomination keyset, so exact mint-policy preservation fails.
+All original value is spendable, with no unfinished wallet operations or duplicate
+or spent live proofs. This closes the funds recovery only; the original receiver
+case remains failed. Its verdict, original accounts and separate recovery audit
+remain in `work/relay-live-send-journal/attempt-1`.
+
+FIPS `c6e46a39f` distinguishes a valid pending history handoff from a failed
+journal write. The former returns the existing bounded-retry `Pending` response;
+invalid requests and genuine storage failures still reject. The regression fails
+before the fix, then all 177 controller checks, strict lint, formatting and size
+checks pass. Initial private-runner permission and artifact-parser failures remain
+preserved; the corrected runner reuses the same compiled test binary. Evidence
+remains in `work/controller-maintenance-pending`. Matching runtime builds and a
+fresh receiver acceptance case are still required.
 
 The Samsung attempt stops before funding because its Android network tool lacks
 the harness's `nc -z` option. FIPS `a8db7a068` replaces both probe callers with one
