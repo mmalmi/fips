@@ -1158,6 +1158,29 @@ remains in `work/receiver-handoff-pressure/arm-2`. This does not measure paid
 forwarding during cleanup or physical flash behavior. The native and ARM builds
 use different optimization profiles, so they do not establish a speed ratio.
 
+A subsequent measured candidate removes the reserved receiver's preliminary
+collection before each release batch. Admission already promises every queue
+slot, and release performs its own bounded collection with fresh ownership checks
+under the wallet lock. Unreserved release and ordinary archive upkeep remain.
+Matched release-profile observations retain the same workload, dependencies,
+original owners, capacity and reopen assertions:
+
+| Target | Whole handoff wall time, before → after | Process CPU, before → after |
+| --- | --- | --- |
+| Linux, shared host | 1.917 → 1.099 s | 1.91 → 1.10 CPU-s |
+| ARM64 router | 31.407 → 18.258 s | 30.68 → 17.82 CPU-s |
+
+Each target has one observation per variant; this is a measured CPU reduction,
+not a latency distribution. The candidate router fixture peaks at 36.13 MiB;
+all ten management checks complete within 196 ms. Original services, boot and
+network settings remain intact, and archived temporary files are removed.
+Source bindings, raw observations and independent acceptance remain in
+`work/reserved-receiver-handoff/native-pair-1` and
+`work/reserved-receiver-handoff/arm-candidate-1`. The synthetic operation owners
+are not valid funding or recovery records for a live wallet. Paid forwarding and
+payment progress throughout a financially valid full-history cleanup still need
+device acceptance; these measurements do not close that gap.
+
 r619 strengthens the existing SDK receiver-retirement regression in `c079bde`;
 production code and dependencies are unchanged. A receiver-store refusal leaves
 the wallet's original reservation and admission journal intact. The admitted
