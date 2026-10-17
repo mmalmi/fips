@@ -1,7 +1,21 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-17 October 2026. Earlier carrier, cadence and phone acceptance use FIPS runtime `1b948a688`,
+17 October 2026.
+
+SDK `03e6b50` reserves the existing shared activity journal before receiving a
+local token into a capacity-limited wallet. The preceding implementation could
+commit the native receive, then fail to finish its activity record after other
+work filled the wallet. The same regression fails before the fix and passes
+afterward: two retries after reopening at full 20 MiB capacity preserve one
+receipt, one activity entry and the original balance, without another mint swap.
+All 448 workspace tests, strict lint, formatting, size checks and 18 feature
+profiles pass; three existing optional measurements remain ignored. Native,
+router and phone qualification on this updated SDK is still pending. Earlier
+device and performance results below retain their recorded source graphs.
+Evidence remains in `work/receive-activity-capacity`.
+
+Earlier carrier, cadence and phone acceptance use FIPS runtime `1b948a688`,
 SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
 SDK `9626cd1` retains the receiver-history reservation added in `ef294e5` and
 also completes the original funding claim before retiring a fully paid channel
