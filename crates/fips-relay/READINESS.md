@@ -1,7 +1,24 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-17 October 2026.
+18 October 2026.
+
+The current native candidate combines FIPS runtime `ab2b9246`, SDK `3627f29`,
+CDK `b1265929` and Spilman `669fbdd943`. Offline wallet commands now honor the
+configured mint-request pacing and expose recovery of original operations.
+Completed native receives release unused completion allowance without removing
+retained receipts or proof charges; a failed release rolls back with the journal.
+The SDK also removes duplicate proof collection during reserved receiver handoff.
+Six focused FIPS checks and 201 SQL wallet tests pass. The SDK's 448-test workspace
+gate used the preceding CDK graph and does not qualify this combined graph alone.
+
+The ordinary Linux daemon, isolated test mint and receiver-history executable
+build on the combined graph; the ordinary daemon excludes simulation features.
+Genuine large-history forwarding, matching device acceptance and final common-graph
+verification remain outstanding. Build and fix evidence is retained in
+`work/receiver-history-native/build-2`, `work/offline-wallet-recovery`,
+`work/cdk-receive-completion` and `work/reserved-receiver-handoff`.
+The device and performance results below retain their recorded source graphs.
 
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
