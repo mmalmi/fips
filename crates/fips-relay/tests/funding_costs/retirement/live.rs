@@ -188,17 +188,20 @@ async fn delivered_to(
     observation
 }
 
+fn payment_caught_up(progress: &Value) -> bool {
+    progress["in_flight"] == false
+        && progress["acknowledged_msat"].as_u64().is_some_and(|ack| {
+            ack >= progress["authorized_sat"].as_u64().unwrap() * 1000
+                && ack >= progress["evidence_msat"].as_u64().unwrap()
+        })
+}
+
 async fn caught_up(config: &ServiceConfig, channel: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let state = status(config).await;
             let p = &state["payment_progress"][channel];
-            if p["in_flight"] == false
-                && p["acknowledged_msat"].as_u64().is_some_and(|ack| {
-                    ack >= p["authorized_sat"].as_u64().unwrap() * 1000
-                        && ack >= p["evidence_msat"].as_u64().unwrap()
-                })
-            {
+            if payment_caught_up(p) {
                 return state;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

@@ -1,7 +1,7 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-16 October 2026. Earlier carrier, cadence and phone acceptance use FIPS runtime `1b948a688`,
+17 October 2026. Earlier carrier, cadence and phone acceptance use FIPS runtime `1b948a688`,
 SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
 SDK `9626cd1` retains the receiver-history reservation added in `ef294e5` and
 also completes the original funding claim before retiring a fully paid channel
@@ -27,8 +27,11 @@ individually oversized or corrupt originals still fail without being skipped.
 All 444 workspace tests, strict lint, 200 SQL wallet tests and four native
 storage-pressure profiles pass. Matching ARM64 cases reduce operation-history
 drain times by 3.3–3.6 times in the recorded comparison, with comparable peak
-memory. These storage tests do not requalify earlier daemon or Android runs.
-The duration and interference of complete payout handoffs remain open.
+memory. The rebuilt ordinary Linux relay also passes the genuine spent-payout
+case below: delivery and both hops' payment counters advance across complete
+cleanup, with observed gaps below one second against a two-second test limit.
+All 3,072 original test sats are independently reconciled. Saturated complete
+handoffs, hardware interference and current Android acceptance remain open.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
@@ -768,10 +771,11 @@ progress while the wallet writer is held and exact spent-coin ownership through
 cleanup. The controller wallet lock spans the handoff and final collection.
 Existing payment updates and forwarding use separate locks; new funding and
 refund work can wait behind it. The saturated profiles below measure individual
-collection calls, not the complete handoff. The next live check must measure
-payment-progress gaps during actual cleanup using genuine payout originals.
-Synthetic unfinished operations remain isolated storage fixtures; inserting them
-into a live wallet would change recovery and final audit obligations.
+collection calls, not the complete handoff. The native case below measures
+payment-progress gaps across actual cleanup using genuine payout originals.
+It has one active receipt/operation, so it does not close saturated live-history
+acceptance. Synthetic unfinished operations remain isolated storage fixtures;
+inserting them into a live wallet would change recovery and final audit obligations.
 
 The existing full-queue regression preserves the saved handoff and original coins
 across reopen, then resumes after entries become collectible. This is safe
@@ -825,28 +829,43 @@ Across its eight-call drain, 53,744 individual saga reads and decoding take
 57.10 of 71.74 seconds (79.6%); reference extraction takes 7.66 seconds (10.7%).
 These wall-time components motivated bounded batching; they are not CPU costs.
 Instrumentation is excluded from production source. Batching is retained after
-the matched comparison above, while complete payout handoffs and interference
-with payments still need qualification.
+the matched comparison above. The native case below checks complete cleanup
+with a genuine payout; saturated handoffs and device interference remain open.
 
-The [spent-payout forwarding fixture](HISTORY.md) now passes on FIPS `7e2c481a3`
-and SDK `1a558a9`. A genuine incoming payout supplies 1,023 one-sat coins to the
-relay. Cleanup removes 960 spent originals in eight batches, preserves 32 still
-owned by an active outgoing channel until its retirement, and leaves 31 unspent
-originals unchanged. Both hops advance payment authorization and provider credit
-while the wallet writer is held; all 128 held-writer and 512 released-writer
-probe packets arrive. Independent stopped-copy audits conserve all 3,072 test sats
-with no unfinished native operations, pending controller plans or open financial
-obligations. One completed channel remains as ordinary expiry history, with its
-687-sat payout and 337-sat refund imported and unspent.
+The [spent-payout forwarding fixture](HISTORY.md) passes with the ordinary Linux
+relay rebuilt against SDK `033eea6`, CDK `c203b84f613d` and Spilman `669fbdd943`.
+A genuine incoming payout supplies 1,023 one-sat coins to the relay. Cleanup
+removes 960 spent originals in eight batches, preserves 32 still owned by an
+active outgoing channel until its retirement, and leaves 31 unspent originals
+unchanged. Both hops advance payment authorization and provider credit while the
+wallet writer is held; all 128 held-writer and 512 released-writer packets arrive.
+Independent stopped-copy audits conserve all 3,072 test sats with no unfinished
+native operations, pending controller plans or open financial obligations. One
+completed channel remains as ordinary expiry history, with its 687-sat payout
+and 337-sat refund imported and unspent.
 
-Release to collection takes 0.719 seconds and 0.89 process CPU-seconds; sampled
-RSS peaks at about 82 MiB. These observations include the whole relay process on
-a shared Linux host, not isolated cleanup work. Neither recorded overlap check
-observes payment progress inside the released cleanup interval. The actual wallet
-charge is 14,743,653 of 67,108,864 bytes (21.97%), with one active receipt/operation;
-this is neither history saturation nor a device resource bound. The regression
-and reproducibility instructions are integrated in `5902b17f8`; original evidence
-and both audits remain in `work/spent-payout-native/attempt-5`.
+The existing fixture now samples through complete cleanup and the live stream's
+final acknowledged payments. Its five-second observation records maximum gaps
+of 0.929 s for delivery, 0.902/0.804 s for the two authorization counters and
+0.904/0.803 s for provider credits, all below the two-second acceptance limit.
+The 500 ms payment cadence and financial terms are unchanged. A focused observer
+regression rejects stalled hops, late catch-up and an idle tail; it also preserves
+the distinction between progress across cleanup and samples strictly inside it.
+Only the first hop advances between unfinished-cleanup samples in this run;
+progress on both hops strictly inside cleanup is not established.
+These are gaps between observed cumulative-counter advances, including observer
+delay; they are not packet latency or a protocol-wide guarantee.
+
+Release to collection takes 0.687 seconds and 0.86 process CPU-seconds; sampled
+RSS peaks at about 84.2 MiB. These observations include the whole relay process
+on a shared Linux host, not isolated cleanup work. The actual wallet charge is
+14,743,653 of 67,108,864 bytes (21.97%), with one active receipt/operation; this
+is neither history saturation nor a device resource bound. Formatting, strict
+affected-target lint, source-size checks, the observer regression and the full
+813-second funded scenario pass. Original evidence, runtime/source bindings and
+both audits remain in `work/cleanup-progress/run-1`; the preceding accepted run
+remains in `work/spent-payout-native/attempt-5`. The initial build caught an unused
+test variable before any funding; its output remains in `work/cleanup-progress/build-1`.
 
 Earlier failed attempts retain their verdicts and original evidence. The third
 exposed a refused purchase whose failed-send cleanup removed SDK admission while
@@ -872,7 +891,7 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; the SDK `9626cd1` router case above closes new-purchase refusal/resumption on its recorded candidate. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
-| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The current native spent-payout case preserves exact active/unspent owners and makes paid progress with a held wallet writer. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
+| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The current native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps across complete cleanup at its recorded history size. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay

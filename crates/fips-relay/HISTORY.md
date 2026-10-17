@@ -752,10 +752,18 @@ cargo test --config /path/to/local-dependencies.toml -p fips-relay \
 ```
 
 This case also requires Python 3 with SQLite, waits for twelve-minute real expiry
-and has a twenty-minute limit. Its retained `spent-payout.json` reports actual
-delivery/payment overlap and whole-process CPU/RSS observations. Cleanup may
-finish between payment cadences; the recorded overlap is not assumed. These
-observations neither isolate cleanup cost nor establish maximum-history capacity.
+and has a twenty-minute limit. Its retained `spent-payout.json` reports delivery,
+both hops' payment authorization and provider credit across the live stream.
+All five counters must advance, with no observed gap above two seconds, and the
+stream must cover complete cleanup. The existing 500 ms payment cadence stays
+unchanged; the gap limit is this workload's acceptance criterion, not a protocol
+guarantee or packet-latency measurement. Financial settlement finishes before
+these progress assertions are checked.
+
+Whole-process CPU/RSS measurement ends when cleanup finishes. Progress between
+two unfinished-cleanup samples is reported separately: fast cleanup may finish
+between payment updates. These observations neither isolate cleanup cost nor
+establish maximum-history capacity.
 
 Seller tests cycle 64 completed channels through a single retained slot and
 restart after each cleanup. They verify exact debt, crash-window retention,

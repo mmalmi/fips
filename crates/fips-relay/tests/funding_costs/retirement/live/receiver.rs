@@ -420,6 +420,9 @@ async fn exercise() {
     }
     let credit_before = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
     measured.sample();
+    let progress_baseline = json!({"elapsed_us":measured.elapsed_us(),"delivered":0,
+        "credits":credit_before,"payments":[held_a["payment_progress"][&transit],
+            held_r["payment_progress"][&guard]]});
     stream += 1;
     let sending = probe_between(&bench, 0, 3, stream, 512, 128, 1000).await;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -437,11 +440,16 @@ async fn exercise() {
     drop(writer.stdin.take());
     assert!(writer.wait().await.unwrap().success());
     let mut samples = Vec::new();
+    let mut resources = None;
+    let mut cleanup_finished_us = None;
+    let mut traffic_finished_us = None;
+    let mut payments_finished = false;
     tokio::time::timeout(Duration::from_secs(35), async {
         loop {
-            measured.sample();
+            if resources.is_none() {
+                measured.sample();
+            }
             let j = journal(&bench.configs[1]);
-            let state = status(&bench.configs[1]).await;
             let remaining = original_subset(&db, &originals).await;
             assert_eq!(j["funding"][&guard_request], guard_funding);
             for key in guard_inputs.iter().chain(&unspent) {
@@ -450,16 +458,32 @@ async fn exercise() {
                     "collection changed an original still owned by guard or spendable balance"
                 );
             }
-            samples.push(json!({"elapsed_us":measured.elapsed_us(),
-                "receiver_retained":j["seller_settlements"][&incoming].is_object(),
-                "remaining_originals":remaining.len(),
-                "delivered":status(&bench.configs[3]).await["probe"]["unique_packets"],
-                "credits":[credit(&bench,1,&transit),credit(&bench,2,&guard)],
-                "payments":[status(&bench.configs[0]).await["payment_progress"][&transit],
-                    state["payment_progress"][&guard]]}));
-            if j["seller_settlements"][&incoming].is_null()
-                && remaining.len() == GUARD_COINS + UNSPENT
-            {
+            let cleanup_pending = j["seller_settlements"][&incoming].is_object()
+                || remaining.len() != GUARD_COINS + UNSPENT;
+            if !payments_finished {
+                let delivered = status(&bench.configs[3]).await["probe"]["unique_packets"]
+                    .as_u64()
+                    .unwrap();
+                let payments = [
+                    status(&bench.configs[0]).await["payment_progress"][&transit].clone(),
+                    status(&bench.configs[1]).await["payment_progress"][&guard].clone(),
+                ];
+                let credits = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
+                let elapsed = measured.elapsed_us();
+                if delivered == 512 {
+                    traffic_finished_us.get_or_insert(elapsed);
+                    payments_finished = payments.iter().all(payment_caught_up);
+                }
+                samples.push(json!({"elapsed_us":elapsed,
+                    "receiver_retained":j["seller_settlements"][&incoming].is_object(),
+                    "cleanup_pending":cleanup_pending,"remaining_originals":remaining.len(),
+                    "delivered":delivered,"credits":credits,"payments":payments}));
+            }
+            if !cleanup_pending && resources.is_none() {
+                cleanup_finished_us = Some(measured.elapsed_us());
+                resources = Some(measured.finish());
+            }
+            if !cleanup_pending && payments_finished {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -467,7 +491,15 @@ async fn exercise() {
     })
     .await
     .expect("whole receiver retirement must finish while the original outgoing guard is active");
-    let resources = measured.finish();
+    let resources = resources.unwrap();
+    // Preserve the 500-ms cadence and financial terms. The two-second bound is
+    // an acceptance limit for observed progress under this paced workload.
+    let mut progress = observation::progress(&progress_baseline, &samples, 2_000_000);
+    let cleanup_finished_us = cleanup_finished_us.unwrap();
+    let traffic_finished_us = traffic_finished_us.unwrap();
+    progress["cleanup_finished_us"] = json!(cleanup_finished_us);
+    progress["traffic_finished_us"] = json!(traffic_finished_us);
+    progress["traffic_covers_cleanup"] = json!(cleanup_finished_us <= traffic_finished_us);
     let live = delivered_to(&bench, 3, sending, 512).await;
     let after_a = caught_up(&bench.configs[0], &transit).await;
     let after_r = caught_up(&bench.configs[1], &guard).await;
@@ -493,6 +525,7 @@ async fn exercise() {
     let mut result = json!({"profile":{"originals":1023,"release_batches":8,"released_spent":960,
         "guard_spent":32,"retained_unspent":31,"initial_sat":INITIAL},"history_size":history_size,
         "resources":resources,"held_probe":held,"live_probe":live,"samples":samples,
+        "progress_baseline":progress_baseline,"progress":progress,
         "held_progress":{"warm":[warm_a["payment_progress"][&transit],warm_r["payment_progress"][&guard]],
             "held":[held_a["payment_progress"][&transit],held_r["payment_progress"][&guard]],
             "warm_credit":warm_credit,"held_credit":credit_before,
@@ -501,9 +534,9 @@ async fn exercise() {
         "progress_observed_during_retirement":overlap,"guard_operation":guard_operation,
         "final_progress":[after_a["payment_progress"][&transit],after_r["payment_progress"][&guard]]});
     save(root.path(), &result);
-    // A fast cleanup can end between payment cadences. Preserve the measured
-    // overlap result; the held eligible original above proves paid progress
-    // with the wallet writer held, not progress within an applied plan.
+    // Finish the original financial obligations even if the progress observation
+    // failed. A fast cleanup may have no interior payment sample; keep that fact
+    // separate from the bounded-progress check across the complete traffic window.
     for (source, channel, progress) in [(0, &transit, &after_a), (1, &guard, &after_r)] {
         settle(
             &bench,
@@ -540,6 +573,16 @@ async fn exercise() {
     result["conserved_sat"] = json!(INITIAL);
     result["final_original_unspent"] = json!(31);
     save(root.path(), &result);
+    for field in [
+        "all_counters_advanced",
+        "within_limit",
+        "traffic_covers_cleanup",
+    ] {
+        assert_eq!(
+            result["progress"][field], true,
+            "failed live progress observation: {field}"
+        );
+    }
 }
 
 fn save(root: &Path, value: &Value) {
