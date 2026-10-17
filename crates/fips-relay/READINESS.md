@@ -130,6 +130,24 @@ failed verdicts without rebuilding. Source/artifact bindings and collected logs
 remain in `work/send-journal-devices`. Device acceptance and the remaining
 physical recovery and resource checks are still required.
 
+On this graph, native paid forwarding during sender retirement and renewal
+both pass; audits reconcile their 768 original test sats. The receiver case
+fails during setup when settlement overlaps an older seller-history handoff.
+The buyer retains its exact signed settlement intent, but the receiver reports
+temporary journal suspension as a permanent rejection. Its 3,072 test sats are
+accounted for as 3,040 spendable and 32 in the original channel; recovery and
+the response-classification fix remain open. The failed verdict and immutable
+originals remain in `work/relay-live-send-journal/attempt-1`.
+
+The Samsung attempt stops before funding because its Android network tool lacks
+the harness's `nc -z` option. FIPS `a8db7a068` replaces both probe callers with one
+compatible connection check; 40 focused checks and open/refused connections on
+both phones pass. Nine archived databases confirm zero funding in the failed
+attempt. Its stopped router profiles and empty temporary app are removed, with
+normal baselines preserved. Evidence remains in `work/samsung-paid-send-journal`.
+The corrected device attempt remains unexecuted pending the runtime fix above;
+these harness checks do not qualify paid Samsung forwarding.
+
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
 limits fail without changing existing accounts. Ten focused Rust checks and 22
