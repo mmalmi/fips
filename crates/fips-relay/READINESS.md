@@ -1146,6 +1146,18 @@ the handoff implementation is unchanged in `03e6b50`. Source, artifact, original
 output and independent acceptance are retained in
 `work/receiver-handoff-pressure/native-1`.
 
+The same workload on an ARM64 router, built from SDK `03e6b50` with release
+optimization, takes 31.407 seconds wall time and 30.68 CPU-seconds. Process RSS
+rises from 12,880 to 22,308 KiB; the whole fixture's cgroup peaks at 36.04 MiB
+under its 192 MiB guard, without limit events. All ownership, capacity and reopen
+assertions pass. Twelve management observations remain responsive; the slowest
+takes 185 ms. The original daemon, boot and network configuration are preserved,
+and complete archives precede removal of the owned scratch directory. A local
+closure-directory error is corrected without repeating the measurement. Evidence
+remains in `work/receiver-handoff-pressure/arm-2`. This does not measure paid
+forwarding during cleanup or physical flash behavior. The native and ARM builds
+use different optimization profiles, so they do not establish a speed ratio.
+
 r619 strengthens the existing SDK receiver-retirement regression in `c079bde`;
 production code and dependencies are unchanged. A receiver-store refusal leaves
 the wallet's original reservation and admission journal intact. The admitted
