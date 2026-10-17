@@ -109,6 +109,17 @@ pub async fn stop(child: &mut Child) {
 }
 
 pub fn has_line_peers(status: &serde_json::Value, npubs: &[String], index: usize) -> bool {
+    has_peers(
+        status,
+        npubs
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| index.abs_diff(*j) == 1)
+            .map(|(_, p)| p.as_str()),
+    )
+}
+
+fn has_peers<'a>(status: &serde_json::Value, expected: impl Iterator<Item = &'a str>) -> bool {
     let actual = status["peers"]
         .as_array()
         .unwrap()
@@ -116,13 +127,7 @@ pub fn has_line_peers(status: &serde_json::Value, npubs: &[String], index: usize
         .filter(|p| p["connected"] == true)
         .map(|p| p["npub"].as_str().unwrap())
         .collect::<std::collections::BTreeSet<_>>();
-    let expected = npubs
-        .iter()
-        .enumerate()
-        .filter(|(j, _)| index.abs_diff(*j) == 1)
-        .map(|(_, p)| p.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    actual == expected
+    actual == expected.collect::<std::collections::BTreeSet<_>>()
 }
 
 pub async fn ready(
@@ -130,6 +135,30 @@ pub async fn ready(
     paths: &[PathBuf],
     npubs: &[String],
     children: &mut [Child],
+) {
+    ready_with(configs, paths, children, |i, status| {
+        has_line_peers(status, npubs, i)
+    })
+    .await;
+}
+
+#[allow(dead_code)] // Shared fixtures compile into separate integration test targets.
+pub async fn ready_configured(
+    configs: &[ServiceConfig],
+    paths: &[PathBuf],
+    children: &mut [Child],
+) {
+    ready_with(configs, paths, children, |i, status| {
+        has_peers(status, configs[i].neighbors.iter().map(|p| p.npub.as_str()))
+    })
+    .await;
+}
+
+async fn ready_with(
+    configs: &[ServiceConfig],
+    paths: &[PathBuf],
+    children: &mut [Child],
+    peers_match: impl Fn(usize, &serde_json::Value) -> bool,
 ) {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -142,7 +171,7 @@ pub async fn ready(
                     );
                 }
                 if let Ok(status) = request(cfg, &AdminRequest::Status).await
-                    && has_line_peers(&status, npubs, i)
+                    && peers_match(i, &status)
                 {
                     ready_nodes += 1;
                 }
@@ -154,7 +183,7 @@ pub async fn ready(
         }
     })
     .await
-    .expect("all processes should establish exactly the intended line peers");
+    .expect("all processes should establish exactly the intended peers");
 }
 
 pub async fn command(path: &Path, action: &str) -> std::process::Output {

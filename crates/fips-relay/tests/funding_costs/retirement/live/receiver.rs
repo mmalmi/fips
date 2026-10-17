@@ -10,12 +10,18 @@ mod custody;
 mod observation;
 use custody::*;
 
-const PAYOUT: usize = 1023;
-const RETIRED: usize = 30;
+const PAYOUT: usize = 959;
+const RETIRED: usize = 28;
 const GUARD_COINS: usize = 32;
 const UNSPENT: usize = 31;
-// The ordinary mint split also keeps small coins. Reserve two 1024-sat
-// coins for A's two channels; R still receives only its genuine 1023-sat payout.
+// Keep R's original 960-slot reservation while admitting an independent
+// 64-slot payer. The payout still spans eight ordinary 128-proof release batches.
+const SOURCE: usize = 4;
+const TRANSIT_CAPACITY: u64 = 64;
+const HELD_PACKETS: u32 = 64;
+const ACTIVE_PACKETS: u32 = 432;
+const PAYLOAD_BYTES: usize = 40;
+const PACKET_RATE: u32 = 72;
 const INITIAL: u64 = 3072;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -101,7 +107,7 @@ async fn mutate(
                     .unwrap();
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                Err(error) => panic!("control command failed without replay: {error}"),
+                Err(error) => control_failed(bench, source, &error).await,
             }
         }
     })
@@ -231,11 +237,11 @@ async fn exercise() {
     .await
     .unwrap();
     mint.mint()
-        .rotate_keyset("sat".parse().unwrap(), vec![1, 1024], 0, false, None)
+        .rotate_keyset("sat".parse().unwrap(), vec![1, 960, 1024], 0, false, None)
         .await
         .unwrap();
     let url = mint.url().to_owned();
-    let mut bench = setup::start_funded_line(
+    let mut bench = setup::start_funded_topology(
         root.path(),
         mint,
         network,
@@ -243,17 +249,25 @@ async fn exercise() {
         setup::LineConfig {
             lifetime: 120,
             quote_lifetime: 60,
-            funding_limits: &[2048, 1024, 32, 32],
+            funding_limits: &[960, 1024, 32, 32, TRANSIT_CAPACITY],
         },
-        &[INITIAL, 0, 0, 0],
+        &[2048, 0, 0, 0, 1024],
+        &[(0, 1), (1, 2), (2, 3), (SOURCE, 1)],
         |index, cfg| {
             cfg.terms.billing = BillingBasis::ForwardingData;
-            cfg.terms.controller.channel_capacity_sat = if index < 2 { 1024 } else { 32 };
+            cfg.terms.controller.channel_capacity_sat = match index {
+                0 | 1 => 960,
+                SOURCE => TRANSIT_CAPACITY,
+                _ => 32,
+            };
             cfg.terms.controller.channel_lifetime_secs = if index == 0 { 720 } else { 120 };
             cfg.terms.controller.max_funding_overhead_sat = 0;
             cfg.terms.wallet_capacity_bytes = Some(NATIVE_LIMIT);
             cfg.terms.buyer_budget_sat = if index == 0 { 2048 } else { 1024 };
-            cfg.terms.fee_msat_per_kib = if index == 1 { 1024 } else { 32 };
+            cfg.terms.fee_msat_per_kib = match index {
+                1 | 2 => 256, // Frequent whole-sat progress within the original channel budgets.
+                _ => 32,
+            };
             cfg.terms.max_rate_msat_per_kib = 2048;
             cfg.terms.quote_max_units = 4 * 1024 * 1024;
             if index == 1 {
@@ -275,26 +289,13 @@ async fn exercise() {
     let mut stream = 10_000;
     let incoming = buy(&bench, 0, 2).await;
     let (_, incoming_funding) = funding(&bench, 0, &incoming);
-    assert_eq!(incoming_funding["capacity_sat"], 1024);
+    assert_eq!(incoming_funding["capacity_sat"], 960);
     let deadline = incoming_funding["refund_after_unix"].as_u64().unwrap();
     earn(&bench, 0, 2, &incoming, PAYOUT as u64, &mut stream).await;
     settle(&bench, 0, &incoming, PAYOUT as u64).await;
-    {
-        let source_db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
-            &bench.configs[0].state_directory.join("wallet"),
-        ))
-        .await
-        .unwrap();
-        assert!(
-            records(&source_db)
-                .await
-                .values()
-                .any(|p| p.state == State::Unspent && p.proof.amount.to_u64() == 1024),
-            "the second source channel needs an ordinary reserve coin within send-input bounds"
-        );
-    }
     let originals = payout(&bench.configs[1], &incoming, &db).await;
     assert_eq!(originals.len(), PAYOUT);
+    assert_eq!(originals.len().div_ceil(128), 8);
     assert!(
         originals
             .values()
@@ -308,7 +309,7 @@ async fn exercise() {
     let mut old_inputs = BTreeSet::new();
     let mut old_operations = BTreeSet::new();
     for _ in 0..2 {
-        for _ in 0..15 {
+        for _ in 0..RETIRED / 2 {
             let channel = buy(&bench, 1, 3).await;
             let (_, opened) = funding(&bench, 1, &channel);
             assert_eq!(opened["capacity_sat"], 32);
@@ -334,7 +335,7 @@ async fn exercise() {
         retained_originals(&db, &originals).await;
     }
     assert_eq!(old.len(), RETIRED);
-    assert_eq!(old_inputs.len(), 960);
+    assert_eq!(old_inputs.len(), RETIRED * GUARD_COINS);
     assert!(
         now() < deadline - 40,
         "preparation must leave the original receiver owner intact"
@@ -363,13 +364,26 @@ async fn exercise() {
     verify_mint(&bench, &before).await;
     assert_eq!(
         status(&bench.configs[1]).await["funding_budget"]["wallet_debited_sat"],
-        992
+        (RETIRED + 1) * GUARD_COINS
     );
-    let transit = buy(&bench, 0, 3).await;
+    let proof_slots = transit_slots(&db).await;
+    let transit = buy(&bench, SOURCE, 3).await;
+    let opening_bytes = transit_opening(&bench, &transit);
     assert_eq!(funding(&bench, 1, &guard).1, guard_funding);
-    traffic(&bench, 0, 3, &mut stream, 1, 1000, 1).await;
-    let warm_a = caught_up(&bench.configs[0], &transit).await;
+    let before_warm = [
+        status(&bench.configs[SOURCE]).await,
+        status(&bench.configs[1]).await,
+    ];
+    traffic(&bench, SOURCE, 3, &mut stream, 1, PAYLOAD_BYTES, 1).await;
+    let warm_a = caught_up(&bench.configs[SOURCE], &transit).await;
     let warm_r = caught_up(&bench.configs[1], &guard).await;
+    let exposure = transit_exposure(
+        &before_warm,
+        [&warm_a, &warm_r],
+        [&warm_a, &warm_r],
+        [&transit, &guard],
+        HELD_PACKETS + ACTIVE_PACKETS,
+    );
     let history_size = history_size(&db, &wallet).await;
     let original_sale = journal(&bench.configs[1])["seller_settlements"][&incoming].clone();
     assert!(original_sale["released"] == true && original_sale["report"].is_object());
@@ -395,8 +409,17 @@ async fn exercise() {
     let held_originals = payout(&bench.configs[1], &incoming, &db).await;
     assert!(held_originals == before);
     let warm_credit = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
-    let held = traffic(&bench, 0, 3, &mut stream, 128, 1000, 128).await;
-    let held_a = caught_up(&bench.configs[0], &transit).await;
+    let held = traffic(
+        &bench,
+        SOURCE,
+        3,
+        &mut stream,
+        HELD_PACKETS,
+        PAYLOAD_BYTES,
+        PACKET_RATE,
+    )
+    .await;
+    let held_a = caught_up(&bench.configs[SOURCE], &transit).await;
     let held_r = caught_up(&bench.configs[1], &guard).await;
     assert_eq!(
         journal(&bench.configs[1])["seller_settlements"][&incoming],
@@ -418,13 +441,29 @@ async fn exercise() {
         );
         assert!(credit(&bench, seller, channel) > warm_credit[seller - 1]);
     }
+    let live_exposure = transit_exposure(
+        &before_warm,
+        [&warm_a, &warm_r],
+        [&held_a, &held_r],
+        [&transit, &guard],
+        ACTIVE_PACKETS,
+    );
     let credit_before = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
     measured.sample();
     let progress_baseline = json!({"elapsed_us":measured.elapsed_us(),"delivered":0,
         "credits":credit_before,"payments":[held_a["payment_progress"][&transit],
             held_r["payment_progress"][&guard]]});
     stream += 1;
-    let sending = probe_between(&bench, 0, 3, stream, 512, 128, 1000).await;
+    let sending = probe_between(
+        &bench,
+        SOURCE,
+        3,
+        stream,
+        ACTIVE_PACKETS,
+        PACKET_RATE,
+        PAYLOAD_BYTES,
+    )
+    .await;
     tokio::time::timeout(Duration::from_secs(2), async {
         while status(&bench.configs[3]).await["probe"]["unique_packets"]
             .as_u64()
@@ -465,12 +504,12 @@ async fn exercise() {
                     .as_u64()
                     .unwrap();
                 let payments = [
-                    status(&bench.configs[0]).await["payment_progress"][&transit].clone(),
+                    status(&bench.configs[SOURCE]).await["payment_progress"][&transit].clone(),
                     status(&bench.configs[1]).await["payment_progress"][&guard].clone(),
                 ];
                 let credits = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
                 let elapsed = measured.elapsed_us();
-                if delivered == 512 {
+                if delivered == u64::from(ACTIVE_PACKETS) {
                     traffic_finished_us.get_or_insert(elapsed);
                     payments_finished = payments.iter().all(payment_caught_up);
                 }
@@ -500,8 +539,8 @@ async fn exercise() {
     progress["cleanup_finished_us"] = json!(cleanup_finished_us);
     progress["traffic_finished_us"] = json!(traffic_finished_us);
     progress["traffic_covers_cleanup"] = json!(cleanup_finished_us <= traffic_finished_us);
-    let live = delivered_to(&bench, 3, sending, 512).await;
-    let after_a = caught_up(&bench.configs[0], &transit).await;
+    let live = delivered_to(&bench, 3, sending, ACTIVE_PACKETS).await;
+    let after_a = caught_up(&bench.configs[SOURCE], &transit).await;
     let after_r = caught_up(&bench.configs[1], &guard).await;
     for (before_state, after_state, channel, seller) in [
         (&held_a, &after_a, &transit, 1),
@@ -522,8 +561,11 @@ async fn exercise() {
             && w[1]["delivered"].as_u64().unwrap() > w[0]["delivered"].as_u64().unwrap()
             && w[1]["credits"][1].as_u64().unwrap() > w[0]["credits"][1].as_u64().unwrap()
     });
-    let mut result = json!({"profile":{"originals":1023,"release_batches":8,"released_spent":960,
-        "guard_spent":32,"retained_unspent":31,"initial_sat":INITIAL},"history_size":history_size,
+    let mut result = json!({"profile":{"originals":PAYOUT,"release_batches":PAYOUT.div_ceil(128),"released_spent":RETIRED*GUARD_COINS,
+        "guard_spent":GUARD_COINS,"retained_unspent":UNSPENT,"initial_sat":INITIAL,
+        "held_packets":HELD_PACKETS,"live_packets":ACTIVE_PACKETS,"payload_bytes":PAYLOAD_BYTES,
+        "packets_per_second":PACKET_RATE},"history_size":history_size,
+        "proof_slots_before_transit":proof_slots,"transit_opening_bytes":opening_bytes,"exposure":exposure,"live_exposure":live_exposure,
         "resources":resources,"held_probe":held,"live_probe":live,"samples":samples,
         "progress_baseline":progress_baseline,"progress":progress,
         "held_progress":{"warm":[warm_a["payment_progress"][&transit],warm_r["payment_progress"][&guard]],
@@ -537,7 +579,7 @@ async fn exercise() {
     // Finish the original financial obligations even if the progress observation
     // failed. A fast cleanup may have no interior payment sample; keep that fact
     // separate from the bounded-progress check across the complete traffic window.
-    for (source, channel, progress) in [(0, &transit, &after_a), (1, &guard, &after_r)] {
+    for (source, channel, progress) in [(SOURCE, &transit, &after_a), (1, &guard, &after_r)] {
         settle(
             &bench,
             source,
@@ -571,7 +613,7 @@ async fn exercise() {
     }
     setup::verify_settled_wallets(&bench, &url, INITIAL).await;
     result["conserved_sat"] = json!(INITIAL);
-    result["final_original_unspent"] = json!(31);
+    result["final_original_unspent"] = json!(UNSPENT);
     save(root.path(), &result);
     for field in [
         "all_counters_advanced",

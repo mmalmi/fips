@@ -307,17 +307,22 @@ pub(super) async fn start_configured_line(
     line: LineConfig<'_>,
     configure: impl Fn(usize, &mut ServiceConfig),
 ) -> Bench {
-    start_configured_topology(root, mint, network, mint_url, line, configure, false, None).await
+    start_configured_topology(
+        root, mint, network, mint_url, line, configure, false, None, None,
+    )
+    .await
 }
 
 #[cfg(all(feature = "measurements", target_os = "linux"))]
-pub(super) async fn start_funded_line(
+#[allow(clippy::too_many_arguments)] // Reuse initialization with explicit grants and edges.
+pub(super) async fn start_funded_topology(
     root: &Path,
     mint: LocalMint,
     network: PaymentNetwork,
     mint_url: &str,
     line: LineConfig<'_>,
     grants: &[u64],
+    edges: &[(usize, usize)],
     configure: impl Fn(usize, &mut ServiceConfig),
 ) -> Bench {
     assert_eq!(grants.len(), line.funding_limits.len());
@@ -330,6 +335,7 @@ pub(super) async fn start_funded_line(
         configure,
         false,
         Some(grants),
+        Some(edges),
     )
     .await
 }
@@ -344,7 +350,10 @@ pub(super) async fn start_configured_fork(
     configure: impl Fn(usize, &mut ServiceConfig),
 ) -> Bench {
     assert_eq!(line.funding_limits.len(), 5);
-    start_configured_topology(root, mint, network, mint_url, line, configure, true, None).await
+    start_configured_topology(
+        root, mint, network, mint_url, line, configure, true, None, None,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)] // One existing topology initializer owns all setup paths.
@@ -357,13 +366,22 @@ async fn start_configured_topology(
     configure: impl Fn(usize, &mut ServiceConfig),
     fork: bool,
     grants: Option<&[u64]>,
+    edges: Option<&[(usize, usize)]>,
 ) -> Bench {
     let LineConfig {
         lifetime,
         quote_lifetime,
         funding_limits,
     } = line;
-    assert!((3..=if fork { 5 } else { 4 }).contains(&funding_limits.len()));
+    assert!((3..=if fork || edges.is_some() { 5 } else { 4 }).contains(&funding_limits.len()));
+    if let Some(edges) = edges {
+        assert!(!fork && !edges.is_empty());
+        assert!(
+            edges
+                .iter()
+                .all(|&(a, b)| a < funding_limits.len() && b < funding_limits.len() && a != b)
+        );
+    }
     let mut configs = Vec::new();
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
@@ -413,7 +431,13 @@ async fn start_configured_topology(
         cfg.neighbors = npubs
             .iter()
             .enumerate()
-            .filter(|(j, _)| i.abs_diff(*j) == 1)
+            .filter(|(j, _)| {
+                edges.map_or(i.abs_diff(*j) == 1, |edges| {
+                    edges
+                        .iter()
+                        .any(|&(a, b)| (a == i && b == *j) || (b == i && a == *j))
+                })
+            })
             .map(|(j, p)| PeerConfig::new(p, "udp", addresses[j].to_string()))
             .collect();
         std::fs::write(&paths[i], serde_json::to_vec(cfg).unwrap()).unwrap();
@@ -423,7 +447,7 @@ async fn start_configured_topology(
     for path in &paths {
         children.push(start(path).await);
     }
-    ready(&configs, &paths, &npubs, &mut children).await;
+    ready_configured(&configs, &paths, &mut children).await;
     if fork {
         configs.swap(0, 2);
         paths.swap(0, 2);

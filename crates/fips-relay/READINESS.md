@@ -157,8 +157,39 @@ unchanged SDK `9254b4e` graph. Android passes five Rust profile and ten Java
 lifecycle checks, strict lint and packaging checks. A native smoke check initially
 misclassified the CLI's documented usage exit; its corrected continuation reuses
 the original compiled daemon and preserves the failed verdict. Artifact and source
-bindings remain in `work/maintenance-device-builds`. The fresh live receiver case
-and physical/device acceptance are not yet established on this runtime.
+bindings remain in `work/maintenance-device-builds`.
+
+The fresh receiver case completes all 30 small-channel settlements, then fails
+opening its second upstream channel. Archived records show that the original
+receiver already reserves all 1,024 proof-history slots; another 1,024-slot
+channel cannot fit. The provider's in-memory rejection reason was not captured,
+so this establishes an invalid capacity assumption in the fixture, rather than
+proving the exact rejection path. All 3,072 original test sats are accounted for
+and subsequently recovered through ordinary restart/upkeep, with the original
+mint policy, identities, budgets and funding counters preserved. Evidence and the
+failed verdict remain in `work/relay-live-maintenance/receiver-1`.
+
+The corrected admission fixture opens a separate 64-sat payer alongside the
+original 960-slot reservation. Its first probe reaches both paid hops, but the
+planned workload exceeds the source channel's conservative cost bound and the
+test stops before the cleanup observation. The measured charge includes additional
+priced traffic; the archive does not identify its frame types or establish the
+sustained per-packet payment rate. All 3,072 original test sats are again recovered
+by ordinary upkeep under the unchanged mint policy, identities and budgets; the
+failed verdict and independent audit remain in `work/relay-live-maintenance/receiver-2`.
+
+The final fixture uses the accepted per-hop price to bound payment cadence and
+the measured warmup charge to bound the remaining workload. On the same runtime,
+all 432 paid packets arrive while the traffic window covers eight-batch receiver
+history release. Delivery, both outgoing authorizations and both provider credits
+advance within the two-second limit; the largest observed gap is 1.043 seconds.
+Release-to-collection takes 623 ms. There is no pair of interior unfinished-cleanup
+samples showing payment progress, so this qualifies bounded progress across the
+whole traffic window rather than progress within each release batch. Independent
+stopped-database checks account for all 3,072 original sats, with no unfinished
+wallet operations, duplicate live proofs or unresolved mint inputs. Evidence is
+in `work/relay-live-maintenance/receiver-3`. This is native Linux loopback functional
+acceptance, not a comparative performance or physical power-loss result.
 
 The Samsung attempt stops before funding because its Android network tool lacks
 the harness's `nc -z` option. FIPS `a8db7a068` replaces both probe callers with one
@@ -166,8 +197,16 @@ compatible connection check; 40 focused checks and open/refused connections on
 both phones pass. Nine archived databases confirm zero funding in the failed
 attempt. Its stopped router profiles and empty temporary app are removed, with
 normal baselines preserved. Evidence remains in `work/samsung-paid-send-journal`.
-The corrected device attempt remains unexecuted pending the runtime fix above;
-these harness checks do not qualify paid Samsung forwarding.
+The corrected Samsung attempt passes on the matching `c6e46a39`/SDK `9254b4e`
+artifacts. Four accounts save and reopen their 20 MiB limits before funding;
+unpaid transit is denied, then foreground and background paid windows deliver
+2 MiB through the same phone process. All four original channels settle and all
+512 test sats are collected. Independent financial and authority checks pass,
+alongside 364 management checks. The temporary phone app and three router test
+profiles are removed, with original accounts, Wi-Fi and baselines preserved.
+Evidence remains in `work/samsung-paid-maintenance`. This existing-LAN UDP case
+keeps the screen awake: it does not qualify screen-off or natural idle behavior,
+mobile discovery, radio roaming, physical power loss or comparative throughput.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing

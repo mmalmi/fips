@@ -185,3 +185,114 @@ pub(super) async fn history_size(db: &cdk_sqlite::WalletSqliteDatabase, wallet: 
         "wallet_db_bytes":std::fs::metadata(cashu_service::cashu_wallet_db_path(wallet)).unwrap().len(),
         "client_json_bytes":std::fs::metadata(cashu_service::spilman_client_store_path(wallet)).unwrap().len()})
 }
+
+pub(super) async fn transit_slots(db: &cdk_sqlite::WalletSqliteDatabase) -> Value {
+    let bytes = db
+        .kv_read("cashu_service", "proof_history", "journal")
+        .await
+        .unwrap()
+        .expect("original incoming payout reserved proof history");
+    let history: Value = serde_json::from_slice(&bytes).unwrap();
+    let queued = history["candidates"].as_object().unwrap().len() as u64;
+    let reserved: u64 = history["reservations"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|r| r["remaining"].as_u64().unwrap())
+        .sum();
+    assert_eq!(reserved, 960, "retain the original receiver reservation");
+    assert!(
+        queued + reserved + TRANSIT_CAPACITY <= 1024,
+        "new transit funding must fit the existing proof-history limit"
+    );
+    json!({"queued":queued,"reserved":reserved,"planned":TRANSIT_CAPACITY,"limit":1024})
+}
+
+pub(super) fn transit_opening(bench: &setup::Bench, channel: &str) -> usize {
+    let (_, funded) = funding(bench, SOURCE, channel);
+    assert_eq!(funded["capacity_sat"], TRANSIT_CAPACITY);
+    let saved = journal(&bench.configs[SOURCE]);
+    let route = saved["outgoing"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|r| r["purchase"]["channel"]["id"] == channel)
+        .unwrap();
+    let payment: cashu_service::CashuSpilmanPayment =
+        serde_json::from_value(funded["funded"]["opening"].clone()).unwrap();
+    let proofs: Vec<Proof> =
+        serde_json::from_value(payment.funding_proofs.clone().unwrap()).unwrap();
+    assert_eq!(proofs.len(), TRANSIT_CAPACITY as usize);
+    assert!(proofs.iter().all(|p| p.amount.to_u64() == 1));
+    let request = fips_relay::controller::ControllerRequest::Accept {
+        offer_id: route["offer"]["id"].as_str().unwrap().to_owned(),
+        channel: serde_json::from_value(funded["funded"]["terms"].clone()).unwrap(),
+        payment: Box::new(payment),
+        replaces: None,
+    };
+    let bytes = serde_json::to_vec(&request).unwrap().len();
+    assert!(bytes <= fips_relay::control_transport::MAX_RECORD_BYTES);
+    bytes
+}
+
+pub(super) fn transit_exposure(
+    before: &[Value; 2],
+    warm: [&Value; 2],
+    current: [&Value; 2],
+    channels: [&str; 2],
+    packets: u32,
+) -> Value {
+    let mut hops = Vec::new();
+    for (index, channel) in channels.into_iter().enumerate() {
+        let evidence = |state: &Value| {
+            state["payment_progress"][channel]["evidence_msat"]
+                .as_u64()
+                .unwrap()
+        };
+        let delta = evidence(warm[index])
+            .checked_sub(evidence(&before[index]))
+            .unwrap();
+        // The first probe can include an extra priced control frame. Keep that
+        // conservative exposure estimate, with one msat for cumulative rounding,
+        // but bound steady cadence using only payload bytes at the accepted price.
+        let upper = delta + 1;
+        let purchase = current[index]["purchases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["channel"]["id"] == channel)
+            .expect("the original channel must still have an accepted purchase");
+        let price: fips_relay::ledger::BytePrice =
+            serde_json::from_value(purchase["contract"]["price"].clone()).unwrap();
+        let lower = u64::try_from(
+            (PAYLOAD_BYTES as u128 * u128::from(price.msat)) / u128::from(price.per_bytes),
+        )
+        .unwrap();
+        assert!(
+            lower > 0,
+            "payload must accrue at least one msat per packet"
+        );
+        let current_msat = evidence(current[index]);
+        let needed_msat = current_msat + upper * u64::from(packets);
+        let needed_sat = needed_msat.div_ceil(1000);
+        let capacity = purchase["channel"]["capacity_sat"].as_u64().unwrap();
+        assert!(
+            needed_sat < capacity,
+            "hop {index}: warmup={delta} msat, current={current_msat} msat, \
+             bound={upper} msat for {packets} remaining packets needs \
+             {needed_msat} msat ({needed_sat} sat), capacity={capacity} sat"
+        );
+        let quantization_us = 1_000_000_000u64.div_ceil(lower * u64::from(PACKET_RATE));
+        assert!(
+            quantization_us + 500_000 < 2_000_000,
+            "hop {index}: payload floor={lower} msat at {PACKET_RATE} packets/s needs \
+             {quantization_us} us plus 500000 us cadence; limit=2000000 us"
+        );
+        hops.push(
+            json!({"capacity_sat":capacity,"maximum_evidence_msat":needed_msat,
+            "calibrated_warmup_msat":delta,"price":price,"minimum_payload_msat":lower,
+            "maximum_quantization_us":quantization_us}),
+        );
+    }
+    json!({"remaining_packets":packets,"hops":hops})
+}

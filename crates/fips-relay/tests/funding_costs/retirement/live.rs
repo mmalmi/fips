@@ -47,6 +47,55 @@ async fn status(config: &ServiceConfig) -> Value {
     request(config, &AdminRequest::Status).await.unwrap()
 }
 
+async fn node_statuses(bench: &setup::Bench) -> Vec<Value> {
+    let mut nodes = Vec::new();
+    for config in &bench.configs {
+        nodes.push(
+            match tokio::time::timeout(
+                Duration::from_secs(2),
+                request(config, &AdminRequest::Status),
+            )
+            .await
+            {
+                Ok(Ok(value)) => value,
+                other => json!({"status_error": format!("{other:?}")}),
+            },
+        );
+    }
+    nodes
+}
+
+#[cfg(target_os = "linux")]
+async fn control_failed(bench: &setup::Bench, source: usize, error: &str) -> ! {
+    // The provider's rejection reason is memory-only. Capture it before a
+    // failed assertion drops the processes, without retrying a money command.
+    let nodes: Vec<_> = node_statuses(bench)
+        .await
+        .into_iter()
+        .map(|state| {
+            json!({"last_error": state["last_error"],
+                "status_error": state["status_error"],
+                "funding_budget": state["funding_budget"]})
+        })
+        .collect();
+    let root = bench.paths[0].parent().unwrap().parent().unwrap();
+    let path = root.join("failed-control.json");
+    let output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    serde_json::to_writer(
+        output,
+        &json!({"source": source, "error": error, "nodes": nodes}),
+    )
+    .unwrap();
+    panic!(
+        "control command failed without replay: {error}; inspect {}",
+        path.display()
+    );
+}
+
 fn credit(bench: &setup::Bench, seller: usize, channel: &str) -> u64 {
     let ledger = restore::read(
         &bench.configs[seller]
@@ -161,19 +210,7 @@ async fn delivered_to(
         || sent["stopped_reason"] != Value::Null
         || sent["submitted_packets"] != count
     {
-        let mut nodes = Vec::new();
-        for config in &bench.configs {
-            let state = tokio::time::timeout(
-                Duration::from_secs(2),
-                request(config, &AdminRequest::Status),
-            )
-            .await;
-            nodes.push(match state {
-                Ok(Ok(value)) => value,
-                other => json!({"status_error":format!("{other:?}")}),
-            });
-        }
-        observation["nodes"] = json!(nodes);
+        observation["nodes"] = json!(node_statuses(bench).await);
         let root = bench.paths[0].parent().unwrap().parent().unwrap();
         let path = root.join(format!(
             "failed-probe-{}.json",
