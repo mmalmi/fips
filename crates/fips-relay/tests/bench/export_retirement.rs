@@ -2,7 +2,7 @@
 use super::*;
 use std::{os::unix::fs::OpenOptionsExt, time::Instant};
 
-async fn export_coin_count(cfg: &ServiceConfig) -> usize {
+async fn export_custody(cfg: &ServiceConfig) -> (usize, Vec<cdk_common::wallet::Transaction>) {
     use cdk_common::database::WalletDatabase;
     // Only the fixed test wallet is inspected; never log its original proofs.
     let database = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
@@ -10,11 +10,48 @@ async fn export_coin_count(cfg: &ServiceConfig) -> usize {
     ))
     .await
     .unwrap();
-    database
+    let coins = database
         .get_proofs(None, None, None, None)
         .await
         .unwrap()
-        .len()
+        .len();
+    let receipts = database
+        .list_transactions(
+            None,
+            Some(cdk_common::wallet::TransactionDirection::Incoming),
+            None,
+        )
+        .await
+        .unwrap();
+    (coins, receipts)
+}
+
+async fn unspent_export_survives_recovery(cfg: &ServiceConfig, payment: &Value) {
+    use cdk_common::database::WalletDatabase;
+    let database = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(
+        &cfg.state_directory.join("wallet"),
+    ))
+    .await
+    .unwrap();
+    let operation = payment["operation_id"].as_str().unwrap().parse().unwrap();
+    let original = database.get_saga(&operation).await.unwrap().unwrap();
+    assert_eq!(
+        original.state,
+        cdk_common::wallet::WalletSagaState::Send(cdk_common::wallet::SendSagaState::TokenCreated)
+    );
+    let proofs = database.get_proofs(None, None, None, None).await.unwrap();
+    let recovered = offline_wallet(cfg, WalletRequest::Recover).await.unwrap();
+    assert_eq!(recovered["recovery_pass_complete"], true);
+    assert_eq!(recovered["minted_amount"], 0);
+    assert_eq!(recovered["finalized_melts"], 0);
+    assert!(
+        database.get_saga(&operation).await.unwrap().as_ref() == Some(&original),
+        "a successful recovery pass retains the unclaimed original send"
+    );
+    assert!(
+        database.get_proofs(None, None, None, None).await.unwrap() == proofs,
+        "recovery must not reclaim or discard a still-unspent export"
+    );
 }
 
 pub(super) async fn check_export_retirement(exports: u64) {
@@ -109,7 +146,8 @@ pub(super) async fn check_export_retirement(exports: u64) {
     for n in 1..128 {
         std::fs::remove_file(directory.join(format!("retained-{n}"))).unwrap();
     }
-    let initial_coins = export_coin_count(&cfg).await;
+    let (initial_coins, incoming_receipts) = export_custody(&cfg).await;
+    assert_eq!(incoming_receipts.len(), 1);
     let mut last_history = Value::Null;
     for id in 1..=exports {
         let amount_sat = if id == exports { 257 - exports } else { 1 };
@@ -222,6 +260,7 @@ pub(super) async fn check_export_retirement(exports: u64) {
         if id == 2 {
             // An acknowledgement may hand off a still-unclaimed token. Keep it
             // outside the cache and prove it remains redeemable after cleanup.
+            unspent_export_survives_recovery(&cfg, &payment).await;
             mint.handle(collect).await.unwrap();
         }
         if id == 2 {
@@ -283,17 +322,36 @@ pub(super) async fn check_export_retirement(exports: u64) {
         buyer,
         std::fs::read(cfg.state_directory.join("buyer/buyer.json")).unwrap()
     );
+    let collected = mint.handle(BenchRequest::Report).await.unwrap();
+    assert_eq!(collected["issued_sat"], 256);
+    assert_eq!(collected["collected_sat"], 256);
+    assert_eq!(collected["conserved"], true);
+    let recovered = offline_wallet(
+        &cfg,
+        serde_json::from_value(json!({"type":"recover"})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered["recovery_pass_complete"], true);
+    assert_eq!(recovered["warning_count"], 0);
+    assert_eq!(recovered["minted_amount"], 0);
+    assert_eq!(recovered["finalized_melts"], 0);
+    let acknowledged = offline_wallet(
+        &cfg,
+        WalletRequest::AcknowledgeExports {
+            through: exports + 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        acknowledged, closed,
+        "recovery does not change retired send costs"
+    );
     let wallet =
         cashu_service::CashuWalletService::open_file_backed(&cfg.state_directory.join("wallet"))
             .await
             .unwrap();
-    let recovered = wallet.recover_startup_state().await;
-    assert!(recovered.warnings.is_empty());
-    assert_eq!(recovered.failed_sagas, 0);
-    wallet
-        .retire_owned_send_requests("fips-exports", exports + 1)
-        .await
-        .unwrap();
     // Fixed cleanup work for this fixture, independent of the export count.
     // Original incoming receipt owners remain; their coin rows are not garbage.
     for _ in 0..64 {
@@ -307,7 +365,11 @@ pub(super) async fn check_export_retirement(exports: u64) {
     );
     assert!(capacity.charged_bytes <= capacity.maximum_bytes);
     drop(wallet);
-    let native_coins = export_coin_count(&cfg).await;
+    let (native_coins, retained_receipts) = export_custody(&cfg).await;
+    assert_eq!(
+        retained_receipts, incoming_receipts,
+        "recovery preserves original incoming receipts"
+    );
     eprintln!(
         "exports={exports} initial_coins={initial_coins} native_coins={native_coins} retired_coins={} archived_refs={}",
         proof_history.retired_proofs, proof_history.archived_proofs
@@ -317,9 +379,10 @@ pub(super) async fn check_export_retirement(exports: u64) {
         "export coin history exceeds original receipt custody: {native_coins} > {initial_coins}"
     );
     let report = mint.handle(BenchRequest::Report).await.unwrap();
-    assert_eq!(report["issued_sat"], 256);
-    assert_eq!(report["collected_sat"], 256);
-    assert_eq!(report["conserved"], true);
+    assert_eq!(
+        report, collected,
+        "recovery creates no new funding or spending"
+    );
     mint.shutdown().await;
 }
 

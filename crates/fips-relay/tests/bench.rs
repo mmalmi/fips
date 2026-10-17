@@ -4,6 +4,8 @@
 mod export_retirement;
 #[path = "bench/fragmented_channel_keyset.rs"]
 mod fragmented_channel_keyset;
+#[path = "bench/request_budget.rs"]
+mod request_budget;
 #[path = "bench/selected_mint_reply.rs"]
 mod selected_mint_reply;
 

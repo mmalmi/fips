@@ -357,7 +357,22 @@ lifetime storage for every other native wallet record.
 
 Offline acknowledgement does not contact the mint to reconcile the last send.
 Its native pending record and acknowledged custody references can remain after
-collection; subsequent online wallet reconciliation releases eligible originals.
+collection. With the relay stopped, reconcile existing wallet operations explicitly:
+
+```sh
+printf '%s\n' '{"type":"recover"}' | fips-relay wallet /absolute/path/relay.json
+```
+
+Recovery resumes pre-existing sends, receives, funded mint quotes and melts; it
+creates no new quote, send or channel. It uses the same exclusive owner lock,
+saved wallet-capacity checks and configured mint access as other offline wallet
+commands. The optional `funding_request_budget` applies to offline import, export
+and recovery as well as channel opening; omission retains CDK's pacing defaults.
+The response contains numeric recovery counts, `warning_count` and
+`recovery_pass_complete`. That flag means the pass reported no failed or pending
+recovery steps and no warnings; still-unspent exported tokens remain live.
+After successful recovery, repeat the original custody
+acknowledgement to release eligible originals; financial terms and costs remain.
 Retain the original mint and collector evidence when distinguishing that local
 bookkeeping from an uncollected token.
 

@@ -4,13 +4,14 @@ mod history;
 mod tests;
 
 use crate::{
+    controller::FundingRequestBudget,
     durable::{acquire_owner, write_private_journal},
     service::{RelayService, ServiceConfig, read_json},
 };
 use cashu::nuts::{CurrencyUnit, Token};
 use cashu_service::{
     CashuSentPayment, CashuWalletSendRequest, CashuWalletService, load_mint_balance,
-    normalize_mint_url, receive_payment_token,
+    normalize_mint_url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,6 +27,8 @@ use std::{
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WalletRequest {
     Balance,
+    /// Resume existing wallet operations without creating new spending requests.
+    Recover,
     Import {
         token: String,
     },
@@ -118,12 +121,26 @@ async fn check_cached(
     Ok(())
 }
 
+async fn open_wallet(
+    directory: &Path,
+    budget: Option<FundingRequestBudget>,
+) -> Result<CashuWalletService, String> {
+    let wallet = CashuWalletService::open_file_backed(directory)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(budget) = budget {
+        budget.apply(&wallet)?;
+    }
+    Ok(wallet)
+}
+
 pub(crate) async fn export_payment(
     root: &Path,
     mint: &str,
     id: &str,
     amount: u64,
     request_id: String,
+    budget: Option<FundingRequestBudget>,
 ) -> Result<Value, String> {
     let path = export_path(root, id)?;
     let mint = normalize_mint_url(mint).map_err(|e| e.to_string())?;
@@ -153,9 +170,7 @@ pub(crate) async fn export_payment(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
-    let wallet = CashuWalletService::open_file_backed(&root.join("wallet"))
-        .await
-        .map_err(|e| e.to_string())?;
+    let wallet = open_wallet(&root.join("wallet"), budget).await?;
     // The SDK retains the original terms, coins and result before publication.
     // Keep this identity stable: a retry must never become another wallet send.
     let request = send_request(mint, request_id, amount);
@@ -192,7 +207,7 @@ pub async fn offline_wallet(
     let wallet = config.state_directory.join("wallet");
     let network = if matches!(
         &command,
-        WalletRequest::Import { .. } | WalletRequest::Export { .. }
+        WalletRequest::Import { .. } | WalletRequest::Export { .. } | WalletRequest::Recover
     ) {
         crate::service::OfflineMint::start(config)
             .await
@@ -208,10 +223,28 @@ pub async fn offline_wallet(
                     .map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string()),
+            WalletRequest::Recover => {
+                let wallet = open_wallet(&wallet, config.funding_request_budget).await?;
+                let report = wallet.recover_startup_state().await;
+                Ok(json!({
+                    "wallets": report.wallets,
+                    "finalized_melts": report.finalized_melts,
+                    "recovered_sagas": report.recovered_sagas,
+                    "compensated_sagas": report.compensated_sagas,
+                    "pending_sagas": report.pending_sagas,
+                    "failed_sagas": report.failed_sagas,
+                    "minted_amount": report.minted_amount,
+                    "warning_count": report.warnings.len(),
+                    "recovery_pass_complete": report.pending_sagas == 0 && report.failed_sagas == 0
+                        && report.warnings.is_empty(),
+                }))
+            }
             WalletRequest::Import { token } => {
                 checked_token(&token, mint)?;
+                let wallet = open_wallet(&wallet, config.funding_request_budget).await?;
                 serde_json::to_value(
-                    receive_payment_token(&wallet, &token)
+                    wallet
+                        .receive_payment_token(&token)
                         .await
                         .map_err(|e| e.to_string())?,
                 )
@@ -227,6 +260,7 @@ pub async fn offline_wallet(
                     &id.to_string(),
                     amount_sat,
                     request_id,
+                    config.funding_request_budget,
                 )
                 .await
                 .map_err(|e| format!("send wallet export: {e}"))

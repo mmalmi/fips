@@ -3,13 +3,21 @@ use super::*;
 use cashu_service::CashuWalletService;
 use std::num::NonZeroU32;
 
-/// CDK HTTP pacing for wallet-backed channel opening, per destination origin.
+/// CDK HTTP pacing for wallet-backed channel opening and offline money operations.
 /// Configure only within the mint operator's limits; this grants no spending authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FundingRequestBudget {
     pub burst: NonZeroU32,
     pub requests_per_minute: NonZeroU32,
+}
+
+impl FundingRequestBudget {
+    pub(crate) fn apply(self, wallet: &CashuWalletService) -> Result<(), String> {
+        wallet
+            .set_request_budget(self.burst.get(), self.requests_per_minute.get())
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl Controller {
@@ -122,12 +130,7 @@ impl Controller {
                         .map_err(|e| e.to_string())?;
                     wallet_timing.mark("wallet_opened");
                     if let Some(budget) = budget {
-                        wallet
-                            .set_request_budget(
-                                budget.burst.get(),
-                                budget.requests_per_minute.get(),
-                            )
-                            .map_err(|e| e.to_string())?;
+                        budget.apply(&wallet)?;
                     }
                     wallet
                         .open_streaming_route_cashu_spilman_channel(request)

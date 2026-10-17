@@ -236,6 +236,7 @@ impl BenchMint {
                         &id,
                         amount_sat,
                         format!("fips-export:{id}"),
+                        None,
                     )
                     .await;
                 }
@@ -272,6 +273,7 @@ impl BenchMint {
                     &id,
                     amount_sat,
                     format!("fips-export:{id}"),
+                    None,
                 )
                 .await
             }
