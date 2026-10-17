@@ -82,7 +82,7 @@ impl Check {
         .expect("new purchase must promptly reject durable maintenance")
         .unwrap_err();
         let elapsed_us = started.elapsed().as_micros();
-        assert_eq!(error, "controller journal suspended");
+        assert_eq!(error, HISTORY_PENDING);
         let state = responsive(source).await;
         let after = journal(source);
         for field in [

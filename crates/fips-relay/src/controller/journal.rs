@@ -1,6 +1,21 @@
 //! Validate retained financial intent before resuming service.
 use super::*;
 
+/// A saved history handoff temporarily fences new journal mutations.
+pub const HISTORY_PENDING: &str = "controller history maintenance pending";
+
+impl Store {
+    pub(super) fn ensure_ready(&self) -> Result<(), String> {
+        if !self.ready {
+            return Err("controller journal suspended".into());
+        }
+        if self.journal.history.as_ref().is_some_and(History::pending) {
+            return Err(HISTORY_PENDING.into());
+        }
+        Ok(())
+    }
+}
+
 // Authorization-format fence independent of the existing accounting checkpoints.
 pub(super) const FUNDING_DEADLINES_VERSION: u16 = 0x80;
 pub(super) const RECOVERY_ONLY_VERSION: u16 = 0x100;

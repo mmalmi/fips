@@ -5,6 +5,7 @@ impl Controller {
     pub async fn handle(&self, peer: PeerIdentity, body: &[u8]) -> ControllerResponse {
         match self.handle_inner(peer, body).await {
             Ok(response) => response,
+            Err(error) if error == HISTORY_PENDING => ControllerResponse::Pending,
             Err(error) => {
                 *self.last_error.lock().unwrap() = Some(error);
                 ControllerResponse::Rejected

@@ -49,6 +49,7 @@ mod funding_ownership;
 mod wallet_barrier;
 pub use capital::FundingBudget;
 mod journal;
+pub use journal::HISTORY_PENDING;
 mod retirement;
 use retirement::History;
 #[cfg(feature = "measurements")]
@@ -239,13 +240,6 @@ impl Store {
         self.journal = candidate;
         self.persist()?;
         Ok(result)
-    }
-
-    fn ensure_ready(&self) -> Result<(), String> {
-        if !self.ready || self.journal.history.as_ref().is_some_and(History::pending) {
-            return Err("controller journal suspended".into());
-        }
-        Ok(())
     }
 
     fn persist(&mut self) -> Result<(), String> {

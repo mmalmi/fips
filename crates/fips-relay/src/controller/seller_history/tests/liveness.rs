@@ -145,33 +145,114 @@ fn receiver_planning_keeps_controller_reads_available() {
     assert!(store.journal.history.as_ref().unwrap().pending());
 }
 
-#[test]
-fn receiver_retirement_keeps_controller_reads_available() {
+#[tokio::test]
+async fn receiver_retirement_keeps_reads_live_and_retries_settlement() {
     let root = tempfile::tempdir().unwrap();
-    let (mut store, seller, template) = fixture(root.path());
-    let t = append(&mut store, &seller, &template, 1, true);
-    prepare_sales(&mut store, &seller, t.expires_unix + 61).unwrap();
-    let shared = Mutex::new(store);
-    let retired = Store::resume_sales(
-        &shared,
-        &seller,
-        |_| panic!("saved intent"),
-        |p| {
-            let mut store = shared
-                .try_lock()
-                .map_err(|_| "receiver retirement blocks controller reads")?;
-            assert!(store.journal.seller_settlements.contains_key(&t.id));
-            assert!(
-                store.change(|_| Ok(())).is_err(),
-                "pending handoff must fence writes"
-            );
-            Ok(p.accounting.after.clone())
-        },
-    );
+    let controller =
+        Arc::new(super::super::super::refresh::tests::disconnected_controller(root.path()).await);
+    let (_, old) = super::super::super::transition_tests::fixture(&root.path().join("fixture"));
+    let peer = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let stranger = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let mut template = old.purchase.channel;
+    template.buyer = *peer.node_addr();
+    let (retiring, retained) = {
+        let mut store = controller.store.lock().unwrap();
+        let retiring = append(&mut store, &controller.services.seller, &template, 1, true);
+        template.expires_unix += 3600;
+        let retained = append(&mut store, &controller.services.seller, &template, 2, false);
+        prepare_sales(
+            &mut store,
+            &controller.services.seller,
+            retiring.expires_unix + 61,
+        )
+        .unwrap();
+        (retiring, retained)
+    };
+    let seal = serde_json::to_vec(&ControllerRequest::Seal {
+        channel_id: retained.id.clone(),
+    })
+    .unwrap();
+    let journal = root.path().join("controller/controller.json");
+    let saved = std::fs::read(&journal).unwrap();
+    let worker = controller.clone();
+    let request = seal.clone();
+    let rt = tokio::runtime::Handle::current();
+    let retired = tokio::task::spawn_blocking(move || {
+        Store::resume_sales(
+            &worker.store,
+            &worker.services.seller,
+            |_| panic!("saved intent"),
+            |p| {
+                {
+                    let mut store = worker
+                        .store
+                        .try_lock()
+                        .map_err(|_| "receiver retirement blocks controller reads")?;
+                    assert!(store.journal.seller_settlements.contains_key(&retiring.id));
+                    assert!(
+                        store.change(|_| Ok(())).is_err(),
+                        "handoff must fence writes"
+                    );
+                    store.ready = false;
+                    assert_eq!(
+                        store.ensure_ready().unwrap_err(),
+                        "controller journal suspended"
+                    );
+                    store.ready = true;
+                }
+                rt.block_on(async {
+                    assert!(worker.snapshot().await.unwrap().history.unwrap().pending());
+                    assert!(matches!(
+                        worker.handle(peer, &request).await,
+                        ControllerResponse::Pending
+                    ));
+                    assert!(worker.last_error.lock().unwrap().is_none());
+                    assert!(matches!(
+                        worker.handle(stranger, &request).await,
+                        ControllerResponse::Rejected
+                    ));
+                    let mut payment = worker.snapshot().await.unwrap().seller_settlements
+                        [&retained.id]
+                        .payment
+                        .clone()
+                        .unwrap();
+                    payment.balance += 1;
+                    let invalid_payment = serde_json::to_vec(&ControllerRequest::Settle {
+                        channel_id: retained.id.clone(),
+                        payment: Box::new(payment),
+                    })
+                    .unwrap();
+                    assert!(matches!(
+                        worker.handle(peer, &invalid_payment).await,
+                        ControllerResponse::Rejected
+                    ));
+                    assert!(matches!(
+                        worker.handle(peer, b"invalid").await,
+                        ControllerResponse::Rejected
+                    ));
+                    worker.store.lock().unwrap().ready = false;
+                    assert!(matches!(
+                        worker.handle(peer, &request).await,
+                        ControllerResponse::Rejected
+                    ));
+                    worker.store.lock().unwrap().ready = true;
+                    assert_eq!(std::fs::read(&journal).unwrap(), saved);
+                });
+                Ok(p.accounting.after.clone())
+            },
+        )
+    })
+    .await
+    .unwrap();
     assert_eq!(retired, Ok(1));
-    let mut store = shared.into_inner().unwrap();
-    store.change(|_| Ok(())).unwrap();
-    assert!(!store.journal.seller_settlements.contains_key(&t.id));
+    assert!(matches!(
+        controller.handle(peer, &seal).await,
+        ControllerResponse::Sealed { .. }
+    ));
+    let state = controller.snapshot().await.unwrap();
+    assert!(!state.history.unwrap().pending());
+    assert_eq!(state.seller_settlements.len(), 1);
+    controller.services.endpoint.shutdown().await.unwrap();
 }
 
 #[test]

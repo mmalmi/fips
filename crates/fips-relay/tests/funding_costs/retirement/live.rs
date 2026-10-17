@@ -1,7 +1,7 @@
 //! Real fragmented funding, automatic retirement and ordinary paid data overlap.
 use super::*;
 use fips_relay::{
-    controller::FundingRequestBudget,
+    controller::{FundingRequestBudget, HISTORY_PENDING},
     ledger::BillingBasis,
     probe::{ReceiveProbe, SendProbe},
     service::ServiceConfig,

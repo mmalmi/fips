@@ -69,7 +69,7 @@ async fn mutate(
             );
             match request(&bench.configs[source], &action).await {
                 Ok(response) => return response,
-                Err(error) if error == "controller journal suspended" => {
+                Err(error) if error == HISTORY_PENDING => {
                     // Upkeep can start after the read. Retry only a refusal that
                     // allocated no funding; settlement effects are read above.
                     // Retirement may remove old funding records concurrently.
