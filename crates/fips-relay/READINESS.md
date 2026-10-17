@@ -10,10 +10,38 @@ work filled the wallet. The same regression fails before the fix and passes
 afterward: two retries after reopening at full 20 MiB capacity preserve one
 receipt, one activity entry and the original balance, without another mint swap.
 All 448 workspace tests, strict lint, formatting, size checks and 18 feature
-profiles pass; three existing optional measurements remain ignored. Native,
-router and phone qualification on this updated SDK is still pending. Earlier
-device and performance results below retain their recorded source graphs.
-Evidence remains in `work/receive-activity-capacity`.
+profiles pass; three existing optional measurements remain ignored. Matching
+Linux, ARM64 OpenWrt and Android artifacts use one frozen FIPS `aab761fa4` source
+and SDK/dependency inventory; the FIPS runtime is unchanged from `c6e46a39f`.
+The Android build passes five Rust customer checks and ten lifecycle checks.
+Source, compilation, production features, ELF/APK contents and 111 original
+evidence files are verified in `work/receive-activity-device-builds`; simulation
+features are excluded from the device daemons. Earlier device and performance
+results below retain their recorded source graphs. SDK regression evidence
+remains in `work/receive-activity-capacity`.
+
+The matching Samsung and three-router run rejects unpaid transit and delivers
+4 MiB across foreground, background, 45.666 seconds of forced idle and after
+idle. The phone keeps the same process and four original payment channels.
+All 495 management checks pass. Two copy-only audits reconcile 11 complete
+SQLite sets, all 512 original test sats in the collector and unchanged spending
+limits; all four accounts retain their configured 20 MiB logical capacity.
+The archived temporary router profiles and Samsung app are removed afterward.
+The first postflight checker expected an ordinary-window topology flag in idle
+samples. Its corrected checker verifies the fields actually recorded; the
+original failure and unchanged execution remain preserved. This qualifies
+controlled LAN/UDP adjacency on the charging, connected Samsung, not natural
+idle, battery use, radio mobility or saturated wallet cleanup. Evidence remains
+in `work/samsung-paid-receive-activity`.
+
+The updated ordinary Linux daemon also passes the existing four-node full-wallet
+restart and settlement regression. Paid forwarding resumes after restart;
+settlement preserves spending limits, and the fixture accounts for all 512 test
+sats as 500 spendable plus 12 mint fees. This is a functional assertion result,
+without an independent retained-mint archive audit or device/performance claim.
+The first setup attempt exceeded the local socket path limit before funding;
+the corrected attempt uses a short temporary path and the same binaries. Both
+outcomes remain in `work/receive-activity-native-recovery`.
 
 Earlier carrier, cadence and phone acceptance use FIPS runtime `1b948a688`,
 SDK `dad0fc3`, Spilman runtime `669fbdd943` and CDK `04c37d5a152a`.
@@ -383,8 +411,9 @@ Current implementation and deployment boundaries:
   emulation nor process interruption establishes physical flash power-loss safety.
 - The Android app embeds the same service and has customer and transit evidence.
   It remains an arm64 bench app, not a production wallet or general Internet VPN.
-  The rebuilt capacity-limited app passes controlled foreground/background transit
-  on the current graph; earlier Doze/cost observations retain their original builds.
+  The rebuilt capacity-limited app passes controlled foreground/background and
+  forced-idle transit on the current graph; earlier cost observations retain their
+  original builds.
   Natural idle and physical mobility remain open. Outstanding acceptance below
   prevents treating it as a qualified production release.
 - Acceptance uses fresh profiles and test money. Legacy profile migration is
