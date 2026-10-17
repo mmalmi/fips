@@ -7,7 +7,13 @@ import subprocess
 
 class SshCommands:
     def ssh_args(self):
-        args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+        # ConnectTimeout covers only setup. Detect a blackholed established
+        # connection before the interruption harness waits 15 seconds for its
+        # worker, while allowing healthy commands to remain silent. An existing
+        # multiplex master would retain its own, potentially unbounded policy.
+        args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3",
+                "-o", "ControlMaster=no", "-o", "ControlPath=none"]
         if self.spec.get("ssh_config"):
             args += ["-F", str(Path(self.spec["ssh_config"]).resolve(strict=True))]
         return args

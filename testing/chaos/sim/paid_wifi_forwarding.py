@@ -72,9 +72,7 @@ class MintForwards:
                 raise RuntimeError("mint forward port already has a router listener")
         for name, node in self.nodes.items():
             args = node.ssh_args() + [
-                "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no",
-                "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5",
-                "-o", "ServerAliveCountMax=3", "-o", "ConnectionAttempts=1",
+                "-o", "ControlPersist=no", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectionAttempts=1",
                 "-o", "ForkAfterAuthentication=no", "-o", "PermitLocalCommand=no",
                 "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-N", "-T"]
             effective = subprocess.run([*args, "-G", node.host], capture_output=True, timeout=10)

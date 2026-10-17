@@ -95,10 +95,10 @@ class ForwardingTests(unittest.TestCase):
         for call in self.popen.call_args_list:
             args = call.args[0]
             for setting in ("BatchMode=yes", "ConnectTimeout=5", "ControlMaster=no",
-                            "ControlPath=none", "ExitOnForwardFailure=yes", "ServerAliveInterval=5",
+                            "ControlPath=none", "ExitOnForwardFailure=yes", "ServerAliveInterval=2",
                             "ServerAliveCountMax=3", "ForkAfterAuthentication=no",
                             "ForwardAgent=no", "ForwardX11=no"):
-                self.assertIn(setting, args)
+                self.assertEqual(args.count(setting), 1)
             self.assertEqual(args[args.index("-F") + 1], str(self.config.resolve()))
             self.assertEqual(args[args.index("-R") + 1], f"127.0.0.1:{PORT}:127.0.0.1:{PORT}")
             self.assertTrue(call.kwargs["start_new_session"])
