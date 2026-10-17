@@ -119,8 +119,16 @@ operations or duplicate/spent live proofs. Whole-prefix retirement, including
 wallet open, takes 0.878 and 3.166 seconds in these shared-host observations;
 these are not isolated performance comparisons. Sources, failed attempts and
 closed financial evidence remain in `work/send-journal-capacity`. This closes the
-reproduced native admission failure. Matching relay builds, device acceptance and
-the remaining physical recovery and resource checks are still required.
+reproduced native admission failure.
+
+The same SDK/source graph now has qualified Linux, ARM64 and Android builds.
+Linux passes 368 relay, funding/recovery and test-mint checks plus strict lint;
+five opt-in resource tests are excluded. Android passes five Rust profile checks,
+ten Java lifecycle checks, packaging and lint. ARM/Android build-verifier errors
+were corrected against the original successful compilations, preserving the
+failed verdicts without rebuilding. Source/artifact bindings and collected logs
+remain in `work/send-journal-devices`. Device acceptance and the remaining
+physical recovery and resource checks are still required.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
