@@ -150,7 +150,15 @@ before the fix, then all 177 controller checks, strict lint, formatting and size
 checks pass. Initial private-runner permission and artifact-parser failures remain
 preserved; the corrected runner reuses the same compiled test binary. Evidence
 remains in `work/controller-maintenance-pending`. Matching runtime builds and a
-fresh receiver acceptance case are still required.
+fresh receiver acceptance case are tracked separately below.
+
+Matching ordinary Linux, ARM64 and Android builds now pass on this fix and the
+unchanged SDK `9254b4e` graph. Android passes five Rust profile and ten Java
+lifecycle checks, strict lint and packaging checks. A native smoke check initially
+misclassified the CLI's documented usage exit; its corrected continuation reuses
+the original compiled daemon and preserves the failed verdict. Artifact and source
+bindings remain in `work/maintenance-device-builds`. The fresh live receiver case
+and physical/device acceptance are not yet established on this runtime.
 
 The Samsung attempt stops before funding because its Android network tool lacks
 the harness's `nc -z` option. FIPS `a8db7a068` replaces both probe callers with one
