@@ -21,6 +21,8 @@ def scenario(path, *, transit=False):
     require(value.get("version") == 1, "unsupported phone scenario version")
     phone, customer, mint = (value[key] for key in ("phone", "customer", "mint"))
     acceptance_identity(phone.get("instance"))
+    require(phone.get("original_packages") in (None, []),
+            "original packages may only explicitly select an empty baseline")
     require(all(isinstance(phone.get(key), str) and phone[key] for key in
                 ("adb", "serial", "evidence_dir")), "phone identity and private evidence are required")
     require(Path(phone["adb"]).is_absolute() and Path(phone["evidence_dir"]).is_absolute(),
@@ -89,8 +91,11 @@ def original_hashes(phone):
     require(all(row.startswith('package:') and re.fullmatch(pattern, row[8:]) for row in installed),
             'unexpected bench package inventory')
     packages = sorted(row[8:] for row in installed if row[8:] != phone.package)
-    require(len(packages) == len(set(packages)) and ORIGINAL_PACKAGE in packages,
-            'original bench account is missing or ambiguous')
+    if getattr(phone, 'original_packages', None) == []:
+        require(not packages, 'unexpected account on an explicitly empty original baseline')
+    else:
+        require(len(packages) == len(set(packages)) and ORIGINAL_PACKAGE in packages,
+                'original bench account is missing or ambiguous')
     return b"".join(package.encode() + b"\n" + _account_hashes(phone, package, command)
                     for package in packages)
 

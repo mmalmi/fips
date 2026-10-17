@@ -162,6 +162,19 @@ class PhoneCustomerTests(unittest.TestCase):
                 PhoneCustomer(self.adb, self.serial, output, instance=value)
             self.assertFalse(output.exists())
 
+    def test_empty_original_inventory_is_explicit_and_bound_to_adapter_identity(self):
+        output = self.root / "empty-originals"
+        phone = PhoneCustomer(self.adb, self.serial, output, original_packages=[])
+        self.assertEqual(phone.original_packages, [])
+        self.assertEqual(phone.identity["original_packages"], [])
+        with self.assertRaisesRegex(RuntimeError, "another device or adapter"):
+            PhoneCustomer(self.adb, self.serial, output)
+        for invalid in (False, "", ["org.fips.relaybench"]):
+            rejected = self.root / "rejected-originals"
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                PhoneCustomer(self.adb, self.serial, rejected, original_packages=invalid)
+            self.assertFalse(rejected.exists())
+
     def test_old_same_action_success_is_archived_and_cannot_complete_a_new_tap(self):
         old = dict(self.marker)
         self.result = None

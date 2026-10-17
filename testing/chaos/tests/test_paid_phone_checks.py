@@ -98,6 +98,20 @@ class PaidPhoneCheckTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in phone.shell.call_args_list[1:]],
                          ["org.fips.relaybench", PACKAGE, PACKAGE + ".trial1"])
 
+    def test_explicit_empty_original_inventory_accepts_only_the_candidate(self):
+        phone = Mock(package=PACKAGE + ".fresh", original_packages=[])
+        for inventory in (b"", ("package:" + phone.package + "\n").encode()):
+            phone.shell.return_value = inventory
+            self.assertEqual(original_hashes(phone), b"")
+        for package in ("org.fips.relaybench", PACKAGE + ".other", "org.fips.relaybench.unexpected"):
+            phone.shell.return_value = ("package:" + package + "\n").encode()
+            with self.subTest(package=package), self.assertRaises(RuntimeError):
+                original_hashes(phone)
+        phone.original_packages = None
+        phone.shell.return_value = b""
+        with self.assertRaisesRegex(RuntimeError, "original bench account"):
+            original_hashes(phone)
+
     def test_only_the_exact_single_verified_apk_is_accepted(self):
         phone = Mock(package=PACKAGE)
         path = "/data/app/fixture/base.apk"

@@ -63,8 +63,11 @@ def checked_timeout(value):
 
 
 class PhoneCustomer:
-    def __init__(self, adb_path, serial, evidence_dir, *, instance=None):
+    def __init__(self, adb_path, serial, evidence_dir, *, instance=None, original_packages=None):
         self.package, self.scheme = acceptance_identity(instance)
+        if original_packages not in (None, []):
+            raise ValueError("original packages may only explicitly select an empty baseline")
+        self.original_packages = original_packages
         self.adb_path = Path(adb_path).resolve(strict=True)
         if not self.adb_path.is_file() or not os.access(self.adb_path, os.X_OK):
             raise ValueError("an explicit executable adb path is required")
@@ -76,6 +79,8 @@ class PhoneCustomer:
         if self.root.stat().st_mode & 0o077:
             raise ValueError("phone evidence directory must be private")
         self.identity = {"adb": str(self.adb_path), "serial": serial, "package": self.package}
+        if original_packages is not None:
+            self.identity["original_packages"] = original_packages
         with self.locked():
             path = self.root / "identity.json"
             if path.exists():
