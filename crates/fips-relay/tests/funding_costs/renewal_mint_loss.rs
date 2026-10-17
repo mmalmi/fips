@@ -128,7 +128,7 @@ async fn scenario(root: &Path, boundary: Boundary) {
     let expiry = status["purchases"][0]["contract"]["expires_unix"]
         .as_u64()
         .unwrap();
-    let held_until = if matches!(boundary, Boundary::Channel) {
+    let refund_deadline = if matches!(boundary, Boundary::Channel) {
         assert_eq!(expiry, original["expires_unix"].as_u64().unwrap());
         let refund = original["refund_after_unix"].as_u64().unwrap();
         let outgoing = before["outgoing"].as_object().unwrap();
@@ -137,9 +137,9 @@ async fn scenario(root: &Path, boundary: Boundary) {
                 .values()
                 .all(|old| { old["offer"]["expires_unix"].as_u64().unwrap() > refund })
         );
-        refund
+        Some(refund)
     } else {
-        expiry
+        None
     };
     let reverse = request(&configs[2], &AdminRequest::Status).await.unwrap();
     let reverse_id = reverse["purchases"][0]["channel"]["id"].as_str().unwrap();
@@ -191,7 +191,7 @@ async fn scenario(root: &Path, boundary: Boundary) {
         tokio::time::sleep_until(held_at + Duration::from_secs(7)).await;
     }
     let expired_probe = if near_expiry {
-        while restore::now() <= held_until {
+        while restore::now() <= expiry {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let received =
@@ -253,6 +253,12 @@ async fn scenario(root: &Path, boundary: Boundary) {
         }
         assert!(read(&journal)["buyer_settlements"][id]["report"].is_null());
         assert!(read(&seller_journal)["seller_settlements"][id]["report"].is_null());
+        // Keep the peers offline until the refund deadline. Keeping them alive
+        // here would let the HTTP timeout retry/restore the committed close,
+        // save its report and activate a successor before the intended crash.
+        while restore::now() <= refund_deadline.unwrap() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
     let released_at = tokio::time::Instant::now();
     if matches!(boundary, Boundary::Channel) {
