@@ -46,9 +46,12 @@ corrected fault-injection/restoration attempts remain in `work/receiver-handoff`
 This qualifies native SDK logical capacity and injected failures. Ordinary FIPS,
 ARM64, Android and device acceptance still need the new SDK; the earlier results
 retain their recorded graph. Version-4 queue journals require fresh profiles.
-Sender archive space is still admitted during retirement, after refund allowances
-can be released; a dedicated full-capacity regression remains open. Physical
-power-cut acceptance also remains open.
+A sender regression now reproduces a separate completion-capacity failure on
+this SDK: after a completed refund, ordinary writes refill the original 16 MiB
+wallet limit and the saved retirement handoff fails its native capacity check.
+Only the test changes; the original runtime is unchanged. Evidence is retained
+in `work/sender-handoff/red-1`. The sender fix and physical power-cut acceptance
+remain open.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing

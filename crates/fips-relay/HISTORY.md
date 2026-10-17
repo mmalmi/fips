@@ -362,11 +362,14 @@ oversized original allowed to progress alone. Neither queue references nor its
 checkpoint duplicate complete proof payloads. Older queue formats require fresh
 profiles.
 
-Sender archive admission remains a separate completion-capacity concern: capture
+Sender archive admission has a reproduced completion-capacity failure: capture
 reserves native space during retirement, after refund allowances can be released.
-The next regression must refill that released space with ordinary wallet writes
-and require the pending handoff to finish before receipt deletion frees capacity.
-The receiver reservation checks do not qualify that sender path.
+On SDK `f8bc962`, ordinary writes refill the original 16 MiB wallet limit after
+refund recovery and a saved handoff then fails the native capacity check. The
+regression finishes the funding claim before filling capacity, so later receipt
+deletion cannot mask the missing reservation. The unchanged-runtime failure is
+retained in `work/sender-handoff/red-1`; a sender fix remains open. Receiver
+reservation checks do not qualify this path.
 
 ## Acknowledged wallet exports
 
