@@ -20,6 +20,19 @@ verification remain outstanding. Build and fix evidence is retained in
 `work/cdk-receive-completion` and `work/reserved-receiver-handoff`.
 The device and performance results below retain their recorded source graphs.
 
+The genuine-history run creates all 5,480 receipts through ordinary wallet
+commands within the 20 MiB allowance, then refuses the first onward 32-sat
+channel because its completion reservations exceed remaining capacity. It does
+not reach the forwarding observation. Stopped-wallet reconciliation accounts
+for all 3,072 test sats as spendable; ordinary controller recovery cancels the
+unfunded intent without starting the mint or requesting new funding. Original
+mint files, wallet proofs and all 5,480 receipts remain exact. The failed verdict
+and recovery are retained in `work/receiver-history-native/run-2`.
+The allocation audit confirms completed native receives hold no unused allowance;
+the proof-history journal still reserves the full 4 MiB proof-payload limit.
+A separate, smaller bound for its fixed-width references is under regression and
+workspace verification. Neither that candidate nor another hardware run is accepted.
+
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
 commit the native receive, then fail to finish its activity record after other
