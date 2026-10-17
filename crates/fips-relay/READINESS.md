@@ -402,6 +402,12 @@ contract/startup boundaries, r613 supported carriers, r531 quote/free-route case
 and r532 the four funded bootstrap, return, newcomer and contention scenarios.
 Physical mobility, resource and target acceptance remain separate requirements.
 
+The manual power-cut harness supports both initial funding and committed
+settlement, sharing operator confirmation, outage/boot evidence and original
+account recovery. Its settlement mode cuts the provider and restores both
+forwarding links. All 74 focused Linux harness checks pass; this adds no physical
+acceptance result. The original initial-funding device attempt remains separate.
+
 The wallet resource audit has closed the custody archive's native completion-space
 gap. The r527/r530/r533 benchmark covers retained receipts, unfinished-operation
 scans, near-4-MiB plain secrets and parsed P2PK conditions at the 16 MiB logical

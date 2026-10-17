@@ -21,6 +21,9 @@ from .wifi_remote import digest
 
 
 class SettlementRun(CommittedSettlement, RouterAccountRecovery):
+    channel_lifetime_seconds = 180
+    expiry_wait_seconds = 150
+
     def __init__(self, args):
         super().__init__(args)
         for name in ('committed_settlement.py', 'wifi_settlement.py'):
@@ -29,7 +32,7 @@ class SettlementRun(CommittedSettlement, RouterAccountRecovery):
     def profile_config(self, node):
         config = super().profile_config(node)
         config['return_allowance'] = False
-        config['terms']['controller']['channel_lifetime_secs'] = 180
+        config['terms']['controller']['channel_lifetime_secs'] = self.channel_lifetime_seconds
         return config
 
     def exercise(self):
@@ -104,7 +107,8 @@ class SettlementRun(CommittedSettlement, RouterAccountRecovery):
                 sale = self.state_json('n02', 'controller/controller.json')['seller_settlements'].get(self.reverse_id)
                 return sale if sale and sale['report'] is not None else None
 
-            sale = eventually('provider expiry while reverse buyer remains stopped', expired, 150)
+            sale = eventually('provider expiry while reverse buyer remains stopped', expired,
+                              self.expiry_wait_seconds)
             require(sale['payment'] is None and not sale['released'],
                     'expiry was not completed independently of its buyer')
             report = validate_report(sale['report'])

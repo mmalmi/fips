@@ -1086,12 +1086,15 @@ network, so neither case establishes physical power-loss or flash-cache recovery
 Focused checks from `testing/chaos`: `PYTHONPATH=.:tests python3 -B -m unittest
 tests.test_committed_settlement tests.test_paid_settlement tests.test_settlement_fixture`.
 
-### Manual router power cut during initial funding
+### Manual router power cuts at committed mint boundaries
 
 `sim.wifi_power_cut --initial` accepts the same inventory, binary, mint and output
 arguments as `sim.wifi_funding`. Arrange an operator who can identify inventory
-node `n01` before starting. At the existing committed first-funding barrier, the
-harness freezes only that candidate process without syncing files, stops the
+node `n01` before starting. Alternatively, `--settlement` selects the existing
+committed-close scenario and cuts its provider, inventory node `n02`. Identify
+that different router before starting. The two modes are mutually exclusive.
+At the selected committed mint barrier, the harness freezes only the named
+candidate process without syncing files, stops the
 other two candidates, and writes `power-cut-request.json` in the fresh output
 directory. It keeps the other routers under management monitoring.
 
@@ -1106,14 +1109,31 @@ An unchanged/repeated boot, stale receipt or missing confirmation cannot pass.
 
 Recovery checks the original service, configuration and candidate identity before
 restaging the RAM executable and test-only shortcut filter. It reopens the saved
-account without initialization, then runs the existing first-purchase recovery,
-paid delivery and 384-test-sat conservation checks. Failure retains original
-financial evidence. No software reboot is dispatched.
+account without initialization. Initial funding keeps its first-purchase recovery
+and paid-delivery checks. Settlement restores the original committed close with
+its buyer stopped, without another swap, then checks the original buyer refund
+and the opposite channel's independent expiry recovery. Both modes retain their
+384-test-sat conservation checks. The provider restores its filter without
+blocking either forwarding neighbor. Failure retains original financial evidence.
+No software reboot is dispatched.
+
+Physical settlement uses 1440-second refund lifetimes (720-second service
+expiry), a 750-second reverse-expiry wait and a 1200-second run deadline.
+Before arming, the original reverse channel must
+have at least 600 seconds left; before restarting its provider it must still have
+180 seconds. Both observations use the provider's clock and the automatic expiry
+deadline, so an operator delay or clock jump cannot silently overlap the strict
+no-resubmission check with an independent expiry swap. The process-only
+settlement and initial-funding timings remain unchanged.
+If the post-boot margin cannot be verified, the failed run preserves the original accounts
+and mint for deliberate recovery instead of starting participants or waiting for
+expiry from a stopped provider.
 
 The kernel can flush writes during the operator pause. This is a physical cut at
 a held application boundary; it does not qualify power removal during a flash
-write, committed settlement or history handoff. Hardware acceptance remains
-pending. The focused Linux checks are the interruption modules above plus
+write or history handoff. The settlement mode has harness checks, not physical
+acceptance. Hardware results remain scoped to their recorded artifacts in
+`crates/fips-relay/READINESS.md`. The focused Linux checks are the interruption modules above plus
 `tests.test_wifi_power_cut`, `tests.test_wifi_restart`,
 `tests.test_wifi_kernel_restart` and `tests.test_funding_checks`.
 
