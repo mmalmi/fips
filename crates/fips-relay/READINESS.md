@@ -34,6 +34,22 @@ All 3,072 original test sats are independently reconciled. Matching ordinary
 ARM64 and Android builds now pass the controlled phone transit case below on this
 SDK/CDK graph. Saturated complete handoffs and hardware interference remain open.
 
+SDK `f8bc962` reserves receiver cleanup slots before accepting funding. Queued
+coins and outstanding payout promises share the existing 1,024-entry limit;
+unrelated releases cannot consume another channel's reservation. Two admitted
+512-coin payouts complete at unchanged full native capacity, including an
+interrupted final commit, reopen and retry. Missing original admission or queue
+custody refuses completion. All 446 workspace tests, strict lint, formatting and
+affected source-size checks pass; three existing optional measurements remain
+ignored. The regression fails against the preceding SDK. Evidence and the two
+corrected fault-injection/restoration attempts remain in `work/receiver-handoff`.
+This qualifies native SDK logical capacity and injected failures. Ordinary FIPS,
+ARM64, Android and device acceptance still need the new SDK; the earlier results
+retain their recorded graph. Version-4 queue journals require fresh profiles.
+Sender archive space is still admitted during retirement, after refund allowances
+can be released; a dedicated full-capacity regression remains open. Physical
+power-cut acceptance also remains open.
+
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
 limits fail without changing existing accounts. Ten focused Rust checks and 22

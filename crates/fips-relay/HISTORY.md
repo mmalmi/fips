@@ -202,7 +202,8 @@ completed handoffs write neither buyer nor controller journals.
 The payment controller pairs its receiver with the original wallet directory.
 Automatic acceptance verifies the agreement and uses SDK wallet admission.
 Services require native capacity accounting, so the SDK reserves the complete
-payout and shared bookkeeping before retaining funding.
+payout, shared bookkeeping and worst-case cleanup queue slots before retaining
+funding.
 Updates and final settlement require the original complete funding record; they
 cannot reconstruct it from a later signed payment. Ordinary updates do not open
 the wallet. Admission, payout import and retirement share the controller's wallet
@@ -224,8 +225,11 @@ Conflicting mint, currency or value also prevents completion and preserves the
 retained records. Restore the original evidence before retrying. Signed proof
 reconstruction retains its existing repair of signatures and spending authorization.
 When capacity accounting is enabled, import also requires the original wallet
-allowance. Authenticated receiver retirement removes the corresponding wallet
-admission only after the original payout handoff.
+allowance and queue reservation. Preparation and first retirement verify these
+records before deleting receiver evidence. Final admission removal and unused
+slot release commit together after the original payout handoff. Completed retries
+still verify exact queue custody for retained payout coins; missing recovery
+records cannot silently finish an unqueued payout.
 These are logical storage reservations. Fresh services must explicitly configure
 native wallet capacity before initialization; [service setup](SERVICE.md) describes
 the fixed policy. Other wallet paths/stores and physical recovery still need
@@ -335,9 +339,17 @@ unspent value, local recovery/send/receipt owners and the lifetime retired count
 FIPS seller-channel retirement supplies its saved original receiver payouts only
 after custody checks and receiver retirement finish.
 
-The version-3 queue stores compact authenticated references. Original coins remain
-in the wallet until native full-record comparison and deletion, committed in the
-same SQLite transaction as the authenticated queue and count update. A failure
+Receiver admission counts queued coins and outstanding promises against the same
+1,024 slots. Generic releases respect those promises; each new payout reference
+consumes its own slot, while queued or already collected retries consume none.
+Unspent payouts remain spendable and queued, so further admissions may require
+spending and collecting earlier payouts. The existing 128-coin batch limit stays
+unchanged.
+
+The version-4 queue stores compact authenticated references and payout slot
+reservations. Original coins remain in the wallet until native full-record
+comparison and deletion in the same SQLite transaction as the authenticated
+queue and count update. A failure
 rolls back both records and storage charges; there is no separate deletion redo
 log. An admitted eligible queue batch can reclaim full native payload capacity
 without growing a recovery intent first. Ordinary wallet reads remain available
@@ -349,6 +361,12 @@ Collection reads originals incrementally, with a soft 4 MiB batch budget and one
 oversized original allowed to progress alone. Neither queue references nor its
 checkpoint duplicate complete proof payloads. Older queue formats require fresh
 profiles.
+
+Sender archive admission remains a separate completion-capacity concern: capture
+reserves native space during retirement, after refund allowances can be released.
+The next regression must refill that released space with ordinary wallet writes
+and require the pending handoff to finish before receipt deletion frees capacity.
+The receiver reservation checks do not qualify that sender path.
 
 ## Acknowledged wallet exports
 
