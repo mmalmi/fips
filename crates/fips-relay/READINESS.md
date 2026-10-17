@@ -102,8 +102,25 @@ The failed result and exact original account audit remain in
 sats, preserves the other original coins and leaves all 4,096 sats spendable;
 retry imports nothing. The original funded and cancelled requests retire at the
 unchanged limit, with no pending operations or duplicate/spent live proofs.
-Restoring useful multi-neighbor admission without weakening reserved completion
-capacity is an open production blocker.
+SDK `9254b4e` restores useful multi-neighbor admission by reserving send-journal
+space for admitted records, their maximum completion size, lifetime-counter
+growth and retirement. Journal writes and allowance changes commit atomically;
+recovery refuses a missing original allowance. The 128-request and 4 MiB journal
+limits are unchanged. Version-4 journals require fresh profiles, without migration.
+
+All 447 workspace tests, strict lint, formatting and affected size checks pass.
+The focused regression fails on the preceding SDK, then preserves completion at
+full native capacity, failed-write rollback and reopen on the fix. The existing
+130-channel recycling test passes. The unchanged aggregate-refund profiles admit
+six 256-sat channels at the 16 MiB native limit and four 1,024-sat channels before
+the client-storage limit refuses more. Both complete refunds and retirement;
+copy-only audits reconcile all 20,480 original test sats with no pending wallet
+operations or duplicate/spent live proofs. Whole-prefix retirement, including
+wallet open, takes 0.878 and 3.166 seconds in these shared-host observations;
+these are not isolated performance comparisons. Sources, failed attempts and
+closed financial evidence remain in `work/send-journal-capacity`. This closes the
+reproduced native admission failure. Matching relay builds, device acceptance and
+the remaining physical recovery and resource checks are still required.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
