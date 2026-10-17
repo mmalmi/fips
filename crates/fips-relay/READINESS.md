@@ -343,9 +343,11 @@ Aggregate resource limits and the remaining physical power-loss boundaries
 remain open.
 
 The remaining resource and maintenance checks, settlement/retirement power loss,
-physical mobility and natural Android idle remain
-open. Physical power cuts require someone on site with the ordinarily powered
-routers; remote process or VM interruption does not substitute for that check.
+physical mobility and natural Android idle remain open. Additional manual
+power-cut testing is cancelled; both private entry points refuse to arm it.
+Automated process/kernel interruption and fault injection continue, with their
+limits recorded: they do not establish physical flash-write atomicity or qualify
+the unobserved settlement/retirement power-cut boundaries.
 r615's archived test profiles and temporary app are also removed. Failed verdicts
 and original financial evidence remain retained. The checklist below defines the
 complete acceptance scope.
@@ -405,7 +407,7 @@ closed financial recovery and the remaining observations listed here.
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
 | Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
-| Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | The captured first-funding cut recovers with controller intervention as described above. Verify the corrected runner end to end and qualify committed settlement and history handoff power cuts, preserving original evidence and test-fund conservation. Harness checks alone do not qualify hardware recovery. |
+| Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | The captured first-funding cut recovers with controller intervention as described above. Unattended recovery with the corrected runner and committed settlement/history handoff cuts remain unqualified. Additional manual cuts are cancelled; continue automated recovery checks without substituting them for physical evidence. Preserve originals and test-fund conservation. |
 | Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. | Finish the workflow/store/query resource audit, including aggregate pressure, maintenance duration and completion capacity. Finite cycles alone do not prove bounded indefinite operation. |
 | Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | Freeze and qualify a common final graph on the intended targets. Exercise install/reopen/recovery with preserved accounts and remove owned test resources. Natural Android deep idle is still unqualified. |
 | Threat model and integration proposal | [Threat model below](#boundaries-and-threats), explicit mint trust and [local TollGate proposal](TOLLGATE.md). r618 checks the current interfaces against the proposal and its pinned upstream specifications, including price/quality trials and raw mint-bridge limits. | Recheck affected contracts if the final runtime changes. The deliverable is a proposal; actual TollGate interoperability needs its separate acceptance before it is claimed. |
@@ -1092,13 +1094,28 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; the SDK `9626cd1` router case above closes new-purchase refusal/resumption on its recorded candidate. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
-| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The current native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps across complete cleanup at its recorded history size. Whole sender calls, receiver release queue and repeated owner scans still need aggregate progress and memory acceptance at the intended limits. |
+| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size. The synthetic full-capacity observation below measures the complete receiver wallet handoff. Whole sender calls and aggregate device progress/memory acceptance remain open. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
 
 These are the relay's wallet entry points, not every generic SDK API. The relay
 does not call the SDK's general startup recovery, Lightning issuance or melt
 commands. Their retained native owners still matter whenever shared recovery or
 collection encounters them; existing owner-preservation coverage remains required.
+
+One opt-in Linux observation measures the complete receiver wallet handoff at
+the full logical limit within a 20 MiB profile with 5,480 operation owners. All
+eight release batches and admission cleanup take 2.0853 seconds wall time and 2.08 CPU-seconds;
+resident memory rises from 25,408 to 36,760 KiB. It retires 1,022 of 1,024 original
+proof records, preserving one live-owned spent record, one unspent record and
+all 5,479 unrelated owners. Reopening and repeating the handoff changes nothing.
+The test uses synthetic storage records after an authenticated-plan/receiver-deletion
+boundary, with no mint or monetary value. It excludes plan validation, receiver
+deletion, concurrent forwarding, ARM timing and physical flash. The two-second
+forwarding-progress target is not a wallet-call deadline; this observation alone
+does not establish forwarding blockage. The recorded artifact uses SDK `9254b4e`;
+the handoff implementation is unchanged in `03e6b50`. Source, artifact, original
+output and independent acceptance are retained in
+`work/receiver-handoff-pressure/native-1`.
 
 r619 strengthens the existing SDK receiver-retirement regression in `c079bde`;
 production code and dependencies are unchanged. A receiver-store refusal leaves
