@@ -5,10 +5,10 @@ The first integration would expose FIPS customer entry alongside an ordinary
 TollGate Internet service. FIPS forwarding must remain purchasable when the
 customer has no ordinary Internet entitlement.
 
-## Existing contracts
+## Original Go proposal basis
 
-TollGate already defines time- and byte-based allotments. Its HTTP interface
-accepts a bearer payment, derives a device identifier from the network context
+The original Go TollGate design defines time- and byte-based allotments. Its HTTP
+interface accepts a bearer payment, derives a device identifier from the network context
 and returns a session event. The Go implementation uses NoDogSplash to gate
 ordinary access and tracks per-customer usage; it also buys upstream access.
 These are useful existing components, but a TollGate session is not a FIPS
@@ -26,6 +26,38 @@ interfaces and the existing Cashu service. The adapter adds no peer operation,
 per-packet payment, delivery receipt or alternative accounting implementation.
 The [eight peer operations and compatibility limits](README.md#peer-protocol)
 remain the wire contract.
+
+## Rust TollGate comparison (2026-10-17)
+
+A separate review covers Rust `v0.1.0-rc.2`:
+[tollgate-rs](https://gitworkshop.dev/npub1hw6amg8p24ne08c9gdq8hhpqx0t0pwanpae9z25crn7m9uy7yarse465gr/relay.ngit.dev/tollgate-rs)
+at `5b5e045c09a6d7e710b6412c9a34581834db5dd0` and
+[tollgate-suite-wrt](https://gitworkshop.dev/npub1hw6amg8p24ne08c9gdq8hhpqx0t0pwanpae9z25crn7m9uy7yarse465gr/relay.ngit.dev/tollgate-suite-wrt)
+at `9ac89549fa7f4f365bc8be43be1b2f8999b2049c`. These are a different integration
+surface from the Go interfaces above.
+
+- Rust TollGate buys prepaid capacity with seller-issued resource vouchers,
+  commonly bytes. Cumulative signed channel updates add only the increase to
+  the service budget. Its CBOR payment messages differ from this relay's JSON
+  quote/controller/payment records and monetary channel balances. Shared Cashu
+  and Spilman components do not establish protocol compatibility. The upstream
+  definitions are `docs/design/core/tollgate-protocol.md` and
+  `docs/design/core/tollgate-vouchers.md`.
+- Its FIPS enforcer, `crates/tollgate-net/src/enforcer/fips.rs`, requires
+  `show_transit_policy`, `set_transit_policy`, and `set_default_transit_policy`.
+  This FIPS implementation instead exposes the embedded
+  [ForwardingPolicy](../fips-core/src/node/forwarding_policy.rs) interface;
+  it does not expose those control commands. The existing upstream adapter
+  therefore cannot attach without integration work.
+- The suite's `crates/exitd/src/socks.rs` implements SOCKS5 CONNECT and rejects
+  BIND and UDP ASSOCIATE. That TCP proxy service differs from nostr-vpn's IP
+  exit. This relay still sells the sender-funded forwarding attempts defined in
+  [ACCOUNTING.md](ACCOUNTING.md), with separate authority for each sending
+  direction.
+
+The optional portal-entry proposal below remains scoped to separate entitlements.
+Neither this comparison nor shared payment dependencies establish a working
+TollGate adapter, mixed-client compatibility, or accepted Internet-exit billing.
 
 ## First integration
 
