@@ -30,8 +30,9 @@ drain times by 3.3–3.6 times in the recorded comparison, with comparable peak
 memory. The rebuilt ordinary Linux relay also passes the genuine spent-payout
 case below: delivery and both hops' payment counters advance across complete
 cleanup, with observed gaps below one second against a two-second test limit.
-All 3,072 original test sats are independently reconciled. Saturated complete
-handoffs, hardware interference and current Android acceptance remain open.
+All 3,072 original test sats are independently reconciled. Matching ordinary
+ARM64 and Android builds now pass the controlled phone transit case below on this
+SDK/CDK graph. Saturated complete handoffs and hardware interference remain open.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
@@ -40,13 +41,17 @@ harness checks, strict lint, formatting and source-size gates pass against SDK
 `1a558a9`. The rebuilt ordinary Linux daemon exercises initialization, reopen and
 paid customer transit. Matching ordinary ARM64 and Android builds pass on the
 same qualified dependencies without simulation features; all ten Java lifecycle
-checks and Android lint/package gates pass. These exact ARM64 and Android
-artifacts now pass the controlled phone transit case below; the earlier expiry,
-Doze and performance observations retain their original build scope.
+checks and Android lint/package gates pass. These artifacts pass the preceding
+capacity-limited phone case. The latest matching builds are accepted below;
+earlier expiry, Doze and performance observations retain their original build scope.
 
-The current capacity-limited app and three routers deliver all 2 MiB through
-foreground and background transit, reject unpaid traffic, and settle four original
-channels. All 516 management checks pass. The empty phone profile reopens with
+FIPS `5ca39d0a1` with SDK `033eea6` and CDK `c203b84f613d` now passes the same
+capacity-limited phone case on matching ordinary ARM64 and Android builds. Their
+source/dependency inventories match; five focused Rust profile checks, ten Java
+lifecycle checks and Android lint/package gates pass without simulation features.
+The app and three routers deliver all 2 MiB through foreground and background
+transit, reject unpaid traffic, and settle four original channels. All 516
+management checks pass. The empty phone profile reopens with
 its original identity; all four saved profiles, service terms and stopped wallet
 databases retain the same 20 MiB logical limit. Independent audits of 11 complete
 SQLite sets conserve and collect all 512 test sats with original funding and
@@ -54,9 +59,10 @@ spending authority unchanged. Five retained export records have their exact coin
 spent at the original mint; export-history retirement is not claimed. Normal
 network settings and original app/accounts are restored. The temporary app and
 three test profiles are removed after archival; original mint/account evidence
-remains in `work/phone-bounded-capacity-attempt2`. This is
-functional acceptance, not natural idle, mobility, power loss or performance.
-The preceding attempt stopped before funding because its validator omitted CDK's
+remains in `work/phone-saga-batches`; earlier accepted capacity evidence remains in
+`work/phone-bounded-capacity-attempt2`. This is functional acceptance, not natural
+idle, mobility, power loss or performance. The earlier capacity-validator attempt
+stopped before funding because its validator omitted CDK's
 fixed 64-byte accounting charge. Its zero-funded originals and failed verdict
 remain preserved; the corrected validator is checked against the actual archived
 database and refuses incorrect totals or capacity violations.
