@@ -19,6 +19,15 @@ ETHERTYPE = 0x88B5
 # A lost-peer quote can take 30 seconds; controller shutdown drains that work.
 CANDIDATE_STOP_SECONDS = 65
 CLEANUP_TIMEOUT_SECONDS = 180
+BOOT_ID = '/proc/sys/kernel/random/boot_id'
+BOOT_ID_PATTERN = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+
+
+def boot_id(node):
+    value = node.remote(['cat', BOOT_ID], timeout=10).decode().strip()
+    if not BOOT_ID_PATTERN.fullmatch(value):
+        raise RuntimeError('invalid router boot identity')
+    return value
 
 
 def checked_name(value):
@@ -59,7 +68,20 @@ def original_ethernet(config):
 
 def baseline_restored(current, original, originals):
     """Keep saved state and links; allow known original routers to rediscover."""
-    fixed = lambda state: {key: value for key, value in state.items() if key != 'connected_peers'}
+    rebooted = (all(isinstance(state.get('boot_id'), str)
+                    and BOOT_ID_PATTERN.fullmatch(state['boot_id'])
+                    for state in (current, original))
+                and current['boot_id'] != original['boot_id'])
+
+    def fixed(state):
+        fields = {key: value for key, value in state.items() if key != 'connected_peers'}
+        if rebooted:
+            # The kernel may assign a different interface index after a reboot.
+            fields.pop('boot_id')
+            fields['mesh_runtime'] = {key: value for key, value in state['mesh_runtime'].items()
+                                      if key != 'ifindex'}
+        return fields
+
     if fixed(current) != fixed(original):
         return False
     before = {tuple(peer) for peer in original['connected_peers']}
@@ -175,7 +197,7 @@ class Router(RelayCommands, SshCommands):
                 "remaining_budget_sat": status["remaining_budget_sat"],
                 "purchases": status["purchases"], "locked_sat": status["locked_sat"],
                 "watched_routes": status["watched_routes"], "access_points_up": sorted(aps),
-                "https_and_dns": True, "mesh_runtime": self.mesh,
+                "https_and_dns": True, "mesh_runtime": self.mesh, "boot_id": boot_id(self),
                 "connected_peers": sorted((p["npub"], p["transport"], p["address"])
                                           for p in status["peers"] if p["connected"])}
 

@@ -63,9 +63,20 @@ crash. Moving the offline wait after process interruption preserves the original
 expiry, refund and conservation assertions and passes the focused retry. Only test
 timing changes; the runtime artifacts are unchanged. Evidence remains in
 `work/native-sender-handoff`; Android additionally passes five Rust profile and
-ten Java lifecycle checks, packaging and lint. Physical device acceptance on this
-SDK remains open. These reservations cover logical payload capacity, not filesystem
-blocks or flash-journal headroom.
+ten Java lifecycle checks, packaging and lint. These reservations cover logical
+payload capacity, not filesystem blocks or flash-journal headroom.
+
+The matching Android APK passes an unfunded native startup check on Android 14;
+the temporary app is removed afterward. This does not qualify paid phone routing.
+A router physically rebooted after the initial-funding test window had closed.
+Its saved configuration and original account survived, and recovery collected all
+384 original test sats, including the unused channel's full 32-sat refund. The
+failed timed-cut verdict is retained: the physical cut was not observed at the
+held funding boundary. Evidence remains in `work/power-cut-sender-handoff-attempt2`
+and `work/samsung-sender-handoff-startup`. The baseline checker now permits only
+the mesh interface index to change across a verified boot-ID change; saved
+configuration, identity, balances, radio settings and link checks remain enforced.
+Controlled power-cut and paid device acceptance on this SDK remain open.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing

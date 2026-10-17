@@ -458,10 +458,13 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(node.guarded.call_count, int(acknowledge))
 
     def test_restoration_allows_known_mesh_links_without_losing_saved_state(self):
+        old_boot = '00000000-0000-0000-0000-000000000001'
+        new_boot = '00000000-0000-0000-0000-000000000002'
         original = {
             name: {'identity': name, 'hashes': 'saved config and accounts',
+                   'boot_id': old_boot,
                    'remaining_budget_sat': 64, 'connected_peers': [],
-                   'mesh_runtime': {'mac': f'02:00:00:00:00:0{index}'}}
+                   'mesh_runtime': {'mac': f'02:00:00:00:00:0{index}', 'ifindex': 6}}
             for index, name in enumerate(('n01', 'n02', 'n03'), 1)
         }
         existing = ('n03', 'ethernet', '020000000003')
@@ -473,6 +476,12 @@ class AcceptanceTests(unittest.TestCase):
                  ({'connected_peers': [existing, ('n02', 'udp', recovered[2])]}, False),
                  ({'connected_peers': [existing, ('n02', 'ethernet', '020000000004')]}, False),
                  ({'hashes': 'changed'}, False), ({'remaining_budget_sat': 63}, False)]
+        reindexed = {**original['n01']['mesh_runtime'], 'ifindex': 8}
+        cases += [({'boot_id': new_boot, 'mesh_runtime': reindexed}, True),
+                  ({'mesh_runtime': reindexed}, False),
+                  ({'boot_id': 'invalid', 'mesh_runtime': reindexed}, False),
+                  ({'boot_id': new_boot, 'mesh_runtime': reindexed, 'hashes': 'changed'}, False),
+                  ({'boot_id': new_boot, 'mesh_runtime': {**reindexed, 'mac': 'changed'}}, False)]
 
         def observe(_label, predicate, _timeout):
             if not predicate():

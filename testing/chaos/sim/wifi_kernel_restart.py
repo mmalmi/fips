@@ -1,7 +1,6 @@
 """Paid router recovery after an unsynced kernel reset, not a physical power cut."""
 
 from pathlib import Path
-import re
 import subprocess
 import time
 
@@ -9,24 +8,14 @@ from .paid_relay import eventually
 from .paid_settlement import require
 from .restart_finances import recovered_exposure
 from .wifi_discovery import ManagementMonitor
-from .wifi_remote import baseline_restored, digest
+from .wifi_remote import BOOT_ID, BOOT_ID_PATTERN, baseline_restored, boot_id, digest
 from .wifi_restart import sampled_process
 from .wifi_restart_load import RestartLoadRun, main
 
 
-BOOT_ID = '/proc/sys/kernel/random/boot_id'
-
-
-def boot_id(node):
-    value = node.remote(['cat', BOOT_ID], timeout=10).decode().strip()
-    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value):
-        raise RuntimeError('invalid router boot identity')
-    return value
-
-
 def reboot_profile(node, before, old_boot):
     """Dispatch once; only a later changed boot ID proves that a reset occurred."""
-    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', old_boot):
+    if not BOOT_ID_PATTERN.fullmatch(old_boot):
         raise ValueError('kernel reset requires a sampled boot identity')
     _, _, command = sampled_process(node, before)
     command += (f'test "$(cat {BOOT_ID})" = "{old_boot}"\n'
