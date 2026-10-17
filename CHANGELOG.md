@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.102] - 2026-10-15
+## [0.4.102] - 2026-10-17
 
 ### Added
 
@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transit paths. Older direct neighbors retain normal routing compatibility.
 - Authenticate and sequence client role changes across packet reordering,
   connection restarts, and draining key epochs.
+
+### Fixed
+
+- Reserve stream control queue capacity so native datagrams cannot starve a waiting stream reader.
+- Update the locked negentropy dependency to 0.5.2 to reject malformed reconciliation ID lists before allocating memory (RUSTSEC-2026-0365).
 
 ## [0.4.101] - 2026-10-14
 
