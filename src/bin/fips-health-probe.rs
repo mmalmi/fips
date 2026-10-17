@@ -51,7 +51,7 @@ async fn main() {
 
     match run(args).await {
         Ok(success) => println!(
-            "fips-health-probe: healthy target={} transport=webrtc rtt_ms={}",
+            "fips-health-probe: healthy target={} initial_authenticated_transport=webrtc echo_carrier=unverified echo_wait_ms={}",
             success.target_npub,
             success.rtt.as_millis()
         ),
@@ -64,6 +64,8 @@ async fn main() {
 
 struct ProbeSuccess {
     target_npub: String,
+    // Total wait across echo retries, not the RTT of an individual packet.
+    // Delivered packets authenticate the source, not their underlay carrier.
     rtt: Duration,
 }
 
