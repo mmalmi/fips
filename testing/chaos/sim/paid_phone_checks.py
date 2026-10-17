@@ -133,6 +133,21 @@ def probe_result(result):
     return code == 0
 
 
+def tcp_probe(phone, source, address, port, output):
+    # Older Android Toybox lacks -z and requires a positive -q delay. Connect
+    # with empty stdin, then close without sending data or retaining banners.
+    command = ["toybox", "nc", "-4", "-n", "-s", source, "-w", "2", "-q", "1",
+               address, str(port)]
+    script = (shlex.join(command) + ' </dev/null >/dev/null; nc_code=$?; '
+              'printf "FIPS_PROBE_EXIT=%s\\n" "$nc_code"; exit 0')
+    phone.check()
+    result = subprocess.run([str(phone.adb_path), "-s", phone.serial, "shell", script],
+                            capture_output=True, timeout=8)
+    save(output, {"adb_exit": result.returncode, "stdout": result.stdout.decode(errors="replace"),
+                  "stderr": result.stderr.decode(errors="replace")})
+    return probe_result(result)
+
+
 def check_customer_access(phone, customer, mint_url, output):
     source, _ = guest_source(phone, customer)
     mint = urlsplit(mint_url)
@@ -142,16 +157,8 @@ def check_customer_access(phone, customer, mint_url, output):
     checks = []
     for target in [allowed, *customer["denied_tcp"], {**allowed, "label": "shared_mint_after"}]:
         expected = target["label"] in ("shared_mint", "shared_mint_after")
-        command = ["toybox", "nc", "-4", "-n", "-z", "-s", source, "-w", "2",
-                   target["address"], str(target["port"])]
-        script = shlex.join(command) + '; nc_code=$?; printf "FIPS_PROBE_EXIT=%s\\n" "$nc_code"; exit 0'
-        phone.check()
-        result = subprocess.run([str(phone.adb_path), "-s", phone.serial, "shell", script],
-                                capture_output=True, timeout=8)
-        save(output / ("network-" + target["label"] + ".json"), {
-            "adb_exit": result.returncode, "stdout": result.stdout.decode(errors="replace"),
-            "stderr": result.stderr.decode(errors="replace")})
-        connected = probe_result(result)
+        connected = tcp_probe(phone, source, target["address"], target["port"],
+                              output / ("network-" + target["label"] + ".json"))
         require(connected == expected, "customer TCP access differs for " + target["label"])
         checks.append({"target": target["label"], "connected": connected, "expected": expected})
     return checks

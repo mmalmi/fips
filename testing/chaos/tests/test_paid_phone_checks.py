@@ -1,6 +1,7 @@
 """Reject unknown probe outcomes and unverified account/application evidence."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.phone_customer import PACKAGE
 from sim.paid_phone_checks import (check_customer_access, guest_source, installed_apk_hash,
                                    original_hashes, probe_result, scenario)
+from sim.paid_phone_transit import PhoneTransitRun
 
 
 def profile():
@@ -38,6 +40,7 @@ class PaidPhoneCheckTests(unittest.TestCase):
     def test_adb_missing_marker_bad_tool_and_bind_errors_are_not_denial(self):
         cases = [completed(adb_code=1, nc_code=1, error=b"device offline"),
                  completed(nc_code=127, error=b"nc: not found"),
+                 completed(nc_code=1, error=b"nc: -q < 1 (see nc --help)"),
                  completed(nc_code=1, error=b"nc: bind: Cannot assign requested address"),
                  completed(nc_code=1), completed()]
         cases[-1].stdout = b""
@@ -55,7 +58,59 @@ class PaidPhoneCheckTests(unittest.TestCase):
         for call in run.call_args_list:
             self.assertEqual(call.args[0][:3], ["/fixture/adb", "-s", "authorized-fixture"])
             self.assertIn("-s 192.0.2.2", call.args[0][-1])
+            self.assertIn("-q 1", call.args[0][-1])
             self.assertEqual(call.kwargs["timeout"], 8)
+
+    def test_probe_connects_without_scan_option_payload_or_banner_confusion(self):
+        phone = Mock(adb_path=Path("/fixture/adb"), serial="authorized-fixture")
+        phone.shell.return_value = b'SSID: "Fixture Guest", IP: /192.0.2.2'
+        real_run = subprocess.run
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            toybox = root / 'toybox'
+            toybox.write_text('''#!/bin/sh
+for arg do
+    test "$arg" != -z || { echo 'nc: Unknown option z' >&2; exit 1; }
+    port=$arg
+done
+test -z "$(cat)" || { echo 'unexpected probe payload' >&2; exit 42; }
+test "$port" != 80 || { echo 'nc: Connection refused' >&2; exit 1; }
+echo 'server banner'
+''')
+            toybox.chmod(0o700)
+            def shell(args, **kwargs):
+                self.assertEqual(args[:4], ['/fixture/adb', '-s', 'authorized-fixture', 'shell'])
+                return real_run(['sh', '-c', args[4]], input=b'must not reach the service',
+                                env={**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH']},
+                                **kwargs)
+            with patch('sim.paid_phone_checks.subprocess.run', side_effect=shell):
+                checks = check_customer_access(phone, profile()['customer'],
+                                               'http://198.51.100.10:41234', root)
+            self.assertEqual([item['connected'] for item in checks], [True, False, True])
+
+    def test_transit_mint_probe_requires_confirmed_connection(self):
+        run = object.__new__(PhoneTransitRun)
+        run.phone = Mock(adb_path=Path('/fixture/adb'), serial='authorized-fixture')
+        run.phone.shell.return_value = b'SSID: "Fixture Guest", IP: /192.0.2.2'
+        run.customer, run.mint_url = profile()['customer'], 'http://198.51.100.10:41234'
+        run.phase = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            run.root = Path(directory)
+            with patch('sim.paid_phone_checks.subprocess.run') as command:
+                for index, result in enumerate((completed(nc_code=1, error=b'nc: connect: Connection refused'),
+                                                completed(nc_code=1, error=b'nc: Unknown option z'))):
+                    run.root = Path(directory) / str(index)
+                    run.root.mkdir()
+                    command.return_value = result
+                    with self.assertRaises(RuntimeError):
+                        run.check_customer_access()
+                    run.phase.assert_not_called()
+                command.return_value = completed()
+                run.root = Path(directory) / 'connected'
+                run.root.mkdir()
+                run.check_customer_access()
+                run.phase.assert_called_once()
+            self.assertEqual(json.loads((run.root / 'network-shared_mint.json').read_text())['adb_exit'], 0)
 
     def test_unknown_middle_probe_aborts_before_it_can_be_accepted(self):
         phone = Mock(adb_path=Path("/fixture/adb"), serial="authorized-fixture")

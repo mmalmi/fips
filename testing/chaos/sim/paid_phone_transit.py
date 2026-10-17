@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from .paid_finances import financial_snapshot, payments_credited
 from .paid_phone import PaidPhoneRun
-from .paid_phone_checks import guest_source
+from .paid_phone_checks import guest_source, tcp_probe
 from .paid_phone_finances import validate_reopened
 from .paid_relay import eventually, relay_config
 from .paid_settlement import require
@@ -78,8 +78,9 @@ class PhoneTransitRun(PaidPhoneRun):
     def check_customer_access(self):
         source, _ = guest_source(self.phone, self.customer)
         mint = urlsplit(self.mint_url)
-        self.phone.shell('toybox', 'nc', '-4', '-n', '-z', '-s', source, '-w', '3',
-                         mint.hostname, str(mint.port))
+        require(tcp_probe(self.phone, source, mint.hostname, mint.port,
+                          self.root / 'network-shared_mint.json'),
+                'phone cannot reach the isolated mint')
         self.phase('phone can reach the isolated mint on its unchanged Wi-Fi')
 
     def customer_profile(self):
