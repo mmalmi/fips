@@ -67,16 +67,43 @@ ten Java lifecycle checks, packaging and lint. These reservations cover logical
 payload capacity, not filesystem blocks or flash-journal headroom.
 
 The matching Android APK passes an unfunded native startup check on Android 14;
-the temporary app is removed afterward. This does not qualify paid phone routing.
-A router physically rebooted after the initial-funding test window had closed.
-Its saved configuration and original account survived, and recovery collected all
-384 original test sats, including the unused channel's full 32-sat refund. The
-failed timed-cut verdict is retained: the physical cut was not observed at the
-held funding boundary. Evidence remains in `work/power-cut-sender-handoff-attempt2`
-and `work/samsung-sender-handoff-startup`. The baseline checker now permits only
-the mesh interface index to change across a verified boot-ID change; saved
+the temporary app is removed afterward. Evidence remains in
+`work/samsung-sender-handoff-startup`; this does not qualify paid phone routing.
+The preceding physical-cut attempt missed its held funding window; its failed verdict
+and recovery of all 384 original test sats remain in
+`work/power-cut-sender-handoff-attempt2`. The baseline checker permits only the
+mesh interface index to change across a verified boot-ID change; saved
 configuration, identity, balances, radio settings and link checks remain enforced.
-Controlled power-cut and paid device acceptance on this SDK remain open.
+
+The next attempt captures an operator-confirmed physical cut while the first
+funding reply is withheld after mint commit. The account, pending funding request
+and provider quote survive unchanged. The runner then times out waiting for its
+old SSH connection; that failed verdict remains preserved. A separate continuation
+starts the same runtime against those exact originals. The first funding recovers
+without another request for it, and all 1,280 payloads in each direction arrive through
+the relay. Both original channels settle at 2 sats paid and 30 refunded each;
+copy-only audits of nine complete SQLite sets reconcile and collect all 384 test
+sats. All 126 continuation management checks pass; normal baselines are restored
+and the archived temporary profiles are removed. Evidence remains in
+`work/power-cut-sender-handoff-attempt3`. The shared SSH helper now bounds failure
+of an established connection while allowing healthy silent commands. A real
+OpenSSH packet-loss regression fails before the fix and passes afterward; 45
+focused checks pass, with two existing Linux-only checks skipped on macOS.
+Funding and recovery assertions are unchanged. This establishes recovery from the
+captured initial-funding cut with controller intervention, not an uninterrupted
+harness pass, flash-write atomicity, or settlement/retirement power-loss safety.
+
+The existing native aggregate-refund fixture fails on SDK `1770996`: the unchanged
+16 MiB profile admits only one channel, below the fixture's multiple-neighbor
+requirement. Cancellation releases the second attempt's temporary reservations;
+the remaining 9,368,095-byte charge includes two shared 4 MiB journal allowances.
+The failed result and exact original account audit remain in
+`work/aggregate-sender-handoff/attempt-1`. Original expiry recovery refunds 256
+sats, preserves the other original coins and leaves all 4,096 sats spendable;
+retry imports nothing. The original funded and cancelled requests retire at the
+unchanged limit, with no pending operations or duplicate/spent live proofs.
+Restoring useful multi-neighbor admission without weakening reserved completion
+capacity is an open production blocker.
 
 FIPS `7e2c481a3` requires a positive, explicit wallet capacity for service and
 customer profiles. Generators save the existing 20 MiB example value; missing
@@ -195,9 +222,10 @@ The original archives are retained and the stopped test profiles are removed.
 This renewal run does not hold the successor's mint reply. The newer SDK also
 passes [new purchases during router cleanup](#payments-during-sender-retirement),
 with both original routes delivering and all original test funds accounted for.
-Aggregate resource limits and physical power loss remain open.
+Aggregate resource limits and the remaining physical power-loss boundaries
+remain open.
 
-The remaining resource and maintenance checks, physical power loss,
+The remaining resource and maintenance checks, settlement/retirement power loss,
 physical mobility and natural Android idle remain
 open. Physical power cuts require someone on site with the ordinarily powered
 routers; remote process or VM interruption does not substitute for that check.
@@ -260,7 +288,7 @@ closed financial recovery and the remaining observations listed here.
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
 | Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
-| Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | Run the [manual first-funding power-cut test](../../testing/chaos/README.md#manual-router-power-cut-during-initial-funding) and qualify committed settlement and history handoff power cuts, preserving original evidence and test-fund conservation. Harness checks alone do not qualify hardware recovery. |
+| Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | The captured first-funding cut recovers with controller intervention as described above. Verify the corrected runner end to end and qualify committed settlement and history handoff power cuts, preserving original evidence and test-fund conservation. Harness checks alone do not qualify hardware recovery. |
 | Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. | Finish the workflow/store/query resource audit, including aggregate pressure, maintenance duration and completion capacity. Finite cycles alone do not prove bounded indefinite operation. |
 | Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | Freeze and qualify a common final graph on the intended targets. Exercise install/reopen/recovery with preserved accounts and remove owned test resources. Natural Android deep idle is still unqualified. |
 | Threat model and integration proposal | [Threat model below](#boundaries-and-threats), explicit mint trust and [local TollGate proposal](TOLLGATE.md). r618 checks the current interfaces against the proposal and its pinned upstream specifications, including price/quality trials and raw mint-bridge limits. | Recheck affected contracts if the final runtime changes. The deliverable is a proposal; actual TollGate interoperability needs its separate acceptance before it is claimed. |
@@ -781,7 +809,7 @@ The 20 MiB example value is explicit in generated profiles, not inferred from
 missing saved data. These are logical storage reservations; filesystem/WAL
 headroom and physical power-loss acceptance remain separate requirements.
 
-Custody archive format 5 reserves its pages, native ownership metadata and maximum
+Custody archive format 6 reserves its pages, native ownership metadata and maximum
 cursor growth in the same transaction as its exact registry checkpoint. Other
 writes cannot consume an admitted capture's remaining allowance. A failed write
 or stale comparison rolls back both; acknowledgment releases unused space. The
@@ -1115,7 +1143,7 @@ selected wallet implementation and accepted mint are explicit trust dependencies
 | Peer discovery or quote spam | Shared admission/rate/connection/record budgets and bounded quote cache; failed authentication releases unowned carriers. | Arbitrary Sybil fairness and RF anti-jamming are not established. |
 | Free-control bypass | Strict bootstrap shapes/limits, explicit free destinations and earned return allowance; quote payloads remain ordinarily accounted. | Configuration may deliberately authorize free service. |
 | Unexpected onward spending | Separate price, capital, lifetime and provider policies; customer/peer input never grants wallet authority. | Accepted mint solvency/correctness remains trusted. |
-| Crash, full disk, lost reply or incomplete retirement | Durable exact intents, original costs/refunds, reserved completion capacity, retained owners and fail-closed recovery. | Lost/corrupted original evidence cannot be invented; physical power-cut acceptance remains open. |
+| Crash, full disk, lost reply or incomplete retirement | Durable exact intents, original costs/refunds, reserved completion capacity, retained owners and fail-closed recovery. | Lost/corrupted original evidence cannot be invented; the captured initial-funding cut does not qualify settlement/retirement cuts or flash-write atomicity. |
 | Slow or vanished peer/mint | Independent channel workers, bounded trials/timeouts and retained recovery ownership. | A stuck financial owner can retain capacity; arbitrary stalls cannot guarantee progress. |
 | Unauthenticated ciphertext or transport prelude | Carrier ownership checks, authenticated liveness and fixed startup deadlines; native and finite physical pressure tests. | Tested ingress rates/windows do not prove unlimited DoS tolerance. |
 | Self-signed WebSocket certificate | Explicit `tls_verification: fips` preserves FIPS identity authentication; normal certificate verification remains available. | It does not authenticate an HTTPS operator or strengthen mint trust. |
