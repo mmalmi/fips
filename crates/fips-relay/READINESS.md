@@ -3,7 +3,7 @@
 **Status: active; production readiness is not established.** Reviewed on
 18 October 2026.
 
-The latest fully built relay candidate combines FIPS runtime `ab2b9246`, SDK `72b3bb8`,
+The preceding accepted native artifacts combine FIPS runtime `ab2b9246`, SDK `72b3bb8`,
 CDK `b1265929` and Spilman `669fbdd943`. Send confirmation and abandoned-funding
 recovery now share a proof-count ceiling capped by the request's maximum debit.
 The 32-sat funding regression fails before the fix and fits five MiB of recovery
@@ -53,6 +53,17 @@ remain pending. A smaller real-payout capacity probe is prepared before
 the full genuine-history repeat; its historical logical pressure does not reproduce
 the cost of scanning 5,480 owners. SDK checks alone do not qualify sustained relay
 progress.
+
+On SDK `8855afe` and CDK `f08ccf4b`, the ordinary Linux daemon, test mint and
+both test executables compile; strict lint, formatting, size and history-setup
+checks pass. Native acceptance remains pending because the payout fixture's
+collection first exceeded the token-size bound, then timed out after collecting
+the complete 959-proof payout. Smaller payout tokens and denomination-preserving
+final exports address those test issues without changing the three-minute guard,
+token limit or financial assertions; the corrected gates are running. Both failed
+originals are preserved, and independent recovery audits reconcile all 3,072 test
+sats from each run with no pending wallet or mint operations and no new issuance.
+Evidence remains in `work/receiver-history-native/build-6` and `build-7`.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
@@ -1067,7 +1078,7 @@ The 20 MiB example value is explicit in generated profiles, not inferred from
 missing saved data. These are logical storage reservations; filesystem/WAL
 headroom and physical power-loss acceptance remain separate requirements.
 
-Custody archive format 6 reserves its pages, native ownership metadata and maximum
+Custody archive format 7 reserves its pages, native ownership metadata and maximum
 cursor growth in the same transaction as its exact registry checkpoint. Other
 writes cannot consume an admitted capture's remaining allowance. A failed write
 or stale comparison rolls back both; acknowledgment releases unused space. The
