@@ -1,7 +1,7 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-18 October 2026.
+19 October 2026.
 
 ## Current state
 
@@ -1021,8 +1021,14 @@ indexed SQL sum without decoding the proof inventory; its work still grows with
 unspent rows. Current saved profiles require native capacity; its logical bound
 does not reserve filesystem space. This closes source coverage for these paths,
 not device reopen latency or peak memory at their limits. Existing tests were
-inspected, not rerun. The source inventory remains in `work/catalog-bounds-r608`;
-settlement reply bounds are a separate path and require their own qualification.
+inspected, not rerun. The current-graph reconciliation in
+`work/catalog-bounds-r608/current-graph.json` verifies all 34 source bindings
+against build 14: 24 are unchanged and ten changed files have been reviewed at
+their catalog/open/balance boundaries. This includes the actual qualified
+Spilman source, whose shared bounded body reader preserves the metadata limits.
+No new catalog invariant gap was found. The original audit remains separate;
+this review adds no device-performance result or full export/custody acceptance.
+Settlement reply bounds are a separate path with their own qualification.
 
 r612 finds no violation of the reviewed local export size/custody contracts.
 Ownership scans and incomplete-operation recovery traverse retained history, so
