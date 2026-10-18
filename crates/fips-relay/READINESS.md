@@ -42,6 +42,26 @@ natural Android deep idle and the remaining contract/resource review are also
 open. The [acceptance checklist](#acceptance-checklist) defines the full scope;
 earlier results below apply to their recorded builds.
 
+## Completion sequence
+
+Keep the current candidate fixed while closing the existing acceptance checklist.
+Change it only to fix a demonstrated failure or an unmet requirement. Reuse valid
+checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
+full suites or creating additional reports without a concrete verification need.
+
+1. Finish the genuine 5,480-receipt workload and reconcile all original test funds.
+2. Build the matching OpenWrt and Android artifacts. Use independent caches in
+   parallel where host capacity permits, after timed measurements have finished.
+3. Complete the affected router/phone, recovery and resource checks, combining
+   compatible scenarios to avoid repeated setup. Close the existing mobility and
+   natural-idle requirements; retain the documented physical power-loss limits.
+4. Reconcile the checklist, threat model, operating/recovery documentation and
+   local TollGate proposal. Integrate verified changes and remove only completed,
+   owned test installations and clean merged worktrees.
+
+The checklist below remains the completion boundary. This sequence adds no feature
+scope and does not convert an unverified requirement into a passing result.
+
 ## Implementation and recovery evidence
 
 Acceptance applies to each recorded source/dependency graph, workload and target.
