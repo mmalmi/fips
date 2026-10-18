@@ -1,5 +1,9 @@
 # webrtc-rs changelog
 
+## nvpn-webrtc 0.17.2 - 2026-10-18
+
+- Use nvpn-webrtc-ice 0.17.2 for consent and candidate comparison fixes.
+
 ## Unreleased
 
 ## v0.7.0

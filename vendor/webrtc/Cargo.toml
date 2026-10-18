@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "nvpn-webrtc"
-version = "0.17.1"
+version = "0.17.2"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false
@@ -61,7 +61,7 @@ version = "0.4"
 [dependencies.ice]
 package = "nvpn-webrtc-ice"
 path = "../webrtc-ice"
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.interceptor]
 version = "=0.17.1"

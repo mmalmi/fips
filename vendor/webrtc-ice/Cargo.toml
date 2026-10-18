@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "nvpn-webrtc-ice"
-version = "0.17.1"
+version = "0.17.2"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false

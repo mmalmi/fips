@@ -1,5 +1,9 @@
 # webrtc-ice changelog
 
+## nvpn-webrtc-ice 0.17.2 - 2026-10-18
+
+- Preserve consent responses and periodic checks without restarting checks for succeeded pairs. Compare candidate addresses without allocations.
+
 ## Unreleased
 
 ### Breaking changes

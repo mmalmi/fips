@@ -2837,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-core"
-version = "0.4.104"
+version = "0.4.105"
 dependencies = [
  "async-wsocket",
  "base64",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-endpoint"
-version = "0.4.104"
+version = "0.4.105"
 dependencies = [
  "nvpn-fips-core",
 ]
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-webrtc"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3008,7 +3008,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-webrtc-ice"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "arc-swap",
  "async-trait",

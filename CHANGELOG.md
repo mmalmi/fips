@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.105] - 2026-10-18
+
+### Fixed
+
+- Keep initial and rekey handshakes alive after unauthenticated replies, so the
+  genuine reply can complete without changing the original retry budget or deadline.
+  Adapted from upstream FIPS commits `17784aea9` and `b37f7cdc2`.
+- Retry failed initial tree announcements on the existing maintenance cadence,
+  including single-peer nodes, without creating an immediate retry loop.
+  Adapted from upstream FIPS commit `7b81bd0e1`.
+- Screen daemon and gateway DNS input before answering. Drop responses, multiple
+  questions, injected answer/authority records, and potentially truncated packets;
+  construct fresh replies and clamp TTLs. Adapted from upstream FIPS commits
+  `76ecae939`, `6ccd30416`, and `3fd8df29a` while retaining the public DNS API.
+- Preserve Iris Chat's ICE consent and candidate comparison fixes when consumers
+  adopt the renamed WebRTC packages. Succeeded pairs still answer consent requests
+  and run periodic checks without starting redundant connectivity checks.
+
+### Dependencies
+
+- Use `nvpn-webrtc` and `nvpn-webrtc-ice` 0.17.2 for the retained ICE fixes.
+
 ## [0.4.103] - 2026-10-18
 
 ### Added

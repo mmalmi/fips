@@ -1,6 +1,6 @@
 [package]
 name = "nvpn-fips-core"
-version = "0.4.104"
+version = "0.4.105"
 edition = "2024"
 description = "Nostr VPN's reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -46,7 +46,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 portable-atomic = { version = "1", features = ["std"] }
 bytes = { version = "1", optional = true }
 if-addrs = { version = "0.15", optional = true }
-webrtc = { package = "nvpn-webrtc", version = "=0.17.1", path = "../../vendor/webrtc", optional = true }
+webrtc = { package = "nvpn-webrtc", version = "=0.17.2", path = "../../vendor/webrtc", optional = true }
 
 nostr = { version = "0.44", features = ["std"] }
 nostr-sdk = "0.44"
