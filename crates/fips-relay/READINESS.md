@@ -26,6 +26,14 @@ strict lint and full workspace formatting pass. Evidence is retained in
 `work/cdk-send-terminal/gate-1`. This fix does not by itself close the larger
 custody-reservation peak; matching relay builds and device acceptance are pending.
 
+The first full SDK check against this newer CDK stops with 393 passed, four failed
+and three ignored tests. The failures are existing capacity assertions that expect
+completed sends to retain their unused reservations. Their replacements check the
+exact completed owner's released bytes, retained proof custody and unchanged
+unrelated storage. They are under verification; no new SDK integration or matching
+relay acceptance is claimed. The failed run, source binding and closed process/cache
+audit are preserved in `work/receiver-history-native/test-grants-1`.
+
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
 handoff. Six focused FIPS checks and 201 SQL wallet tests pass on their recorded
