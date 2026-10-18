@@ -30,9 +30,21 @@ The first full SDK check against this newer CDK stops with 393 passed, four fail
 and three ignored tests. The failures are existing capacity assertions that expect
 completed sends to retain their unused reservations. Their replacements check the
 exact completed owner's released bytes, retained proof custody and unchanged
-unrelated storage. They are under verification; no new SDK integration or matching
-relay acceptance is claimed. The failed run, source binding and closed process/cache
+unrelated storage. All 22 affected proof-history tests and the compact simulation
+grant regression now pass against the newer CDK; full workspace verification is
+still running. No new SDK integration or matching relay acceptance is claimed.
+The failed run, source binding and closed process/cache
 audit are preserved in `work/receiver-history-native/test-grants-1`.
+
+A further SDK candidate replaces the fixed custody-page framing allowance with
+the measured authenticated encoding and row-ownership cost. It retains one framing
+allowance per native original proof to cover later query regrouping, and narrows
+completed-channel allowances only after checking their exact terminal evidence.
+Independent source review found no actionable correctness issue; this candidate
+has not passed runtime acceptance. Trusted repair must not rewrite spent native
+evidence after refinement. A smaller real-payout capacity probe is prepared before
+the full genuine-history repeat; its historical logical pressure does not reproduce
+the cost of scanning 5,480 owners. Neither preparation qualifies sustained progress.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
@@ -83,8 +95,9 @@ mint or requesting new funding. Independent stopped-copy audits reconcile all
 that only the two completed outgoing receipts and their 64 exact mint-spent
 proofs retire. Lifetime debit and signed totals remain 64 sats, with no pending
 financial owners. The failed workload and closed recovery remain in
-`work/receiver-history-native/run-4`. The remaining admission peak needs diagnosis
-before another funded repeat or device acceptance.
+`work/receiver-history-native/run-4`. The proposed custody-reservation reduction
+must pass its safety and measured admission checks before another full funded
+repeat or device acceptance.
 
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
