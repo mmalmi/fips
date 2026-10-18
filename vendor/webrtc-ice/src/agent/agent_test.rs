@@ -1850,6 +1850,12 @@ async fn test_agent_restart_one_side() -> Result<()> {
 
 #[tokio::test]
 async fn test_agent_restart_both_side() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(15), restart_both_sides())
+        .await
+        .expect("both-side restart must finish within 15 seconds")
+}
+
+async fn restart_both_sides() -> Result<()> {
     let one_second = Duration::from_secs(1);
     //"Restart Both Sides"
 
@@ -1869,16 +1875,22 @@ async fn test_agent_restart_both_side() -> Result<()> {
             out
         };
 
+    // Keep this restart test on loopback: scanning unrelated host/VPN interfaces
+    // can exhaust its one-second failure budget before gathering finishes.
     // Store the original candidates, confirm that after we reconnect we have new pairs
     let (_, _, agent_a, agent_b) = pipe(
         Some(AgentConfig {
             disconnected_timeout: Some(one_second),
             failed_timeout: Some(one_second),
+            include_loopback: true,
+            ip_filter: Arc::new(Some(Box::new(|ip| ip.is_loopback() && ip.is_ipv4()))),
             ..Default::default()
         }),
         Some(AgentConfig {
             disconnected_timeout: Some(one_second),
             failed_timeout: Some(one_second),
+            include_loopback: true,
+            ip_filter: Arc::new(Some(Box::new(|ip| ip.is_loopback() && ip.is_ipv4()))),
             ..Default::default()
         }),
     )
