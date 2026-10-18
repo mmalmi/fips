@@ -112,9 +112,14 @@
         /// Linux UDP_GRO segment size.
         ///
         /// Returns `(bytes_read, source_addr, kernel_drops, gro_segment_size)`.
-        /// Linux/macOS use `recv_batch`; this single-packet variant remains
+        /// Linux/macOS/iOS/Android use `recv_batch`; this single-packet variant remains
         /// for other unix targets.
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        )))]
         pub async fn recv_from(
             &self,
             buf: &mut [u8],
@@ -135,10 +140,16 @@
         }
 
         /// Drain up to `RECV_BATCH_SIZE` datagrams from the kernel via
-        /// `recvmmsg` (Linux) or `recvmsg_x` (macOS). Returns
+        /// `recvmmsg` (Linux), `recvmsg_x` (macOS), or nonblocking `recvmsg`
+        /// calls sharing one readiness turn (iOS/Android). Returns
         /// `(count, kernel_drops)`; same buffer / addr / GRO segment-size contract as
         /// `UdpRawSocket::recv_batch`.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))]
         pub async fn recv_batch(
             &self,
             bufs: &mut [Vec<u8>],
@@ -161,7 +172,20 @@
                         guard.clear_ready();
                         continue;
                     }
-                    Ok(Ok(result)) => return Ok(result),
+                    Ok(Ok(result)) => {
+                        #[cfg(any(target_os = "ios", target_os = "android"))]
+                        if result.0
+                            < bufs.len()
+                                .min(addrs.len())
+                                .min(gro_segment_sizes.len())
+                                .min(RECV_BATCH_SIZE)
+                        {
+                            // A short portable batch already observed WouldBlock.
+                            // Do not perform another empty receive before waiting.
+                            guard.clear_ready();
+                        }
+                        return Ok(result);
+                    }
                     Ok(Err(e)) => return Err(TransportError::RecvFailed(format!("{}", e))),
                     Err(_would_block) => continue,
                 }
@@ -229,6 +253,7 @@
     }
 
     /// Convert a `libc::sockaddr_storage` to `std::net::SocketAddr`.
+    #[cfg(any(test, not(any(target_os = "ios", target_os = "android"))))]
     fn sockaddr_to_socket_addr(storage: &libc::sockaddr_storage) -> std::io::Result<SocketAddr> {
         match storage.ss_family as libc::c_int {
             libc::AF_INET => {

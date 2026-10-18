@@ -20,10 +20,14 @@ use std::sync::Arc;
 #[cfg(unix)]
 use tracing::warn;
 
-/// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
-/// kernel queue. Shared with the higher-level UDP receive loops so all Linux
-/// packet ingress paths use the same batch width.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Maximum number of ready datagrams drained in one receive turn.
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+))]
 const RECV_BATCH_SIZE: usize = super::UDP_RECV_BATCH_SIZE;
 
 // ============================================================================

@@ -112,7 +112,12 @@ async fn assert_batch_preserves_successful_prefix(native: bool) {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+))]
 async fn recv_datagrams(
     socket: &AsyncUdpSocket,
     expected_count: usize,
@@ -141,7 +146,12 @@ async fn recv_datagrams(
     received
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 async fn recv_datagrams(
     socket: &AsyncUdpSocket,
     expected_count: usize,
@@ -395,7 +405,12 @@ async fn send_batch_to_sends_vectored_payloads() {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+))]
 #[tokio::test]
 async fn recv_batch_writes_into_vec_spare_capacity() {
     let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)

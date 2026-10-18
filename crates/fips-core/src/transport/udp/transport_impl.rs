@@ -78,7 +78,12 @@ impl Drop for UdpTransport {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+))]
 fn debug_udp_fmp_batch(
     stage: &'static str,
     transport_id: TransportId,
@@ -135,7 +140,8 @@ impl UdpReceiveErrorBackoff {
 ///
 /// On Linux, drains the kernel UDP queue in `UDP_RECV_BATCH_SIZE` bursts via
 /// `recvmmsg` to amortise the per-syscall + per-task-wakeup overhead. macOS
-/// uses Darwin `recvmsg_x` for the same batching shape. Windows falls through
+/// uses Darwin `recvmsg_x`; iOS/Android drain ready recvmsg calls without a
+/// batching delay. These paths transfer pooled buffers. Windows falls through
 /// to single-packet `recv_from`. Either way every
 /// datagram is forwarded to `packet_tx` in arrival order.
 async fn udp_receive_loop(
@@ -148,7 +154,12 @@ async fn udp_receive_loop(
     debug!(transport_id = %transport_id, "UDP receive loop starting");
     let mut recv_error_backoff = UdpReceiveErrorBackoff::default();
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    ))]
     fn cached_transport_addr(
         cache: &mut Vec<(SocketAddr, TransportAddr)>,
         remote_addr: SocketAddr,
@@ -354,7 +365,7 @@ async fn udp_receive_loop(
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
     {
         const BATCH: usize = UDP_RECV_BATCH_SIZE;
         let buf_size = mtu as usize + 100;
@@ -452,7 +463,12 @@ async fn udp_receive_loop(
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
     {
         let mut buf = vec![0u8; mtu as usize + 100];
 

@@ -134,7 +134,12 @@ async fn assert_udp_send(transport: &UdpTransport, payload: &[u8]) {
     assert_eq!(&received[..received_len], payload);
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+))]
 #[test]
 fn udp_receive_batch_width_matches_dataplane_reference() {
     assert_eq!(UDP_RECV_BATCH_SIZE, 128);
