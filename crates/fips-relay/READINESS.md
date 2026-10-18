@@ -17,15 +17,23 @@ SDK `16a80cee` now replaces the unconditional 4 MiB activity reservation with
 completion sizing from retained entries, original send records and possible
 import receipts. Its verified changes are integrated locally, and the ordinary
 Linux relay has passed requalification with this SDK. The renewed 20 MiB capacity
-probe opens and settles four onward channels, then refuses the fifth. Its audit
-accounts for all 3,072 test sats as spendable, but original native-send and
-controller bookkeeping still needs recovery. This failed probe retains the old
+probe opens and settles four onward channels, then refuses the fifth. Original
+wallet recovery completes the spent send and retires all four paid channels;
+an independent audit conserves all 3,072 test sats and the 128-sat lifetime debit.
+The unfunded fifth request remains pending: its first wallet-record write failed,
+and cleanup removed the admission needed to prove cancellation. Missing evidence
+is still treated as uncertain. The regression reproduces this loss of evidence;
+the correction passes all five admission-capacity tests, formatting and strict
+lint. Full SDK verification is running. The original profile stays frozen with
+its pending controller record and will not be reused. This failed probe retains the old
 13,983,529-byte starting charge with synthetic ballast; it does not establish the
 new charge or behavior of the genuine 5,480-receipt workload, which has not yet
 been rerun with this SDK.
 
-Next, finish recovery of the original probe accounts and compare its artificial
-pressure with the genuine history setup. Acceptance still requires the unchanged
+Next, accept and integrate the rejected-admission correction, then rebuild the
+ordinary relay. The original failed profile and partial recovery remain retained;
+the next workload uses fresh profiles within the existing greenfield scope.
+Acceptance still requires the unchanged
 5,480-receipt workload at 20 MiB, then qualification of the same graph on the
 intended devices. Physical mobile encounter/rejoin,
 natural Android deep idle and the remaining contract/resource review are also
@@ -43,8 +51,9 @@ results below provide regression evidence, not acceptance of a newer binary.
 | Latest native artifacts, `work/receiver-history-native/build-10` | Ordinary Linux daemon, test mint and both test executables pass formatting, size, strict lint and four mint tests on SDK `16a80cee`. The original sparse-proof payout/export case passes. | Sustained forwarding under history pressure and matching device artifacts are pending. |
 | Dependency checks, `work/cdk-sparse-selection/gate-6` | CDK `bb9b87d8` passes 560 wallet tests; SDK `8855afe` passes 454 workspace tests, with three existing optional measurements ignored. Both selection regressions fail before the fix and pass afterward; lint, formatting and the wallet-only build pass. | These checks qualify dependencies, not the complete relay workload. |
 | Activity completion space, `work/activity-storage/gate-9` | SDK `16a80cee` has 457 passing workspace tests and three existing optional tests ignored; lint, formatting, source size, documentation and the wallet-only build pass. Coverage combines 378 unchanged passing tests from gate 6 with 79 rerun or previously unreached tests. The corrected fault targets the refund owner's release; production code is unchanged between those runs. | The original full invocation remains recorded as failed. SDK verification and local integration are complete; relay history-pressure and device qualification remain pending. |
+| Rejected first wallet write, `work/rejected-admission/gate-1` through `gate-3` | The new regression fails before the correction with missing cancellation evidence. All five admission-capacity tests pass with the fix; formatting and strict lint pass. | The full SDK suite is still running. The candidate is not integrated, and it cannot reconstruct the erased admission from the old failed profile. |
 | Failed native preparations, `work/receiver-history-native/build-6` through `build-8` | Original recovery audits reconcile all 3,072 test sats from each run without new funding. The original mint policy and financial evidence remain retained. | Token-size, collection-time and sparse-selection failures retain their failed verdicts. The later build does not change them. |
-| Latest capacity probe, `work/receiver-history-native/capacity-2` | Incoming payout and four onward channel settlements succeed at 20 MiB. The stopped-original audit accounts for all 3,072 test sats as spendable. | The fifth channel is refused; original native-send/controller bookkeeping remains unfinished. Synthetic ballast retains the old starting charge and does not qualify genuine receipt history or sustained forwarding. The preceding capacity-1 failure remains fully recovered. |
+| Latest capacity probe, `work/receiver-history-native/capacity-2` | Incoming payout and four onward channel settlements succeed at 20 MiB. Original recovery completes the native send and retires four paid channels. The independent partial-recovery audit conserves 3,072 spendable test sats, unchanged mint financial records and the 128-sat lifetime debit. | The fifth channel is refused and its unfunded controller request remains pending after its admission record was removed. Synthetic ballast retains the old starting charge and does not qualify genuine receipt history or sustained forwarding. The preceding capacity-1 failure remains fully recovered. |
 | Genuine history, `work/receiver-history-native/run-2` through `run-4` | All 5,480 original receipts remain preserved. Separate recovery audits reconcile all 3,072 test sats from each failed run. The latest completes two paid channels before the third opening is refused. | The complete cleanup/forwarding observation has not passed. Replacing genuine receipts with ballast or raising capacity would not close it. |
 | Initial-funding physical cut, `work/power-cut-sender-handoff-attempt3` | The captured cut preserves original funding authority. A continuation recovers the original channels, delivers 1,280 payloads in each direction and collects all 384 test sats; normal baselines are restored. | Recovery required controller intervention after the runner lost its SSH connection. It does not establish unattended recovery, flash-write atomicity or settlement/retirement power-loss safety. Further manual cuts are cancelled. |
 | Paid carriers, r613 | Seven recorded-graph cases cover TCP, configured/seeded WebSocket, self-signed/CA-validated TLS and sustained UDP/Ethernet loss. Independent audits conserve all 2,688 test sats with no unfinished operations. | Native processes and virtual links; no physical mobility or final-device claim. |
