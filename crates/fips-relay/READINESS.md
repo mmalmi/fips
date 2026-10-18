@@ -75,10 +75,12 @@ measurements remain ignored. Strict lint, formatting and the wallet-only build
 pass. A separate pre-existing recovery test now supplies its required receive
 identity; production recovery validation is unchanged. The component is integrated
 locally, with exact sources and evidence in `work/cdk-sparse-selection/gate-6`.
-Matching relay and device acceptance remain pending. A stopped-copy audit accounts
-for all 3,072 test sats as spendable, verifies the original payout is spent and
-finds no buyer send preparation. The issuer's spent export and the buyer's
-unprepared request still need reconciliation. The failed verdict is preserved in
+Matching relay and device acceptance remain pending. Recovery with the verified
+fix completes the exact saved 1,024-sat request and reconciles the issuer's spent
+export. An independent audit conserves all 3,072 test sats as spendable: 1,983 in
+the collector and 1,089 in the buyer. No wallet or mint operations remain pending;
+no new funds were issued. The original payout receipt and mint keys are preserved.
+The failed verdict is preserved in
 `work/receiver-history-native/build-8`; this is not sustained-relay acceptance.
 
 Offline wallet commands honor configured mint-request pacing and recover original
