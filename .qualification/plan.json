@@ -4,11 +4,15 @@
   "archive": "hashtree-embedded-0.2.94.crate",
   "sha256": "39872e2351ec599d6b04c5ccb564470f34ea7769ebfeb8b8746a1d6d7064b3c2",
   "sourceCommit": "7cd139aff770e44d6635f14ccfb498dc53d14ab0",
+  "sourceRepository": "https://github.com/mmalmi/hashtree.git",
+  "workingDirectory": "rust",
   "commands": [
     [
       "cargo",
       "package",
-      "--locked"
+      "--locked",
+      "-p",
+      "hashtree-embedded"
     ]
   ]
 }
