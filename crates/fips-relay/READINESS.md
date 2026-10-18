@@ -3,7 +3,7 @@
 **Status: active; production readiness is not established.** Reviewed on
 18 October 2026.
 
-The current candidate combines FIPS runtime `ab2b9246`, SDK `72b3bb8`,
+The latest fully built relay candidate combines FIPS runtime `ab2b9246`, SDK `72b3bb8`,
 CDK `b1265929` and Spilman `669fbdd943`. Send confirmation and abandoned-funding
 recovery now share a proof-count ceiling capped by the request's maximum debit.
 The 32-sat funding regression fails before the fix and fits five MiB of recovery
@@ -26,15 +26,18 @@ strict lint and full workspace formatting pass. Evidence is retained in
 `work/cdk-send-terminal/gate-1`. This fix does not by itself close the larger
 custody-reservation peak; matching relay builds and device acceptance are pending.
 
-The first full SDK check against this newer CDK stops with 393 passed, four failed
+The first full SDK check against this newer CDK stopped with 393 passed, four failed
 and three ignored tests. The failures are existing capacity assertions that expect
 completed sends to retain their unused reservations. Their replacements check the
 exact completed owner's released bytes, retained proof custody and unchanged
-unrelated storage. All 22 affected proof-history tests and the compact simulation
-grant regression now pass against the newer CDK; full workspace verification is
-still running. No new SDK integration or matching relay acceptance is claimed.
-The failed run, source binding and closed process/cache
-audit are preserved in `work/receiver-history-native/test-grants-1`.
+unrelated storage. All 22 affected proof-history tests, the compact simulation
+grant regression and all 452 workspace tests now pass against the newer CDK;
+three existing optional measurements remain ignored. Strict lint and formatting
+also pass. SDK `43d5efd` integrates the corrected assertions and compact test
+funding for sparse mint denominations. Sources, compiler records, closed process
+and cache checks, and local integration are verified in
+`work/receiver-history-native/test-grants-2`. Matching relay acceptance remains
+pending. The failed original remains in `work/receiver-history-native/test-grants-1`.
 
 A further SDK candidate replaces the fixed custody-page framing allowance with
 the measured authenticated encoding and row-ownership cost. It retains one framing
