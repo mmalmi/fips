@@ -60,10 +60,20 @@ checks pass. Native acceptance remains pending because the payout fixture's
 collection first exceeded the token-size bound, then timed out after collecting
 the complete 959-proof payout. Smaller payout tokens and denomination-preserving
 final exports address those test issues without changing the three-minute guard,
-token limit or financial assertions; the corrected gates are running. Both failed
+token limit or financial assertions. Both failed
 originals are preserved, and independent recovery audits reconcile all 3,072 test
 sats from each run with no pending wallet or mint operations and no new issuance.
 Evidence remains in `work/receiver-history-native/build-6` and `build-7`.
+
+The next native run collects all 959 original payout proofs, then fails its first
+1,024-sat final export despite a 2,113-sat wallet balance. CDK's selection by repeated
+halving misses the fixture's 960-sat denominations. A focused regression fails on
+the prior code and passes when the existing selection routine can use the full
+balance; broader dependency checks are in progress. A stopped-copy audit accounts
+for all 3,072 test sats as spendable, verifies the original payout is spent and
+finds no buyer send preparation. The issuer's spent export and the buyer's
+unprepared request still need reconciliation. The failed verdict is preserved in
+`work/receiver-history-native/build-8`; this is not sustained-relay acceptance.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
