@@ -41,7 +41,7 @@ impl NostrDiscovery {
         let Some(valid_until_ms) = self.event_valid_until_ms(event) else {
             return NostrAdvertIngestOutcome::Rejected;
         };
-        let Ok(verified_event) = VerifiedEvent::try_from(event) else {
+        let Ok(verified_event) = self.verify_event(event) else {
             return NostrAdvertIngestOutcome::Rejected;
         };
         let author_key = NostrPeerKey::from_public_key_ref(verified_event.pubkey());
@@ -246,7 +246,7 @@ impl NostrDiscovery {
                 let Some(valid_until_ms) = self.event_valid_until_ms(ev) else {
                     return NostrRefetchOutcome::Skipped;
                 };
-                let Ok(verified_event) = VerifiedEvent::try_from(ev) else {
+                let Ok(verified_event) = self.verify_event(ev) else {
                     return NostrRefetchOutcome::Skipped;
                 };
                 let Ok(advert) = Self::parse_overlay_advert_event(verified_event, &self.config.app)
@@ -533,7 +533,7 @@ impl NostrDiscovery {
             let Some(valid_until_ms) = self.event_valid_until_ms(event) else {
                 continue;
             };
-            let Ok(verified_event) = VerifiedEvent::try_from(event) else {
+            let Ok(verified_event) = self.verify_event(event) else {
                 continue;
             };
             if *verified_event.pubkey() != target_pubkey {

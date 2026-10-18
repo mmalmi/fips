@@ -107,7 +107,7 @@ impl NostrDiscovery {
             return false;
         }
 
-        let Ok(verified_event) = VerifiedEvent::try_from(event) else {
+        let Ok(verified_event) = self.verify_event(event) else {
             return false;
         };
         if !self.rating_fact_author_is_trusted(verified_event.pubkey()) {

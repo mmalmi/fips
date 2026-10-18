@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Recover lost initial WebRTC offers and answers within the original connection
   deadline, reusing the same negotiation and safely accepting duplicate answers.
+- Reuse successful discovery event signature checks for exact replays, with a
+  bounded proof cache and unchanged event-content, freshness, and admission checks.
 
 ## [0.4.102] - 2026-10-17
 

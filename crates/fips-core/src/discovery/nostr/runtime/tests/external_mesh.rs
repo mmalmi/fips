@@ -240,6 +240,92 @@ async fn stale_external_advert_does_not_replace_newer_cache_entry() {
     assert_eq!(endpoints[0].addr, "8.8.8.8:443");
 }
 
+#[tokio::test]
+async fn replayed_advert_proof_preserves_validation_and_newer_endpoint_selection() {
+    let peer = nostr::Keys::generate();
+    let npub = peer.public_key().to_bech32().unwrap();
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        advert_relays: Vec::new(),
+        ..Default::default()
+    });
+    let now = Timestamp::now().as_secs();
+    let original = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.4.4:443",
+        now,
+    );
+    assert_eq!(
+        discovery.ingest_advert_event(&original).await,
+        NostrAdvertIngestOutcome::Cached
+    );
+    assert_eq!(
+        discovery.ingest_advert_event(&original).await,
+        NostrAdvertIngestOutcome::Replaced
+    );
+    let mut forged = original.clone();
+    forged.content = forged.content.replace("8.8.4.4", "1.1.1.1");
+    assert_eq!(
+        discovery.ingest_advert_event(&forged).await,
+        NostrAdvertIngestOutcome::Rejected
+    );
+    let newer = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.8.8:443",
+        now + 1,
+    );
+    assert_eq!(
+        discovery.ingest_advert_event(&newer).await,
+        NostrAdvertIngestOutcome::Replaced
+    );
+    assert_eq!(
+        discovery.ingest_advert_event(&original).await,
+        NostrAdvertIngestOutcome::Stale
+    );
+    assert_eq!(
+        discovery
+            .cached_advert_endpoints_for_peer(&npub)
+            .await
+            .unwrap()[0]
+            .addr,
+        "8.8.8.8:443"
+    );
+}
+
+#[tokio::test]
+async fn verified_signature_does_not_bypass_advert_expiration() {
+    let peer = nostr::Keys::generate();
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        advert_relays: Vec::new(),
+        ..Default::default()
+    });
+    let expired = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.4.4:443",
+        Timestamp::now().as_secs().saturating_sub(3_601),
+    );
+    // A signature proof can outlive the event's usable lifetime. Admission
+    // must still apply current freshness before using the cached proof.
+    discovery.verify_event(&expired).unwrap();
+    assert_eq!(
+        discovery.ingest_advert_event(&expired).await,
+        NostrAdvertIngestOutcome::Rejected
+    );
+    assert!(
+        discovery
+            .cached_advert_endpoints_for_peer(&peer.public_key().to_bech32().unwrap())
+            .await
+            .is_none()
+    );
+}
+
 fn signed_runtime_overlay_advert_event(
     keys: &nostr::Keys,
     app: &str,

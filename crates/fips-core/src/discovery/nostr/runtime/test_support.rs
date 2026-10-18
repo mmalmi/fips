@@ -81,6 +81,9 @@ impl NostrDiscovery {
             config,
             host_network: None,
             advert_cache: RwLock::new(HashMap::new()),
+            verified_events: std::sync::Mutex::new(
+                verified_event::EventVerificationCache::default(),
+            ),
             peer_trust_scores: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),
             current_advert_event_id: RwLock::new(None),

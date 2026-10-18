@@ -290,6 +290,7 @@ pub struct NostrDiscovery {
     bind_interface: RwLock<Option<String>>,
     relay_config: RwLock<AdvertRelayConfig>,
     advert_cache: RwLock<HashMap<NostrPeerKey, CachedOverlayAdvert>>,
+    verified_events: std::sync::Mutex<verified_event::EventVerificationCache>,
     peer_trust_scores: RwLock<HashMap<NostrPeerKey, NostrPeerTrustScore>>,
     local_advert: RwLock<Option<OverlayAdvert>>,
     current_advert_event_id: RwLock<Option<EventId>>,
@@ -423,6 +424,9 @@ impl NostrDiscovery {
             config,
             host_network,
             advert_cache: RwLock::new(HashMap::new()),
+            verified_events: std::sync::Mutex::new(
+                verified_event::EventVerificationCache::default(),
+            ),
             peer_trust_scores: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),
             current_advert_event_id: RwLock::new(None),
