@@ -5,135 +5,70 @@
 
 ## Current state
 
-The latest accepted Linux build combines FIPS runtime `ab2b9246`, SDK `715969e`
-and CDK `bb9b87d8`. All four mint tests and four controller-cancellation tests
-pass, including the original sparse-proof payout/export case. The corrected
-genuine-history workload now passes on Linux, including sustained paid progress
-and independent reconciliation of all original test funds. Matching OpenWrt and
-Android builds are verified; their device acceptance remains open.
+The current candidate combines FIPS runtime `ab2b9246`, SDK `715969e` and CDK
+`4f03d81b`. Ordinary Linux, ARM64 OpenWrt and Android builds pass verification.
+The latest CDK production change fixes cancellation after a failed local write
+before send confirmation; the regression also verifies that an uncertain write
+which committed confirmation retains its original coins for recovery. FIPS,
+SDK, Spilman, forwarding and cadence code are unchanged by this correction.
 
-The preceding capacity probe rejected its first onward channel at the
-unchanged 20 MiB limit. Its incoming payout succeeds; all 3,072 original test sats
-are independently reconciled as spendable, with no unfinished financial owners.
-SDK `16a80cee` now replaces the unconditional 4 MiB activity reservation with
-completion sizing from retained entries, original send records and possible
-import receipts. Its verified changes are integrated locally, and the ordinary
-Linux relay has passed requalification with this SDK. The renewed 20 MiB capacity
-probe opens and settles four onward channels, then refuses the fifth. Original
-wallet recovery completes the spent send and retires all four paid channels;
-an independent audit conserves all 3,072 test sats and the 128-sat lifetime debit.
-The unfunded fifth request remains pending: its first wallet-record write failed,
-and cleanup removed the admission needed to prove cancellation. Missing evidence
-is still treated as uncertain. The regression reproduces this loss of evidence.
-SDK `715969e` preserves the original admission when the first wallet write fails;
-all 458 workspace tests pass, with three existing optional tests ignored.
-Formatting, strict lint and the wallet-only build also pass, and the verified
-fix is integrated locally. The original profile stays frozen with its pending
-controller record and will not be reused. This failed probe retains the old
-13,983,529-byte starting charge with synthetic ballast; it does not establish the
-new charge or behavior of the genuine 5,480-receipt workload.
+Accepted evidence:
 
-The rebuilt ordinary relay has passed verification with SDK `715969e`. Runs 6
-and 7 of the 5,480-receipt workload complete all 28 onward openings, settlements
-and both history-retirement cohorts at 20 MiB. Both fail the final traffic wait;
-each stopped-original audit independently reconciles all 3,072 test sats as
-spendable without unresolved financial operations. Run 7's partial observations
-identify a harness timing error: after releasing the writer, the outgoing
-channel has 25 seconds of service left for roughly 28 seconds of traffic.
-Cleanup finishes, but only 73 of 84 packets arrive before expiration. Narrowing
-the held-writer inspection alone did not fix this error.
+- CDK's new regression fails before the fix and passes after fresh compilation.
+  All 561 wallet tests pass, as do formatting and strict lint. Evidence in
+  `work/cdk-confirmation-cancel/gate-1` retains the initial stale executable and
+  wrapper metadata failures alongside their independently verified resolution.
+- The ordinary Linux relay passes strict lint, compilation, production-feature
+  and source checks in `work/confirmation-native/gate-1`. It recovers both failed
+  export originals with their mints stopped. Independent stopped-copy audits
+  reconcile all 2,048 original test sats as spendable, preserve coin identities,
+  receipts, cached exports, mint ledgers and buyer budgets, and find no unfinished
+  wallet owners. No mint starts or new funding occurs; the original test verdicts
+  remain failed in `work/export-original-recovery/run-1`.
+- The larger-token case in `work/export-payload/gate-3` passes pressure, refusal,
+  recovery, acknowledgment and continued spending at 20 MiB, then collects all
+  1,024 test sats. Its 79 exports occupy 1,477,458 bytes. Whole offline reopen and
+  acknowledgment takes 13.627 seconds on Linux. Controlled test-mint request
+  pacing reduces the complete case from 1,008 to 137 seconds without changing
+  production defaults. Large-payload device costs remain open.
+- `work/confirmation-device-builds` preserves independently verified ordinary
+  router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
+  lifecycle tests, Android lint, signature and packaged-native checks pass.
+  The five unchanged customer-profile tests are reused. These are build results;
+  physical acceptance of the updated artifacts is pending.
+- The genuine 5,480-receipt native workload passes at 20 MiB in
+  `work/receiver-history-native/run-8`, on the preceding CDK `bb9b87d8` graph.
+  All 28 onward openings, settlements and both retirement cohorts complete.
+  The independent audit reconciles all 3,072 original test sats as spendable,
+  with no unfinished financial owners. All five delivery/payment counters
+  advance; the largest observed gap is 1.398 seconds against the two-second
+  limit. Cleanup finishes about 1.043 seconds after writer release while traffic
+  continues. This is not evidence of multiple interior cleanup-overlap samples.
 
-Build 14 opens the outgoing channel later and checks that its remaining lifetime
-covers the full 35-second observation. Formatting, size, strict lint and the
-focused build pass; the exact runtime, mint and bench binaries are reused from
-build 11. The complete corrected workload in `work/receiver-history-native/run-8`
-passes in 1,603 seconds with unchanged storage, payment and progress limits. Its
-stopped-original audit reconciles all 3,072 test sats as spendable, with no
-unfinished financial operations. All five delivery/payment counters advance;
-their largest observed gap is 1.398 seconds against the two-second limit.
-Cleanup overlaps the traffic window and finishes about 1.043 seconds after the
-writer is released. This does not establish multiple interior samples of cleanup.
-Matching OpenWrt (`arm-7`) and Android (`android-3`) artifacts are built and
-independently verified. Android's five profile tests and ten lifecycle tests pass,
-as do its formatting, size, strict lint, manifest and APK checks. Builds ran before
-the final timed native observation; device execution remained gated on run 8.
-The phone preparation now verifies that the APK and ordinary router binary share
-the qualified source/dependency graph. All 158 focused Linux phone-harness checks
-pass without skips. The isolated Pixel copy is installed, visually checked,
-empty and stopped; original accounts, foreground and Wi-Fi are preserved.
-Evidence is in `work/receiver-history-phone`. Funded phone execution waits for
-the active router case to finish and its original funds to be reconciled.
-The phone runner and stopped-original auditors are prepared and preserved with
-their frozen harness. The existing financial audit logic is unchanged, and the
-runner requires successful router acceptance before any funded device action.
-The router harness has the same timing correction. Its first device attempt stops
-before funding because the fixture retained a 64-sat lock limit for a 960-sat
-channel; original services are restored and the zero-issued mint closes. The
-corrected lock limits match the native fixture. The ordinary Linux relay rejects
-the old configuration and initializes all five corrected profiles. The second
-attempt is stopped early after measuring about two seconds per receipt, which
-cannot meet the inherited one-hour preparation allowance. Its immediate recovery
-retry encounters the still-finishing remote wallet owner. The original mint and
-profiles remain intact; a continuation returns the borrowed original and audits
-all 3,072 sats as spendable before collection. All funds are now collected, native
-wallet recovery is complete, the original mint is stopped and router baselines
-are restored. Complete original profiles and mint records are archived. Removing
-the three idle recovery executables releases 78,180 KiB of router RAM-backed
-storage; no account directory is removed.
+The third router history attempt is running with the same 5,480 receipts, 20 MiB
+limit and two-second progress requirement. Its longer preparation allowance
+follows measured device speed. The preceding device attempt's 3,072 sats are
+fully collected, its original profiles and mint are archived, and baselines are
+restored. The current run retains its recorded CDK `bb9b87d8` graph; it will not
+be presented as execution of the newer binary.
 
-The next driver allows six hours for hardware receipt preparation and eight hours
-for the case, retaining 5,480 receipts, 20 MiB storage and two-second live progress
-acceptance. Preparation deadlines remain checked between original transfers.
-Recovery now waits for the original remote wallet lock before retrying the saved
-request. All 64 focused Linux harness tests pass without skips, including the
-deadline recovery and real-lock waiting checks. The third attempt is now running
-after the second attempt's completed original-fund collection and fresh device
-preflight. No new device acceptance is claimed.
+The phone fixture now binds the matching corrected artifacts and reuses all 158
+unchanged harness checks. The updated isolated APK is installed, visually checked,
+empty and stopped; original accounts, normal Wi-Fi and foreground are preserved.
+Its old empty data and the rejected debug-signature update are retained in
+`work/receiver-history-phone`, together with the completed installation checks.
+Funded execution waits for closure of the active router case. Physical mobile
+encounter/rejoin, natural Android deep idle, remaining resource reconciliation
+and final local integration are still open.
 
-The candidate removes 338 lines belonging to the superseded synthetic-capacity
-diagnostic and its unused hooks/helper. The real-history fixture keeps its
-workload and assertions. Formatting, source size, strict lint, focused compilation,
-test inventory and the progress-observation regression pass in
-`work/cleanup-history-gate-2`. Production source is unchanged; run 8 remains
-evidence for its original build-14 executable, not a new execution of the cleaned
-test. The first cleanup gate's unused-import failure is retained separately.
-The larger-token export-pressure case exposes a pre-confirmation cancellation
-gap in CDK: after 79 retained exports, storage refusal leaves the next 63 sats
-reserved. Both failed originals remain preserved and are now recovered.
-The candidate uses existing version-fenced cancellation for any error before
-confirmation, preserving coins if an uncertain write already committed that
-confirmation. With this change, `work/export-payload/gate-3` passes the complete
-20 MiB pressure/refusal/recovery/acknowledgment/continued-spending case and collects
-all 1,024 test sats. The 79 retained tokens occupy 1,477,458 bytes; whole offline
-reopen and acknowledgment takes 13.627 seconds on Linux. Formatting, size, strict
-lint, the focused build and the smaller export regression pass. This does not
-qualify concurrent forwarding or device costs for large exports.
-Explicit request pacing for this controlled local mint reduces the pressure
-test from 1,008 seconds to about 137 seconds; production defaults are unchanged.
-CDK `4f03d81b` is saved on the local integration branch. Its regression fails on
-the original code and passes after a verified fresh compilation. All 561 wallet
-tests pass without skips, as do formatting and strict lint. The same regression
-checks a write rejected before commit and a committed confirmation with a lost
-reply; the latter keeps its coins reserved and recovers the original send.
-Evidence in `work/cdk-confirmation-cancel/gate-1` preserves the initial stale
-test-artifact result and the final wrapper metadata error. A separate source/log
-check completes that metadata without repeating the passing suite. The ordinary
-Linux relay passes strict lint, compilation, production-feature and source checks
-in `work/confirmation-native/gate-1`. It recovers both earlier failed originals
-with their mints stopped. The first pass releases each original 63-sat reservation
-while reporting the original storage refusal; the second completes without
-warnings. An independent stopped-copy audit reconciles all 2,048 test sats as
-spendable, verifies exact original coin identities, unchanged receipts, mint
-ledgers, cached exports and buyer budgets, and finds no unfinished wallet owners.
-No mint starts and no new funding occurs. Their failed test verdicts remain
-unchanged in `work/export-original-recovery/run-1`.
-Matching router and Android builds are running from CDK `4f03d81b`. The unchanged
-five Android customer-profile tests are reused; native compilation, target lint,
-Java lifecycle and package verification remain required. Earlier router/phone
-artifacts retain their original CDK graph; they do not qualify this change.
-Physical mobile encounter/rejoin, natural Android deep idle and the remaining
-contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
-defines the full scope; earlier results below apply to their recorded builds.
+The candidate also removes 338 lines of superseded synthetic-capacity helpers;
+focused checks pass in `work/cleanup-history-gate-2`. Original failed fixtures
+remain preserved. In particular, the earlier synthetic capacity probe's erased
+admission cannot be reconstructed: its original funds are reconciled, but its
+unfunded controller record stays pending and that profile will not be reused.
+Earlier run narratives remain in Git at `69aa4072d:crates/fips-relay/READINESS.md`
+and in the evidence table below. The [acceptance checklist](#acceptance-checklist)
+remains the full completion boundary.
 
 ## Completion sequence
 
