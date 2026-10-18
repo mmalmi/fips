@@ -193,7 +193,7 @@ impl WebRtcRuntime {
                 candidate_routes = candidate_count.unique_routes,
                 "WebRTC offer sent"
             );
-            Ok(())
+            Ok(signal)
         })
         .await
         .unwrap_or_else(|_| {
@@ -201,8 +201,8 @@ impl WebRtcRuntime {
                 "WebRTC outbound negotiation deadline exceeded".into(),
             ))
         });
-        if let Err(error) = result {
-            if is_negotiation_timeout(&error) {
+        if let Err(error) = &result {
+            if is_negotiation_timeout(error) {
                 self.negotiation.record_timeout();
             }
             Self::record_partial_local_candidate_diagnostic(&pc).await;
@@ -222,9 +222,12 @@ impl WebRtcRuntime {
                 format!("WebRTC outbound connection failed: {error}"),
             )
             .await;
-            return Err(error);
+            return result.map(|_| ());
         }
-        self.spawn_connect_timeout(remote_addr, session_id, deadline, &pc);
+        let offer = result?;
+        self.spawn_connect_timeout(
+            remote_addr, session_id, deadline, &pc, Some((remote_xonly, offer)),
+        );
         Ok(())
     }
 
@@ -390,6 +393,34 @@ impl WebRtcRuntime {
         }
         if let Some((pending_owner, pending_created_at_ms, pending_origin)) = &pending {
             if pending_owner.session_id.as_deref() == Some(signal.negotiation_id.as_str()) {
+                // A repeated offer may be recovering a lost answer. Reuse the
+                // existing peer and SDP, without extending its original deadline.
+                if *pending_origin == PendingDialOrigin::Remote
+                    && let Some(pc) = pending_owner.pc.as_ref().and_then(|pc| pc.upgrade())
+                    && let Some(answer) = pc.local_description().await
+                {
+                    let reply = WebRtcSignal {
+                        version: signal.version,
+                        negotiation_id: signal.negotiation_id.clone(),
+                        link_type: signal.link_type.clone(),
+                        kind: LinkNegotiationKind::Answer,
+                        created_at_ms: now_ms(),
+                        expires_at_ms: signal.expires_at_ms,
+                        payload: WebRtcSignalPayload {
+                            sdp: Some(answer.sdp),
+                            candidates: None,
+                        },
+                    };
+                    self.queue_signal_for_pending(
+                        &remote_addr,
+                        &signal.negotiation_id,
+                        &pc,
+                        sender_xonly,
+                        &reply,
+                    )
+                    .await?;
+                    self.negotiation.record_answer_queued();
+                }
                 return Ok(());
             }
             if !incoming_offer_replaces_pending(
@@ -661,6 +692,7 @@ impl WebRtcRuntime {
                 session_id.clone(),
                 deadline,
                 &pc,
+                None,
             );
         }
         result
@@ -729,6 +761,7 @@ impl WebRtcRuntime {
         let pending_session = {
             let mut pending = self.pending.lock().await;
             pending.get_mut(&remote_addr).map(|pending| {
+                let answer_already_started = !pending.awaiting_answer;
                 if pending.session_id == signal.negotiation_id {
                     pending.awaiting_answer = false;
                 }
@@ -736,10 +769,11 @@ impl WebRtcRuntime {
                     pending.session_id.clone(),
                     Arc::clone(&pending.pc),
                     pending.deadline,
+                    answer_already_started,
                 )
             })
         };
-        let Some((pending_session_id, pc, deadline)) = pending_session else {
+        let Some((pending_session_id, pc, deadline, answer_already_started)) = pending_session else {
             if self
                 .pool
                 .lock()
@@ -764,6 +798,11 @@ impl WebRtcRuntime {
             return Err(TransportError::StartFailed(
                 "WebRTC answer session mismatch".into(),
             ));
+        }
+        // Retransmitted answers must not reapply SDP to a peer that has already
+        // started applying this answer, even before the data channel is promoted.
+        if answer_already_started {
+            return Ok(());
         }
         let result: Result<EmbeddedCandidateCount, TransportError> =
             tokio::time::timeout_at(deadline, async {

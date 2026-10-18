@@ -411,6 +411,7 @@ impl WebRtcRuntime {
         session_id: String,
         deadline: tokio::time::Instant,
         pc: &ManagedPeer,
+        retry_offer: Option<(PublicKey, WebRtcSignal)>,
     ) {
         let pool = Arc::downgrade(&self.pool);
         let pending = Arc::downgrade(&self.pending);
@@ -419,7 +420,47 @@ impl WebRtcRuntime {
         let expected_pc = Arc::downgrade(pc);
         let negotiation = Arc::clone(&self.negotiation);
         let transport_id = self.transport_id;
+        let signaling = self.signaling.clone();
         tokio::spawn(async move {
+            if let Some((recipient, offer)) = retry_offer {
+                loop {
+                    let next =
+                        (tokio::time::Instant::now() + Duration::from_millis(500)).min(deadline);
+                    tokio::time::sleep_until(next).await;
+                    if tokio::time::Instant::now() >= deadline || now_ms() >= offer.expires_at_ms {
+                        break;
+                    }
+                    let Some(pending) = pending.upgrade() else {
+                        return;
+                    };
+                    let pending = pending.lock().await;
+                    let Some(dial) = pending.get(&addr) else {
+                        return;
+                    };
+                    if dial.session_id != session_id
+                        || dial.deadline != deadline
+                        || !expected_pc.ptr_eq(&Arc::downgrade(&dial.pc))
+                    {
+                        return;
+                    }
+                    if !dial.awaiting_answer {
+                        break;
+                    }
+                    if dial.pc.is_closing() || !dial.pc.setup_is_current() {
+                        return;
+                    }
+                    // Preserve the exact offer and generation. A pending-map
+                    // lock orders the send against stop, replacement and answer.
+                    if tokio::time::Instant::now() >= deadline || now_ms() >= offer.expires_at_ms {
+                        break;
+                    }
+                    if signaling.send_signal(recipient, &offer).is_err() {
+                        break;
+                    }
+                    negotiation.record_offer_queued();
+                }
+            }
+            drop(signaling);
             tokio::time::sleep_until(deadline).await;
             let (Some(pool), Some(pending), Some(failed), Some(ready)) = (
                 pool.upgrade(),

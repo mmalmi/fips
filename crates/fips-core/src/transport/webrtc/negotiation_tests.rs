@@ -321,6 +321,7 @@ async fn old_connect_timeout_cannot_remove_same_id_successor() {
         "reused-session".into(),
         old_deadline,
         &old_pc,
+        None,
     );
 
     let successor_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -412,6 +413,7 @@ async fn expired_answer_after_connect_timer_counts_one_phase_timeout() {
         "one-timeout".into(),
         deadline,
         &pc,
+        None,
     );
     tokio::time::sleep_until(deadline + Duration::from_millis(20)).await;
     assert!(!transport.pending.lock().await.contains_key(&remote_addr));

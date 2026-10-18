@@ -25,6 +25,138 @@ struct ChurnPeers<'a> {
     stable_addr: &'a TransportAddr,
 }
 
+async fn initial_negotiation_with_signal_loss(
+    drop_kind: Option<LinkNegotiationKind>,
+    duplicate_answer: bool,
+) {
+    let (initiator_identity, responder_identity) = ordered_identities();
+    let initiator_addr = identity_addr(&initiator_identity);
+    let responder_addr = identity_addr(&responder_identity);
+    let config = WebRtcConfig {
+        accept_connections: Some(true),
+        max_connections: Some(1),
+        connect_timeout_ms: Some(4_000),
+        ice_gather_timeout_ms: Some(250),
+        resolve_mdns_candidates: Some(false),
+        stun_servers: Some(Vec::new()),
+        ..WebRtcConfig::default()
+    };
+    let (mut initiator, mut initiator_rx) = new_transport(81, &initiator_identity, &config);
+    let (mut responder, mut responder_rx) = new_transport(82, &responder_identity, &config);
+    initiator.start_async().await.expect("start initiator");
+    responder.start_async().await.expect("start responder");
+    initiator
+        .connect_async(&responder_addr)
+        .await
+        .expect("begin initial negotiation");
+
+    let mut dropped = false;
+    let connected =
+        tokio::time::timeout(Duration::from_millis(config.connect_timeout_ms()), async {
+            loop {
+                for reverse in [false, true] {
+                    let (source, destination, identity) = if reverse {
+                        (&mut responder, &mut initiator, &responder_identity)
+                    } else {
+                        (&mut initiator, &mut responder, &initiator_identity)
+                    };
+                    for outbound in source.drain_link_negotiations(16) {
+                        let message =
+                            LinkNegotiationMessage::decode(&outbound.payload).expect("SDP signal");
+                        assert_canonical_loopback_candidate_profile(&message);
+                        if !dropped && drop_kind.as_ref() == Some(&message.kind) {
+                            dropped = true;
+                            continue;
+                        }
+                        if duplicate_answer && message.kind == LinkNegotiationKind::Answer {
+                            destination
+                                .ingest_link_negotiation(identity.pubkey_full(), message.clone())
+                                .expect("deliver duplicate answer");
+                        }
+                        destination
+                            .ingest_link_negotiation(identity.pubkey_full(), message)
+                            .expect("deliver remaining signal");
+                    }
+                }
+                if initiator.connection_state_sync(&responder_addr) == ConnectionState::Connected
+                    && responder.connection_state_sync(&initiator_addr)
+                        == ConnectionState::Connected
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+    if connected.is_ok() {
+        assert_round_trip(
+            &initiator,
+            &responder,
+            &mut initiator_rx,
+            &mut responder_rx,
+            &initiator_addr,
+            &responder_addr,
+            0,
+        )
+        .await;
+    }
+    initiator.stop_async().await.expect("stop initiator");
+    responder.stop_async().await.expect("stop responder");
+    wait_for_resource_quiescence(&[&initiator, &responder]).await;
+    assert_eq!(
+        dropped,
+        drop_kind.is_some(),
+        "the selected loss was exercised"
+    );
+    assert!(
+        connected.is_ok(),
+        "initial negotiation must survive one missing {drop_kind:?} signal within its original deadline"
+    );
+}
+
+#[tokio::test]
+async fn initial_negotiation_without_signal_loss() {
+    initial_negotiation_with_signal_loss(None, false).await;
+}
+
+#[tokio::test]
+async fn initial_negotiation_survives_first_offer_loss() {
+    initial_negotiation_with_signal_loss(Some(LinkNegotiationKind::Offer), false).await;
+}
+
+#[tokio::test]
+async fn initial_negotiation_survives_first_answer_loss() {
+    initial_negotiation_with_signal_loss(Some(LinkNegotiationKind::Answer), false).await;
+}
+
+#[tokio::test]
+async fn initial_negotiation_accepts_duplicate_answer() {
+    initial_negotiation_with_signal_loss(None, true).await;
+}
+
+#[tokio::test]
+async fn initial_negotiation_stops_retransmitting_after_stop() {
+    let (identity, remote) = ordered_identities();
+    let config = WebRtcConfig {
+        max_connections: Some(1),
+        connect_timeout_ms: Some(4_000),
+        ice_gather_timeout_ms: Some(250),
+        resolve_mdns_candidates: Some(false),
+        stun_servers: Some(Vec::new()),
+        ..WebRtcConfig::default()
+    };
+    let (mut transport, _rx) = new_transport(83, &identity, &config);
+    transport.start_async().await.expect("start transport");
+    transport.connect_async(&identity_addr(&remote)).await.expect("begin negotiation");
+    let _offer = take_link_negotiation(&mut transport, LinkNegotiationKind::Offer).await;
+    transport.stop_async().await.expect("stop pending negotiation");
+    wait_for_resource_quiescence(&[&transport]).await;
+    transport.drain_link_negotiations(16);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(transport.drain_link_negotiations(16).is_empty());
+    assert_resource_quiescent(&transport);
+}
+
 #[tokio::test]
 async fn fresh_replacement_with_one_slot_finishes_inside_connect_timeout() {
     let (churn_identity, stable_identity) = ordered_identities();
