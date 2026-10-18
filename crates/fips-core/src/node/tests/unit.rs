@@ -26,6 +26,7 @@ mod registries_core;
 mod rekey;
 mod retry_basics;
 mod retry_paths;
+mod routing_status;
 mod session_registry;
 mod update_peers_aliases;
 mod update_peers_config;

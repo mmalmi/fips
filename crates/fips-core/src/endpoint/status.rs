@@ -2,6 +2,20 @@ use crate::NodeAddr;
 use crate::node::{NodeEndpointPeer, NodeEndpointRelayStatus};
 use std::net::SocketAddr;
 
+/// The effective routing role and the adjacencies used to negotiate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FipsEndpointRoutingStatus {
+    /// Whether the application requested client-only routing.
+    pub client_only_requested: bool,
+    /// Whether client-only routing is currently active, after compatibility checks.
+    pub client_only: bool,
+    /// Number of currently sendable authenticated peer adjacencies.
+    pub connected_peers: usize,
+    /// Sendable adjacencies that have not advertised client-role support.
+    pub peers_without_client_support: usize,
+}
+
 /// Authenticated FIPS peer state visible to an embedded application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointPeer {

@@ -59,7 +59,7 @@ pub use service_carrier::{
     SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES, ServiceCarrierDiagnostics, ServiceCarrierSnapshot,
     ServiceCarrierTransportSnapshot,
 };
-pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
+pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus, FipsEndpointRoutingStatus};
 
 /// Endpoint data bytes delivered by FIPS.
 ///
@@ -881,6 +881,17 @@ impl FipsEndpoint {
                 previous_hop,
                 response_tx,
             },
+            response_rx,
+        )
+        .await
+    }
+
+    /// Snapshot the negotiated routing role, including legacy compatibility fallback.
+    pub async fn routing_status(&self) -> Result<FipsEndpointRoutingStatus, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "routing status",
+            NodeEndpointControlCommand::RoutingStatus { response_tx },
             response_rx,
         )
         .await

@@ -137,7 +137,11 @@ fn large_packets_keep_worker_offload() {
 
 #[test]
 fn isolated_packet_at_inline_byte_limit_preserves_its_lane() {
-    for class in [PacketClass::Bulk, PacketClass::Background, PacketClass::Control] {
+    for class in [
+        PacketClass::Bulk,
+        PacketClass::Background,
+        PacketClass::Control,
+    ] {
         // The FMP header and authentication tag add 32 bytes to the plaintext.
         let payload = vec![1; 480];
         let (mut mover, mut pool) = inline_receiver(class, &payload);

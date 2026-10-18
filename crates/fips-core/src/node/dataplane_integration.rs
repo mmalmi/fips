@@ -466,7 +466,8 @@ impl Node {
             }
             Err(failure) => {
                 let reason = Self::dataplane_pending_outbound_failure_from_stop(
-                    "queued endpoint data", &failure,
+                    "queued endpoint data",
+                    &failure,
                 );
                 self.defer_dataplane_control_turn(failure.into_turn());
                 reason

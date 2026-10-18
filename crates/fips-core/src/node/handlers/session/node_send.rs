@@ -220,6 +220,19 @@ impl Node {
                 };
                 let _ = response_tx.send(accepted);
             }
+            NodeEndpointControlCommand::RoutingStatus { response_tx } => {
+                let mut status = crate::endpoint::FipsEndpointRoutingStatus {
+                    client_only_requested: self.config.node.leaf_only,
+                    client_only: self.is_leaf_only(),
+                    connected_peers: 0,
+                    peers_without_client_support: 0,
+                };
+                for peer in self.peers.values().filter(|peer| peer.can_send()) {
+                    status.connected_peers += 1;
+                    status.peers_without_client_support += usize::from(!peer.client_only_supported);
+                }
+                let _ = response_tx.send(status);
+            }
             NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let pending_peers = self

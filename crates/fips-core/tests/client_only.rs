@@ -118,7 +118,12 @@ async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<TestE
     nodes
 }
 
-async fn connect(nodes: &[TestEndpoint], edges: &[(usize, usize)], client: bool) {
+async fn connect(
+    nodes: &[TestEndpoint],
+    edges: &[(usize, usize)],
+    client_requested: bool,
+    wait_for_client: bool,
+) {
     let mut addresses = Vec::new();
     for node in nodes {
         addresses.push(node.bound_udp_listen_addrs().await.unwrap()[0]);
@@ -147,7 +152,7 @@ async fn connect(nodes: &[TestEndpoint], edges: &[(usize, usize)], client: bool)
                     .count();
             }
             if count == edges.len() * 2 {
-                if !client {
+                if !wait_for_client {
                     break;
                 }
                 // Authentication precedes capability and role negotiation. Do
@@ -181,6 +186,24 @@ async fn connect(nodes: &[TestEndpoint], edges: &[(usize, usize)], client: bool)
     })
     .await
     .expect("authenticated adjacencies and negotiated client routing");
+
+    for (index, node) in nodes.iter().enumerate() {
+        let status = node.routing_status().await.unwrap();
+        assert_eq!(status.client_only_requested, client_requested && index == 0);
+        if wait_for_client || !status.client_only_requested {
+            assert_eq!(status.client_only, client_requested && index == 0);
+        }
+        assert_eq!(
+            status.connected_peers,
+            edges
+                .iter()
+                .filter(|(a, b)| *a == index || *b == index)
+                .count()
+        );
+        if status.client_only {
+            assert_eq!(status.peers_without_client_support, 0);
+        }
+    }
 }
 
 async fn delivered(source: &FipsEndpoint, dest: &FipsEndpoint, payload: &[u8]) -> bool {
@@ -225,7 +248,7 @@ async fn reachable(reply_learned: bool, wait_for_client: bool) {
         let nodes = endpoints(4, true, reply_learned).await;
         let mut edges = vec![(1, 2), (2, 3)];
         edges.extend(upstreams.iter().map(|upstream| (0, *upstream)));
-        connect(&nodes, &edges, wait_for_client).await;
+        connect(&nodes, &edges, true, wait_for_client).await;
         // New sessions in both directions, with no supplied remote route.
         let inbound = delivered(&nodes[3], &nodes[0], b"first inbound").await;
         {
@@ -255,7 +278,7 @@ async fn reachable(reply_learned: bool, wait_for_client: bool) {
 async fn client_only_cannot_bridge_unrelated_sessions_but_router_can() {
     for client in [false, true] {
         let nodes = endpoints(3, client, true).await;
-        connect(&nodes, &[(1, 0), (0, 2)], client).await;
+        connect(&nodes, &[(1, 0), (0, 2)], client, client).await;
         let own = delivered(&nodes[0], &nodes[1], b"client's own session").await;
         let transit = delivered(&nodes[1], &nodes[2], b"unrelated transit").await;
         for node in &nodes {
