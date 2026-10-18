@@ -1,9 +1,9 @@
 {
-  "name": "nvpn-fips-endpoint",
-  "version": "0.4.106",
-  "archive": "nvpn-fips-endpoint-0.4.106.crate",
-  "sha256": "4443ed00a7d04e46ec8abb805ebef0566e06198b0ebfc2bf519ce61120739c38",
-  "sourceCommit": "f310263416b293ea310cd1b78c001ab228ada63b",
+  "name": "nvpn-fips-tcp-endpoint",
+  "version": "0.2.41",
+  "archive": "nvpn-fips-tcp-endpoint-0.2.41.crate",
+  "sha256": "a91989d7f4d8209069ada185e31b307cae15a6d8e6ebbe33613199af9273a885",
+  "sourceCommit": "332f7f5a971dbf8341750f6e500f7ad30bca4bb8",
   "commands": [
     [
       "cargo",
@@ -13,6 +13,17 @@
       "x86_64-unknown-linux-gnu",
       "--",
       "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
     ]
   ]
 }
