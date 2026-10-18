@@ -99,7 +99,7 @@ evidence for its original build-14 executable, not a new execution of the cleane
 test. The first cleanup gate's unused-import failure is retained separately.
 The larger-token export-pressure case exposes a pre-confirmation cancellation
 gap in CDK: after 79 retained exports, storage refusal leaves the next 63 sats
-reserved. Both failed originals remain preserved; their recovery is pending.
+reserved. Both failed originals remain preserved and are now recovered.
 The candidate uses existing version-fenced cancellation for any error before
 confirmation, preserving coins if an uncertain write already committed that
 confirmation. With this change, `work/export-payload/gate-3` passes the complete
@@ -117,9 +117,20 @@ checks a write rejected before commit and a committed confirmation with a lost
 reply; the latter keeps its coins reserved and recovers the original send.
 Evidence in `work/cdk-confirmation-cancel/gate-1` preserves the initial stale
 test-artifact result and the final wrapper metadata error. A separate source/log
-check completes that metadata without repeating the passing suite. Ordinary
-relay compilation is running. Earlier router/phone artifacts retain their
-original CDK graph; they do not qualify this candidate change.
+check completes that metadata without repeating the passing suite. The ordinary
+Linux relay passes strict lint, compilation, production-feature and source checks
+in `work/confirmation-native/gate-1`. It recovers both earlier failed originals
+with their mints stopped. The first pass releases each original 63-sat reservation
+while reporting the original storage refusal; the second completes without
+warnings. An independent stopped-copy audit reconciles all 2,048 test sats as
+spendable, verifies exact original coin identities, unchanged receipts, mint
+ledgers, cached exports and buyer budgets, and finds no unfinished wallet owners.
+No mint starts and no new funding occurs. Their failed test verdicts remain
+unchanged in `work/export-original-recovery/run-1`.
+Matching router and Android builds are running from CDK `4f03d81b`. The unchanged
+five Android customer-profile tests are reused; native compilation, target lint,
+Java lifecycle and package verification remain required. Earlier router/phone
+artifacts retain their original CDK graph; they do not qualify this change.
 Physical mobile encounter/rejoin, natural Android deep idle and the remaining
 contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
 defines the full scope; earlier results below apply to their recorded builds.
@@ -923,10 +934,15 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size. The synthetic full-capacity observation below measures the complete receiver wallet handoff. Whole sender calls and aggregate device progress/memory acceptance remain open. |
-| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
+| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending; the router acknowledgment takes 29.75 s. The larger-token case in `work/export-payload/gate-3` fills the 20 MiB store after 79 exports and passes refusal, recovery, acknowledgment and continued spending on the corrected CDK; Linux reopen/acknowledgment takes 13.627 s. Large-payload device costs remain open. These are exclusively owned offline commands, so their duration is administrative downtime. |
 
 These are the relay's wallet entry points, not every generic SDK API. The local
-`recover` command calls shared SDK startup recovery under the exclusive wallet
+import/export/acknowledgment commands require the relay to be stopped: the CLI
+acquires its exclusive root lock, and the customer API rejects wallet actions
+while its service is running. Concurrent-forwarding acceptance applies to the
+automatic channel/history maintenance paths above, which run in the service.
+This distinction follows the existing interfaces; it adds no runtime restriction.
+The local `recover` command calls shared SDK startup recovery under the exclusive wallet
 owner lock and configured mint-request pacing. It resumes original receipt/send
 work, checks existing pending melts and paid mint quotes, and releases cancelled
 custody. The relay exposes no commands to create Lightning invoices or payments.
