@@ -533,7 +533,11 @@ impl ControlledSelector for AgentInternal {
             }
 
             self.send_binding_success(m, local, remote).await;
-            self.ping_candidate(local, remote).await;
+            // RFC 8445 section 7.3.1.4: a succeeded pair still answers requests,
+            // but no longer generates triggered connectivity checks.
+            if p.state.load(Ordering::SeqCst) != CandidatePairState::Succeeded as u8 {
+                self.ping_candidate(local, remote).await;
+            }
         }
     }
 }

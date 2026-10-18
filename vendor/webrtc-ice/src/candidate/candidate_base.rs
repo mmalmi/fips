@@ -167,6 +167,10 @@ impl Candidate for CandidateBase {
         self.address.clone()
     }
 
+    fn address_matches(&self, address: &str) -> bool {
+        self.address == address
+    }
+
     /// Returns Candidate Port.
     fn port(&self) -> u16 {
         self.port
@@ -192,6 +196,10 @@ impl Candidate for CandidateBase {
     /// Returns `Option<CandidateRelatedAddress>`.
     fn related_address(&self) -> Option<CandidateRelatedAddress> {
         self.related_address.as_ref().cloned()
+    }
+
+    fn related_address_matches(&self, address: Option<&CandidateRelatedAddress>) -> bool {
+        self.related_address.as_ref() == address
     }
 
     /// Returns candidate type.
@@ -283,10 +291,10 @@ impl Candidate for CandidateBase {
     fn equal(&self, other: &dyn Candidate) -> bool {
         self.network_type() == other.network_type()
             && self.candidate_type() == other.candidate_type()
-            && self.address() == other.address()
+            && other.address_matches(&self.address)
             && self.port() == other.port()
             && self.tcp_type() == other.tcp_type()
-            && self.related_address() == other.related_address()
+            && other.related_address_matches(self.related_address.as_ref())
     }
 
     fn set_ip(&self, ip: &IpAddr) -> Result<()> {

@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod candidate_equality_test;
+#[cfg(test)]
 mod candidate_pair_test;
 #[cfg(test)]
 mod candidate_relay_test;
@@ -63,6 +65,10 @@ pub trait Candidate: fmt::Display {
 
     fn network_type(&self) -> NetworkType;
     fn address(&self) -> String;
+    /// Compare the advertised address without requiring an owned copy.
+    fn address_matches(&self, address: &str) -> bool {
+        self.address() == address
+    }
     fn port(&self) -> u16;
 
     fn priority(&self) -> u32;
@@ -70,6 +76,10 @@ pub trait Candidate: fmt::Display {
     /// A transport address related to candidate,
     /// which is useful for diagnostics and other purposes.
     fn related_address(&self) -> Option<CandidateRelatedAddress>;
+    /// Compare the related address without requiring an owned copy.
+    fn related_address_matches(&self, address: Option<&CandidateRelatedAddress>) -> bool {
+        self.related_address().as_ref() == address
+    }
 
     fn candidate_type(&self) -> CandidateType;
     fn tcp_type(&self) -> TcpType;

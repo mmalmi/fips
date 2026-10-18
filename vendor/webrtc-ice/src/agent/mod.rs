@@ -10,6 +10,9 @@ pub(crate) mod agent_vnet_test;
 pub mod agent_config;
 pub mod agent_gather;
 pub(crate) mod agent_internal;
+#[cfg(test)]
+mod agent_idle_regression_test;
+
 pub mod agent_selector;
 pub mod agent_stats;
 pub mod agent_transport;
