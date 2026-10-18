@@ -15,15 +15,16 @@ completion allowance while retaining proof and receipt charges.
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
 handoff. Six focused FIPS checks and 201 SQL wallet tests pass on their recorded
-graphs. The preceding ordinary Linux daemon, isolated test mint and receiver-history
-executable build with SDK `3627f29`; the ordinary daemon excludes simulation features.
-Matching builds for SDK `6052d7a`, genuine large-history forwarding and device
-acceptance remain outstanding. Build and fix evidence is retained in
-`work/receiver-history-native/build-2`, `work/offline-wallet-recovery`,
+graphs. Matching ordinary Linux daemon, isolated test mint and receiver-history
+executable builds now pass on SDK `6052d7a` and CDK `b1265929`. Original compiler
+records, artifact hashes and CLI checks are verified; the ordinary daemon excludes
+simulation features. Genuine large-history forwarding and device acceptance remain
+outstanding. Build and fix evidence is retained in
+`work/receiver-history-native/build-3`, `work/offline-wallet-recovery`,
 `work/cdk-receive-completion` and `work/reserved-receiver-handoff`.
 The device and performance results below retain their recorded source graphs.
 
-The genuine-history run creates all 5,480 receipts through ordinary wallet
+The preceding genuine-history run creates all 5,480 receipts through ordinary wallet
 commands within the 20 MiB allowance, then refuses the first onward 32-sat
 channel because its completion reservations exceed remaining capacity. It does
 not reach the forwarding observation. Stopped-wallet reconciliation accounts
