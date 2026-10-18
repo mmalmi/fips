@@ -63,6 +63,9 @@ pass without skips. The isolated Pixel copy is installed, visually checked,
 empty and stopped; original accounts, foreground and Wi-Fi are preserved.
 Evidence is in `work/receiver-history-phone`. Funded phone execution waits for
 the active router case to finish and its original funds to be reconciled.
+The phone runner and stopped-original auditors are prepared and preserved with
+their frozen harness. The existing financial audit logic is unchanged, and the
+runner requires successful router acceptance before any funded device action.
 The router harness has the same timing correction. Its first device attempt stops
 before funding because the fixture retained a 64-sat lock limit for a 960-sat
 channel; original services are restored and the zero-issued mint closes. The
@@ -94,6 +97,10 @@ test inventory and the progress-observation regression pass in
 `work/cleanup-history-gate-2`. Production source is unchanged; run 8 remains
 evidence for its original build-14 executable, not a new execution of the cleaned
 test. The first cleanup gate's unused-import failure is retained separately.
+The existing export fixture now has a larger-token pressure case. Its formatting,
+size, strict lint, focused build and shared export regression pass; the pressure
+case is running. Production source is unchanged, and this pending case supplies
+no new acceptance claim yet.
 Physical mobile encounter/rejoin, natural Android deep idle and the remaining
 contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
 defines the full scope; earlier results below apply to their recorded builds.
