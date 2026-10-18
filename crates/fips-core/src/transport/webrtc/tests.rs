@@ -784,7 +784,7 @@ async fn invalid_answer_immediately_removes_and_closes_its_pending_session() {
             pc: Arc::clone(&pc),
             created_at_ms: now_ms(),
             origin: PendingDialOrigin::Local,
-            awaiting_answer: false,
+            awaiting_answer: true,
             deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         },
     );
