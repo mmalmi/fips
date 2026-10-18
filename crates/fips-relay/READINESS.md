@@ -32,23 +32,27 @@ controller record and will not be reused. This failed probe retains the old
 13,983,529-byte starting charge with synthetic ballast; it does not establish the
 new charge or behavior of the genuine 5,480-receipt workload.
 
-The rebuilt ordinary relay has passed verification with SDK `715969e`. The
-5,480-receipt workload at 20 MiB completes all 28 onward openings, settlements and
-both history-retirement cohorts. Its final cleanup/traffic wait times out; this
-is a failed workload, not sustained-forwarding acceptance. The stopped original
-wallet/mint audit independently reconciles all 3,072 test sats as spendable with
-no unresolved financial operations. The harness scans unrelated receipt history
-while holding the wallet writer. The corrected observer reads only the payout's
-proofs and saves timeout observations; formatting, size, strict lint and the
-focused build pass in `work/receiver-history-native/build-13`. The unchanged
-runtime, mint and bench binaries are reused from build-11. The same complete
-workload is running again in `work/receiver-history-native/run-7` with unchanged
-limits. The original failure and the earlier partial recovery remain
-retained. Acceptance still requires the complete workload to pass, then
-qualification of the same graph on the intended devices. Physical mobile encounter/rejoin,
-natural Android deep idle and the remaining contract/resource review are also
-open. The [acceptance checklist](#acceptance-checklist) defines the full scope;
-earlier results below apply to their recorded builds.
+The rebuilt ordinary relay has passed verification with SDK `715969e`. Runs 6
+and 7 of the 5,480-receipt workload complete all 28 onward openings, settlements
+and both history-retirement cohorts at 20 MiB. Both fail the final traffic wait;
+each stopped-original audit independently reconciles all 3,072 test sats as
+spendable without unresolved financial operations. Run 7's partial observations
+identify a harness timing error: after releasing the writer, the outgoing
+channel has 25 seconds of service left for roughly 28 seconds of traffic.
+Cleanup finishes, but only 73 of 84 packets arrive before expiration. Narrowing
+the held-writer inspection alone did not fix this error.
+
+Build 14 opens the outgoing channel later and checks that its remaining lifetime
+covers the full 35-second observation. Formatting, size, strict lint and the
+focused build pass; the exact runtime, mint and bench binaries are reused from
+build 11. The complete corrected workload has been launched in
+`work/receiver-history-native/run-8`, with unchanged storage, payment and progress
+limits. Matching OpenWrt and Android builds are prepared, pending this result.
+The router harness has the same timing correction; 50 focused local tests pass
+and 12 Linux-only tests are skipped. No new device acceptance is claimed.
+Physical mobile encounter/rejoin, natural Android deep idle and the remaining
+contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
+defines the full scope; earlier results below apply to their recorded builds.
 
 ## Completion sequence
 
@@ -78,8 +82,8 @@ results below provide regression evidence, not acceptance of a newer binary.
 
 | Evidence | Verified result | Remaining boundary |
 | --- | --- | --- |
-| Latest native artifacts, `work/receiver-history-native/build-11` | Ordinary Linux daemon, test mint and both test executables pass formatting, size, strict lint, four mint tests and four controller-cancellation tests on SDK `715969e`. The original sparse-proof payout/export case passes. Source/dependency and artifact verification is complete. | Sustained forwarding under history pressure fails in `work/receiver-history-native/run-6`; matching device artifacts are pending. |
-| Genuine history, `work/receiver-history-native/run-6` | All 5,480 receipts are created by ordinary receives; their initial charge is 8,521,564 bytes. All 28 onward channels settle and both cohorts retire at the unchanged 20 MiB limit. The stopped original audit reconciles 3,072 spendable test sats without unresolved operations. | The final 35-second cleanup/traffic wait times out. The outgoing guard expires during that window; the held-writer inspection scans unrelated history. The exact cause and focused harness correction require verification. No two-second progress or complete-workload pass is claimed. |
+| Latest native artifacts, `work/receiver-history-native/build-11` and `build-14` | Build 11's ordinary daemon, test mint and both test executables pass formatting, size, strict lint, four mint tests and four controller-cancellation tests on SDK `715969e`. The sparse-proof payout/export case passes. Build 14 reuses the exact daemon, mint and bench binaries; only the observer test changes, with focused build/lint/format/size checks passing. | The corrected complete workload in run 8 and matching device artifacts remain pending. |
+| Genuine history, `work/receiver-history-native/run-6` and `run-7` | Each run retains 5,480 ordinary receipts, completes 28 onward channels and retires both cohorts at 20 MiB. Each independent stopped-original audit reconciles 3,072 spendable test sats without unresolved operations. Run 7 records successful cleanup, a 75,660-microsecond held inspection and 73 of 84 delivered packets. | Both runs fail. Run 7 confirms that the outgoing channel has only 25 seconds left when the approximately 28-second stream begins. Build 14 corrects this schedule and checks remaining service lifetime; full-workload and two-second progress acceptance still require run 8. |
 | Dependency checks, `work/cdk-sparse-selection/gate-6` | CDK `bb9b87d8` passes 560 wallet tests; SDK `8855afe` passes 454 workspace tests, with three existing optional measurements ignored. Both selection regressions fail before the fix and pass afterward; lint, formatting and the wallet-only build pass. | These checks qualify dependencies, not the complete relay workload. |
 | Activity completion space, `work/activity-storage/gate-9` | SDK `16a80cee` has 457 passing workspace tests and three existing optional tests ignored; lint, formatting, source size, documentation and the wallet-only build pass. Coverage combines 378 unchanged passing tests from gate 6 with 79 rerun or previously unreached tests. The corrected fault targets the refund owner's release; production code is unchanged between those runs. | The original full invocation remains recorded as failed. SDK verification and local integration are complete; relay history-pressure and device qualification remain pending. |
 | Rejected first wallet write, `work/rejected-admission/gate-1` through `gate-3` | The new regression fails before the correction with missing cancellation evidence. SDK `715969e` passes the complete workspace invocation: 458 tests, zero failures and three existing optional tests ignored. Formatting, strict lint and the wallet-only build pass; the exact verified fix is integrated locally. | Native build checks pass; live-workload and device qualification remain pending. The fix cannot reconstruct the erased admission from the old failed profile. |
