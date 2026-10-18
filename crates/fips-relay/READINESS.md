@@ -61,9 +61,21 @@ The router harness has the same timing correction. Its first device attempt stop
 before funding because the fixture retained a 64-sat lock limit for a 960-sat
 channel; original services are restored and the zero-issued mint closes. The
 corrected lock limits match the native fixture. The ordinary Linux relay rejects
-the old configuration and initializes all five corrected profiles; all 62 focused
-Linux harness tests pass without skips. The second guarded router attempt is
-launched with the verified artifacts. No new device acceptance is claimed.
+the old configuration and initializes all five corrected profiles. The second
+attempt is stopped early after measuring about two seconds per receipt, which
+cannot meet the inherited one-hour preparation allowance. Its immediate recovery
+retry encounters the still-finishing remote wallet owner. The original mint and
+profiles remain intact; a continuation returns the borrowed original and audits
+all 3,072 sats as spendable before collection. Collection is still running.
+
+The next driver allows six hours for hardware receipt preparation and eight hours
+for the case, retaining 5,480 receipts, 20 MiB storage and two-second live progress
+acceptance. Preparation deadlines remain checked between original transfers.
+Recovery now waits for the original remote wallet lock before retrying the saved
+request. All 64 focused Linux harness tests pass without skips, including the
+deadline recovery and real-lock waiting checks. The third attempt is prepared and
+requires the second attempt's completed original-fund collection before launch.
+No new device acceptance is claimed.
 Physical mobile encounter/rejoin, natural Android deep idle and the remaining
 contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
 defines the full scope; earlier results below apply to their recorded builds.
