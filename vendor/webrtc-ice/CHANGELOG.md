@@ -1,5 +1,9 @@
 # webrtc-ice changelog
 
+## nvpn-webrtc-ice 0.17.3 - 2026-10-18
+
+- Use the WebRTC 0.17.2 utility and mDNS lifecycle fixes, preserving native socket protection, consent behavior, and allocation-free candidate comparisons.
+
 ## nvpn-webrtc-ice 0.17.2 - 2026-10-18
 
 - Preserve consent responses and periodic checks without restarting checks for succeeded pairs. Compare candidate addresses without allocations.

@@ -1,5 +1,9 @@
 # webrtc-turn changelog
 
+## nvpn-turn 0.17.2 - 2026-10-18
+
+- Use the 0.17.2 native utility foundation while preserving protection of TURN sockets.
+
 ## Unreleased
 
 * [#330 Fix the problem that the UDP port of the server relay is not released](https://github.com/webrtc-rs/webrtc/pull/330) by [@clia](https://github.com/clia).

@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "nvpn-webrtc"
-version = "0.17.2"
+version = "0.17.3"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false
@@ -49,11 +49,11 @@ version = "0.1"
 version = "1"
 
 [dependencies.data]
-version = "=0.17.1"
+version = "=0.17.2"
 package = "webrtc-data"
 
 [dependencies.dtls]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.hex]
 version = "0.4"
@@ -61,10 +61,10 @@ version = "0.4"
 [dependencies.ice]
 package = "nvpn-webrtc-ice"
 path = "../webrtc-ice"
-version = "=0.17.2"
+version = "=0.17.3"
 
 [dependencies.interceptor]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.lazy_static]
 version = "1.4"
@@ -73,11 +73,11 @@ version = "1.4"
 version = "0.4"
 
 [dependencies.mdns]
-version = "=0.17.1"
+version = "=0.17.2"
 package = "webrtc-mdns"
 
 [dependencies.media]
-version = "=0.17.1"
+version = "=0.17.2"
 package = "webrtc-media"
 
 [dependencies.pem]
@@ -104,17 +104,17 @@ version = "1.9.5"
 version = "0.17.14"
 
 [dependencies.rtcp]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.rtp]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.sctp]
-version = "=0.17.1"
+version = "=0.17.2"
 package = "webrtc-sctp"
 
 [dependencies.sdp]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.serde]
 version = "1"
@@ -131,11 +131,11 @@ version = "0.2"
 features = ["serde"]
 
 [dependencies.srtp]
-version = "=0.17.1"
+version = "=0.17.2"
 package = "webrtc-srtp"
 
 [dependencies.stun]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.thiserror]
 version = "1"
@@ -158,7 +158,7 @@ features = [
 [dependencies.turn]
 package = "nvpn-turn"
 path = "../turn"
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.unicase]
 version = "2.8"
@@ -169,7 +169,7 @@ version = "2"
 [dependencies.util]
 package = "nvpn-webrtc-util"
 path = "../webrtc-util"
-version = "=0.17.1"
+version = "=0.17.2"
 default-features = false
 
 [dependencies.waitgroup]

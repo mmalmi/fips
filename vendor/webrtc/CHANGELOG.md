@@ -1,5 +1,9 @@
 # webrtc-rs changelog
 
+## nvpn-webrtc 0.17.3 - 2026-10-18
+
+- Use the WebRTC 0.17.2 foundation and its safe SCTP MTU while retaining native socket policy and ICE consent fixes.
+
 ## nvpn-webrtc 0.17.2 - 2026-10-18
 
 - Use nvpn-webrtc-ice 0.17.2 for consent and candidate comparison fixes.

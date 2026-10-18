@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "nvpn-turn"
-version = "0.17.1"
+version = "0.17.2"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false
@@ -64,7 +64,7 @@ version = "0.9"
 version = "0.17.14"
 
 [dependencies.stun]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.thiserror]
 version = "1"
@@ -91,7 +91,7 @@ version = "0.7"
 [dependencies.util]
 package = "nvpn-webrtc-util"
 path = "../webrtc-util"
-version = "=0.17.1"
+version = "=0.17.2"
 features = [
     "conn",
     "vnet",

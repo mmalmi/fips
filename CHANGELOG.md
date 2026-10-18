@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.106] - 2026-10-18
+
+### Fixed
+
+- Retain the WebRTC 0.17.2 foundation when consumers adopt the Nostr VPN forks:
+  Windows UDP listeners survive connection-reset errors, mDNS close joins its
+  worker and releases its socket, and SCTP uses the safe 1191-byte default MTU.
+- Retain mDNS-SD 0.19.2 behavior, including overflow-safe TTL expiration, legacy
+  unicast response handling, and contiguous packet encoding, while preserving
+  native socket protection before network traffic.
+- Keep the ICE consent and allocation-free candidate comparison fixes from 0.4.105.
+
+### Dependencies
+
+- Use `nvpn-webrtc` and `nvpn-webrtc-ice` 0.17.3, `nvpn-webrtc-util` and
+  `nvpn-turn` 0.17.2, and `nvpn-mdns-sd` 0.19.2.
+
 ## [0.4.105] - 2026-10-18
 
 ### Fixed

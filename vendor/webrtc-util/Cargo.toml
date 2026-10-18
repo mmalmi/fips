@@ -1,6 +1,6 @@
 [package]
 name = "nvpn-webrtc-util"
-version = "0.17.1"
+version = "0.17.2"
 edition = "2021"
 description = "Native socket policy extension for Nostr VPN WebRTC"
 license = "MIT OR Apache-2.0"
@@ -20,7 +20,7 @@ marshal = ["upstream/marshal"]
 sync = ["upstream/sync"]
 
 [dependencies]
-upstream = { package = "webrtc-util", version = "=0.17.1", default-features = false }
+upstream = { package = "webrtc-util", version = "=0.17.2", default-features = false }
 tokio = { version = "1", features = ["sync"], optional = true }
 
 [dev-dependencies]

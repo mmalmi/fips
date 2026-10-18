@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "nvpn-webrtc-ice"
-version = "0.17.2"
+version = "0.17.3"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false
@@ -44,7 +44,7 @@ version = "3"
 version = "0.4"
 
 [dependencies.mdns]
-version = "=0.17.1"
+version = "=0.17.2"
 package = "webrtc-mdns"
 
 [dependencies.portable-atomic]
@@ -61,7 +61,7 @@ features = ["derive"]
 version = "1"
 
 [dependencies.stun]
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.thiserror]
 version = "1"
@@ -84,7 +84,7 @@ features = [
 [dependencies.turn]
 package = "nvpn-turn"
 path = "../turn"
-version = "=0.17.1"
+version = "=0.17.2"
 
 [dependencies.url]
 version = "2"
@@ -92,7 +92,7 @@ version = "2"
 [dependencies.util]
 package = "nvpn-webrtc-util"
 path = "../webrtc-util"
-version = "=0.17.1"
+version = "=0.17.2"
 features = [
     "conn",
     "vnet",

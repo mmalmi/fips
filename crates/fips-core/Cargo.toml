@@ -1,6 +1,6 @@
 [package]
 name = "nvpn-fips-core"
-version = "0.4.105"
+version = "0.4.106"
 edition = "2024"
 description = "Nostr VPN's reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -38,7 +38,7 @@ tokio = { version = "1", features = ["rt", "macros", "signal", "sync", "net", "t
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 simple-dns = "0.11.2"
-mdns-sd = { package = "nvpn-mdns-sd", version = "=0.19.1", path = "../../vendor/mdns-sd" }
+mdns-sd = { package = "nvpn-mdns-sd", version = "=0.19.2", path = "../../vendor/mdns-sd" }
 socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }
@@ -46,7 +46,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 portable-atomic = { version = "1", features = ["std"] }
 bytes = { version = "1", optional = true }
 if-addrs = { version = "0.15", optional = true }
-webrtc = { package = "nvpn-webrtc", version = "=0.17.2", path = "../../vendor/webrtc", optional = true }
+webrtc = { package = "nvpn-webrtc", version = "=0.17.3", path = "../../vendor/webrtc", optional = true }
 
 nostr = { version = "0.44", features = ["std"] }
 nostr-sdk = "0.44"
