@@ -1162,10 +1162,15 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size. The synthetic full-capacity observation below measures the complete receiver wallet handoff. Whole sender calls and aggregate device progress/memory acceptance remain open. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r612 traces token/cache and SDK journal limits. r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending. The router's whole acknowledgement takes 29.75 s. Larger payloads, aggregate store saturation and maintenance cost under concurrent forwarding remain open. |
 
-These are the relay's wallet entry points, not every generic SDK API. The relay
-does not call the SDK's general startup recovery, Lightning issuance or melt
-commands. Their retained native owners still matter whenever shared recovery or
-collection encounters them; existing owner-preservation coverage remains required.
+These are the relay's wallet entry points, not every generic SDK API. The local
+`recover` command calls shared SDK startup recovery under the exclusive wallet
+owner lock and configured mint-request pacing. It resumes original receipt/send
+work, checks existing pending melts and paid mint quotes, and releases cancelled
+custody. The relay exposes no commands to create Lightning invoices or payments.
+A successful recovery pass can retain an unclaimed export; its report does not
+mean every financial owner has retired. The existing export-recovery regression
+preserves that original send and its proofs. Whole-pass costs still depend on the
+retained work, so per-record read limits alone do not establish a duration bound.
 
 One opt-in Linux observation measures the complete receiver wallet handoff at
 the full logical limit within a 20 MiB profile with 5,480 operation owners. All
