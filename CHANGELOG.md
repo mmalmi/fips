@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expose the negotiated endpoint routing role, including compatibility with
+  connected peers that do not support client-only routing.
+
+### Fixed
+
+- Recover lost initial WebRTC offers and answers within the original connection
+  deadline, reusing the same negotiation and safely accepting duplicate answers.
+
 ## [0.4.102] - 2026-10-17
 
 ### Added
