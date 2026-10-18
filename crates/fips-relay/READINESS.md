@@ -43,8 +43,10 @@ The repeat on SDK `6052d7a` also creates all 5,480 genuine receipts within the
 unchanged 20 MiB allowance, but opening the first onward channel still fails with
 `wallet_storage_capacity`. It does not reach paid forwarding. An independent audit
 of the stopped originals matches all 3,072 test sats to spendable wallet proofs;
-one unfunded controller intent remains unfinished, so financial recovery is not
-marked complete. All 124 original files and the failed verdict are preserved in
+ordinary recovery retires the one unfunded controller intent without starting the
+mint or new funding. The post-recovery audit preserves all original wallet proofs,
+5,480 receipts and mint files, with no unresolved financial owners. All 124 failed-run
+originals, the post-recovery archive and the failed verdict are preserved in
 `work/receiver-history-native/run-3`. The smaller journal reservation is verified,
 but another capacity cause remains under investigation.
 
