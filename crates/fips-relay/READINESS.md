@@ -57,6 +57,12 @@ Matching OpenWrt (`arm-7`) and Android (`android-3`) artifacts are built and
 independently verified. Android's five profile tests and ten lifecycle tests pass,
 as do its formatting, size, strict lint, manifest and APK checks. Builds ran before
 the final timed native observation; device execution remained gated on run 8.
+The phone preparation now verifies that the APK and ordinary router binary share
+the qualified source/dependency graph. All 158 focused Linux phone-harness checks
+pass without skips. The isolated Pixel copy is installed, visually checked,
+empty and stopped; original accounts, foreground and Wi-Fi are preserved.
+Evidence is in `work/receiver-history-phone`. Funded phone execution waits for
+the active router case to finish and its original funds to be reconciled.
 The router harness has the same timing correction. Its first device attempt stops
 before funding because the fixture retained a 64-sat lock limit for a 960-sat
 channel; original services are restored and the zero-issued mint closes. The
