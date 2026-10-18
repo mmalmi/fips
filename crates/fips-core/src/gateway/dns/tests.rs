@@ -5,6 +5,61 @@ use tokio::sync::mpsc;
 
 const TEST_TTL: u32 = 60;
 
+#[tokio::test]
+async fn responses_and_multiple_questions_never_reach_the_upstream_or_pool() {
+    let upstream = UdpSocket::bind("[::1]:0").await.unwrap();
+    let pool = test_pool();
+    let (events, mut received) = mpsc::channel(4);
+    for bytes in [build_answer(42, "peer.fips", "fd00::1"), {
+        let bytes = build_query(42, "peer.fips");
+        let mut query = Packet::parse(&bytes).unwrap();
+        query.questions.push(query.questions[0].clone());
+        query.build_bytes_vec_compressed().unwrap()
+    }] {
+        assert!(
+            handle_query(
+                &bytes,
+                upstream.local_addr().unwrap(),
+                TEST_TTL,
+                &pool,
+                &events
+            )
+            .await
+            .is_none()
+        );
+    }
+    assert!(received.try_recv().is_err());
+    let mut buffer = [0; 512];
+    assert_eq!(
+        upstream.try_recv_from(&mut buffer).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn generated_dns_replies_keep_one_question_flags_and_bounded_ttl() {
+    let bytes = build_query(42, "peer.fips");
+    let mut query = Packet::parse(&bytes).unwrap();
+    query.set_flags(PacketFlag::RECURSION_DESIRED | PacketFlag::CHECKING_DISABLED);
+    for bytes in [
+        build_refused(&query).unwrap(),
+        build_servfail(&query).unwrap(),
+        build_nodata(&query, u32::MAX).unwrap(),
+        build_aaaa_response(&query, "fd01::1".parse().unwrap(), u32::MAX).unwrap(),
+    ] {
+        let reply = Packet::parse(&bytes).unwrap();
+        assert_eq!(reply.questions.len(), 1);
+        assert!(reply.has_flags(PacketFlag::RECURSION_DESIRED | PacketFlag::CHECKING_DISABLED));
+        assert!(
+            reply
+                .answers
+                .iter()
+                .chain(reply.name_servers.iter())
+                .all(|record| record.ttl <= i32::MAX as u32)
+        );
+    }
+}
+
 /// Build a client-facing AAAA query.
 fn build_query(id: u16, qname: &str) -> Vec<u8> {
     build_query_of_type(id, qname, QTYPE::TYPE(TYPE::AAAA))

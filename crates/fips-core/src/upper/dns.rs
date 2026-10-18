@@ -12,10 +12,15 @@
 
 use crate::upper::hosts::{HostMap, HostMapReloader};
 use crate::{NodeAddr, PeerIdentity};
+#[cfg(test)]
+use simple_dns::Packet;
 use simple_dns::rdata::{AAAA, RData};
-use simple_dns::{CLASS, Name, Packet, PacketFlag, QTYPE, RCODE, ResourceRecord, TYPE};
+use simple_dns::{CLASS, Name, PacketFlag, QTYPE, RCODE, ResourceRecord, TYPE};
 use std::net::Ipv6Addr;
 use tracing::{debug, trace, warn};
+
+#[cfg(test)]
+mod adversarial;
 
 /// Identity resolved by the DNS responder, sent to Node for cache population.
 pub struct DnsResolvedIdentity {
@@ -100,19 +105,24 @@ pub fn handle_dns_packet(
     ttl: u32,
     hosts: &HostMap,
 ) -> Option<(Vec<u8>, Option<DnsResolvedIdentity>)> {
-    let query = Packet::parse(query_bytes).ok()?;
+    let query = crate::dns_query::parse_query(query_bytes)?;
     let question = query.questions.first()?;
 
     let qname = question.qname.to_string();
     let is_aaaa = matches!(question.qtype, QTYPE::TYPE(TYPE::AAAA));
 
-    let mut response = query.into_reply();
+    let mut response = crate::dns_query::reply(&query);
     response.set_flags(PacketFlag::AUTHORITATIVE_ANSWER);
 
     if is_aaaa && let Some((ipv6, node_addr, pubkey)) = resolve_fips_query_with_hosts(&qname, hosts)
     {
         let name = Name::new_unchecked(&qname).into_owned();
-        let record = ResourceRecord::new(name, CLASS::IN, ttl, RData::AAAA(AAAA::from(ipv6)));
+        let record = ResourceRecord::new(
+            name,
+            CLASS::IN,
+            ttl.min(crate::dns_query::MAX_TTL),
+            RData::AAAA(AAAA::from(ipv6)),
+        );
         response.answers.push(record);
 
         let identity = DnsResolvedIdentity { node_addr, pubkey };
@@ -173,7 +183,7 @@ pub async fn run_dns_responder(
     mut reloader: HostMapReloader,
     mesh_ifindex: Option<u32>,
 ) {
-    let mut buf = [0u8; 512]; // Standard DNS UDP max
+    let mut buf = [0u8; crate::dns_query::MAX_DATAGRAM];
 
     loop {
         let (len, src, arrival_ifindex) = match recv_with_pktinfo(&socket, &mut buf).await {
@@ -184,7 +194,10 @@ pub async fn run_dns_responder(
             }
         };
 
-        if is_mesh_interface_query(arrival_ifindex, mesh_ifindex) {
+        if !crate::dns_query::accepts_source_port(src.port())
+            || len == buf.len()
+            || is_mesh_interface_query(arrival_ifindex, mesh_ifindex)
+        {
             trace!(
                 src = %src,
                 ifindex = ?arrival_ifindex,

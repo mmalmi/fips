@@ -8,6 +8,7 @@ pub mod cache;
 pub mod config;
 pub mod control;
 pub mod discovery;
+pub(crate) mod dns_query;
 pub mod endpoint;
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub mod gateway;

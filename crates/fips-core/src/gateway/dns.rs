@@ -95,28 +95,26 @@ fn upstream_response_matches(
 
 /// Build a REFUSED DNS response.
 fn build_refused(query: &Packet) -> Option<Vec<u8>> {
-    let mut response = Packet::new_reply(query.id());
+    let mut response = crate::dns_query::reply(query);
     response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
     *response.rcode_mut() = RCODE::Refused;
-    response.questions.clone_from(&query.questions);
     response.build_bytes_vec_compressed().ok()
 }
 
 /// Build a SERVFAIL DNS response.
 fn build_servfail(query: &Packet) -> Option<Vec<u8>> {
-    let mut response = Packet::new_reply(query.id());
+    let mut response = crate::dns_query::reply(query);
     response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
     *response.rcode_mut() = RCODE::ServerFailure;
-    response.questions.clone_from(&query.questions);
     response.build_bytes_vec_compressed().ok()
 }
 
 /// Build a NODATA response (NOERROR with no answer records).
 /// Signals "this name exists but has no records of the requested type".
 fn build_nodata(query: &Packet, ttl: u32) -> Option<Vec<u8>> {
-    let mut response = Packet::new_reply(query.id());
+    let ttl = ttl.min(crate::dns_query::MAX_TTL);
+    let mut response = crate::dns_query::reply(query);
     response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
-    response.questions.clone_from(&query.questions);
 
     // Add a minimal SOA in the authority section (RFC 2308 §2.2).
     // This tells the client how long to cache the negative answer.
@@ -141,12 +139,10 @@ fn build_nodata(query: &Packet, ttl: u32) -> Option<Vec<u8>> {
 
 /// Build an AAAA response with the given virtual IP.
 fn build_aaaa_response(query: &Packet, virtual_ip: Ipv6Addr, ttl: u32) -> Option<Vec<u8>> {
+    let ttl = ttl.min(crate::dns_query::MAX_TTL);
     let question = query.questions.first()?;
-    let mut response = Packet::new_reply(query.id());
+    let mut response = crate::dns_query::reply(query);
     response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
-
-    // Echo the question section (required by RFC 1035 §4.1.1)
-    response.questions.push(question.clone());
 
     let aaaa = rdata::RData::AAAA(rdata::AAAA {
         address: virtual_ip.into(),
@@ -265,6 +261,9 @@ pub async fn serve(
         tokio::select! {
             result = socket.recv_from(&mut buf) => {
                 let (len, client_addr) = result?;
+                if !crate::dns_query::accepts_source_port(client_addr.port()) || len == buf.len() {
+                    continue;
+                }
                 let query_bytes = &buf[..len];
 
                 let response = match handle_query(
@@ -300,7 +299,7 @@ async fn handle_query(
     pool: &std::sync::Arc<tokio::sync::Mutex<VirtualIpPool>>,
     event_tx: &tokio::sync::mpsc::Sender<PoolEvent>,
 ) -> Option<Vec<u8>> {
-    let query = Packet::parse(query_bytes).ok()?;
+    let query = crate::dns_query::parse_query(query_bytes)?;
 
     // Check if this is a .fips query
     let fips_name = match extract_fips_name(&query) {
@@ -411,10 +410,9 @@ async fn handle_query(
             rcode = ?upstream_response.rcode(),
             "Upstream returned non-success"
         );
-        let mut err_resp = Packet::new_reply(query.id());
+        let mut err_resp = crate::dns_query::reply(&query);
         err_resp.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
         *err_resp.rcode_mut() = upstream_response.rcode();
-        err_resp.questions.clone_from(&query.questions);
         return err_resp.build_bytes_vec_compressed().ok();
     }
 
