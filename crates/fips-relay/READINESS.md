@@ -13,7 +13,9 @@ All 451 workspace tests and strict lint pass; three existing optional measuremen
 remain ignored. Full formatting passes after formatter-only cleanup in three
 existing test files; runtime sources are byte-identical to the passing suite.
 Size checks pass. Matching ordinary Linux daemon, test-mint and receiver-history
-artifacts are verified. Genuine large-history forwarding remains pending on this SDK.
+artifacts are verified. The genuine-history repeat completes two paid channels,
+then refuses the third opening at the unchanged wallet limit. It does not reach
+the cleanup/forwarding observation; all original test funds are reconciled below.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
@@ -53,6 +55,19 @@ originals, the post-recovery archive and the failed verdict are preserved in
 `work/receiver-history-native/run-3`. This failure motivated the current proof-count
 fix. The failed forwarding verdict remains unchanged until the complete scenario
 passes with the corrected SDK.
+
+The repeat on SDK `72b3bb8` preserves all 5,480 genuine receipts, receives the
+959-sat payout and completes two 32-sat paid channels. The third opening fails
+with `wallet_storage_capacity` before native send preparation; paid forwarding
+during cleanup remains unobserved. Ordinary recovery cancels the one unfunded
+intent and retires the two expired, fully paid channels without restarting the
+mint or requesting new funding. Independent stopped-copy audits reconcile all
+3,072 test sats as spendable, preserve the 5,480 incoming receipts and confirm
+that only the two completed outgoing receipts and their 64 exact mint-spent
+proofs retire. Lifetime debit and signed totals remain 64 sats, with no pending
+financial owners. The failed workload and closed recovery remain in
+`work/receiver-history-native/run-4`. The remaining admission peak needs diagnosis
+before another funded repeat or device acceptance.
 
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
