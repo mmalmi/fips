@@ -75,13 +75,27 @@ measurements remain ignored. Strict lint, formatting and the wallet-only build
 pass. A separate pre-existing recovery test now supplies its required receive
 identity; production recovery validation is unchanged. The component is integrated
 locally, with exact sources and evidence in `work/cdk-sparse-selection/gate-6`.
-Matching relay and device acceptance remain pending. Recovery with the verified
+Matching Linux daemon, test-mint and test executables pass formatting, size,
+strict lint and all four existing mint tests on this graph. The formerly failing
+payout/export case passes in 79.83 seconds. Source and compiler checks, stopped
+processes and artifacts are verified in `work/receiver-history-native/build-9`;
+sustained relay and device acceptance remain pending. Recovery with the verified
 fix completes the exact saved 1,024-sat request and reconciles the issuer's spent
 export. An independent audit conserves all 3,072 test sats as spendable: 1,983 in
 the collector and 1,089 in the buyer. No wallet or mint operations remain pending;
 no new funds were issued. The original payout receipt and mint keys are preserved.
 The failed verdict is preserved in
 `work/receiver-history-native/build-8`; this is not sustained-relay acceptance.
+
+The preliminary capacity probe on these artifacts completes its incoming payout,
+then rejects the first onward opening at the unchanged 20 MiB wallet limit. The
+stopped wallet charges 19,751,093 bytes, including a 4 MiB activity-history
+reservation, before completing the funding-recovery reservation. All 3,072 test
+sats are independently accounted for as spendable; one unfunded controller
+request still needs reconciliation. This run has no genuine historical receipts
+and does not reach the paid cleanup/progress observation. Its failed verdict and
+originals remain in `work/receiver-history-native/capacity-1`. The 5,480-receipt
+repeat and matching ARM build remain unlaunched.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
