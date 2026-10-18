@@ -3,6 +3,29 @@
 **Status: active; production readiness is not established.** Reviewed on
 18 October 2026.
 
+## Current state
+
+The latest accepted Linux build combines FIPS runtime `ab2b9246`, SDK `8855afe`
+and CDK `bb9b87d8`. All four mint tests pass, including the original sparse-proof
+payout/export case. This acceptance does not include sustained forwarding under
+large-history pressure or matching router/Android artifacts.
+
+The preliminary capacity probe still rejects its first onward channel at the
+unchanged 20 MiB limit. Its incoming payout succeeds; all 3,072 original test sats
+are independently reconciled as spendable, with no unfinished financial owners.
+An isolated SDK candidate replaces the unconditional 4 MiB activity reservation
+with completion sizing from retained entries, original send records and possible
+import receipts. Full SDK verification and integration remain pending.
+
+The next acceptance sequence is: qualify that SDK candidate, rebuild the ordinary
+Linux relay, pass the capacity probe and genuine 5,480-receipt workload, then
+qualify the same graph on the intended devices. Physical mobile encounter/rejoin,
+natural Android deep idle and the remaining contract/resource review are also
+open. The [acceptance checklist](#acceptance-checklist) defines the full scope;
+earlier results below apply to their recorded builds.
+
+## Implementation and recovery evidence
+
 The preceding accepted native artifacts combine FIPS runtime `ab2b9246`, SDK `72b3bb8`,
 CDK `b1265929` and Spilman `669fbdd943`. Send confirmation and abandoned-funding
 recovery now share a proof-count ceiling capped by the request's maximum debit.
@@ -561,7 +584,7 @@ Current implementation and deployment boundaries:
 - The Android app embeds the same service and has customer and transit evidence.
   It remains an arm64 bench app, not a production wallet or general Internet VPN.
   The rebuilt capacity-limited app passes controlled foreground/background and
-  forced-idle transit on the current graph; earlier cost observations retain their
+  forced-idle transit on its recorded graph; earlier cost observations retain their
   original builds.
   Natural idle and physical mobility remain open. Outstanding acceptance below
   prevents treating it as a qualified production release.
