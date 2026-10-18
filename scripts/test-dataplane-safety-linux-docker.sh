@@ -67,8 +67,13 @@ DEFAULT_FILTERS=(
 )
 
 if [[ "$#" -gt 0 ]]; then
+  # Explicit filters follow Cargo/libtest substring semantics. The ownership
+  # runner supplies broad groups such as _own and dataplane_owner_fairness_.
+  FILTER_MODE=substring
   FILTERS=("$@")
 else
+  # Keep the curated safety list strict so renamed or ambiguous cases fail.
+  FILTER_MODE=exact
   FILTERS=("${DEFAULT_FILTERS[@]}")
 fi
 
@@ -100,20 +105,32 @@ docker run --rm \
       echo "failed to resolve the nvpn-fips-core library test binary" >&2
       exit 1
     fi
-    test_list="$($test_bin --list --format terse)"
+    filter_mode="$1"
+    shift
+    test_list="$("$test_bin" --list --format terse)"
+    selected=()
     for filter in "$@"; do
       matches=()
       while IFS= read -r line; do
+        [[ "$line" == *": test" ]] || continue
         test_name="${line%: test}"
-        if [[ "$test_name" == "$filter" || "$test_name" == *"::$filter" ]]; then
+        if [[ "$filter_mode" == substring && "$test_name" == *"$filter"* ]] \
+          || [[ "$filter_mode" == exact \
+            && ("$test_name" == "$filter" || "$test_name" == *"::$filter") ]]; then
           matches+=("$test_name")
         fi
       done <<<"$test_list"
-      if [[ "${#matches[@]}" -ne 1 ]]; then
+      if [[ "${#matches[@]}" -eq 0 ]]; then
+        echo "filter matched no tests: $filter" >&2
+        exit 1
+      fi
+      if [[ "$filter_mode" == exact && "${#matches[@]}" -ne 1 ]]; then
         echo "filter must resolve to exactly one test: $filter (${#matches[@]} matches)" >&2
         exit 1
       fi
-      echo "--- ${matches[0]} ---"
-      "$test_bin" --exact "${matches[0]}"
+      selected+=("${matches[@]}")
     done
-  ' bash "${FILTERS[@]}"
+    # Multiple exact filters are ORed by libtest, which also runs overlapping
+    # selections only once. Keep execution serial as in the old per-test loop.
+    "$test_bin" --exact --test-threads=1 "${selected[@]}"
+  ' bash "$FILTER_MODE" "${FILTERS[@]}"
