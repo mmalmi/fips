@@ -3,7 +3,7 @@
 **Status: active; production readiness is not established.** Reviewed on
 18 October 2026.
 
-The next native candidate combines FIPS runtime `ab2b9246`, SDK `6052d7a`,
+The latest native candidate combines FIPS runtime `ab2b9246`, SDK `6052d7a`,
 CDK `b1265929` and Spilman `669fbdd943`. The SDK reserves 512 KiB for the bounded
 proof-history reference journal while retaining the separate 4 MiB proof-payload
 allowance. The maximum-shape regression fails before the fix and passes afterward.
@@ -38,6 +38,15 @@ limit. SDK `6052d7a` replaces that reservation with the independently verified
 512 KiB journal bound. Evidence remains in `work/receiver-history-native/sdk-final-4`;
 the failed forwarding verdict is unchanged until the genuine-history run passes
 with the new SDK. No new hardware run is accepted.
+
+The repeat on SDK `6052d7a` also creates all 5,480 genuine receipts within the
+unchanged 20 MiB allowance, but opening the first onward channel still fails with
+`wallet_storage_capacity`. It does not reach paid forwarding. An independent audit
+of the stopped originals matches all 3,072 test sats to spendable wallet proofs;
+one unfunded controller intent remains unfinished, so financial recovery is not
+marked complete. All 124 original files and the failed verdict are preserved in
+`work/receiver-history-native/run-3`. The smaller journal reservation is verified,
+but another capacity cause remains under investigation.
 
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
