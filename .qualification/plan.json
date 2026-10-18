@@ -1,29 +1,14 @@
 {
-  "name": "nostr-pubsub-fips",
-  "version": "0.5.34",
-  "archive": "nostr-pubsub-fips-0.5.34.crate",
-  "sha256": "835fe4d5cd9678a2daab5ac59a372b55bd403e67e90a16211bab343c24e4df7c",
-  "sourceCommit": "522bdd5acc330cc141589929ff7a51b68adc34c0",
+  "name": "hashtree-embedded",
+  "version": "0.2.94",
+  "archive": "hashtree-embedded-0.2.94.crate",
+  "sha256": "39872e2351ec599d6b04c5ccb564470f34ea7769ebfeb8b8746a1d6d7064b3c2",
+  "sourceCommit": "7cd139aff770e44d6635f14ccfb498dc53d14ab0",
   "commands": [
     [
       "cargo",
-      "test",
-      "--locked",
-      "--target",
-      "x86_64-unknown-linux-gnu",
-      "--",
-      "--test-threads=1"
-    ],
-    [
-      "cargo",
-      "clippy",
-      "--locked",
-      "--target",
-      "x86_64-unknown-linux-gnu",
-      "--all-targets",
-      "--",
-      "-D",
-      "warnings"
+      "package",
+      "--locked"
     ]
   ]
 }
