@@ -93,7 +93,13 @@ pub struct PacketBuffer {
 }
 
 impl PacketBuffer {
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+    ))]
     fn pooled(data: Vec<u8>, pool: PacketBufferPool) -> Self {
         Self {
             data,
@@ -375,7 +381,13 @@ pub struct PacketTx {
     bulk: Sender<ReservedPacketQueueItem>,
     fast_ingress: Option<Arc<dyn PacketFastIngressSink>>,
     batch_pool: PacketBatchPool,
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+    ))]
     buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
     /// this instead of touching an empty priority mpsc once per data packet.
@@ -681,7 +693,13 @@ impl PacketBatchPool {
 }
 
 impl PacketBufferPool {
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+    ))]
     fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Vec::new())),
@@ -689,7 +707,13 @@ impl PacketBufferPool {
         }
     }
 
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+    ))]
     fn take(&self, capacity: usize) -> Vec<u8> {
         if self.available.load(Relaxed) > 0 {
             let buffer = {
@@ -768,26 +792,29 @@ impl PacketBufferPool {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn fresh_recv_buffer(size: usize) -> Vec<u8> {
-    vec![0u8; size]
-}
-
-#[cfg(all(any(test, target_os = "linux"), not(target_os = "macos")))]
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+))]
 fn fresh_recv_buffer(size: usize) -> Vec<u8> {
     Vec::with_capacity(size)
 }
 
-#[cfg(target_os = "macos")]
-fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
-    buffer.resize(size, 0);
-}
-
-#[cfg(all(any(test, target_os = "linux"), not(target_os = "macos")))]
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+))]
 fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
     buffer.clear();
+    // reserve's argument is additional to length, not existing capacity.
     if buffer.capacity() < size {
-        buffer.reserve(size.saturating_sub(buffer.capacity()));
+        buffer.reserve(size);
     }
 }
 
@@ -807,7 +834,12 @@ impl PacketBatch {
         self.packets.is_empty()
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    ))]
     pub(crate) fn as_slice(&self) -> &[ReceivedPacket] {
         &self.packets
     }

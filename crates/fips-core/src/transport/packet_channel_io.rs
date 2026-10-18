@@ -21,12 +21,24 @@ impl PacketTx {
         self.batch_pool.take(capacity)
     }
 
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+    ))]
     pub(crate) fn recv_buffer(&self, capacity: usize) -> Vec<u8> {
         self.buffer_pool.take(capacity)
     }
 
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        test,
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+    ))]
     pub(crate) fn packet_buffer(&self, data: Vec<u8>) -> PacketBuffer {
         PacketBuffer::pooled(data, self.buffer_pool.clone())
     }
@@ -504,7 +516,13 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
             bulk: bulk_tx,
             fast_ingress: None,
             batch_pool: PacketBatchPool::new(),
-            #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+            #[cfg(any(
+                test,
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "android",
+            ))]
             buffer_pool: PacketBufferPool::new(),
             priority_queued_packets: Arc::clone(&priority_queued_packets),
             priority_reserved_packets: Arc::clone(&priority_reserved_packets),

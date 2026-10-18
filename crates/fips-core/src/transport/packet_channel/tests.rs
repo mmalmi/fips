@@ -130,6 +130,19 @@ fn packet_buffer_batch_recycle_preserves_pool_accounting() {
     assert!(reused.iter().any(|buffer| buffer.as_ptr() == second_ptr));
 }
 
+#[test]
+fn recycled_receive_buffer_reserves_the_full_requested_capacity() {
+    let (tx, _rx) = packet_channel(1);
+    let buffer = tx.recv_buffer(1024);
+    drop(tx.packet_buffer(buffer));
+    assert_eq!(packet_buffer_pool_cached_len(&tx.buffer_pool), 1);
+
+    let larger = tx.recv_buffer(1500);
+    assert!(larger.capacity() >= 1500);
+    assert!(larger.is_empty(), "kernel receive initializes spare capacity");
+    assert_eq!(packet_buffer_pool_cached_len(&tx.buffer_pool), 0);
+}
+
 fn queued_packets(tx: &PacketTx) -> usize {
     tx.queued_packets.load(Relaxed)
 }
