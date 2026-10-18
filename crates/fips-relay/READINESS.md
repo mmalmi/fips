@@ -3,19 +3,22 @@
 **Status: active; production readiness is not established.** Reviewed on
 18 October 2026.
 
-The current native candidate combines FIPS runtime `ab2b9246`, SDK `3627f29`,
-CDK `b1265929` and Spilman `669fbdd943`. Offline wallet commands now honor the
-configured mint-request pacing and expose recovery of original operations.
-Completed native receives release unused completion allowance without removing
-retained receipts or proof charges; a failed release rolls back with the journal.
-The SDK also removes duplicate proof collection during reserved receiver handoff.
-Six focused FIPS checks and 201 SQL wallet tests pass. The SDK's 448-test workspace
-gate used the preceding CDK graph and does not qualify this combined graph alone.
+The next native candidate combines FIPS runtime `ab2b9246`, SDK `6052d7a`,
+CDK `b1265929` and Spilman `669fbdd943`. The SDK reserves 512 KiB for the bounded
+proof-history reference journal while retaining the separate 4 MiB proof-payload
+allowance. The maximum-shape regression fails before the fix and passes afterward.
+On this exact SDK/CDK graph, all 449 workspace tests, strict lint, formatting and
+size checks pass; three existing optional measurements remain ignored. The focused
+full-capacity receive-recovery check also passes, including release of unused
+completion allowance while retaining proof and receipt charges.
 
-The ordinary Linux daemon, isolated test mint and receiver-history executable
-build on the combined graph; the ordinary daemon excludes simulation features.
-Genuine large-history forwarding, matching device acceptance and final common-graph
-verification remain outstanding. Build and fix evidence is retained in
+Offline wallet commands honor configured mint-request pacing and recover original
+operations. The SDK also avoids duplicate proof collection during reserved receiver
+handoff. Six focused FIPS checks and 201 SQL wallet tests pass on their recorded
+graphs. The preceding ordinary Linux daemon, isolated test mint and receiver-history
+executable build with SDK `3627f29`; the ordinary daemon excludes simulation features.
+Matching builds for SDK `6052d7a`, genuine large-history forwarding and device
+acceptance remain outstanding. Build and fix evidence is retained in
 `work/receiver-history-native/build-2`, `work/offline-wallet-recovery`,
 `work/cdk-receive-completion` and `work/reserved-receiver-handoff`.
 The device and performance results below retain their recorded source graphs.
@@ -29,9 +32,11 @@ unfunded intent without starting the mint or requesting new funding. Original
 mint files, wallet proofs and all 5,480 receipts remain exact. The failed verdict
 and recovery are retained in `work/receiver-history-native/run-2`.
 The allocation audit confirms completed native receives hold no unused allowance;
-the proof-history journal still reserves the full 4 MiB proof-payload limit.
-A separate, smaller bound for its fixed-width references is under regression and
-workspace verification. Neither that candidate nor another hardware run is accepted.
+the failed run's proof-history journal still reserved the full 4 MiB proof-payload
+limit. SDK `6052d7a` replaces that reservation with the independently verified
+512 KiB journal bound. Evidence remains in `work/receiver-history-native/sdk-final-4`;
+the failed forwarding verdict is unchanged until the genuine-history run passes
+with the new SDK. No new hardware run is accepted.
 
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
