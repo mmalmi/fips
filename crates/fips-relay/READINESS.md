@@ -17,6 +17,15 @@ artifacts are verified. The genuine-history repeat completes two paid channels,
 then refuses the third opening at the unchanged wallet limit. It does not reach
 the cleanup/forwarding observation; all original test funds are reconciled below.
 
+A newer local CDK component, `f08ccf4b`, releases unused completion space when
+claimed or reclaimed sends finish. Retained proofs and receipts remain charged;
+nonterminal sends keep their original allowance. One parameterized regression
+covers transaction rollback, reopen and repeated deletion at full capacity: it
+fails on the prior component and passes with the fix. All 202 SQL wallet tests,
+strict lint and full workspace formatting pass. Evidence is retained in
+`work/cdk-send-terminal/gate-1`. This fix does not by itself close the larger
+custody-reservation peak; matching relay builds and device acceptance are pending.
+
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
 handoff. Six focused FIPS checks and 201 SQL wallet tests pass on their recorded
