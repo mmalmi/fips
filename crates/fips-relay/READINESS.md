@@ -67,9 +67,15 @@ Evidence remains in `work/receiver-history-native/build-6` and `build-7`.
 
 The next native run collects all 959 original payout proofs, then fails its first
 1,024-sat final export despite a 2,113-sat wallet balance. CDK's selection by repeated
-halving misses the fixture's 960-sat denominations. A focused regression fails on
-the prior code and passes when the existing selection routine can use the full
-balance; broader dependency checks are in progress. A stopped-copy audit accounts
+halving misses the fixture's 960-sat denominations. CDK `bb9b87d8` lets the existing
+selection routine use the full balance while preserving unique coins. Both the
+sparse-denomination and duplicate-balance regressions fail before the fix and pass
+afterward. All 560 wallet tests and 454 SDK tests pass; three existing optional
+measurements remain ignored. Strict lint, formatting and the wallet-only build
+pass. A separate pre-existing recovery test now supplies its required receive
+identity; production recovery validation is unchanged. The component is integrated
+locally, with exact sources and evidence in `work/cdk-sparse-selection/gate-6`.
+Matching relay and device acceptance remain pending. A stopped-copy audit accounts
 for all 3,072 test sats as spendable, verifies the original payout is spent and
 finds no buyer send preparation. The issuer's spent export and the buyer's
 unprepared request still need reconciliation. The failed verdict is preserved in
