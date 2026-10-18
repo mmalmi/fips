@@ -90,9 +90,11 @@ The failed verdict is preserved in
 The preliminary capacity probe on these artifacts completes its incoming payout,
 then rejects the first onward opening at the unchanged 20 MiB wallet limit. The
 stopped wallet charges 19,751,093 bytes, including a 4 MiB activity-history
-reservation, before completing the funding-recovery reservation. All 3,072 test
-sats are independently accounted for as spendable; one unfunded controller
-request still needs reconciliation. This run has no genuine historical receipts
+reservation, before completing the funding-recovery reservation. Ordinary
+controller recovery cancels the one unfunded request without starting the mint
+or requesting new funding. An independent audit conserves all 3,072 test sats as
+spendable, preserves the original proofs and mint files, and finds no unfinished
+financial owners. This run has no genuine historical receipts
 and does not reach the paid cleanup/progress observation. Its failed verdict and
 originals remain in `work/receiver-history-native/capacity-1`. The 5,480-receipt
 repeat and matching ARM build remain unlaunched.
