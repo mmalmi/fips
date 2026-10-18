@@ -2,6 +2,8 @@
 
 ## nvpn-webrtc-ice 0.17.3 - 2026-10-18
 
+- Retain upstream 0.17.2 candidate cleanup before startup and on repeated close.
+
 - Use the WebRTC 0.17.2 utility and mDNS lifecycle fixes, preserving native socket protection, consent behavior, and allocation-free candidate comparisons.
 
 ## nvpn-webrtc-ice 0.17.2 - 2026-10-18

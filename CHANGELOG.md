@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unicast response handling, and contiguous packet encoding, while preserving
   native socket protection before network traffic.
 - Keep the ICE consent and allocation-free candidate comparison fixes from 0.4.105.
+- Retain upstream ICE cleanup for candidates closed before startup or more than
+  once, closing the connection before its relay client.
 
 ### Dependencies
 

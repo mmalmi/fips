@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod candidate_close_test;
+#[cfg(test)]
 mod candidate_equality_test;
 #[cfg(test)]
 mod candidate_pair_test;
