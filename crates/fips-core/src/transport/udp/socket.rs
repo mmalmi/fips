@@ -22,7 +22,7 @@ use tracing::warn;
 
 /// Maximum number of ready datagrams drained in one receive turn.
 #[cfg(any(
-    test,
+    all(test, unix),
     target_os = "linux",
     target_os = "macos",
     target_os = "ios",

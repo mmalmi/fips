@@ -59,13 +59,19 @@ const CONFIGURED_SOCKET_REBIND_RETRY_DELAYS: [Duration; 4] = [
 #[cfg(any(target_os = "linux", test))]
 const LINUX_UDP_RCVBUF_ERRORS_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Datagrams drained per UDP receive syscall.
+/// Datagrams drained per UDP receive turn.
 ///
 /// WireGuard-go and Tailscale use 128 as their ideal userspace packet batch,
 /// and the current measured bottleneck is pre-`PacketRx` dequeue backlog, so a
 /// wider receive batch reduces syscall/channel-item churn without changing the
 /// priority/bulk lane contract at the packet channel boundary.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    test
+))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
 #[cfg(target_os = "linux")]
