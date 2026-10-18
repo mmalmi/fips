@@ -38,8 +38,12 @@ both history-retirement cohorts. Its final cleanup/traffic wait times out; this
 is a failed workload, not sustained-forwarding acceptance. The stopped original
 wallet/mint audit independently reconciles all 3,072 test sats as spendable with
 no unresolved financial operations. The harness scans unrelated receipt history
-while holding the wallet writer; a focused observation correction is under
-verification. The original failure and the earlier partial recovery remain
+while holding the wallet writer. The corrected observer reads only the payout's
+proofs and saves timeout observations; formatting, size, strict lint and the
+focused build pass in `work/receiver-history-native/build-13`. The unchanged
+runtime, mint and bench binaries are reused from build-11. The same complete
+workload is running again in `work/receiver-history-native/run-7` with unchanged
+limits. The original failure and the earlier partial recovery remain
 retained. Acceptance still requires the complete workload to pass, then
 qualification of the same graph on the intended devices. Physical mobile encounter/rejoin,
 natural Android deep idle and the remaining contract/resource review are also
