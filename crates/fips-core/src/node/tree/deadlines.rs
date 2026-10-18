@@ -16,6 +16,32 @@ fn fixture(last_sent: u64) -> (Node, NodeAddr) {
 }
 
 #[tokio::test]
+async fn failed_initial_tree_send_arms_a_bounded_retry() {
+    let (mut node, addr) = fixture(0);
+    let before = Node::now_ms();
+    assert!(node.send_tree_announce_to_peer(&addr).await.is_err());
+    assert!(node.peers.get(&addr).unwrap().has_pending_tree_announce());
+    let due = node.pending_tree_announce_deadline_ms().unwrap();
+    assert!(due >= before + node.config.node.tick_interval_secs * 1_000);
+    node.send_pending_tree_announces().await;
+    assert_eq!(
+        node.stats().tree.send_failed,
+        1,
+        "persistent failure must not spin"
+    );
+    assert_eq!(
+        node.peers.get(&addr).unwrap().last_tree_announce_sent_ms(),
+        0
+    );
+    node.send_due_tree_announces().await;
+    assert_eq!(
+        node.stats().tree.send_failed,
+        2,
+        "maintenance retries the retained update"
+    );
+}
+
+#[tokio::test]
 async fn rate_limited_send_arms_only_pending_deadline() {
     let last = Node::now_ms() + 60_000;
     let (mut node, addr) = fixture(last);
@@ -84,7 +110,7 @@ async fn pending_dispatch_leaves_periodic_refresh_on_maintenance() {
     // fast path above must not make this attempt just because refresh is due.
     node.send_due_tree_announces().await;
     assert_eq!(node.stats().tree.send_failed, 1);
-    assert_eq!(node.pending_tree_announce_deadline_ms(), None);
+    assert!(node.pending_tree_announce_deadline_ms().is_some());
 }
 
 #[tokio::test]

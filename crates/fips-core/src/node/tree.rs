@@ -154,8 +154,8 @@ impl Node {
 
     /// Send a TreeAnnounce to a specific peer, respecting rate limits.
     ///
-    /// If the peer is rate-limited, the announce is marked pending for
-    /// delivery when that peer's rate-limit interval expires.
+    /// Rate-limited or failed announces remain pending. Failed sends retry
+    /// on the existing maintenance cadence without advancing the send time.
     pub(super) async fn send_tree_announce_to_peer(
         &mut self,
         peer_addr: &NodeAddr,
@@ -232,6 +232,8 @@ impl Node {
             .await
         {
             self.stats_mut().tree.send_failed += 1;
+            self.mark_tree_announce_pending(peer_addr);
+            self.defer_tree_announce_retry();
             return Err(e);
         }
 
