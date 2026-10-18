@@ -22,16 +22,18 @@ wallet recovery completes the spent send and retires all four paid channels;
 an independent audit conserves all 3,072 test sats and the 128-sat lifetime debit.
 The unfunded fifth request remains pending: its first wallet-record write failed,
 and cleanup removed the admission needed to prove cancellation. Missing evidence
-is still treated as uncertain. The regression reproduces this loss of evidence;
-the correction passes all five admission-capacity tests, formatting and strict
-lint. Full SDK verification is running. The original profile stays frozen with
-its pending controller record and will not be reused. This failed probe retains the old
+is still treated as uncertain. The regression reproduces this loss of evidence.
+SDK `715969e` preserves the original admission when the first wallet write fails;
+all 458 workspace tests pass, with three existing optional tests ignored.
+Formatting, strict lint and the wallet-only build also pass, and the verified
+fix is integrated locally. The original profile stays frozen with its pending
+controller record and will not be reused. This failed probe retains the old
 13,983,529-byte starting charge with synthetic ballast; it does not establish the
 new charge or behavior of the genuine 5,480-receipt workload, which has not yet
 been rerun with this SDK.
 
-Next, accept and integrate the rejected-admission correction, then rebuild the
-ordinary relay. The original failed profile and partial recovery remain retained;
+The ordinary relay is rebuilding with SDK `715969e`; its checks include the four
+existing controller-cancellation cases. The original failed profile and partial recovery remain retained;
 the next workload uses fresh profiles within the existing greenfield scope.
 Acceptance still requires the unchanged
 5,480-receipt workload at 20 MiB, then qualification of the same graph on the
@@ -51,7 +53,7 @@ results below provide regression evidence, not acceptance of a newer binary.
 | Latest native artifacts, `work/receiver-history-native/build-10` | Ordinary Linux daemon, test mint and both test executables pass formatting, size, strict lint and four mint tests on SDK `16a80cee`. The original sparse-proof payout/export case passes. | Sustained forwarding under history pressure and matching device artifacts are pending. |
 | Dependency checks, `work/cdk-sparse-selection/gate-6` | CDK `bb9b87d8` passes 560 wallet tests; SDK `8855afe` passes 454 workspace tests, with three existing optional measurements ignored. Both selection regressions fail before the fix and pass afterward; lint, formatting and the wallet-only build pass. | These checks qualify dependencies, not the complete relay workload. |
 | Activity completion space, `work/activity-storage/gate-9` | SDK `16a80cee` has 457 passing workspace tests and three existing optional tests ignored; lint, formatting, source size, documentation and the wallet-only build pass. Coverage combines 378 unchanged passing tests from gate 6 with 79 rerun or previously unreached tests. The corrected fault targets the refund owner's release; production code is unchanged between those runs. | The original full invocation remains recorded as failed. SDK verification and local integration are complete; relay history-pressure and device qualification remain pending. |
-| Rejected first wallet write, `work/rejected-admission/gate-1` through `gate-3` | The new regression fails before the correction with missing cancellation evidence. All five admission-capacity tests pass with the fix; formatting and strict lint pass. | The full SDK suite is still running. The candidate is not integrated, and it cannot reconstruct the erased admission from the old failed profile. |
+| Rejected first wallet write, `work/rejected-admission/gate-1` through `gate-3` | The new regression fails before the correction with missing cancellation evidence. SDK `715969e` passes the complete workspace invocation: 458 tests, zero failures and three existing optional tests ignored. Formatting, strict lint and the wallet-only build pass; the exact verified fix is integrated locally. | Relay and device requalification remain pending. The fix cannot reconstruct the erased admission from the old failed profile. |
 | Failed native preparations, `work/receiver-history-native/build-6` through `build-8` | Original recovery audits reconcile all 3,072 test sats from each run without new funding. The original mint policy and financial evidence remain retained. | Token-size, collection-time and sparse-selection failures retain their failed verdicts. The later build does not change them. |
 | Latest capacity probe, `work/receiver-history-native/capacity-2` | Incoming payout and four onward channel settlements succeed at 20 MiB. Original recovery completes the native send and retires four paid channels. The independent partial-recovery audit conserves 3,072 spendable test sats, unchanged mint financial records and the 128-sat lifetime debit. | The fifth channel is refused and its unfunded controller request remains pending after its admission record was removed. Synthetic ballast retains the old starting charge and does not qualify genuine receipt history or sustained forwarding. The preceding capacity-1 failure remains fully recovered. |
 | Genuine history, `work/receiver-history-native/run-2` through `run-4` | All 5,480 original receipts remain preserved. Separate recovery audits reconcile all 3,072 test sats from each failed run. The latest completes two paid channels before the third opening is refused. | The complete cleanup/forwarding observation has not passed. Replacing genuine receipts with ballast or raising capacity would not close it. |
