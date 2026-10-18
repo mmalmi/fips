@@ -1,9 +1,9 @@
 {
-  "name": "nvpn-fips-tcp-endpoint",
-  "version": "0.2.41",
-  "archive": "nvpn-fips-tcp-endpoint-0.2.41.crate",
-  "sha256": "a91989d7f4d8209069ada185e31b307cae15a6d8e6ebbe33613199af9273a885",
-  "sourceCommit": "332f7f5a971dbf8341750f6e500f7ad30bca4bb8",
+  "name": "nostr-pubsub-fips",
+  "version": "0.5.34",
+  "archive": "nostr-pubsub-fips-0.5.34.crate",
+  "sha256": "835fe4d5cd9678a2daab5ac59a372b55bd403e67e90a16211bab343c24e4df7c",
+  "sourceCommit": "522bdd5acc330cc141589929ff7a51b68adc34c0",
   "commands": [
     [
       "cargo",
