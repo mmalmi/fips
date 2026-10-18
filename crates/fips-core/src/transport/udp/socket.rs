@@ -38,6 +38,7 @@ const RECV_BATCH_SIZE: usize = super::UDP_RECV_BATCH_SIZE;
 mod platform {
     include!("socket_unix_types.rs");
     include!("socket_unix_raw.rs");
+    include!("socket_unix_portable.rs");
     include!("socket_unix_io.rs");
 }
 

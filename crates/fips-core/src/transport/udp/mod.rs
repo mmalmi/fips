@@ -100,7 +100,12 @@ pub(crate) trait UdpPayloadBatch {
 
     #[cfg(any(
         test,
-        not(any(target_os = "linux", target_os = "macos", target_os = "android"))
+        not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))
     ))]
     fn copy_payload_into(&self, index: usize, out: &mut Vec<u8>) {
         out.clear();
@@ -143,7 +148,12 @@ impl UdpSendSnapshot {
         Ok(())
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    ))]
     pub(crate) async fn send_payload_batch_to<B>(
         &self,
         payloads: &B,
@@ -189,7 +199,12 @@ impl UdpSendSnapshot {
         failed
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
     pub(crate) async fn send_payload_batch_to<B>(
         &self,
         payloads: &B,
@@ -204,7 +219,12 @@ impl UdpSendSnapshot {
 
     #[cfg(any(
         test,
-        not(any(target_os = "linux", target_os = "macos", target_os = "android"))
+        not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))
     ))]
     async fn send_payload_batch_scalar_to<B>(&self, payloads: &B, remote_addr: SocketAddr) -> usize
     where

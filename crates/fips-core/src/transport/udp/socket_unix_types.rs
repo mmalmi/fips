@@ -11,7 +11,7 @@
     /// as the Linux path.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     const SEND_BATCH_SIZE: usize = 256;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios", all(test, not(any(target_os = "linux", target_os = "android")))))]
     const SEND_BATCH_SIZE: usize = 64;
     #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_SEGMENTS: usize = 64;

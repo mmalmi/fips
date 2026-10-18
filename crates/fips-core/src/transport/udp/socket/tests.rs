@@ -1,12 +1,12 @@
 use super::*;
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 #[derive(Debug)]
 struct TestPayloadBatch {
     payloads: Vec<Vec<Vec<u8>>>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 impl TestPayloadBatch {
     fn new(payloads: Vec<Vec<&[u8]>>) -> Self {
         Self {
@@ -18,7 +18,7 @@ impl TestPayloadBatch {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
     fn len(&self) -> usize {
         self.payloads.len()
@@ -45,19 +45,19 @@ impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 #[tokio::test]
 async fn scalar_batch_send_preserves_successful_prefix() {
     assert_batch_preserves_successful_prefix(false).await;
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 #[tokio::test]
 async fn native_batch_send_preserves_successful_prefix() {
     assert_batch_preserves_successful_prefix(true).await;
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 async fn assert_batch_preserves_successful_prefix(native: bool) {
     use crate::transport::udp::{UdpSendSnapshot, UdpStats};
     use tokio::time::{Duration, timeout};
@@ -356,7 +356,7 @@ async fn stalled_control_send_hits_total_deadline() {
     assert!(matches!(result, Err(TransportError::Timeout)));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 #[tokio::test]
 async fn send_batch_to_sends_vectored_payloads() {
     use crate::transport::udp::UdpPayloadBatch;
@@ -458,7 +458,7 @@ async fn recv_batch_writes_into_vec_spare_capacity() {
     assert_eq!(gro_segment_sizes[0], 0);
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
 #[tokio::test]
 async fn native_batch_send_respects_offset_and_empty_tail() {
     use crate::transport::udp::UdpPayloadBatch;

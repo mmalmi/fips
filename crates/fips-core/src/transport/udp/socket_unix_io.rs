@@ -90,6 +90,13 @@
             data: &[u8],
             dest: &SocketAddr,
         ) -> Result<usize, TransportError> {
+            // UDP sockets are normally writable. Try the nonblocking syscall
+            // before allocating a timeout and entering reactor readiness state.
+            match self.inner.get_ref().send_to(data, dest) {
+                Ok(sent) => return Ok(sent),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(TransportError::SendFailed(error.to_string())),
+            }
             bounded_control_send(async {
                 loop {
                     let mut guard = self.inner.writable().await.map_err(|e| {
@@ -194,7 +201,7 @@
 
         /// Push same-destination datagrams to the kernel in batches without
         /// building a per-packet address tuple batch first.
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "android"))]
         pub async fn send_batch_to<B>(
             &self,
             payloads: &B,
@@ -204,13 +211,19 @@
         where
             B: crate::transport::udp::UdpPayloadBatch + ?Sized,
         {
-            // Keep Android's borrowed scalar fast path for an ordinary single
+            // Keep the borrowed scalar fast path for an ordinary single
             // packet; only fragmented payloads need vectors in that case.
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             if payloads.len().saturating_sub(offset) == 1
                 && let Some(data) = payloads.contiguous_payload(offset)
             {
                 return self.send_to(data, &dest).await.map(|_| 1);
+            }
+
+            match self.inner.get_ref().send_batch_to(payloads, offset, dest) {
+                Ok(sent) => return Ok(sent),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(TransportError::SendFailed(error.to_string())),
             }
 
             let send = async {
@@ -228,11 +241,11 @@
                     }
                 }
             };
-            // Android previously used bounded scalar sends. Keep that bound
+            // Mobile previously used bounded scalar sends. Keep that bound
             // when sending an already-collected batch, including readiness waits.
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             return bounded_control_send(send).await;
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             send.await
         }
     }
