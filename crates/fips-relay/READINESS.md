@@ -3,20 +3,23 @@
 **Status: active; production readiness is not established.** Reviewed on
 18 October 2026.
 
-The latest native candidate combines FIPS runtime `ab2b9246`, SDK `6052d7a`,
-CDK `b1265929` and Spilman `669fbdd943`. The SDK reserves 512 KiB for the bounded
-proof-history reference journal while retaining the separate 4 MiB proof-payload
-allowance. The maximum-shape regression fails before the fix and passes afterward.
-On this exact SDK/CDK graph, all 449 workspace tests, strict lint, formatting and
-size checks pass; three existing optional measurements remain ignored. The focused
-full-capacity receive-recovery check also passes, including release of unused
-completion allowance while retaining proof and receipt charges.
+The current candidate combines FIPS runtime `ab2b9246`, SDK `72b3bb8`,
+CDK `b1265929` and Spilman `669fbdd943`. Send confirmation and abandoned-funding
+recovery now share a proof-count ceiling capped by the request's maximum debit.
+The 32-sat funding regression fails before the fix and fits five MiB of recovery
+headroom afterward, without reducing the future keyset allowance. The 512 KiB
+proof-history reference journal and separate 4 MiB proof-payload allowance remain.
+All 451 workspace tests and strict lint pass; three existing optional measurements
+remain ignored. Full formatting passes after formatter-only cleanup in three
+existing test files; runtime sources are byte-identical to the passing suite.
+Size checks pass. Matching relay artifacts and genuine large-history forwarding
+remain pending on this SDK.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
 handoff. Six focused FIPS checks and 201 SQL wallet tests pass on their recorded
 graphs. Matching ordinary Linux daemon, isolated test mint and receiver-history
-executable builds now pass on SDK `6052d7a` and CDK `b1265929`. Original compiler
+executable builds passed on the preceding SDK `6052d7a` and CDK `b1265929`. Original compiler
 records, artifact hashes and CLI checks are verified; the ordinary daemon excludes
 simulation features. Genuine large-history forwarding and device acceptance remain
 outstanding. Build and fix evidence is retained in
@@ -47,8 +50,9 @@ ordinary recovery retires the one unfunded controller intent without starting th
 mint or new funding. The post-recovery audit preserves all original wallet proofs,
 5,480 receipts and mint files, with no unresolved financial owners. All 124 failed-run
 originals, the post-recovery archive and the failed verdict are preserved in
-`work/receiver-history-native/run-3`. The smaller journal reservation is verified,
-but another capacity cause remains under investigation.
+`work/receiver-history-native/run-3`. This failure motivated the current proof-count
+fix. The failed forwarding verdict remains unchanged until the complete scenario
+passes with the corrected SDK.
 
 SDK `03e6b50` reserves the existing shared activity journal before receiving a
 local token into a capacity-limited wallet. The preceding implementation could
