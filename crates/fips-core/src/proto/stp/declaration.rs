@@ -137,10 +137,10 @@ impl ParentDeclaration {
             .as_ref()
             .ok_or(TreeError::InvalidSignature(self.node_addr))?;
 
-        let secp = secp256k1::Secp256k1::verification_only();
         let hash = self.signing_hash();
 
-        secp.verify_schnorr(signature, &hash, pubkey)
+        secp256k1::SECP256K1
+            .verify_schnorr(signature, &hash, pubkey)
             .map_err(|_| TreeError::InvalidSignature(self.node_addr))
     }
 

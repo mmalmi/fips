@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn signed_declarations_keep_key_and_message_validation_with_shared_context() {
+    let identities = [
+        crate::Identity::from_secret_bytes(&[1; 32]).unwrap(),
+        crate::Identity::from_secret_bytes(&[2; 32]).unwrap(),
+    ];
+    for (index, identity) in identities.iter().enumerate() {
+        let mut declaration =
+            ParentDeclaration::new(*identity.node_addr(), make_node_addr(3), 1, 1000);
+        assert!(declaration.verify(&identity.pubkey()).is_err());
+        declaration.sign(identity).unwrap();
+        assert!(declaration.verify(&identity.pubkey()).is_ok());
+        assert!(declaration.verify(&identities[1 - index].pubkey()).is_err());
+        let altered = ParentDeclaration::with_signature(
+            *identity.node_addr(),
+            make_node_addr(3),
+            2,
+            1000,
+            *declaration.signature().unwrap(),
+        );
+        assert!(altered.verify(&identity.pubkey()).is_err());
+    }
+}
+
+#[test]
 fn test_parent_declaration_new() {
     let node = make_node_addr(1);
     let parent = make_node_addr(2);
