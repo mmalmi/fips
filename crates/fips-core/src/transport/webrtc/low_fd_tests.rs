@@ -147,9 +147,15 @@ async fn initial_negotiation_stops_retransmitting_after_stop() {
     };
     let (mut transport, _rx) = new_transport(83, &identity, &config);
     transport.start_async().await.expect("start transport");
-    transport.connect_async(&identity_addr(&remote)).await.expect("begin negotiation");
+    transport
+        .connect_async(&identity_addr(&remote))
+        .await
+        .expect("begin negotiation");
     let _offer = take_link_negotiation(&mut transport, LinkNegotiationKind::Offer).await;
-    transport.stop_async().await.expect("stop pending negotiation");
+    transport
+        .stop_async()
+        .await
+        .expect("stop pending negotiation");
     wait_for_resource_quiescence(&[&transport]).await;
     transport.drain_link_negotiations(16);
     tokio::time::sleep(Duration::from_millis(600)).await;

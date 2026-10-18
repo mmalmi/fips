@@ -226,7 +226,11 @@ impl WebRtcRuntime {
         }
         let offer = result?;
         self.spawn_connect_timeout(
-            remote_addr, session_id, deadline, &pc, Some((remote_xonly, offer)),
+            remote_addr,
+            session_id,
+            deadline,
+            &pc,
+            Some((remote_xonly, offer)),
         );
         Ok(())
     }
@@ -773,7 +777,8 @@ impl WebRtcRuntime {
                 )
             })
         };
-        let Some((pending_session_id, pc, deadline, answer_already_started)) = pending_session else {
+        let Some((pending_session_id, pc, deadline, answer_already_started)) = pending_session
+        else {
             if self
                 .pool
                 .lock()
