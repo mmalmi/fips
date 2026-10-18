@@ -66,16 +66,28 @@ attempt is stopped early after measuring about two seconds per receipt, which
 cannot meet the inherited one-hour preparation allowance. Its immediate recovery
 retry encounters the still-finishing remote wallet owner. The original mint and
 profiles remain intact; a continuation returns the borrowed original and audits
-all 3,072 sats as spendable before collection. Collection is still running.
+all 3,072 sats as spendable before collection. All funds are now collected, native
+wallet recovery is complete, the original mint is stopped and router baselines
+are restored. Complete original profiles and mint records are archived. Removing
+the three idle recovery executables releases 78,180 KiB of router RAM-backed
+storage; no account directory is removed.
 
 The next driver allows six hours for hardware receipt preparation and eight hours
 for the case, retaining 5,480 receipts, 20 MiB storage and two-second live progress
 acceptance. Preparation deadlines remain checked between original transfers.
 Recovery now waits for the original remote wallet lock before retrying the saved
 request. All 64 focused Linux harness tests pass without skips, including the
-deadline recovery and real-lock waiting checks. The third attempt is prepared and
-requires the second attempt's completed original-fund collection before launch.
-No new device acceptance is claimed.
+deadline recovery and real-lock waiting checks. The third attempt is now running
+after the second attempt's completed original-fund collection and fresh device
+preflight. No new device acceptance is claimed.
+
+The candidate removes 338 lines belonging to the superseded synthetic-capacity
+diagnostic and its unused hooks/helper. The real-history fixture keeps its
+workload and assertions. Formatting, source size, strict lint, focused compilation,
+test inventory and the progress-observation regression pass in
+`work/cleanup-history-gate-2`. Production source is unchanged; run 8 remains
+evidence for its original build-14 executable, not a new execution of the cleaned
+test. The first cleanup gate's unused-import failure is retained separately.
 Physical mobile encounter/rejoin, natural Android deep idle and the remaining
 contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
 defines the full scope; earlier results below apply to their recorded builds.
