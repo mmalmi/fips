@@ -642,7 +642,7 @@ name = "fips-client-only-compat"
 version = "0.0.0"
 dependencies = [
  "nvpn-fips-core 0.4.101",
- "nvpn-fips-core 0.4.102",
+ "nvpn-fips-core 0.4.103",
  "tokio",
 ]
 
@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-core"
-version = "0.4.102"
+version = "0.4.103"
 dependencies = [
  "async-wsocket",
  "base64",
