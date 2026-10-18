@@ -13,12 +13,14 @@ large-history pressure or matching router/Android artifacts.
 The preliminary capacity probe still rejects its first onward channel at the
 unchanged 20 MiB limit. Its incoming payout succeeds; all 3,072 original test sats
 are independently reconciled as spendable, with no unfinished financial owners.
-An isolated SDK candidate replaces the unconditional 4 MiB activity reservation
-with completion sizing from retained entries, original send records and possible
-import receipts. Full SDK verification and integration remain pending.
+SDK `16a80cee` now replaces the unconditional 4 MiB activity reservation with
+completion sizing from retained entries, original send records and possible
+import receipts. Its verified changes are integrated locally. Requalification of
+the ordinary Linux relay with this SDK is running; the capacity and genuine
+history workloads have not yet been rerun with it.
 
-The next acceptance sequence is: qualify that SDK candidate, rebuild the ordinary
-Linux relay, pass the capacity probe and genuine 5,480-receipt workload, then
+The next acceptance sequence is: qualify the rebuilt ordinary Linux relay, pass
+the capacity probe and genuine 5,480-receipt workload, then
 qualify the same graph on the intended devices. Physical mobile encounter/rejoin,
 natural Android deep idle and the remaining contract/resource review are also
 open. The [acceptance checklist](#acceptance-checklist) defines the full scope;
@@ -34,6 +36,7 @@ results below provide regression evidence, not acceptance of a newer binary.
 | --- | --- | --- |
 | Latest native artifacts, `work/receiver-history-native/build-9` | Ordinary Linux daemon, test mint and both test executables pass formatting, size, strict lint and four mint tests. The original sparse-proof payout/export case passes. | Sustained forwarding under history pressure and matching device artifacts are pending. |
 | Dependency checks, `work/cdk-sparse-selection/gate-6` | CDK `bb9b87d8` passes 560 wallet tests; SDK `8855afe` passes 454 workspace tests, with three existing optional measurements ignored. Both selection regressions fail before the fix and pass afterward; lint, formatting and the wallet-only build pass. | These checks qualify dependencies, not the complete relay workload. |
+| Activity completion space, `work/activity-storage/gate-9` | SDK `16a80cee` has 457 passing workspace tests and three existing optional tests ignored; lint, formatting, source size, documentation and the wallet-only build pass. Coverage combines 378 unchanged passing tests from gate 6 with 79 rerun or previously unreached tests. The corrected fault targets the refund owner's release; production code is unchanged between those runs. | The original full invocation remains recorded as failed. SDK verification and local integration are complete; relay history-pressure and device qualification remain pending. |
 | Failed native preparations, `work/receiver-history-native/build-6` through `build-8` | Original recovery audits reconcile all 3,072 test sats from each run without new funding. The original mint policy and financial evidence remain retained. | Token-size, collection-time and sparse-selection failures retain their failed verdicts. The later build does not change them. |
 | Latest capacity probe, `work/receiver-history-native/capacity-1` | Incoming payout succeeds. All 3,072 original test sats are recovered as spendable, with no unfinished financial owners or changed proofs/mint files. | The first onward channel is refused at the unchanged 20 MiB limit. Synthetic logical pressure does not reproduce thousands of receipt owners or qualify sustained forwarding. |
 | Genuine history, `work/receiver-history-native/run-2` through `run-4` | All 5,480 original receipts remain preserved. Separate recovery audits reconcile all 3,072 test sats from each failed run. The latest completes two paid channels before the third opening is refused. | The complete cleanup/forwarding observation has not passed. Replacing genuine receipts with ballast or raising capacity would not close it. |
