@@ -39,15 +39,20 @@ and cache checks, and local integration are verified in
 `work/receiver-history-native/test-grants-2`. Matching relay acceptance remains
 pending. The failed original remains in `work/receiver-history-native/test-grants-1`.
 
-A further SDK candidate replaces the fixed custody-page framing allowance with
+SDK `8855afe` replaces the fixed custody-page framing allowance with
 the measured authenticated encoding and row-ownership cost. It retains one framing
 allowance per native original proof to cover later query regrouping, and narrows
 completed-channel allowances only after checking their exact terminal evidence.
-Independent source review found no actionable correctness issue; this candidate
-has not passed runtime acceptance. Trusted repair must not rewrite spent native
-evidence after refinement. A smaller real-payout capacity probe is prepared before
+All 454 workspace tests and 17 focused checks pass against CDK `f08ccf4b`, along
+with strict lint, formatting and a wallet-only build; three existing optional
+measurements remain ignored. The regression fails before the fix and passes after
+it. Exact sources, evidence and local integration are verified in
+`work/receiver-history-native/terminal-custody-5`. Trusted repair must not rewrite
+spent native evidence after refinement. Matching relay and device acceptance
+remain pending. A smaller real-payout capacity probe is prepared before
 the full genuine-history repeat; its historical logical pressure does not reproduce
-the cost of scanning 5,480 owners. Neither preparation qualifies sustained progress.
+the cost of scanning 5,480 owners. SDK checks alone do not qualify sustained relay
+progress.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
