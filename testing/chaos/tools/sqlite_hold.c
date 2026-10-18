@@ -5,6 +5,7 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -24,7 +25,76 @@ static double now(void) {
     return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
 }
 
+static int expired(void *deadline) {
+    return now() > *(double *)deadline;
+}
+
+/* A bounded snapshot of caller-pinned public identities, never arbitrary SQL. */
+static int observe(const char *path) {
+    unsigned char ys[1024][33];
+    int count = 0, states[1024], result = 1;
+    char line[68];
+    while (fgets(line, sizeof(line), stdin)) {
+        if (count == 1024 || strlen(line) != 67 || line[66] != '\n')
+            return 1;
+        for (int i = 0; i < 33; i++) {
+            unsigned value = 0;
+            for (int j = 0; j < 2; j++) {
+                char ch = line[2 * i + j];
+                if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+                    return 1;
+                value = value * 16 + (unsigned)(ch <= '9' ? ch - '0' : ch - 'a' + 10);
+            }
+            ys[count][i] = (unsigned char)value;
+        }
+        for (int i = 0; i < count; i++)
+            if (memcmp(ys[i], ys[count], 33) == 0) return 1;
+        count++;
+    }
+    if (count == 0 || ferror(stdin)) return 1;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *query = NULL;
+    const char *names[] = {"UNSPENT", "SPENT", "PENDING_SPENT", "PENDING", "RESERVED"};
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_db_readonly(db, "main") != 1) goto done;
+    sqlite3_busy_timeout(db, 250);
+    double deadline = now() + 1;
+    sqlite3_progress_handler(db, 100, expired, &deadline);
+    if (sqlite3_exec(db, "PRAGMA query_only=ON; BEGIN", NULL, NULL, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, "SELECT state FROM proof WHERE y=?1", -1, &query, NULL) != SQLITE_OK)
+        goto done;
+    for (int i = 0; i < count; i++) {
+        if (now() > deadline || sqlite3_bind_blob(query, 1, ys[i], 33, SQLITE_STATIC) != SQLITE_OK)
+            goto done;
+        int step = sqlite3_step(query);
+        states[i] = -1;
+        if (step == SQLITE_ROW) {
+            const unsigned char *state = sqlite3_column_text(query, 0);
+            for (int j = 0; state && j < 5; j++)
+                if (strcmp((const char *)state, names[j]) == 0) states[i] = j;
+            if (states[i] == -1 || sqlite3_step(query) != SQLITE_DONE) goto done;
+        } else if (step != SQLITE_DONE) goto done;
+        if (sqlite3_reset(query) != SQLITE_OK) goto done;
+    }
+    if (sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) goto done;
+    printf("{\"states\":[");
+    for (int i = 0; i < count; i++) {
+        if (i) putchar(',');
+        if (states[i] == -1) printf("null");
+        else printf("\"%s\"", names[states[i]]);
+    }
+    puts("]}");
+    result = 0;
+done:
+    sqlite3_finalize(query);
+    sqlite3_close(db);
+    if (result) fprintf(stderr, "bounded read-only proof observation failed\n");
+    return result;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "observe") == 0) return observe(argv[2]);
     if (argc != 4) {
         fprintf(stderr, "usage: sqlite-hold EXISTING_DB RELEASE_FILE MAX_SECONDS\n");
         return 1;

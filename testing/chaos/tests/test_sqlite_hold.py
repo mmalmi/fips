@@ -11,6 +11,38 @@ import unittest
 
 @unittest.skipUnless(os.environ.get('FIPS_SQLITE_HOLD'), 'requires built SQLite hold helper')
 class SqliteHoldTests(unittest.TestCase):
+    def test_readonly_original_identity_snapshot_sees_wal_and_refuses_ambiguous_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'wallet.sqlite'
+            first, second, terminal, absent = (bytes([n]) * 33 for n in (2, 3, 4, 5))
+            with sqlite3.connect(path) as db:
+                db.execute('PRAGMA journal_mode=WAL')
+                db.execute('CREATE TABLE proof (y BLOB PRIMARY KEY, state TEXT)')
+                db.executemany('INSERT INTO proof VALUES (?,?)',
+                               [(first, 'SPENT'), (second, 'UNSPENT'), (terminal, 'PENDING_SPENT')])
+                db.commit()
+                original = {p.name: p.read_bytes() for p in path.parent.glob('wallet.sqlite*')
+                            if not p.name.endswith('-shm')}
+                db.execute('BEGIN IMMEDIATE')
+                argv = [os.environ['FIPS_SQLITE_HOLD'], 'observe', str(path)]
+                supplied = '\n'.join(y.hex() for y in (first, second, terminal, absent)) + '\n'
+                result = subprocess.run(argv, input=supplied, text=True, capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {'states': ['SPENT', 'UNSPENT', 'PENDING_SPENT', None]})
+                self.assertEqual(original, {p.name: p.read_bytes() for p in path.parent.glob('wallet.sqlite*')
+                                           if not p.name.endswith('-shm')})
+                for invalid in ('', first.hex(), first.hex() + '\n' + first.hex() + '\n',
+                                'z' * 66 + '\n', supplied * 400):
+                    failed = subprocess.run(argv, input=invalid, text=True, capture_output=True, timeout=3)
+                    self.assertNotEqual(failed.returncode, 0)
+                    self.assertEqual(failed.stdout, '')
+                db.rollback()
+            missing = path.parent / 'missing.sqlite'
+            failed = subprocess.run([*argv[:-1], str(missing)], input=supplied,
+                                    text=True, capture_output=True, timeout=3)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(missing.exists())
+
     def test_writer_contention_rolls_back_on_release_deadline_and_termination(self):
         binary = os.environ['FIPS_SQLITE_HOLD']
         for mode in ('requested', 'deadline', 'signal'):
