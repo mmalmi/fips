@@ -12,18 +12,18 @@ proof-history reference journal and separate 4 MiB proof-payload allowance remai
 All 451 workspace tests and strict lint pass; three existing optional measurements
 remain ignored. Full formatting passes after formatter-only cleanup in three
 existing test files; runtime sources are byte-identical to the passing suite.
-Size checks pass. Matching relay artifacts and genuine large-history forwarding
-remain pending on this SDK.
+Size checks pass. Matching ordinary Linux daemon, test-mint and receiver-history
+artifacts are verified. Genuine large-history forwarding remains pending on this SDK.
 
 Offline wallet commands honor configured mint-request pacing and recover original
 operations. The SDK also avoids duplicate proof collection during reserved receiver
 handoff. Six focused FIPS checks and 201 SQL wallet tests pass on their recorded
 graphs. Matching ordinary Linux daemon, isolated test mint and receiver-history
-executable builds passed on the preceding SDK `6052d7a` and CDK `b1265929`. Original compiler
+executable builds pass on SDK `72b3bb8` and CDK `b1265929`. Original compiler
 records, artifact hashes and CLI checks are verified; the ordinary daemon excludes
 simulation features. Genuine large-history forwarding and device acceptance remain
 outstanding. Build and fix evidence is retained in
-`work/receiver-history-native/build-3`, `work/offline-wallet-recovery`,
+`work/receiver-history-native/build-4`, `work/offline-wallet-recovery`,
 `work/cdk-receive-completion` and `work/reserved-receiver-handoff`.
 The device and performance results below retain their recorded source graphs.
 
