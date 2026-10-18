@@ -43,7 +43,7 @@ fn authenticated_fmp_peers_can_rotate_before_the_initial_cross_connection_window
     });
 }
 
-async fn complete_rekey(nodes: &mut [super::super::spanning_tree::TestNode]) {
+pub(super) async fn complete_rekey(nodes: &mut [super::super::spanning_tree::TestNode]) {
     let addresses = [*nodes[0].node.node_addr(), *nodes[1].node.node_addr()];
     let indices = [
         nodes[0].node.get_peer(&addresses[1]).unwrap().our_index(),

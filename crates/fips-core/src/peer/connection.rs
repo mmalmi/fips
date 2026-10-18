@@ -653,7 +653,10 @@ impl PeerConnection {
             .take()
             .expect("noise handshake must exist in SentMsg1 state");
 
-        hs.read_message_2(message)?;
+        if let Err(error) = hs.try_read_message_2(message) {
+            self.noise_handshake = Some(hs);
+            return Err(error);
+        }
 
         // Capture remote epoch from msg2
         self.remote_epoch = hs.remote_epoch();
@@ -664,6 +667,11 @@ impl PeerConnection {
         self.last_activity = current_time_ms;
 
         Ok(())
+    }
+
+    /// An unauthenticated reply leaves the original attempt available.
+    pub(crate) fn has_pending_handshake(&self) -> bool {
+        self.handshake_state == HandshakeState::SentMsg1 && self.noise_handshake.is_some()
     }
 
     /// Take the completed Noise session.

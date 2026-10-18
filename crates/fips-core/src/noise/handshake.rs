@@ -568,6 +568,23 @@ impl HandshakeState {
         Ok(())
     }
 
+    /// Read IK message 2 transactionally, retaining the initiation on rejection.
+    /// Keep this snapshot in sync with the fields mutated by `read_message_2`.
+    pub fn try_read_message_2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        let symmetric = self.symmetric.clone();
+        let remote_ephemeral = self.remote_ephemeral;
+        let remote_epoch = self.remote_epoch;
+        let progress = self.progress;
+        let result = self.read_message_2(message);
+        if result.is_err() {
+            self.symmetric = symmetric;
+            self.remote_ephemeral = remote_ephemeral;
+            self.remote_epoch = remote_epoch;
+            self.progress = progress;
+        }
+        result
+    }
+
     // ========================================================================
     // XK Pattern Methods (Session Layer)
     // ========================================================================

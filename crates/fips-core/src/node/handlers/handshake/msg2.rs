@@ -138,6 +138,13 @@ impl Node {
                                 pending_fmp_open,
                             ))
                         }
+                        Err(e) if peer.has_rekey_handshake() => {
+                            // The dispatch index is public. A forged reply
+                            // must not retire the genuine reply's receiver or
+                            // reset the existing resend budget and deadline.
+                            debug!(peer = %display_name, error = %e, "Rejected unauthenticated rekey msg2");
+                            return;
+                        }
                         Err(e) => {
                             warn!(
                                 peer = %display_name,
@@ -256,6 +263,10 @@ impl Node {
 
             let noise_msg2 = &packet.data.as_slice()[header.noise_msg2_offset..];
             if let Err(e) = conn.complete_handshake(noise_msg2, packet.timestamp_ms) {
+                if conn.has_pending_handshake() {
+                    debug!(link_id = %link_id, error = %e, "Rejected unauthenticated initial msg2");
+                    return;
+                }
                 warn!(
                     link_id = %link_id,
                     error = %e,

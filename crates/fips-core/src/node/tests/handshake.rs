@@ -11,6 +11,7 @@ mod control_progress;
 mod delayed_startup;
 mod early_rekey;
 mod epoch_restart;
+mod forged_msg2;
 mod maintenance_progress;
 mod rx_loop;
 mod same_path_refresh;

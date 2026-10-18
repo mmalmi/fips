@@ -282,7 +282,10 @@ impl ActivePeer {
                 got: "no handshake state".to_string(),
             })?;
 
-        hs.read_message_2(msg2_bytes)?;
+        if let Err(error) = hs.try_read_message_2(msg2_bytes) {
+            self.rekey_handshake = Some(hs);
+            return Err(error);
+        }
         let remote_epoch = hs.remote_epoch();
         let session = hs.into_session()?;
 
@@ -292,6 +295,10 @@ impl ActivePeer {
         self.rekey_msg1_resend_count = 0;
 
         Ok((session, remote_epoch))
+    }
+
+    pub(crate) fn has_rekey_handshake(&self) -> bool {
+        self.rekey_handshake.is_some()
     }
 
     /// Check if msg1 needs resending.
