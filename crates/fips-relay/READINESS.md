@@ -97,10 +97,29 @@ test inventory and the progress-observation regression pass in
 `work/cleanup-history-gate-2`. Production source is unchanged; run 8 remains
 evidence for its original build-14 executable, not a new execution of the cleaned
 test. The first cleanup gate's unused-import failure is retained separately.
-The existing export fixture now has a larger-token pressure case. Its formatting,
-size, strict lint, focused build and shared export regression pass; the pressure
-case is running. Production source is unchanged, and this pending case supplies
-no new acceptance claim yet.
+The larger-token export-pressure case exposes a pre-confirmation cancellation
+gap in CDK: after 79 retained exports, storage refusal leaves the next 63 sats
+reserved. Both failed originals remain preserved; their recovery is pending.
+The candidate uses existing version-fenced cancellation for any error before
+confirmation, preserving coins if an uncertain write already committed that
+confirmation. With this change, `work/export-payload/gate-3` passes the complete
+20 MiB pressure/refusal/recovery/acknowledgment/continued-spending case and collects
+all 1,024 test sats. The 79 retained tokens occupy 1,477,458 bytes; whole offline
+reopen and acknowledgment takes 13.627 seconds on Linux. Formatting, size, strict
+lint, the focused build and the smaller export regression pass. This does not
+qualify concurrent forwarding or device costs for large exports.
+Explicit request pacing for this controlled local mint reduces the pressure
+test from 1,008 seconds to about 137 seconds; production defaults are unchanged.
+CDK `4f03d81b` is saved on the local integration branch. Its regression fails on
+the original code and passes after a verified fresh compilation. All 561 wallet
+tests pass without skips, as do formatting and strict lint. The same regression
+checks a write rejected before commit and a committed confirmation with a lost
+reply; the latter keeps its coins reserved and recovers the original send.
+Evidence in `work/cdk-confirmation-cancel/gate-1` preserves the initial stale
+test-artifact result and the final wrapper metadata error. A separate source/log
+check completes that metadata without repeating the passing suite. Ordinary
+relay compilation is running. Earlier router/phone artifacts retain their
+original CDK graph; they do not qualify this candidate change.
 Physical mobile encounter/rejoin, natural Android deep idle and the remaining
 contract/resource review are also open. The [acceptance checklist](#acceptance-checklist)
 defines the full scope; earlier results below apply to their recorded builds.
