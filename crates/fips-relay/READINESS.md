@@ -67,6 +67,15 @@ follows measured device speed. The preceding device attempt's 3,072 sats are
 fully collected, its original profiles and mint are archived, and baselines are
 restored. The current run retains its recorded CDK `bb9b87d8` graph; it will not
 be presented as execution of the newer binary.
+A separate read-only observer now samples the five owned relay daemons every
+five seconds during this same attempt. It reuses the existing process identity
+and resource parsers, makes no wallet requests and writes no router files. Its
+CPU/RSS observations will exclude the earlier receipt preparation and short-lived
+wallet commands; they are not payment-attributed costs or a memory-limit guarantee.
+Three real router proc records and six rejected malformed records qualify the
+parser adaptation in `work/receiver-history-router/attempt-3/resource-observation`.
+The live run has not yet reached the service phase, so these checks add no relay
+performance acceptance.
 
 The phone fixture now binds the matching corrected artifacts and reuses all 158
 unchanged harness checks. The updated isolated APK is installed, visually checked,
