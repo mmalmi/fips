@@ -28,7 +28,7 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | All twelve earlier diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The corrected harness passes 24 focused Linux checks. | The next rehearsal records a bounded proof-reader failure after 61 progress and 50 custody samples; all 31 settlements are recorded, but independent original-fund recovery remains live. Partial payment timing remains unqualified. Full history is ineligible until a later corrected-observer run actually passes and independently closes. Preserve both failures and the two-second/35-second requirements. One receipt cannot establish history pressure. |
+| Router receiver retirement | All earlier diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The next rehearsal records a bounded proof-reader failure; its original 3,072 sats are also independently conserved, all 224 archived members verified and all owners stopped. | Partial payment timing remains unqualified. Independent counter polling and explicit unavailable custody pass 30 focused Linux checks. Full history is ineligible until the corrected-observer hardware run actually passes and independently closes. Preserve both failures and the two-second/35-second requirements. One receipt cannot establish history pressure. |
 | Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass. A separate 3 MiB foreground/background/disconnect-rejoin case also passes using the same processes and four original channels. Each case independently reconciles its original 512 test sats and removes the temporary app. | Controlled LAN/UDP rejoin is complete. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The current ordinary native matrix passes all eight trials and 32 workload windows: all 285,696 packets arrive, all 48 channels close and independent audits account for 40,960 test sats across 96 complete SQLite sets. Original archives and 872 members are verified. Quote, payment scheduling, accounting, Spilman and payment-wire contracts remain unchanged; session recovery and authenticated fallback selection change. | Finish the pending router case. Keep earlier target costs attached to their measured binaries and retain the explicit shared/physical cost exclusions. |
 
@@ -418,8 +418,12 @@ history pressure.
    These observations neither qualify the full window nor establish a runtime
    payment failure. Preserve the snapshot and partial analysis in
    `work/observer-rehearsal-current-window`. All 31 settlements are subsequently
-   recorded; the root-owned sequence continues original-fund collection and
-   independent auditing without operator actions or a full-history launch.
+   recorded. Independent audits now conserve all 3,072 original test sats with
+   no financial issues. Parent review verifies every member of all four stopped
+   profile archives (224 members), restored baselines, stopped mint and absent
+   producer, supervisor and local sequence owners. The queued full-history
+   continuation exits on its failed prerequisite without commands or funding;
+   no full-history namespace exists. Its failed verdict remains unchanged.
    Integrated correction `be3c18f6d` keeps one outstanding read per progress
    counter, so a slow status query cannot delay unrelated readers. Cached values
    do not count as fresh observations. Custody pairs run at most once per second;
@@ -480,9 +484,9 @@ history pressure.
    The replacement `work/full-history-observer-draft` passes five focused checks
    for the actual corrected-observer prerequisite and 213-file harness. It reuses
    the unchanged nine-check workload/deadline and qualified archive evidence.
-   The reviewed root continuation remains gated while the failed rehearsal's
-   original funds close; its required functional pass cannot be replaced by
-   financial release. No full-history namespace or new grant exists. Preserve
+   The reviewed root continuation exits on the failed rehearsal prerequisite;
+   its required functional pass cannot be replaced by financial release.
+   No full-history namespace or new grant exists. Preserve
    this immutable continuation and its unexecuted capacity helper. A later
    continuation needs a newly qualified passing prerequisite before it preserves
    closed router records as verified gzip copies, checks actual synced flash/RAM
@@ -500,11 +504,28 @@ history pressure.
    sequence bindings remain in `work/full-history-observer-draft`,
    `work/n02-closed-space-execution-2`, `work/full-history-resource-observer`
    and `work/current-device-sequences/full-history-observer-initial`.
-   The separate `work/n02-closed-space-execution-3` passes 16 offline checks for
-   capacity preservation after the failed rehearsal independently closes and all
-   exact owners exit. It retains that failed verdict, uses the same exact archive
-   and inactive-helper targets, and grants no full-history launch authority.
-   It remains unexecuted until actual financial release and restored baselines.
+   The separate `work/n02-closed-space-execution-3` passes 17 offline checks and
+   the actual financial-release gate, then stops before its first mutation:
+   stripping leading BusyBox inode padding breaks the exact metadata guard.
+   Its failed attempt is closed with zero representations, helper removals,
+   financial operations or tests; original forms and private mirrors survive.
+   A read-only inspection confirms the unchanged guard accepts preserved padding.
+   The fresh `work/n02-closed-space-execution-4` passes 20 focused checks and runs
+   once after root review. It preserves that padding and the prior failed
+   execution, binds exact owner absence, and reclaims two exact inactive
+   regenerable helper copies (4,579,328 allocated bytes). Three closed profiles
+   are preserved as verified compressed copies before expanded-form removal.
+   It then stops: staging the remaining archive with its scratch reserve would
+   breach the RAM floor. Root review verifies all 180 members of six private
+   archives, restored n02 baseline, closed partial effects and absent owners;
+   its complete failed source/execution mirror is retained. No tests or funding
+   occur. Do not replay this attempt or treat partial space recovery as a pass.
+   A separately scoped completion is being prepared using one exact old daemon
+   copy from an independently closed test, with preserved native/ARM artifacts
+   and fresh process, inode and open-file checks required before reclamation.
+   The 24 MiB flash and strictly greater than 100 MiB RAM floors remain unchanged.
+   Every financial byte must remain in verified archives before expanded-form
+   removal. Capacity release alone grants no full-history launch authority.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
