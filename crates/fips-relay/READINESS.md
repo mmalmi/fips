@@ -49,10 +49,12 @@ Accepted evidence:
   relocation, the first two routers have 20,140 KiB and 25,688 KiB available,
   before the sixth pilot. Normal-service baselines remain unchanged. The prepared
   export case uses the second router and retains its 24 MiB free-space preflight.
-  Its queued coordinator waits for the sixth pilot's independent closure, then
-  preserves and relocates that stopped case before checking space again. The
-  relocation evidence remains in `work/receiver-history-router`; this does not
-  establish storage acceptance.
+  The sixth pilot is now independently closed. Its stopped profiles are also
+  preserved and relocated, releasing another 3,436 and 2,948 KiB of observed
+  flash space, with 20,104 and 25,704 KiB available at the final check. Every file
+  and normal-service baseline is preserved. The ordinary-ARM large-export case
+  passes preflight and is running; its verdict and independent audit remain
+  pending. The relocation evidence remains in `work/receiver-history-router`.
 - `work/confirmation-device-builds` preserves independently verified ordinary
   router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
   lifecycle tests, Android lint, signature and packaged-native checks pass.
@@ -135,10 +137,11 @@ Change it only to fix a demonstrated failure or an unmet requirement. Reuse vali
 checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
 full suites or creating additional reports without a concrete verification need.
 
-1. Finish the sixth diagnostic's original expiry, collection and independent
-   closure before reusing the shared devices. Its failed verdict stays recorded.
+1. The sixth diagnostic's original expiry, collection and independent closure
+   are complete. All 3,072 test sats are recovered, with no unfinished financial
+   owners and the mint stopped. Its failed verdict stays recorded.
 2. Run the already prepared ordinary-ARM large-export case next. Its coordinator
-   is queued behind that exact financial closure. Measure command CPU, memory,
+   has started after that exact financial closure. Measure command CPU, memory,
    storage and acknowledgment time in the same run, then independently audit
    refusal, recovery and continued spending. This independent case need not wait
    for a passing receiver-retirement workload.
@@ -268,9 +271,11 @@ Its second onward channel recovers from two lost warmup probes, but a later
 preparation packet is missing near the end of its 60-second forwarding window.
 The incoming payout settles at 959/1 sats, the first onward channel at 32/0, and
 the second at 30/2. Its failed verdict and five-profile failure observations are
-retained. Original expiry/collection and independent financial closure are still
-running; the main receiver-retirement workload is not reached. No replacement
-funding or full-history rerun is authorized by a passing build alone.
+retained. Original expiry/collection and the independent stopped-copy audit
+recover all 3,072 test sats, with no unfinished financial owners or audit issues;
+the mint is stopped and normal-service baselines are restored. The main
+receiver-retirement workload is not reached. The original failed verdict stays
+recorded in `work/receiver-history-router/short-burst-6/postflight`.
 
 The next fixture allows 120 seconds of onward service and a 2,400-second
 incoming lifetime, covering the bounded warmup and the observed preparation
