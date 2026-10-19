@@ -148,6 +148,14 @@ full suites or creating additional reports without a concrete verification need.
 
 The checklist below remains the completion boundary. This sequence adds no feature
 scope and does not convert an unverified requirement into a passing result.
+Independent financial closure and restored services release the devices for the
+next fixture even when the preceding functional test failed. The prepared ARM
+export and phone runners now check that closure separately from history acceptance;
+their source/artifact bindings verify, and the phone reuses its 158 unchanged
+harness checks. These cases still run separately when they share devices.
+A short diagnostic with one genuine receipt is prepared to repeat the failed
+burst and settlement before another full pressure run. It cannot qualify history
+pressure, and it has not yet been funded or executed.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
