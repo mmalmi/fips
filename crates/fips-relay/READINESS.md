@@ -149,6 +149,15 @@ authority, stopped-wallet custody and the mint independently. Its existing
 three recorded net transfers feed the shared collection distribution check;
 no per-channel report is fabricated. Original incoming expiry and retirement are
 still pending. Evidence is in `work/receiver-history-router/short-burst-8`.
+The recovery and independent closure run independently of the chat command
+session. The ninth rehearsal's unchanged harness, verified artifact and unfunded
+preflight are preserved in `work/receiver-history-router/short-burst-9-*`.
+`after-interrupted-recovery.json` pins a one-shot continuation: it waits for the
+exact audit owner to exit, requires independently conserved originals and a
+stopped mint, then repeats device/space preflight before launching the rehearsal.
+Interrupted predecessor handling verifies its actual recovery directory and
+preserves the missing individual report. There is no automatic funding retry or
+full-history launch.
 
 Natural idle now has a prepared harness on branch `codex/receiver-setup-pacing`,
 commit `104f01754`. It refuses charging, simulated or forced idle before funding,
