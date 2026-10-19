@@ -14,10 +14,6 @@ const DECRYPT_FAILURE_RECOVERY_QUIET_MS: u64 = 5_000;
 /// Removing only the end-to-end session lets the next valid setup establish a
 /// clean epoch without discarding an otherwise healthy carrier peer.
 const DECRYPT_FAILURE_EVICTION_THRESHOLD: u32 = 64;
-fn pending_rekey_outranks_setup(existing: &SessionEntry, now_ms: u64, stale_ms: u64) -> bool {
-    existing.pending_new_session().is_some() && !existing.pending_stale(now_ms, stale_ms)
-}
-
 fn duplicate_rekey_responder_ack(existing: &SessionEntry) -> Option<Vec<u8>> {
     if existing.is_established()
         && existing.has_rekey_in_progress()
@@ -55,11 +51,6 @@ fn session_can_recover_from_decrypt_failures(entry: &SessionEntry, now_ms: u64) 
 }
 
 impl crate::node::SessionRegistry {
-    fn should_defer_incoming_session_rekey(&self, source_addr: &NodeAddr) -> bool {
-        self.get(source_addr)
-            .is_some_and(|entry| entry.is_established() && entry.is_draining())
-    }
-
     fn record_handshake_resend(&mut self, source_addr: &NodeAddr, next_resend_at_ms: u64) -> bool {
         let Some(entry) = self.get_mut(source_addr) else {
             return false;

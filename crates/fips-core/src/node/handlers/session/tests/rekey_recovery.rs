@@ -1,30 +1,3 @@
-    #[test]
-    fn fresh_pending_rekey_outranks_unauthenticated_setup() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
-        entry.set_rekey_state(rekey, true);
-        entry.set_pending_session(make_xk_session(&local, &peer));
-        entry.set_rekey_completed_ms(1_000);
-
-        assert!(pending_rekey_outranks_setup(&entry, 1_999, 1_000));
-        assert!(!pending_rekey_outranks_setup(&entry, 2_001, 1_000));
-    }
-
-    #[test]
-    fn fresh_responder_pending_rekey_also_outranks_setup() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        let rekey = HandshakeState::new_xk_responder(local.keypair());
-        entry.set_rekey_state(rekey, false);
-        entry.set_pending_session(make_xk_session(&peer, &local));
-        entry.set_rekey_completed_ms(1_000);
-
-        assert!(pending_rekey_outranks_setup(&entry, 1_999, 1_000));
-    }
-
     #[tokio::test]
     async fn forged_session_ack_preserves_the_initiating_entry() {
         let local = Identity::generate();
@@ -210,30 +183,6 @@
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             None,
         ));
-    }
-
-    #[test]
-    fn authenticated_pending_epoch_cutover_supersedes_a_side_recovery_handshake() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        entry.set_rekey_state(
-            HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full()),
-            true,
-        );
-        entry.set_pending_session(make_xk_session(&local, &peer));
-        entry.set_rekey_state(
-            HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full()),
-            true,
-        );
-        entry.set_handshake_payload(vec![0x55], 2_500);
-
-        assert!(entry.cutover_to_authenticated_pending_epoch(2_000, true));
-        assert!(entry.is_established());
-        assert!(!entry.has_rekey_in_progress());
-        assert!(entry.pending_new_session().is_none());
-        assert!(entry.handshake_payload().is_none());
-        assert!(entry.current_k_bit());
     }
 
     #[tokio::test]

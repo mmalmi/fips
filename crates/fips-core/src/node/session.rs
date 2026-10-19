@@ -549,10 +549,12 @@ impl SessionEntry {
         self.current_rekey_confirmation = self.pending_rekey_confirmation.take();
         self.current_k_bit = !self.current_k_bit;
         self.session_start_ms = now_ms;
-        self.rekey_state = None;
-        self.rekey_handshake_initiator = false;
         self.pending_rekey_initiator = false;
-        self.clear_handshake_payload();
+        // A newer handshake may already have an accepted msg2 at the peer.
+        // Older authenticated traffic must preserve its state and retries.
+        if !self.has_rekey_in_progress() {
+            self.clear_handshake_payload();
+        }
         self.rekey_completed_ms = 0;
         self.rekey_probe_last_ms = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
@@ -605,17 +607,6 @@ impl SessionEntry {
     pub(crate) fn complete_drain(&mut self) {
         self.drain_started_ms = 0;
         self.previous_k_bit = None;
-    }
-
-    /// Whether a completed pending session has waited longer than `stale_ms`
-    /// for authenticated cutover traffic.
-    ///
-    /// Staleness only stops the pending epoch vetoing a new handshake. It is
-    /// never permission to discard keys the peer may already be using.
-    pub(crate) fn pending_stale(&self, now_ms: u64, stale_ms: u64) -> bool {
-        self.pending_new_session.is_some()
-            && self.rekey_completed_ms != 0
-            && now_ms.saturating_sub(self.rekey_completed_ms) > stale_ms
     }
 
     /// Abandon only an armed rekey handshake, preserving live and completed

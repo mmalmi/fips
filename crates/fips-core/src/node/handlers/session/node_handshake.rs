@@ -59,16 +59,6 @@ impl Node {
         }
         self.cache_current_root_coords(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
-        // K is one bit, so a pending epoch cannot coexist with both current and
-        // previous. Drop this attempt and let msg1 retransmission retry after drain.
-        if self.sessions.should_defer_incoming_session_rekey(src_addr) {
-            debug!(
-                src = %self.peer_display_name(src_addr),
-                "Deferring FSP rekey msg1 until previous key epoch drain completes"
-            );
-            return;
-        }
-
         // Check for existing session with this remote
         let mut changed_from_initiator_to_responder = false;
         if let Some(existing) = self.sessions.get(src_addr) {
@@ -125,15 +115,6 @@ impl Node {
                 // only arm a rekey handshake beside the live session. Local
                 // rekey configuration controls initiation, not responding.
                 let rekey_in_progress = existing.has_rekey_in_progress();
-                let pending_outranks = pending_rekey_outranks_setup(
-                    existing,
-                    Self::now_ms(),
-                    self.config
-                        .node
-                        .session
-                        .idle_timeout_secs
-                        .saturating_mul(1000),
-                );
 
                 // Dual-initiation detection: both sides sent SessionSetup
                 // simultaneously. Apply tie-breaker — smaller NodeAddr
@@ -185,12 +166,6 @@ impl Node {
                         "Dual FSP rekey initiation: we lose (larger addr), abandoning ours"
                     );
                     self.sessions.abandon_rekey_handshake(src_addr);
-                } else if pending_outranks {
-                    debug!(
-                        src = %self.peer_display_name(src_addr),
-                        "FSP rekey msg1 received while a completed epoch awaits cutover, dropping"
-                    );
-                    return;
                 }
                 let our_keypair = self.identity.keypair();
                 let mut handshake = HandshakeState::new_xk_responder(our_keypair);
@@ -433,17 +408,6 @@ impl Node {
                     self.config.node.session.coords_warmup_packets,
                 );
             } else {
-                let pending_epoch = session
-                    .recv_cipher_clone()
-                    .zip(session.send_cipher_clone())
-                    .map(|(open, seal)| {
-                        (
-                            !entry.current_k_bit(),
-                            open,
-                            seal,
-                            session.send_counter_authority(),
-                        )
-                    });
                 self.sessions.install_rekey_initiator_pending_session(
                     *src_addr,
                     entry,
@@ -452,15 +416,7 @@ impl Node {
                     now_ms,
                     resend_interval,
                 );
-                if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {
-                    self.install_dataplane_fsp_pending_epoch(
-                        src_addr,
-                        pending_k_bit,
-                        open,
-                        seal,
-                        send_counter_authority,
-                    );
-                }
+                self.sync_dataplane_fsp_pending_epoch(src_addr);
                 self.refresh_dataplane_fsp_owner_routes(src_addr);
             }
 
@@ -718,17 +674,6 @@ impl Node {
                 self.sessions.insert(*src_addr, entry);
                 return;
             };
-            let pending_epoch = session
-                .recv_cipher_clone()
-                .zip(session.send_cipher_clone())
-                .map(|(open, seal)| {
-                    (
-                        !entry.current_k_bit(),
-                        open,
-                        seal,
-                        session.send_counter_authority(),
-                    )
-                });
             self.sessions.install_rekey_responder_pending_session(
                 *src_addr,
                 entry,
@@ -736,15 +681,7 @@ impl Node {
                 confirmation,
                 Self::now_ms(),
             );
-            if let Some((pending_k_bit, open, seal, send_counter_authority)) = pending_epoch {
-                self.install_dataplane_fsp_pending_epoch(
-                    src_addr,
-                    pending_k_bit,
-                    open,
-                    seal,
-                    send_counter_authority,
-                );
-            }
+            self.sync_dataplane_fsp_pending_epoch(src_addr);
             self.learn_reverse_route(*src_addr, *previous_hop_addr);
             self.refresh_dataplane_fsp_owner_routes(src_addr);
 

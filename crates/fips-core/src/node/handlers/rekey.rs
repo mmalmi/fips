@@ -351,7 +351,6 @@ impl crate::node::SessionRegistry {
             }
 
             if entry.pending_new_session().is_some()
-                && !entry.has_rekey_in_progress()
                 && entry.pending_rekey_initiator()
                 && entry.rekey_probe_due(tick.now_ms, tick.probe_delay_ms, tick.probe_interval_ms)
             {
@@ -394,7 +393,6 @@ impl crate::node::SessionRegistry {
             return false;
         };
         if entry.pending_new_session().is_none()
-            || entry.has_rekey_in_progress()
             || !entry.pending_rekey_initiator()
             || !entry.rekey_probe_due(now_ms, probe_delay_ms, probe_interval_ms)
         {
@@ -885,6 +883,7 @@ impl Node {
                         current_k_bit,
                         previous_draining_k_bit,
                     );
+                    self.sync_dataplane_fsp_pending_epoch(&node_addr);
                 }
             }
         }

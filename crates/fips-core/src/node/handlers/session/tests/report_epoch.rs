@@ -81,6 +81,15 @@ impl ReportEpochFixture {
 }
 
 async fn receive_epoch_wire(node: &mut Node, raw: crate::dataplane::DataplaneRawIngress) -> usize {
+    try_receive_epoch_wire(node, raw)
+        .await
+        .expect("encrypted packet must authenticate")
+}
+
+async fn try_receive_epoch_wire(
+    node: &mut Node,
+    raw: crate::dataplane::DataplaneRawIngress,
+) -> Option<usize> {
     use crate::dataplane::{DataplaneLiveOutboundFirsts, DataplaneLiveTurnIo};
     let mut raw = std::collections::VecDeque::from([raw]);
     let (endpoint_tx, _endpoint_rx) = crate::node::EndpointEventSender::channel(1);
@@ -112,15 +121,14 @@ async fn receive_epoch_wire(node: &mut Node, raw: crate::dataplane::DataplaneRaw
             turn.raw_ingress_drops().is_empty(),
             "encrypted packet must route"
         );
-        assert!(
-            turn.drops().is_empty(),
-            "encrypted packet must authenticate"
-        );
+        if !turn.drops().is_empty() {
+            return None;
+        }
         let delivered =
             turn.fsp_session_ingress_count() != 0 || !turn.fmp_link_ingress().is_empty();
         processed += node.process_dataplane_control_ingress(&mut turn).await;
         if delivered {
-            return processed;
+            return Some(processed);
         }
         assert!(
             Instant::now() < deadline,

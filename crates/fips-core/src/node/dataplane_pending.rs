@@ -351,6 +351,35 @@ impl Node {
             .is_ok()
     }
 
+    pub(in crate::node) fn sync_dataplane_fsp_pending_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(entry) = self
+            .sessions
+            .get(node_addr)
+            .filter(|entry| !entry.is_draining())
+        else {
+            // Let Noise authenticate a possible restart during drain, but keep
+            // the previous receive keys until their one-bit K slot is free.
+            return false;
+        };
+        let Some(session) = entry.pending_new_session() else {
+            return false;
+        };
+        let Some((open, seal)) = session.recv_cipher_clone().zip(session.send_cipher_clone())
+        else {
+            return false;
+        };
+        self.install_dataplane_fsp_pending_epoch(
+            node_addr,
+            !entry.current_k_bit(),
+            open,
+            seal,
+            session.send_counter_authority(),
+        )
+    }
+
     pub(in crate::node) fn install_dataplane_fsp_pending_epoch(
         &mut self,
         node_addr: &NodeAddr,
