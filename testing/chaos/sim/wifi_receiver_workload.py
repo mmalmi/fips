@@ -112,7 +112,7 @@ class ReceiverWorkload:
         finally:
             self.save()
 
-    def earn(self, owner, destination, channel, target):
+    def earn(self, owner, destination, channel, target, rate_pps=128):
         def evidence(state):
             return state['payment_progress'][channel]['evidence_msat']
         before = evidence(self.ctl(owner, 'status'))
@@ -126,7 +126,7 @@ class ReceiverWorkload:
             if signed == target:
                 return
             count = min(1024, ((target - 1) * 1000 + 1 - evidence(current)) // unit)
-            self.send(owner, destination, max(1, count), 1000 if count else 40, 128)
+            self.send(owner, destination, max(1, count), 1000 if count else 40, rate_pps)
             current = self.payment(owner, channel)
         raise RuntimeError('ordinary paid traffic did not reach its exact target')
 
@@ -167,7 +167,7 @@ class ReceiverWorkload:
     def receiver_case(self):
         self.incoming = self.buy_route('n01', 'n03', 'n02', 960)
         deadline = self.intents[self.incoming]['refund_after_unix']
-        self.earn('n01', 'n03', self.incoming, 959)
+        self.earn('n01', 'n03', self.incoming, 959, rate_pps=32)
         self.settle_channel(self.incoming, 959)
         archive = self.stop_snapshot('n02', 'original-payout')
         custody.unchanged(archive, self.retained_history)

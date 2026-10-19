@@ -945,6 +945,11 @@ Preparation has a six-hour allowance, and the command's initial alarm is eight
 hours. Smaller values from 1 to 5,480 are useful for setup checks but do not
 qualify the full-history workload.
 
+The initial 960-sat channel earns its payout at 32 packets/s. This sparse test
+keyset makes each partial payment reconstruct 960 one-sat outputs; 128 packets/s
+exhausted the unchanged credit allowance on the routers. The 32-sat onward
+channels retain their 128-packet/s setup rate.
+
 The receiver completes 28 onward channels before a controlled writer hold and
 release. The observation requires all 84 packets and both hops' payment/credit
 counters to advance without gaps exceeding two seconds, with cleanup completing

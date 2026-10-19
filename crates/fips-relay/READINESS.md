@@ -169,11 +169,24 @@ owners. Its final observation then failed because the harness omitted retired
 authorization when checking the lifetime budget. The observer now includes that
 history while preserving the separate active-authorization counters. The new
 regression fails before the fix; 54 focused checks pass afterward, with one
-existing Linux-only check skipped on macOS. The original accounts and mint are
-retained for collection, and the failed delivery verdict is preserved.
+existing Linux-only check skipped on macOS. Original recovery and the independent
+stopped-copy audit reconcile all 3,072 test sats, with every test wallet empty,
+no unfinished financial owners and the mint stopped. No new funds are issued;
+all original files and the failed delivery verdict are preserved.
 Observations and matching source hashes are
 in `work/receiver-history-router/short-burst-analysis.json`. This diagnoses the
 failed-run graph; it qualifies neither history pressure nor the newer candidate.
+
+The next diagnostic delivers all 1,024 packets at 32 packets/s in 31.969 seconds,
+with no missing, invalid or duplicate packets. Its nine payment cycles average
+1.250 seconds of sender CPU and 2.438 seconds of provider CPU, and the channel
+settles at 267 sats paid and 693 refunded. Financial closure is still running.
+Prices, credit limits and the binary match the failed burst; unrelated closed
+history was relocated before this run, so filesystem pressure is not matched.
+Evidence is in `work/receiver-history-router/short-burst-2-analysis.json`.
+The prepared harness paces only the initial 960-sat setup channel at this measured
+rate. Complete workload timing and genuine history pressure still require device
+acceptance; the 5,480-receipt, 84-packet and two-second progress criteria remain.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
