@@ -242,6 +242,14 @@ in the new test's sample report and its correction are retained in the logs.
 The exact native mechanism of the first-packet loss remains unproven; the later
 observation of a historical neighbor error does not establish causation.
 No firmware rebuild or production-default change occurs.
+The first onward opening and the next are 26 seconds apart, after about 199
+seconds of incoming preparation. Extrapolating that single cycle across 28
+channels already exceeds the original 720-second incoming lifetime; this is a
+schedule estimate, not a completed throughput measurement. The next fixture uses
+one shared 1,200-second incoming lifetime in configuration and validation, with
+the same 360-second preparation quote and unchanged 120-second onward lifetimes.
+The 84-packet stream, two-second progress bound, 35-second cleanup deadline and
+original financial conservation requirements remain unchanged.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the

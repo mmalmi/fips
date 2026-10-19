@@ -13,6 +13,8 @@ from .wifi_priority_checks import received, submitted
 from .wifi_retirement_live import maintenance_idle
 from .wifi_receiver_window import exposure, measure
 
+SETUP_LIFETIME = 1200
+
 
 def caught_up(progress):
     return (not progress['in_flight'] and progress['acknowledged_msat'] is not None
@@ -63,7 +65,7 @@ class ReceiverWorkload:
         channel = purchase['channel']['id']
         intent, = [row for row in self.journal(owner)['funding'].values()
                    if row['funded'] and row['funded']['terms']['id'] == channel]
-        lifetime = 720 if owner == 'n01' else 120
+        lifetime = SETUP_LIFETIME if owner == 'n01' else 120
         require(channel not in self.intents and intent['funded']['terms'] == purchase['channel']
                 and intent['capacity_sat'] == capacity
                 and intent['max_wallet_debit_sat'] == capacity

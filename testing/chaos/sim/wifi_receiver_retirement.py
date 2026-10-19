@@ -23,7 +23,7 @@ from .wifi_remote import digest
 from .wifi_retirement import RetirementRun
 from .wifi_retirement_purchase import PurchaseRetirementRun
 from . import wifi_receiver_custody as custody
-from .wifi_receiver_workload import ReceiverWorkload
+from .wifi_receiver_workload import ReceiverWorkload, SETUP_LIFETIME
 
 INITIAL = {'n01': 2048, 'n02': 0, 'n03': 0, 'source': 1024, 'destination': 0}
 LIMITS = {'n01': 960, 'n02': 1024, 'n03': 32, 'source': 64, 'destination': 32}
@@ -86,7 +86,7 @@ class ReceiverRetirementRun(ReceiverWorkload, PurchaseRetirementRun):
                                # Later transit is still capped by its 60-second channel.
                                quote_lifetime_secs=360 if name == 'n02' else 60,
                                wallet_capacity_bytes=WALLET_BYTES)
-        config['terms']['controller'].update(channel_lifetime_secs=720 if name == 'n01' else 120,
+        config['terms']['controller'].update(channel_lifetime_secs=SETUP_LIFETIME if name == 'n01' else 120,
             channel_capacity_sat=960 if name in ('n01', 'n02') else 64 if name == 'source' else 32,
             max_locked_sat=LIMITS[name], max_wallet_spend_sat=LIMITS[name], max_funding_overhead_sat=0)
         if name == 'n02':

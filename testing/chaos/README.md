@@ -951,6 +951,8 @@ exhausted the unchanged credit allowance on the routers. The 32-sat onward
 channels retain their 128-packet/s setup rate. The receiver's 360-second quote
 covers the paced preparation; later transit remains limited by its unchanged
 60-second service channel. Each purchased route's expiry is recorded.
+The original incoming owner's refund deadline is 20 minutes after creation,
+allowing the 28 ordinary device channel cycles before its controlled retirement.
 After a stopped custody observation, preparation uses the existing finite native
 session probe with at most six fresh attempts. Every submitted attempt remains
 ordinarily billable and is retained, including loss; an uncertain send is never
