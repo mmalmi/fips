@@ -21,7 +21,8 @@ the next rehearsal delivers all 84 packets and completes cleanup in 18.728 s.
 Its four payment timing series remain unqualified: read latency spans the
 two-second limit without proving a payment stall. Independent auditing closes
 all 3,072 original test sats without financial issues and preserves the failed
-verdict; archive verification is in progress. The next observer revision preserves every fresh reading while
+verdict. All 224 archived profile members and both preserved copies are verified;
+the producer, supervisor and root sequence are stopped. The next observer revision preserves every fresh reading while
 the main thread releases the writer and reads authorization, completed signatures
 and provider credit through persistent connections. That revision is undergoing
 verification; router retirement acceptance remains pending.
@@ -591,11 +592,13 @@ history pressure.
    flash bytes and 143,126,528/132,571,136/128,458,752 RAM bytes. Storage work
    issues no funds and starts no tests. A sealed root release binds that fresh
    measurement and the two preceding closed failed attempts before a new
-   namespace. The corrected rehearsal is dispatched in
-   `work/receiver-history-router/observer-availability-b8a0363f3ce3`; both actual
-   Linux owners are observed live. Its root runner always collects the original
-   financial state after a launch attempt. Functional and financial acceptance
-   remain pending; full history is still unlaunched.
+   namespace. The rehearsal in
+   `work/receiver-history-router/observer-availability-b8a0363f3ce3` delivers all
+   84 packets and completes cleanup in 18.728 s, but its four payment timing
+   series remain unqualified. Independent auditing closes all 3,072 original
+   sats without financial issues; all 224 archived profile members, the complete
+   original-case mirror and exact owner exits are verified. Its failed verdict
+   remains preserved. Full history is still unlaunched.
    The reviewed replacement `work/full-history-availability-v2` passes seven
    focused checks and requires that actual functional pass, original-fund close
    and a new full-history capacity release. The source-only
@@ -604,7 +607,10 @@ history pressure.
    only a measured n02 shortfall can select up to four explicitly archived old
    profiles. Root verifies its source and complete 19-file private mirror.
    Materialization, execution and capacity acceptance remain pending; these
-   preparations start no device operations, tests or funding.
+   preparations start no device operations, tests or funding. Both must be
+   rebound to the newly qualified 215-file observer harness and an actual
+   passing rehearsal. The prerequisite check must distinguish the verified
+   controller collection wrapper from its embedded raw archive receipt.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary

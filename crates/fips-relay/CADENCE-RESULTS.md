@@ -2650,9 +2650,10 @@ receiver/wallet SQLite; the separate syscall comparison above measures those
 file operations, still excluding physical storage writes. Framed payment records
 exclude TCP/FIPS/carrier headers, acknowledgments and retransmissions; the local
 payment-service counters above add those submissions within their stated scope.
-Aggregate link bytes cannot establish payment-specific wire overhead. Broader
-impairment/device acceptance, actual radio airtime and complete CPU/storage/wire
-attribution remain work for production readiness.
+Aggregate link bytes cannot establish payment-specific wire overhead. Remaining
+device acceptance follows the [readiness checklist](READINESS.md#acceptance-checklist).
+Shared CPU work outside the observed spans, physical storage writes, radio
+airtime and battery costs remain unmeasured and excluded from the v1 claims.
 
 The earlier 16 September schema-1 result remains in repository history. It reported
 complete delivery and conservation but did not verify payment boundaries; it must
