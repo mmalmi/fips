@@ -21,6 +21,10 @@ Accepted storage preparation preserves 78 files and 117 archive members while
 recovering 6.1 MiB of flash; all three routers meet the one-receipt capacity floors.
 The active case is
 `work/receiver-history-router/observer-availability-8b694b85a709`.
+Its local supervising process was interrupted after dispatch. The original
+producer and independent closer continue; final acceptance requires a separate
+stopped-original audit while preserving the missing local exit status. Neither
+the paid workload nor its financial close is replayed.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -250,16 +254,23 @@ must accompany the full run below.
    cannot block financial closure or alter the two-second/35-second acceptance.
    Report sampled CPU/RSS/HWM and host headroom, not hard memory, generic whole-call
    or physical-write maxima. Reuse qualified workload/archive/resource helpers;
-   sources and earlier refused bindings remain in `work/full-history-draft`,
-   `work/full-history-observer-draft`, `work/full-history-availability-v2` and
-   `work/full-history-resource-observer`.
+   The current reviewed sources are `work/full-history-autonomous-v5`,
+   `work/full-history-resource-observer-autonomous-v2` and
+   `work/post-pass-autonomous-capacity-v4`. The resource metadata matches all
+   seven pinned helpers in the qualified 215-file graph. Actual configuration
+   still requires the passing rehearsal, independent recovery and fresh capacity.
+   Earlier sources and refused bindings remain preserved separately.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
-   `work/current-radio-rejoin-after-full-v2` retains its 384-sat cap, two original
+   `work/current-radio-autonomous-v5` retains its 384-sat cap, two original
    32-sat channels, original accounting and fresh all-three capacity checks;
    rebind it to the actual accepted full run before staging. This does not claim
    physical movement, fading, seamless roaming or automatic channel selection.
+   Resource-process exit alone is insufficient: the saved capture and summary
+   must reconcile useful observations of all five profiles on the three hosts.
+   Missed epochs/endpoints, transient errors, partial windows and zero measured
+   CPU activity retain their explicit scopes.
 5. **Reconcile and integrate the whole result.** Check every checklist row against
    final source/dependency/features/artifacts, target evidence, threat model,
    operating/recovery documentation and the local TollGate proposal. Remove only
