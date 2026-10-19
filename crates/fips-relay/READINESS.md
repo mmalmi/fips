@@ -12,12 +12,13 @@ The ordinary ARM64 OpenWrt build
 and Android build/lifecycle/package checks pass for the same core changes. Both
 controlled phone cases and their independent audits pass. The current native
 eight-trial cadence matrix also passes, with every original test sat independently
-accounted for. The paced router
-rehearsal delivers every measured packet and finishes cleanup, but fails its
-payment-progress observation. The next rehearsal records a failed bounded proof
-read and incomplete timing coverage; its original-fund recovery is running.
-Router retirement acceptance remains pending. A further harness correction now
-passes its focused Linux/macOS checks; another actual router run is required.
+accounted for. The paced router rehearsal fails payment-progress observation;
+the next rehearsal fails a bounded proof read and has incomplete timing coverage.
+Both failed runs are independently closed, with all 3,072 original test sats
+conserved in each. The corrected observer passes its focused Linux/macOS checks.
+After verified storage preparation and fresh capacity checks on all three routers,
+another actual rehearsal is running. Router retirement acceptance remains pending;
+neither its functional verdict nor its financial closure is established yet.
 Earlier results remain attached to their recorded
 artifacts. Production readiness still depends
 on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
@@ -584,6 +585,15 @@ history pressure.
    Linux owners are observed live. Its root runner always collects the original
    financial state after a launch attempt. Functional and financial acceptance
    remain pending; full history is still unlaunched.
+   The reviewed replacement `work/full-history-availability-v2` passes seven
+   focused checks and requires that actual functional pass, original-fund close
+   and a new full-history capacity release. The source-only
+   `work/post-pass-full-history-capacity-draft` passes ten focused checks and
+   reuses that same prerequisite validator. It measures all three routers first;
+   only a measured n02 shortfall can select up to four explicitly archived old
+   profiles. Root verifies its source and complete 19-file private mirror.
+   Materialization, execution and capacity acceptance remain pending; these
+   preparations start no device operations, tests or funding.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
