@@ -181,7 +181,7 @@ class WifiRun:
         failed = dict(phase=phase, error=str(error), at=time.monotonic(), **evidence, states={})
         self.evidence['failed_probe'] = failed
         self.save()
-        for name in self.nodes:
+        for name in self.participants():
             try:
                 failed['states'][name] = self.ctl(name, 'status')
             except Exception as inspection:

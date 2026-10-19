@@ -32,6 +32,7 @@ class ReceiverWorkloadTests(unittest.TestCase):
                         missing_packets=1, duplicate_packets=0, invalid_packets=0, latency=None)
         run = ReceiverWorkload()
         run.evidence, run.save = {'receiver_history': {}}, Mock()
+        run.record_probe_failure = Mock()
         run.ctl = Mock(return_value={'probe': receiver})
         run.participants = lambda: {'buyer': SimpleNamespace(npub='buyer')}
         with patch('sim.wifi_receiver_workload.probes.arm', return_value=shape), \
@@ -43,7 +44,41 @@ class ReceiverWorkloadTests(unittest.TestCase):
         record, = run.evidence['receiver_history']['traffic']
         self.assertEqual((record['sender'], record['receiver']), (sender, receiver))
         self.assertIn('delivery is incomplete', record['failure'])
+        run.record_probe_failure.assert_called_once_with(
+            'receiver paid traffic', unittest.mock.ANY, record)
         self.assertEqual(run.save.call_count, 2)
+
+    def test_restart_warmup_preserves_loss_and_never_replays_an_uncertain_send(self):
+        run = ReceiverWorkload()
+        run.evidence, run.save = {'receiver_history': {}}, Mock()
+        run.ctl = Mock(return_value={'payment_progress': {'original': {'evidence_msat': 260}}})
+        run.participants = lambda: {'buyer': SimpleNamespace(npub='buyer')}
+        current = {'payment_progress': {'original': {'evidence_msat': 520}}}
+        run.payment = Mock(return_value=current)
+
+        def attempt(identifier, delivered):
+            return dict(sender=dict(stream_id=identifier, requested_packets=1, submitted_packets=1,
+                                    submitted_bytes=1000, stopped_reason=None),
+                        receiver=dict(stream_id=identifier, source='buyer', expected_packets=1,
+                                      payload_bytes=1000, unique_packets=delivered, unique_bytes=1000 * delivered,
+                                      missing_packets=1-delivered, duplicate_packets=0, invalid_packets=0,
+                                      latency=None))
+
+        lost, delivered = attempt('first', 0), attempt('second', 1)
+        with patch('sim.wifi_receiver_workload.stream', side_effect=[lost, delivered]) as send:
+            self.assertEqual(run.warmup_payment('buyer', 'destination', 'original'), (current, 260))
+        self.assertEqual(send.call_count, 2)
+        self.assertEqual([row['receiver']['unique_packets'] for row in
+                          run.evidence['receiver_history']['warmup']], [0, 1])
+        run.payment.assert_called_once_with('buyer', 'original')
+        with patch('sim.wifi_receiver_workload.stream', side_effect=TimeoutError('lost reply')) as send:
+            with self.assertRaisesRegex(TimeoutError, 'lost reply'):
+                run.warmup_payment('buyer', 'destination', 'original')
+        send.assert_called_once()
+        with patch('sim.wifi_receiver_workload.stream', return_value=lost) as send:
+            with self.assertRaisesRegex(RuntimeError, 'native session warmup failed'):
+                run.warmup_payment('buyer', 'destination', 'original')
+        self.assertEqual(send.call_count, 6)
 
     def test_full_reports_match_after_provider_release_without_replaying_settlement(self):
         terms = {'id': 'original', 'capacity_sat': 960}

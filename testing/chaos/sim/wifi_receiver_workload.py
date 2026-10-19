@@ -2,8 +2,10 @@
 
 import json
 import time
+from types import SimpleNamespace
 
 from . import wifi_probes as probes
+from .cadence_workloads import stream
 from . import wifi_receiver_custody as custody
 from .paid_relay import eventually
 from .paid_settlement import require, validate_report, verified_refund
@@ -109,18 +111,33 @@ class ReceiverWorkload:
             return record
         except Exception as error:
             record['failure'] = str(error)
+            self.record_probe_failure('receiver paid traffic', error, record)
             raise
         finally:
             self.save()
 
+    def warmup_payment(self, owner, destination, channel):
+        view = SimpleNamespace(ctl=self.ctl, nodes=self.participants())
+        for _ in range(6):
+            before = self.ctl(owner, 'status')['payment_progress'][channel]['evidence_msat']
+            probe = stream(view, 1, 1, source=owner, destination=destination, drain_seconds=10)
+            shape = dict(stream_id=probe['sender']['stream_id'], packet_count=1, payload_bytes=1000)
+            submitted(probe['sender'], shape)
+            received(probe['receiver'], shape, view.nodes[owner].npub)
+            self.evidence['receiver_history'].setdefault('warmup', []).append(
+                dict(source=owner, destination=destination, channel=channel, **probe))
+            self.save()
+            if probe['receiver']['unique_packets'] == 1:
+                current = self.payment(owner, channel)
+                unit = current['payment_progress'][channel]['evidence_msat'] - before
+                require(unit > 0, 'ordinary warmup did not accrue paid evidence')
+                return current, unit
+        raise RuntimeError('native session warmup failed; preserve all separately billable attempts')
+
     def earn(self, owner, destination, channel, target, rate_pps=128):
         def evidence(state):
             return state['payment_progress'][channel]['evidence_msat']
-        before = evidence(self.ctl(owner, 'status'))
-        self.send(owner, destination, 1, 1000, 1)
-        current = self.payment(owner, channel)
-        unit = evidence(current) - before
-        require(unit > 0, 'ordinary warmup did not accrue paid evidence')
+        current, unit = self.warmup_payment(owner, destination, channel)
         for _ in range(100):
             signed = current['payment_progress'][channel]['authorized_sat']
             require(signed <= target and evidence(current) <= target * 1000, 'target payment overshot')

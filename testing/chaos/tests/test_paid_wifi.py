@@ -376,8 +376,9 @@ class PaidWifiTests(unittest.TestCase):
     def test_failed_probe_retains_partial_delivery_despite_an_observer_failure(self):
         service = object.__new__(PaidWifiRun)
         service.nodes, service.evidence = {'n01': None, 'n02': None}, {}
+        service.participants = lambda: {**service.nodes, 'auxiliary': None}
         service.save, service.phase = Mock(), Mock()
-        service.ctl = Mock(side_effect=[{'peers': []}, RuntimeError('observer unavailable')])
+        service.ctl = Mock(side_effect=[{'peers': []}, RuntimeError('observer unavailable'), {'received': 7}])
 
         def fail(_run, _source, _destination, _wait, evidence, **_kwargs):
             evidence.update(sent={'submitted_packets': 8}, received={'unique_packets': 7})
@@ -391,6 +392,7 @@ class PaidWifiTests(unittest.TestCase):
         self.assertEqual(failed['sent']['submitted_packets'], 8)
         self.assertEqual(failed['states']['n01'], {'peers': []})
         self.assertEqual(failed['states']['n02'], {'error': 'observer unavailable'})
+        self.assertEqual(failed['states']['auxiliary'], {'received': 7})
         service.phase.assert_not_called()
 
     def test_unpaid_denial_rejects_failed_or_incomplete_submission(self):

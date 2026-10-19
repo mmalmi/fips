@@ -225,8 +225,23 @@ After the verified relocations, `short-burst-5` runs the corrected one-receipt
 pilot on the existing ordinary ARM artifact. Its recorded incoming route has
 360 seconds of service. The read-only process observer now resolves the actual
 `purchase-source` and `purchase-destination` profiles and has observed all five
-daemons without errors. This remains an ongoing diagnostic, not history-pressure
-or resource acceptance; no firmware rebuild or production-default change occurs.
+daemons without errors. It earns and settles the full 959-sat setup payout and one
+32-sat onward channel. The next channel's first packet after a stopped custody
+observation is submitted but does not arrive; that channel settles at zero paid
+and 32 refunded. Original financial closure is running. This remains a failed
+diagnostic, not history-pressure or resource acceptance.
+
+The next fixture reuses the existing finite native-session warmup, allowing at
+most six fresh, separately billable preparation attempts with their losses
+retained. An uncertain send is never replayed. This matches existing service and
+router restart fixtures without changing the measured retirement stream's
+complete-delivery requirement. Failed measured traffic now records all five
+participants through the shared failure observer before closure. The focused
+checks pass 37 tests, with one existing Linux-only check skipped; a missing field
+in the new test's sample report and its correction are retained in the logs.
+The exact native mechanism of the first-packet loss remains unproven; the later
+observation of a historical neighbor error does not establish causation.
+No firmware rebuild or production-default change occurs.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
