@@ -52,9 +52,22 @@ Accepted evidence:
   The sixth pilot is now independently closed. Its stopped profiles are also
   preserved and relocated, releasing another 3,436 and 2,948 KiB of observed
   flash space, with 20,104 and 25,704 KiB available at the final check. Every file
-  and normal-service baseline is preserved. The ordinary-ARM large-export case
-  passes preflight and is running; its verdict and independent audit remain
-  pending. The relocation evidence remains in `work/receiver-history-router`.
+  and normal-service baseline is preserved. The first ordinary-ARM export attempt
+  fails before import because its randomly assigned mint port is unreachable
+  from the router. Independent stopped-copy auditing recovers the unchanged
+  1,024-sat grant into the collector, with zero router balance, preserved
+  authority and a stopped mint. The failed verdict and both audit-format
+  corrections remain in `work/export-payload-device`.
+  The corrected runner retains the configured port, checks router access before
+  issuing funds, and preserves the mint-recovery file's original bytes. Two
+  subsequent space preflights refuse without creating device/mint profiles or
+  issuing funds. More independently closed profiles are preserved and moved off
+  flash; flushing pending writes then leaves 26,392 KiB available on the third
+  router. The unchanged 24 MiB requirement passes there. The corrected case in
+  `work/export-payload-device/reachable-mint` is running; its initial import
+  succeeds in 1.57 seconds. Pressure and independent final acceptance remain
+  pending. The relocation evidence remains in `work/receiver-history-router`
+  and `work/export-payload-device/recovered-export-relocation`.
 - `work/confirmation-device-builds` preserves independently verified ordinary
   router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
   lifecycle tests, Android lint, signature and packaged-native checks pass.
@@ -140,8 +153,8 @@ full suites or creating additional reports without a concrete verification need.
 1. The sixth diagnostic's original expiry, collection and independent closure
    are complete. All 3,072 test sats are recovered, with no unfinished financial
    owners and the mint stopped. Its failed verdict stays recorded.
-2. Run the already prepared ordinary-ARM large-export case next. Its coordinator
-   has started after that exact financial closure. Measure command CPU, memory,
+2. Finish the corrected ordinary-ARM large-export case, now active after original
+   grant recovery and unfunded preflight corrections. Measure command CPU, memory,
    storage and acknowledgment time in the same run, then independently audit
    refusal, recovery and continued spending. This independent case need not wait
    for a passing receiver-retirement workload.
