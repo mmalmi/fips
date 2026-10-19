@@ -74,6 +74,14 @@ pass and 513 evidence files have identical preserved copies. Natural idle,
 physical movement, battery costs and ad hoc radio operation are not established
 by this configured LAN/UDP test.
 
+The phone stays plugged in at the user's request. Continue tests through its
+existing USB connection; no operator-assisted unplugging or movement is scheduled.
+Controlled link loss/rejoin and forced idle can be exercised remotely, but neither
+qualifies actual movement or natural off-charge operation. A secure wireless
+pairing attempt fails before connection; wireless debugging is restored to its
+original disabled state and USB access remains available. This setup attempt
+issues no funds and changes no phone accounts.
+
 ### Router retirement diagnostic
 
 The failed long attempt preserves all 5,480 genuine receipts and independently
@@ -192,7 +200,9 @@ history pressure.
    records are preserved, all test funds collected and normal services restored.
 2. The corrected phone regression, postflight, stopped-account/mint archives and
    independent wallet audit are complete. Its 158 unchanged harness checks are
-   reused. Physical encounter/rejoin and natural off-charge idle remain open.
+   reused. Continue unattended checks through USB. Physical encounter/rejoin and
+   natural off-charge idle remain unqualified; do not request manual phone actions
+   or substitute simulated battery state for that evidence.
 3. Close the interrupted eighth router rehearsal and complete the corrected
    short workflow. The seventh is independently closed without replacing its
    original funds. Once the full workflow passes,
