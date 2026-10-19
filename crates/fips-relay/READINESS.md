@@ -196,16 +196,28 @@ path was interrupted.
 
 Original-only recovery preserves the last channel's 31-sat buyer authorization
 and matching provider credit, alongside the five actual settlement reports.
-It requires exact cumulative debits/refunds and the resulting stopped-wallet
-allocation before collection; no missing per-channel report is fabricated.
-Recovery and the queued independent audit are running with no new issuance or
-purchase commands. The rejected result, failed management observations and raw
-snapshots remain unchanged in `work/receiver-history-router/short-burst-9`.
+Its first accounting check refuses to equate signed credit with realized payout.
+The provider was stopped past refund eligibility: the last 32-sat deposit returns
+to the sender and its 31-sat signed credit expires unclaimed. The five onward
+channels retain 159 sats of signed lifetime charges, 128 sats of realized payments,
+160 sats of gross debits and 32 sats of refunds. Buyer lifetime authority is not
+reset to the smaller realized payment.
+
+Corrected recovery verifies all five stopped accounts against these committed
+totals, original policy and channel counts before collection. It reuses the shared
+collector with the five actual reports; the missing report's zero realized
+transfer follows from the final cumulative records. No per-channel report is
+fabricated. Collection and the queued independent audit are running with no new
+issuance, purchase commands or relay restarts. The rejected result, failed
+management observations and first recovery refusal remain unchanged in
+`work/receiver-history-router/short-burst-9`.
 
 The Linux controller preparation in `work/receiver-history-router/controller-host-probe`
 stages the same 211-file harness and hash-matched artifacts on the existing Linux
 host, which has sufficient space. A private job key is generated there because
 its existing keys cannot administer the routers; the private key is not copied.
+All 32 focused harness checks pass on Linux/Python 3.14, including the check
+previously skipped on macOS; there are no failures or skips.
 No router authorization changes or new funded case have started. This preparation
 removes no acceptance requirement and does not yet prove stable connectivity.
 
@@ -1313,6 +1325,7 @@ selected wallet implementation and accepted mint are explicit trust dependencies
 | Peer discovery or quote spam | Shared admission/rate/connection/record budgets and bounded quote cache; failed authentication releases unowned carriers. | Arbitrary Sybil fairness and RF anti-jamming are not established. |
 | Free-control bypass | Strict bootstrap shapes/limits, explicit free destinations and earned return allowance; quote payloads remain ordinarily accounted. | Configuration may deliberately authorize free service. |
 | Unexpected onward spending | Separate price, capital, lifetime and provider policies; customer/peer input never grants wallet authority. | Accepted mint solvency/correctness remains trusted. |
+| Provider offline past refund eligibility | Persist original payment authority and preserve signed lifetime charges separately from realized payouts and refunds. The ninth diagnostic retains 31 sats of unclaimed credit without resetting its buyer's authority. | Signed credit remains conditional until claimed. An offline provider can miss its claim deadline and lose that income while the sender recovers the deposit. Channel terms and operational availability must allow time for settlement and recovery. |
 | Crash, full disk, lost reply or incomplete retirement | Durable exact intents, original costs/refunds, reserved completion capacity, retained owners and fail-closed recovery. | Lost/corrupted original evidence cannot be invented; the captured initial-funding cut does not qualify settlement/retirement cuts or flash-write atomicity. |
 | Slow or vanished peer/mint | Independent channel workers, bounded trials/timeouts and retained recovery ownership. | A stuck financial owner can retain capacity; arbitrary stalls cannot guarantee progress. |
 | Unauthenticated ciphertext or transport prelude | Carrier ownership checks, authenticated liveness and fixed startup deadlines; native and finite physical pressure tests. | Tested ingress rates/windows do not prove unlimited DoS tolerance. |
