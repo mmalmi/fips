@@ -43,20 +43,16 @@ Accepted evidence:
   introduce no wallet operations and do not qualify the pending financial case.
   Timing includes timeout supervision and excludes SSH/controller work. Evidence
   in `work/offline-wallet-metrics` retains both corrected preparation-wrapper
-  failures. Two fully archived, financially closed earlier router profiles are
-  relocated from flash to temporary storage with every file preserved, releasing
-  4,992 and 8,632 KiB of observed flash space on their respective routers. The
-  active profiles and original service configuration are unchanged. The prepared
-  export case now selects the second router; its unchanged 24 MiB free-space
-  requirement still needs the closed diagnostic profiles to release more space.
-  Six additional, independently closed diagnostic profiles are relocated from
-  the first two routers after both local archive copies and every device file
-  agree. This releases 15,184 KiB and 3,008 KiB of observed flash space, leaving
-  16,152 KiB and 22,740 KiB respectively before the next pilot. All files remain
-  preserved and normal-service baselines match. The second router still needs
-  more headroom for the 24 MiB export preflight; this is not a completed storage
-  acceptance result. Evidence is in
-  `work/receiver-history-router/closed-diagnostic-relocation`.
+  failures. Closed diagnostic profiles have been verified against two local
+  archive copies, checked for active owners, and relocated from flash to temporary
+  router storage with every file preserved. After the fifth diagnostic's
+  relocation, the first two routers have 20,140 KiB and 25,688 KiB available,
+  before the sixth pilot. Normal-service baselines remain unchanged. The prepared
+  export case uses the second router and retains its 24 MiB free-space preflight.
+  Its queued coordinator waits for the sixth pilot's independent closure, then
+  preserves and relocates that stopped case before checking space again. The
+  relocation evidence remains in `work/receiver-history-router`; this does not
+  establish storage acceptance.
 - `work/confirmation-device-builds` preserves independently verified ordinary
   router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
   lifecycle tests, Android lint, signature and packaged-native checks pass.
@@ -139,19 +135,26 @@ Change it only to fix a demonstrated failure or an unmet requirement. Reuse vali
 checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
 full suites or creating additional reports without a concrete verification need.
 
-1. Original failed-run recovery and the single-burst comparison are closed.
-   Qualify the missing receiver-retirement
-   workload. Reuse the accepted native workload, verified builds and preserved
-   genuine receipts; do not repeat completed preparation by default. Check
-   short traffic and settlement behavior before another lengthy device run.
-2. Run the prepared ordinary-ARM large-export case after that closure. Measure
-   command CPU, memory, storage and acknowledgment time in the same run, then
-   independently audit refusal, recovery and continued spending.
-3. Run the prepared corrected phone regression. Close physical encounter/rejoin
-   and natural-idle observations when the phone is available; forced idle and
-   controlled channel changes do not substitute for them. Retain the documented
-   physical power-loss limits; no further manual cuts are planned.
-4. Reconcile the checklist, threat model, operating/recovery documentation and
+1. Finish the sixth diagnostic's original expiry, collection and independent
+   closure before reusing the shared devices. Its failed verdict stays recorded.
+2. Run the already prepared ordinary-ARM large-export case next. Its coordinator
+   is queued behind that exact financial closure. Measure command CPU, memory,
+   storage and acknowledgment time in the same run, then independently audit
+   refusal, recovery and continued spending. This independent case need not wait
+   for a passing receiver-retirement workload.
+3. Run the prepared corrected phone regression when the devices are released.
+   Close physical encounter/rejoin and natural-idle observations when the phone
+   is available; forced idle and controlled channel changes do not substitute
+   for them. Retain the documented physical power-loss limits; no further manual
+   cuts are planned. The existing postflight, stopped-account archives and
+   independent wallet audit provide the complete closure sequence.
+4. Finish the missing router receiver-retirement acceptance. The seventh
+   one-receipt diagnostic is prepared, with source hashes and its archive saved;
+   it is not launched or funded. It also waits for the export case to release
+   the devices. Reuse verified builds and preserved genuine receipts; qualify
+   the full workflow before repeating lengthy preparation. One receipt does not
+   establish history pressure.
+5. Reconcile the checklist, threat model, operating/recovery documentation and
    local TollGate proposal. Integrate verified changes and remove only completed,
    owned test installations and clean merged worktrees.
 
