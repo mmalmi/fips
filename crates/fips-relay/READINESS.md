@@ -121,6 +121,13 @@ history pressure.
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
+   The final 5,480-receipt driver is prepared and unfunded in
+   `work/receiver-history-router/full-history-driver.py`, with exact bindings in
+   `full-history-inputs.json`. It reuses the qualified harness and financial
+   auditors and refuses a live predecessor. The initial guard-check ordering
+   failure is preserved; corrected preflight and live-owner refusal pass without
+   device actions. Review the completed pilot's timing before launching it: the
+   earlier full receipt preparation took 17,713.54 seconds on the router.
 4. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
    verified changes and remove only completed, owned test installations and clean
