@@ -187,6 +187,11 @@ Evidence is in `work/receiver-history-router/short-burst-2-analysis.json`.
 The prepared harness paces only the initial 960-sat setup channel at this measured
 rate. Complete workload timing and genuine history pressure still require device
 acceptance; the 5,480-receipt, 84-packet and two-second progress criteria remain.
+The complete-workload pilot uses one receipt and the corrected `4f03d81b` ordinary
+ARM binary. Collection now passes the fixture's existing 330-second wallet timeout
+to both main and auxiliary profiles; it previously inherited the 45-second default.
+The new dispatch regression fails before the fix. All 88 focused checks pass,
+with one existing Linux-only check skipped on macOS; no retry is added.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the

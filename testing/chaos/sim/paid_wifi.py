@@ -186,7 +186,7 @@ class PaidWifiRun(WifiRun):
             self.retain_channels(self.channel_anchor, current)
         return current
 
-    def account_execute(self, name, binary, action, body):
+    def account_execute(self, name, binary, action, body, *, operation_timeout=45):
         self.check_forwards()
         self.monitor.check()
         if name == "mint":
@@ -194,7 +194,8 @@ class PaidWifiRun(WifiRun):
             return self.mint.request(body)
         require(binary == "fips-relay" and action == "wallet", "unexpected offline account operation")
         fields = dict(body)
-        return self.nodes[name].control(fields.pop("type"), action=action, **fields)
+        return self.nodes[name].control(fields.pop("type"), action=action,
+                                        operation_timeout=operation_timeout, **fields)
 
     def paid_streams(self, before, phase):
         for source, destination in (("n01", "n03"), ("n03", "n01")):

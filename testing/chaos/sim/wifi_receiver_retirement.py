@@ -249,7 +249,7 @@ exit 1
                                   channel_providers=self.providers)
         view = SimpleNamespace(nodes=self.participants(), state_json=self.state_json, evidence=self.evidence)
         collect_settled_wallets(view, settled, self.reports, self.owners, self.mint_url,
-            execute=self.account_execute, stop=lambda _name: None,
+            execute=partial(self.account_execute, operation_timeout=330), stop=lambda _name: None,
             export_path=lambda name, relative: self.participants()[name].state + '/' + relative,
             fixture=fixture, max_export_sat=32, export_start=starts.__getitem__)
         amounts = self.evidence['phases'][-1]['settlement_collection']['collected_by_node']

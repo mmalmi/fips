@@ -87,12 +87,14 @@ class PurchaseRetirementRun(LiveRetirementRun):
         node = self.participants()[name]
         return json.loads(node.remote(['cat', node.state + '/' + relative]))
 
-    def account_execute(self, name, binary, action, body):
+    def account_execute(self, name, binary, action, body, *, operation_timeout=45):
         if name not in self.extra:
-            return super().account_execute(name, binary, action, body)
+            return super().account_execute(name, binary, action, body,
+                                           operation_timeout=operation_timeout)
         require(binary == 'fips-relay' and action == 'wallet', 'unexpected auxiliary account operation')
         fields = dict(body)
-        return self.ctl(name, fields.pop('type'), action=action, **fields)
+        return self.ctl(name, fields.pop('type'), action=action,
+                        operation_timeout=operation_timeout, **fields)
 
     def udp_config(self, name):
         node = self.nodes[name]

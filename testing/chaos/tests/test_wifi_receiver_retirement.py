@@ -106,6 +106,22 @@ class ReceiverWindowTests(unittest.TestCase):
 
 
 class StoppedCustodyTests(unittest.TestCase):
+    def test_collection_deadline_reaches_original_and_auxiliary_wallets_once(self):
+        run = object.__new__(ReceiverRetirementRun)
+        run.check_forwards, run.monitor = Mock(), Mock()
+        run.nodes = {'n01': SimpleNamespace(control=Mock())}
+        run.extra = {'source': SimpleNamespace(control=Mock())}
+        body = {'type': 'export', 'id': 1, 'amount_sat': 32}
+        for name, profile in run.participants().items():
+            for timeout in (45, 330):
+                with self.subTest(name=name, timeout=timeout):
+                    run.account_execute(name, 'fips-relay', 'wallet', body,
+                                        operation_timeout=timeout)
+                    profile.control.assert_called_once_with('export', action='wallet',
+                        operation_timeout=timeout, id=1, amount_sat=32)
+                    profile.control.reset_mock()
+        self.assertEqual(body, {'type': 'export', 'id': 1, 'amount_sat': 32})
+
     @unittest.skipUnless(sys.platform == 'linux', 'router flock command requires Linux')
     def test_remote_recovery_waits_for_the_original_wallet_owner(self):
         import fcntl
