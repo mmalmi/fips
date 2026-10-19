@@ -48,6 +48,7 @@ mod sim_harness;
 mod source_coords_recovery;
 mod source_routes;
 mod sparse_recovery;
+mod surviving_initiator_restart;
 mod tun_deferred_ownership;
 mod tun_outbound_core;
 mod tun_outbound_tail;

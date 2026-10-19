@@ -120,10 +120,18 @@ impl Node {
                 }
                 return;
             } else if existing.is_established() {
+                // A late simultaneous msg1 is one the peer sent while it was
+                // still Initiating, which it abandons after
+                // handshake_timeout_secs. Past that window, a SessionSetup
+                // from a peer whose initial msg3 we still retain is a fresh
+                // attempt from a peer that lost its side, so it must be
+                // answered rather than dropped until the msg3 is confirmed.
+                let settle_window_ms = self.config.node.rate_limit.handshake_timeout_secs * 1000;
                 if existing.is_initiator()
                     && !existing.has_rekey_in_progress()
                     && existing.pending_new_session().is_none()
                     && existing.handshake_payload().is_some()
+                    && Self::now_ms().saturating_sub(existing.session_start_ms()) < settle_window_ms
                 {
                     debug!(
                         src = %self.peer_display_name(src_addr),
