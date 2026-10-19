@@ -287,11 +287,27 @@ This setup cap does not establish maximum throughput or diagnose every missing
 packet; the 84 measured packets at 3 packets/s, two-second progress and 35-second
 cleanup requirements are unchanged.
 
+A later read-only capture confirms eight admission-wait expirations on the
+forwarding router, totaling 8,584 bytes: exactly eight normal 1,000-byte probes
+with their 73-byte transit envelopes. There are no queue-full, invalidation,
+send-error or background-full drops. The separate eight no-route drops total
+only 792 bytes. These cumulative counters strongly support expiry during payment
+backpressure; absent pre-burst deltas or packet identities, they do not prove
+individual attribution or why replenishment was delayed. Original analysis and
+the source-bound supplement remain in
+`work/receiver-history-router/restart-recovery-burst-diagnosis`.
+
 The new USB-only phone regression seals the qualified artifacts without device
 actions or funding. It requires this exact router run's independent financial
 closure, stopped original owners/mint and restored normal baselines before
 launch. A failed hardware verdict is preserved and does not prevent financial
 release. No manual unplugging, movement or pairing is scheduled.
+Before any installation or funding, review catches a repeated-observation
+directory collision in the first phone preparation. Its two unfunded waiters are
+stopped and all original bytes preserved. The replacement in
+`work/phone-restart-recovery-2` uses a separate private directory per observation;
+the mocked second-call regression fails before correction and passes afterward.
+Artifacts, workload, financial terms and the unchanged 158-check harness are reused.
 
 The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
 `104f01754`. It refuses charging, simulated or forced idle before funding,
