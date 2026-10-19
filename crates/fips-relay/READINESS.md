@@ -16,7 +16,7 @@ requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Seven diagnostic attempts are independently closed. The eighth controller disappears during preparation, with four funded channels; the remote guards restore normal services and its original mint still accounts for all 3,072 sats. | Close the interrupted originals and complete the corrected one-receipt rehearsal. The full history workload has not passed; one receipt cannot establish history pressure. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Eight diagnostic attempts are independently closed, including recovery of all 3,072 original sats after the eighth controller disappears. The corrected ninth rehearsal is running. | Complete the one-receipt rehearsal, then qualify the full history workload. One receipt cannot establish history pressure. |
 | Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
@@ -165,8 +165,11 @@ three recorded net transfers feed the shared collection distribution check;
 no per-channel report is fabricated. Original incoming expiry and retirement are
 complete. All five accounts match their original cumulative debit, refund,
 exposure and remaining-budget totals, with no unfinished channel owners. Collection
-of the original funds and the independent stopped-wallet/mint audit are still
-running. Evidence is in `work/receiver-history-router/short-burst-8`.
+and the independent stopped-wallet/mint audit now reconcile all 3,072 original
+sats with no financial issues, zero new issuance, a stopped mint and every
+normal-service baseline restored. The missing individual report and interrupted
+failed verdict remain preserved. All 79 case files have identical archived
+copies. Evidence is in `work/receiver-history-router/short-burst-8`.
 The recovery and independent closure run independently of the chat command
 session. The ninth rehearsal's unchanged harness, verified artifact and unfunded
 preflight are preserved in `work/receiver-history-router/short-burst-9-*`.
@@ -175,7 +178,10 @@ exact audit owner to exit, requires independently conserved originals and a
 stopped mint, then repeats device/space preflight before launching the rehearsal.
 Interrupted predecessor handling verifies its actual recovery directory and
 preserves the missing individual report. There is no automatic funding retry or
-full-history launch.
+full-history launch. The ninth rehearsal, `c9d13bc1c5da`, has started after that
+independent closure and fresh device preflight. It uses the same verified ARM
+artifact and corrected 211-file harness, with one real receipt and the complete
+workload. Its functional and financial acceptance remain pending.
 
 Natural idle now has a prepared harness on branch `codex/receiver-setup-pacing`,
 commit `104f01754`. It refuses charging, simulated or forced idle before funding,
@@ -206,9 +212,9 @@ history pressure.
    reused. Continue unattended checks through USB. Physical encounter/rejoin and
    natural off-charge idle remain unqualified; do not request manual phone actions
    or substitute simulated battery state for that evidence.
-3. Close the interrupted eighth router rehearsal and complete the corrected
-   short workflow. The seventh is independently closed without replacing its
-   original funds. Once the full workflow passes,
+3. The interrupted eighth router rehearsal is independently closed without
+   replacing its original funds. Complete the running ninth rehearsal's corrected
+   short workflow. Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
