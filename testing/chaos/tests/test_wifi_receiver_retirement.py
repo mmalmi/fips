@@ -19,10 +19,35 @@ from sim import wifi_receiver_custody as custody
 from sim.remote_mint import RemoteMint
 from sim.wifi_receiver_window import exposure, progress
 from sim.wifi_receiver_retirement import ReceiverRetirementRun, SNAPSHOT_BUDGET, RECOVERY_RESERVE
-from sim.wifi_receiver_workload import ReceiverWorkload
+from sim.wifi_receiver_workload import ReceiverWorkload, TRANSIT_SETUP_SECONDS
 
 
 class ReceiverWorkloadTests(unittest.TestCase):
+    def test_final_observation_fits_earliest_preparation_service_window(self):
+        run = ReceiverRetirementRun.__new__(ReceiverRetirementRun)
+        configs = {name: run.terms(name, {'terms': {'controller': {}}})['terms']
+                   for name in ('source', 'n02', 'n03')}
+        # Preparation, retirement eligibility, held probe and the full observation.
+        required_seconds = TRANSIT_SETUP_SECONDS + 3 + 3 + 37
+        for buyer, provider in [('source', 'n02'), ('n02', 'n03')]:
+            service = min(configs[buyer]['controller']['channel_lifetime_secs'] // 2,
+                          configs[provider]['quote_lifetime_secs'])
+            with self.subTest(buyer=buyer):
+                self.assertGreaterEqual(service, required_seconds)
+
+    def test_retirement_waits_for_original_prefix_deadlines_only(self):
+        run = ReceiverWorkload()
+        run.old = {'first', 'second'}
+        run.intents = {'first': {'refund_after_unix': 100},
+                       'second': {'refund_after_unix': 120},
+                       'current': {'refund_after_unix': 500}}
+        run.until = Mock()
+        run.journal = Mock(return_value={'funding': {}})
+        with patch('sim.wifi_receiver_workload.maintenance_idle', return_value=True):
+            run.retired_prefix()
+        run.until.assert_called_once_with(121)
+        self.assertEqual(run.old, {'first', 'second'})
+
     def test_incomplete_burst_keeps_both_packet_counts_without_replaying_send(self):
         shape = dict(stream_id='original', packet_count=2, payload_bytes=1000)
         sender = dict(stream_id='original', requested_packets=2, submitted_packets=2,

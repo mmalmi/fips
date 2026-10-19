@@ -282,6 +282,17 @@ wall and monotonic start/end times so expiry can be checked directly. Focused
 checks pass 25 tests with one existing Linux-only skip; generated configurations
 for all five participants confirm that only the stated lifetimes changed.
 
+A full-sequence review also catches two conflicts before another funded run:
+retained sender prefixes could wait longer for eligibility than the fixed
+180-second maintenance timeout, and the final setup started only ten seconds
+before receiver expiry. The fixture now waits for the original prefix's maximum
+refund deadline before timing maintenance, starts final preparation 45 seconds
+early, and gives the independent source 120 seconds of service. Both final hops
+therefore cover preparation, eligibility, the held probe and the unchanged
+35-second observation. Setup and writer-hold wall times are retained. Two focused
+checks fail before the correction; 27 checks pass afterward with one existing
+Linux-only skip. These verify fixture scheduling, not hardware acceptance.
+
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
 15–16 October comparisons; the Spilman and TCP/FIPS dependency inventories also

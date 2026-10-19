@@ -13,7 +13,8 @@ from .wifi_priority_checks import received, submitted
 from .wifi_retirement_live import maintenance_idle
 from .wifi_receiver_window import exposure, measure
 
-CHANNEL_LIFETIMES = {"n01": 2400, "n02": 240}
+CHANNEL_LIFETIMES = {"n01": 2400, "n02": 240, "source": 240}
+TRANSIT_SETUP_SECONDS = 45
 
 
 def caught_up(progress):
@@ -173,6 +174,8 @@ class ReceiverWorkload:
         self.save()
 
     def retired_prefix(self):
+        # Start the maintenance deadline after the originals become eligible.
+        self.until(max(self.intents[channel]['refund_after_unix'] for channel in self.old) + 1)
         def done():
             journal = self.journal()
             return maintenance_idle(journal) and all(row['funded']['terms']['id'] not in self.old
@@ -214,10 +217,14 @@ class ReceiverWorkload:
                     'sender retirement released still receiver-owned originals')
             custody.unchanged(archive, self.retained_history)
             self.restart('n02')
-        require(len(self.old) == 28 and len(self.old_inputs) == 896 and time.time() < deadline - 40,
+        require(len(self.old) == 28 and len(self.old_inputs) == 896 and time.time() < deadline - TRANSIT_SETUP_SECONDS,
                 'preparation did not preserve original receiver owner and deadline')
         # Preserve service time after the incoming refund deadline for the live window.
-        self.until(deadline - 10)
+        self.until(deadline - TRANSIT_SETUP_SECONDS)
+        self.evidence['receiver_history']['transit_setup'] = {
+            'started_unix': time.time(), 'receiver_refund_after_unix': deadline,
+            'planned_lead_seconds': TRANSIT_SETUP_SECONDS}
+        self.save()
         self.guard = self.buy_route('n02', 'destination', 'n03', 32)
         archive = self.stop_snapshot('n02', 'before-transit')
         self.guard_inputs, guard_operation = custody.inputs(archive, self.intents[self.guard], self.originals)
@@ -252,6 +259,8 @@ class ReceiverWorkload:
                 'original receiver settlement is not durably released')
         self.held_nodes.append('n02')
         self.nodes['n02'].hold_wallet(self.args.sqlite_hold, seconds=150)
+        self.evidence['receiver_history']['transit_setup']['writer_held_unix'] = time.time()
+        self.save()
         require(time.time() < deadline, 'writer hold began after original retirement deadline')
         self.until(deadline + 3)
         eligible = self.journal()
