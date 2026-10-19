@@ -16,8 +16,8 @@ accounted for. The paced router
 rehearsal delivers every measured packet and finishes cleanup, but fails its
 payment-progress observation. The next rehearsal records a failed bounded proof
 read and incomplete timing coverage; its original-fund recovery is running.
-Router retirement acceptance remains pending, with further observer correction
-required before another run.
+Router retirement acceptance remains pending. A further harness correction now
+passes its focused Linux/macOS checks; another actual router run is required.
 Earlier results remain attached to their recorded
 artifacts. Production readiness still depends
 on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
@@ -420,6 +420,21 @@ history pressure.
    `work/observer-rehearsal-current-window`. All 31 settlements are subsequently
    recorded; the root-owned sequence continues original-fund collection and
    independent auditing without operator actions or a full-history launch.
+   Integrated correction `be3c18f6d` keeps one outstanding read per progress
+   counter, so a slow status query cannot delay unrelated readers. Cached values
+   do not count as fresh observations. Custody pairs run at most once per second;
+   bounded remote-read failures remain explicit missing observations, while
+   JSON/schema/count/identity failures remain fatal. Missing custody cannot prove
+   overlap, completion or fresh post-terminal custody. The same two-second and
+   35-second limits, original stream and financial terms remain unchanged.
+   All 30 focused checks pass on the exact 213-file Linux harness; macOS passes
+   29 with one existing Linux-only skip. All 209 other harness files match the
+   preceding qualified bundle. A local qualifier preflight initially selected
+   the overlaid test fixture instead of its paced base; it fails before remote
+   staging and is preserved separately. The corrected qualifier pins both layers.
+   Sources, logs and integration bindings remain in
+   `work/receiver-observer-availability`. This is harness qualification, not a
+   hardware pass or proof that the failed SQLite read was busy or timed out.
    Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
@@ -485,6 +500,11 @@ history pressure.
    sequence bindings remain in `work/full-history-observer-draft`,
    `work/n02-closed-space-execution-2`, `work/full-history-resource-observer`
    and `work/current-device-sequences/full-history-observer-initial`.
+   The separate `work/n02-closed-space-execution-3` passes 16 offline checks for
+   capacity preservation after the failed rehearsal independently closes and all
+   exact owners exit. It retains that failed verdict, uses the same exact archive
+   and inactive-helper targets, and grants no full-history launch authority.
+   It remains unexecuted until actual financial release and restored baselines.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
