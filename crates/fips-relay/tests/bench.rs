@@ -33,6 +33,7 @@ async fn real_mint_funds_a_saved_relay_and_redeems_its_private_export() {
         bind: "127.0.0.1:0".parse().unwrap(),
         max_issued_sat: 256,
         fragmented_channel_keyset: false,
+        receiver_history_keyset: false,
     };
     let mut mint = BenchMint::start(mint_config).await.unwrap();
     let mut cfg = config(root.path(), mint.url());
@@ -379,6 +380,7 @@ async fn test_mint_refuses_public_or_wildcard_binding() {
             bind: address.parse().unwrap(),
             max_issued_sat: 10,
             fragmented_channel_keyset: false,
+            receiver_history_keyset: false,
         };
         assert!(BenchMint::start(cfg).await.is_err());
         assert!(!root.join("mint").exists());
@@ -388,6 +390,7 @@ async fn test_mint_refuses_public_or_wildcard_binding() {
         bind: "127.0.0.1:0".parse().unwrap(),
         max_issued_sat: 10,
         fragmented_channel_keyset: false,
+        receiver_history_keyset: false,
     };
     let mut mint = BenchMint::start(cfg.clone()).await.unwrap();
     let recovery_path = cfg.state_directory.join("recovery.json");
@@ -448,6 +451,12 @@ async fn acknowledged_exports_outlive_the_request_limit_without_reusing_spends()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "real large tokens fill the retained export or storage bound; run explicitly"]
+async fn large_retained_exports_complete_after_admission_refusal() {
+    export_retirement::check_large_export_pressure().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn command_line_tools_fund_and_recover_export_over_the_private_control_socket() {
     use std::{process::Stdio, time::Duration};
     use tokio::{io::AsyncWriteExt, process::Command};
@@ -478,6 +487,7 @@ async fn command_line_tools_fund_and_recover_export_over_the_private_control_soc
             bind: "127.0.0.1:0".parse().unwrap(),
             max_issued_sat: 16,
             fragmented_channel_keyset: false,
+            receiver_history_keyset: false,
         };
         let path = root.path().join("mint.json");
         std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();

@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 
 #[path = "receiver/custody.rs"]
 mod custody;
+#[path = "receiver/history.rs"]
+mod history;
 #[path = "receiver/observation.rs"]
 mod observation;
 use custody::*;
@@ -18,18 +20,48 @@ const UNSPENT: usize = 31;
 // 64-slot payer. The payout still spans eight ordinary 128-proof release batches.
 const SOURCE: usize = 4;
 const TRANSIT_CAPACITY: u64 = 64;
-const HELD_PACKETS: u32 = 64;
-const ACTIVE_PACKETS: u32 = 432;
-const PAYLOAD_BYTES: usize = 40;
-const PACKET_RATE: u32 = 72;
 const INITIAL: u64 = 3072;
+
+#[derive(Clone, Copy)]
+struct Traffic {
+    held_packets: u32,
+    live_packets: u32,
+    payload_bytes: usize,
+    packets_per_second: u32,
+}
+
+impl Traffic {
+    fn for_history(retained: bool) -> Self {
+        if !retained {
+            Self {
+                held_packets: 64,
+                live_packets: 432,
+                payload_bytes: 40,
+                packets_per_second: 72,
+            }
+        } else {
+            // About 28 seconds of paid data covers the observed ARM cleanup.
+            // Calibration still refuses exposure that cannot fit original funds.
+            Self {
+                held_packets: 8,
+                live_packets: 84,
+                payload_bytes: 1000,
+                packets_per_second: 3,
+            }
+        }
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "opt-in ordinary eight-batch spent receiver retirement with transit traffic"]
 async fn spent_receiver_payout_retires_during_paid_forwarding() {
-    tokio::time::timeout(Duration::from_secs(1200), exercise())
-        .await
-        .expect("bounded spent-payout scenario; preserve original failed evidence");
+    let rows = history::requested();
+    tokio::time::timeout(
+        Duration::from_secs(if rows == 0 { 1200 } else { 7200 }),
+        exercise(rows),
+    )
+    .await
+    .expect("bounded spent-payout scenario; preserve original failed evidence");
 }
 
 async fn mutate(
@@ -223,7 +255,8 @@ async fn expired_prefix(bench: &setup::Bench, old: &BTreeSet<String>) {
     .expect("ordinary upkeep must retire the original funding prefix");
 }
 
-async fn exercise() {
+async fn exercise(rows: u64) {
+    let traffic_profile = Traffic::for_history(rows != 0);
     let root = retained_tempdir();
     let network = PaymentNetwork::new(9631, 0, Arc::new(VirtualClock::new(now())));
     let mint = LocalMint::start_with_limits(
@@ -262,7 +295,11 @@ async fn exercise() {
             };
             cfg.terms.controller.channel_lifetime_secs = if index == 0 { 720 } else { 120 };
             cfg.terms.controller.max_funding_overhead_sat = 0;
-            cfg.terms.wallet_capacity_bytes = Some(NATIVE_LIMIT);
+            cfg.terms.wallet_capacity_bytes = Some(if rows == 0 {
+                NATIVE_LIMIT
+            } else {
+                history::WALLET_BYTES
+            });
             cfg.terms.buyer_budget_sat = if index == 0 { 2048 } else { 1024 };
             cfg.terms.fee_msat_per_kib = match index {
                 1 | 2 => 256, // Frequent whole-sat progress within the original channel budgets.
@@ -281,11 +318,15 @@ async fn exercise() {
         },
     )
     .await;
+    let retained = history::prepare(&mut bench, rows).await;
     let wallet = bench.configs[1].state_directory.join("wallet");
     let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&wallet))
         .await
         .unwrap();
-    assert!(records(&db).await.is_empty());
+    assert!(
+        records(&db).await == retained.coins,
+        "only the separately audited genuine history may precede the payout"
+    );
     let mut stream = 10_000;
     let incoming = buy(&bench, 0, 2).await;
     let (_, incoming_funding) = funding(&bench, 0, &incoming);
@@ -302,37 +343,49 @@ async fn exercise() {
             .all(|p| p.state == State::Unspent && p.proof.amount.to_u64() == 1)
     );
     assert!(
-        records(&db).await == originals,
-        "payout must be R's only funding"
+        records(&db).await
+            == retained
+                .coins
+                .iter()
+                .chain(&originals)
+                .map(|(key, proof)| (key.clone(), proof.clone()))
+                .collect(),
+        "the complete wallet must contain only exact retained history and original payout"
+    );
+    assert!(
+        retained
+            .coins
+            .keys()
+            .all(|key| !originals.contains_key(key))
     );
     let mut old = BTreeSet::new();
     let mut old_inputs = BTreeSet::new();
     let mut old_operations = BTreeSet::new();
-    for _ in 0..2 {
-        for _ in 0..RETIRED / 2 {
-            let channel = buy(&bench, 1, 3).await;
-            let (_, opened) = funding(&bench, 1, &channel);
-            assert_eq!(opened["capacity_sat"], 32);
-            let (inputs, operation) = original_inputs(&wallet, &opened).await;
-            assert_eq!(inputs.len(), 32);
-            for key in inputs {
-                assert!(originals.contains_key(&key) && old_inputs.insert(key));
-            }
-            assert!(old_operations.insert(operation));
-            earn(&bench, 1, 3, &channel, 32, &mut stream).await;
-            settle(&bench, 1, &channel, 32).await;
-            assert!(old.insert(channel));
-            assert!(
-                journal(&bench.configs[1])["funding"]
-                    .as_object()
-                    .unwrap()
-                    .len()
-                    <= 16
-            );
+    for index in 0..RETIRED {
+        let channel = buy(&bench, 1, 3).await;
+        let (_, opened) = funding(&bench, 1, &channel);
+        assert_eq!(opened["capacity_sat"], 32);
+        let (inputs, operation) = original_inputs(&wallet, &opened).await;
+        assert_eq!(inputs.len(), 32);
+        for key in inputs {
+            assert!(originals.contains_key(&key) && old_inputs.insert(key));
         }
-        expired_prefix(&bench, &old).await;
-        released_sends(&db, &wallet, &old_operations).await;
-        retained_originals(&db, &originals).await;
+        assert!(old_operations.insert(operation.clone()));
+        earn(&bench, 1, 3, &channel, 32, &mut stream).await;
+        settle(&bench, 1, &channel, 32).await;
+        assert!(old.insert(channel));
+        assert!(
+            journal(&bench.configs[1])["funding"]
+                .as_object()
+                .unwrap()
+                .len()
+                <= 16
+        );
+        if (index + 1) % (RETIRED / 2) == 0 {
+            expired_prefix(&bench, &old).await;
+            released_sends(&db, &wallet, &old_operations).await;
+            retained_originals(&db, &originals).await;
+        }
     }
     assert_eq!(old.len(), RETIRED);
     assert_eq!(old_inputs.len(), RETIRED * GUARD_COINS);
@@ -340,7 +393,9 @@ async fn exercise() {
         now() < deadline - 40,
         "preparation must leave the original receiver owner intact"
     );
-    wait_until(deadline - 30).await;
+    // A 120-second funding lifetime provides 60 seconds of forwarding. Keep
+    // enough service time after the incoming refund deadline for the live window.
+    wait_until(deadline - 10).await;
     let guard = buy(&bench, 1, 3).await;
     let (guard_request, guard_funding) = funding(&bench, 1, &guard);
     let guard_deadline = guard_funding["refund_after_unix"].as_u64().unwrap();
@@ -374,7 +429,16 @@ async fn exercise() {
         status(&bench.configs[SOURCE]).await,
         status(&bench.configs[1]).await,
     ];
-    traffic(&bench, SOURCE, 3, &mut stream, 1, PAYLOAD_BYTES, 1).await;
+    traffic(
+        &bench,
+        SOURCE,
+        3,
+        &mut stream,
+        1,
+        traffic_profile.payload_bytes,
+        1,
+    )
+    .await;
     let warm_a = caught_up(&bench.configs[SOURCE], &transit).await;
     let warm_r = caught_up(&bench.configs[1], &guard).await;
     let exposure = transit_exposure(
@@ -382,9 +446,11 @@ async fn exercise() {
         [&warm_a, &warm_r],
         [&warm_a, &warm_r],
         [&transit, &guard],
-        HELD_PACKETS + ACTIVE_PACKETS,
+        traffic_profile,
+        traffic_profile.held_packets + traffic_profile.live_packets,
     );
     let history_size = history_size(&db, &wallet).await;
+    retained.unchanged(&db).await;
     let original_sale = journal(&bench.configs[1])["seller_settlements"][&incoming].clone();
     assert!(original_sale["released"] == true && original_sale["report"].is_object());
     let mut measured = observation::Window::new(bench.children[1].id().unwrap());
@@ -406,7 +472,9 @@ async fn exercise() {
             .values()
             .all(|route| route["channel"]["id"] != incoming)
     );
+    let inspection_started = Instant::now();
     let held_originals = payout(&bench.configs[1], &incoming, &db).await;
+    let held_inspection_us = inspection_started.elapsed().as_micros();
     assert!(held_originals == before);
     let warm_credit = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
     let held = traffic(
@@ -414,9 +482,9 @@ async fn exercise() {
         SOURCE,
         3,
         &mut stream,
-        HELD_PACKETS,
-        PAYLOAD_BYTES,
-        PACKET_RATE,
+        traffic_profile.held_packets,
+        traffic_profile.payload_bytes,
+        traffic_profile.packets_per_second,
     )
     .await;
     let held_a = caught_up(&bench.configs[SOURCE], &transit).await;
@@ -446,22 +514,34 @@ async fn exercise() {
         [&warm_a, &warm_r],
         [&held_a, &held_r],
         [&transit, &guard],
-        ACTIVE_PACKETS,
+        traffic_profile,
+        traffic_profile.live_packets,
     );
     let credit_before = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
     measured.sample();
     let progress_baseline = json!({"elapsed_us":measured.elapsed_us(),"delivered":0,
         "credits":credit_before,"payments":[held_a["payment_progress"][&transit],
             held_r["payment_progress"][&guard]]});
+    for expires in [
+        guard_funding["expires_unix"].as_u64().unwrap(),
+        funding(&bench, SOURCE, &transit).1["expires_unix"]
+            .as_u64()
+            .unwrap(),
+    ] {
+        assert!(
+            now() + 37 < expires,
+            "the full 35-second observation must fit the original forwarding terms"
+        );
+    }
     stream += 1;
     let sending = probe_between(
         &bench,
         SOURCE,
         3,
         stream,
-        ACTIVE_PACKETS,
-        PACKET_RATE,
-        PAYLOAD_BYTES,
+        traffic_profile.live_packets,
+        traffic_profile.packets_per_second,
+        traffic_profile.payload_bytes,
     )
     .await;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -478,12 +558,13 @@ async fn exercise() {
     measured.release();
     drop(writer.stdin.take());
     assert!(writer.wait().await.unwrap().success());
+    let writer_released_unix = now();
     let mut samples = Vec::new();
     let mut resources = None;
     let mut cleanup_finished_us = None;
     let mut traffic_finished_us = None;
     let mut payments_finished = false;
-    tokio::time::timeout(Duration::from_secs(35), async {
+    let completion = tokio::time::timeout(Duration::from_secs(35), async {
         loop {
             if resources.is_none() {
                 measured.sample();
@@ -509,7 +590,7 @@ async fn exercise() {
                 ];
                 let credits = [credit(&bench, 1, &transit), credit(&bench, 2, &guard)];
                 let elapsed = measured.elapsed_us();
-                if delivered == u64::from(ACTIVE_PACKETS) {
+                if delivered == u64::from(traffic_profile.live_packets) {
                     traffic_finished_us.get_or_insert(elapsed);
                     payments_finished = payments.iter().all(payment_caught_up);
                 }
@@ -528,8 +609,18 @@ async fn exercise() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("whole receiver retirement must finish while the original outgoing guard is active");
+    .await;
+    save(
+        root.path(),
+        &json!({"observation_complete":completion.is_ok(),"samples":samples,
+            "cleanup_finished_us":cleanup_finished_us,"traffic_finished_us":traffic_finished_us,
+            "payments_finished":payments_finished,"held_inspection_us":held_inspection_us,
+            "writer_released_unix":writer_released_unix,
+            "guard_expires_unix":guard_funding["expires_unix"],"observed_unix":now()}),
+    );
+    completion.expect(
+        "whole receiver retirement must finish while the original outgoing guard is active",
+    );
     let resources = resources.unwrap();
     // Preserve the 500-ms cadence and financial terms. The two-second bound is
     // an acceptance limit for observed progress under this paced workload.
@@ -539,7 +630,7 @@ async fn exercise() {
     progress["cleanup_finished_us"] = json!(cleanup_finished_us);
     progress["traffic_finished_us"] = json!(traffic_finished_us);
     progress["traffic_covers_cleanup"] = json!(cleanup_finished_us <= traffic_finished_us);
-    let live = delivered_to(&bench, 3, sending, ACTIVE_PACKETS).await;
+    let live = delivered_to(&bench, 3, sending, traffic_profile.live_packets).await;
     let after_a = caught_up(&bench.configs[SOURCE], &transit).await;
     let after_r = caught_up(&bench.configs[1], &guard).await;
     for (before_state, after_state, channel, seller) in [
@@ -563,10 +654,12 @@ async fn exercise() {
     });
     let mut result = json!({"profile":{"originals":PAYOUT,"release_batches":PAYOUT.div_ceil(128),"released_spent":RETIRED*GUARD_COINS,
         "guard_spent":GUARD_COINS,"retained_unspent":UNSPENT,"initial_sat":INITIAL,
-        "held_packets":HELD_PACKETS,"live_packets":ACTIVE_PACKETS,"payload_bytes":PAYLOAD_BYTES,
-        "packets_per_second":PACKET_RATE},"history_size":history_size,
+        "held_packets":traffic_profile.held_packets,"live_packets":traffic_profile.live_packets,"payload_bytes":traffic_profile.payload_bytes,
+        "packets_per_second":traffic_profile.packets_per_second},"history_size":history_size,
+        "genuine_retained_history":retained.observation,
         "proof_slots_before_transit":proof_slots,"transit_opening_bytes":opening_bytes,"exposure":exposure,"live_exposure":live_exposure,
         "resources":resources,"held_probe":held,"live_probe":live,"samples":samples,
+        "held_inspection_us":held_inspection_us,"writer_released_unix":writer_released_unix,
         "progress_baseline":progress_baseline,"progress":progress,
         "held_progress":{"warm":[warm_a["payment_progress"][&transit],warm_r["payment_progress"][&guard]],
             "held":[held_a["payment_progress"][&transit],held_r["payment_progress"][&guard]],
@@ -612,6 +705,7 @@ async fn exercise() {
         stop(child).await;
     }
     setup::verify_settled_wallets(&bench, &url, INITIAL).await;
+    retained.unchanged(&db).await;
     result["conserved_sat"] = json!(INITIAL);
     result["final_original_unspent"] = json!(UNSPENT);
     save(root.path(), &result);

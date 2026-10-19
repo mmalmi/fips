@@ -17,30 +17,55 @@ use std::{
 async fn fragmented_channels_preserve_original_grant_refunds_and_final_collection() {
     let root = tempfile::tempdir().unwrap().keep();
     eprintln!("fragmented channel fixture: {}", root.display());
-    tokio::time::timeout(Duration::from_secs(180), exercise(&root))
+    tokio::time::timeout(Duration::from_secs(180), exercise(&root, false))
         .await
         .expect("bounded grant/channel/refund/collection test");
     std::fs::remove_dir_all(root).unwrap();
 }
 
-async fn exercise(root: &Path) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receiver_history_keyset_preserves_959_original_payouts_and_collection() {
+    let root = tempfile::tempdir().unwrap().keep();
+    eprintln!("receiver keyset fixture: {}", root.display());
+    tokio::time::timeout(Duration::from_secs(180), exercise(&root, true))
+        .await
+        .expect("bounded receiver grant/payout/collection test");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+async fn exercise(root: &Path, receiver_history: bool) {
+    let grant_sat = if receiver_history { 3072 } else { 128 };
+    let capacity = if receiver_history { 960 } else { 32 };
+    let denominations = if receiver_history {
+        [1, 960, 1024]
+    } else {
+        [1, 64, 128]
+    };
     let mut config: BenchConfig = serde_json::from_value(json!({
         "state_directory": root.join("mint"),
-        "bind": "127.0.0.1:0", "max_issued_sat": 513
+        "bind": "127.0.0.1:0", "max_issued_sat": if receiver_history {3073} else {513}
     }))
     .unwrap();
     assert!(!config.fragmented_channel_keyset);
-    config.fragmented_channel_keyset = true;
+    assert!(!config.receiver_history_keyset);
+    config.fragmented_channel_keyset = !receiver_history;
+    config.receiver_history_keyset = receiver_history;
     assert!(BenchMint::start(config.clone()).await.is_err());
     assert!(!config.state_directory.exists());
-    config.max_issued_sat = 128;
+    config.max_issued_sat = grant_sat;
+    if receiver_history {
+        config.fragmented_channel_keyset = true;
+        assert!(BenchMint::start(config.clone()).await.is_err());
+        assert!(!config.state_directory.exists());
+        config.fragmented_channel_keyset = false;
+    }
     let mut mint = BenchMint::start(config).await.unwrap();
     let cfg = super::config(root, mint.url());
     RelayService::initialize(cfg.clone()).await.unwrap();
     let grant = mint
         .handle(BenchRequest::Issue {
             id: "original".into(),
-            amount_sat: 128,
+            amount_sat: grant_sat,
         })
         .await
         .unwrap();
@@ -71,9 +96,9 @@ async fn exercise(root: &Path) {
     )
     .unwrap();
     drop(issuer);
-    let bounded = parsed.value().unwrap().to_u64() == 128
+    let bounded = parsed.value().unwrap().to_u64() == grant_sat
         && amounts.len() <= 65
-        && amounts.iter().all(|amount| [1, 64, 128].contains(amount))
+        && amounts.iter().all(|amount| denominations.contains(amount))
         && serde_json::to_vec(&history["entries"]["fips-export:original"])
             .unwrap()
             .len()
@@ -87,7 +112,7 @@ async fn exercise(root: &Path) {
         .await
         .unwrap();
         mint.shutdown().await;
-        panic!("128-sat grant must fit the ordinary recovery-record bound");
+        panic!("original grant must fit the ordinary recovery-record bound");
     }
     offline_wallet(
         &cfg,
@@ -108,7 +133,12 @@ async fn exercise(root: &Path) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    for (index, paid) in std::iter::repeat_n(0, 15).chain([19]).enumerate() {
+    let payments: Vec<u64> = if receiver_history {
+        vec![959]
+    } else {
+        std::iter::repeat_n(0, 15).chain([19]).collect()
+    };
+    for (index, paid) in payments.iter().copied().enumerate() {
         let wallet = CashuWalletService::open_file_backed(&buyer).await.unwrap();
         wallet.set_request_budget(128, 60_000).unwrap();
         let opened = wallet
@@ -116,8 +146,8 @@ async fn exercise(root: &Path) {
                 StreamingRouteOpenCashuSpilmanChannelFromWalletRequest {
                     mint_url: mint.url().into(),
                     receiver_pubkey_hex: receiver.receiver_pubkey_hex().into(),
-                    capacity_sat: 32,
-                    max_total_amount_sat: Some(32),
+                    capacity_sat: capacity,
+                    max_total_amount_sat: Some(capacity),
                     expiry_unix: now + 300 + index as u64,
                     max_amount_per_output: 0,
                     unit: "sat".into(),
@@ -131,11 +161,16 @@ async fn exercise(root: &Path) {
             .await
             .unwrap();
         drop(wallet);
-        assert_eq!(opened.channel.funding_token_amount, 32);
+        assert_eq!(opened.channel.funding_token_amount, capacity);
         let funding: Vec<Proof> =
             serde_json::from_value(opened.channel.payment.funding_proofs.clone().unwrap()).unwrap();
-        assert_eq!(funding.len(), 32);
-        assert!(funding.iter().all(|proof| proof.amount.to_u64() == 1));
+        if receiver_history {
+            assert_eq!(funding.len(), 1);
+            assert_eq!(funding[0].amount.to_u64(), capacity);
+        } else {
+            assert_eq!(funding.len(), 32);
+            assert!(funding.iter().all(|proof| proof.amount.to_u64() == 1));
+        }
         let id = &opened.channel.channel_id;
         let signer = FileSpilmanPaymentSigner::load(&buyer).unwrap();
         let payment = signer.sign_cashu_spilman_payment(id, paid, true).unwrap();
@@ -145,31 +180,39 @@ async fn exercise(root: &Path) {
             .unwrap();
         let settled = receiver.close_cashu_spilman_channel(id).await.unwrap();
         assert_eq!(settled.receiver_sum, paid);
-        assert_eq!(settled.sender_sum, 32 - paid);
+        assert_eq!(settled.sender_sum, capacity - paid);
         let refund: Vec<Proof> = serde_json::from_str(&settled.sender_proofs_json).unwrap();
-        assert_eq!(refund.len() as u64, 32 - paid);
+        assert_eq!(refund.len() as u64, capacity - paid);
         assert!(refund.iter().all(|proof| proof.amount.to_u64() == 1));
         let restored = restore_streaming_route_cashu_spilman_refund(&buyer, id)
             .await
             .unwrap();
         assert!(restored.complete);
-        assert_eq!(restored.imported_amount_sat, 32 - paid);
+        assert_eq!(restored.imported_amount_sat, capacity - paid);
         if paid > 0 {
             let proofs: Vec<Proof> = serde_json::from_str(&settled.receiver_proofs_json).unwrap();
-            let token = Token::new(
-                mint.url().parse().unwrap(),
-                proofs,
-                None,
-                "sat".parse().unwrap(),
-            );
-            assert_eq!(
-                mint.handle(BenchRequest::Collect {
-                    token: token.to_string()
-                })
-                .await
-                .unwrap()["amount_sat"],
-                paid
-            );
+            if receiver_history {
+                assert_eq!(proofs.len(), 959);
+                assert!(proofs.iter().all(|proof| proof.amount.to_u64() == 1));
+            }
+            // P2PK payout witnesses must also fit the ordinary token-size bound.
+            for batch in proofs.chunks(32) {
+                let amount: u64 = batch.iter().map(|proof| proof.amount.to_u64()).sum();
+                let token = Token::new(
+                    mint.url().parse().unwrap(),
+                    batch.to_vec(),
+                    None,
+                    "sat".parse().unwrap(),
+                );
+                assert_eq!(
+                    mint.handle(BenchRequest::Collect {
+                        token: token.to_string()
+                    })
+                    .await
+                    .unwrap()["amount_sat"],
+                    amount
+                );
+            }
         }
     }
     let db = cdk_sqlite::WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&buyer))
@@ -184,11 +227,21 @@ async fn exercise(root: &Path) {
             .iter()
             .map(|coin| coin.proof.amount.to_u64())
             .sum::<u64>(),
-        109
+        grant_sat - payments.iter().sum::<u64>()
     );
-    assert!(coins.iter().any(|coin| coin.proof.amount.to_u64() == 64));
+    assert!(
+        coins
+            .iter()
+            .any(|coin| coin.proof.amount.to_u64() == denominations[1]
+                || coin.proof.amount.to_u64() == denominations[2])
+    );
     drop(db);
-    for (index, amount_sat) in [32, 32, 32, 13].into_iter().enumerate() {
+    let remaining = grant_sat - payments.iter().sum::<u64>();
+    // Preserve the larger grant denominations during final collection instead
+    // of repeatedly splitting them into unrelated small outgoing payments.
+    let chunk = if receiver_history { 1024 } else { 32 };
+    let chunks = (0..remaining.div_ceil(chunk)).map(|index| (remaining - index * chunk).min(chunk));
+    for (index, amount_sat) in chunks.enumerate() {
         let exported = offline_wallet(
             &cfg,
             WalletRequest::Export {
@@ -217,8 +270,8 @@ async fn exercise(root: &Path) {
         0
     );
     let report = mint.handle(BenchRequest::Report).await.unwrap();
-    assert_eq!(report["issued_sat"], 128);
-    assert_eq!(report["collected_sat"], 128);
+    assert_eq!(report["issued_sat"], grant_sat);
+    assert_eq!(report["collected_sat"], grant_sat);
     assert_eq!(report["conserved"], true);
     mint.shutdown().await;
 }

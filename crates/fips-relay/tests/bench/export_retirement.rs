@@ -2,6 +2,30 @@
 use super::*;
 use std::{os::unix::fs::OpenOptionsExt, time::Instant};
 
+async fn initialize_wallet(root: &Path, mint: &str, capacity: u64) -> ServiceConfig {
+    let mut cfg = config(root, mint);
+    cfg.terms.wallet_capacity_bytes = Some(capacity);
+    // This fixture owns its local mint; request pacing has separate coverage.
+    cfg.funding_request_budget = Some(fips_relay::controller::FundingRequestBudget {
+        burst: 128.try_into().unwrap(),
+        requests_per_minute: 60_000.try_into().unwrap(),
+    });
+    let saved = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.join("relay.json"))
+        .unwrap();
+    serde_json::to_writer(&saved, &cfg).unwrap();
+    saved.sync_all().unwrap();
+    RelayService::initialize(cfg.clone()).await.unwrap();
+    cfg
+}
+
+fn exported(summary: &Value) -> Value {
+    serde_json::from_slice(&std::fs::read(summary["path"].as_str().unwrap()).unwrap()).unwrap()
+}
+
 async fn export_custody(cfg: &ServiceConfig) -> (usize, Vec<cdk_common::wallet::Transaction>) {
     use cdk_common::database::WalletDatabase;
     // Only the fixed test wallet is inspected; never log its original proofs.
@@ -65,22 +89,13 @@ pub(super) async fn check_export_retirement(exports: u64) {
             bind: "127.0.0.1:0".parse().unwrap(),
             max_issued_sat: 256,
             fragmented_channel_keyset: false,
+            receiver_history_keyset: false,
         },
         614,
     )
     .await
     .unwrap();
-    let mut cfg = config(&root, mint.url());
-    cfg.terms.wallet_capacity_bytes = Some(16 * 1024 * 1024);
-    let saved = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(root.join("relay.json"))
-        .unwrap();
-    serde_json::to_writer(&saved, &cfg).unwrap();
-    saved.sync_all().unwrap();
-    RelayService::initialize(cfg.clone()).await.unwrap();
+    let cfg = initialize_wallet(&root, mint.url(), 16 * 1024 * 1024).await;
     let buyer = std::fs::read(cfg.state_directory.join("buyer/buyer.json")).unwrap();
     let export = WalletRequest::Export {
         id: 1,
@@ -102,8 +117,7 @@ pub(super) async fn check_export_retirement(exports: u64) {
         })
         .await
         .unwrap();
-    let payment: Value =
-        serde_json::from_slice(&std::fs::read(grant["path"].as_str().unwrap()).unwrap()).unwrap();
+    let payment = exported(&grant);
     offline_wallet(
         &cfg,
         WalletRequest::Import {
@@ -438,4 +452,181 @@ async fn full_cache_refuses_new_spending(cfg: &ServiceConfig) -> u64 {
             .all(|(path, bytes)| std::fs::read(path).unwrap() == *bytes)
     );
     originals.iter().map(|(_, bytes)| bytes.len() as u64).sum()
+}
+
+pub(super) async fn check_large_export_pressure() {
+    let root = tempfile::tempdir().unwrap().keep();
+    eprintln!("large export fixture: {}", root.display());
+    let mut mint = BenchMint::start_seeded(
+        BenchConfig {
+            state_directory: root.join("mint"),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            max_issued_sat: 3072,
+            fragmented_channel_keyset: false,
+            receiver_history_keyset: true,
+        },
+        6142,
+    )
+    .await
+    .unwrap();
+    let cfg = initialize_wallet(&root, mint.url(), 20 * 1024 * 1024).await;
+    let buyer = std::fs::read(cfg.state_directory.join("buyer/buyer.json")).unwrap();
+    let grant = mint
+        .handle(BenchRequest::Issue {
+            id: "large-exports".into(),
+            amount_sat: 1024,
+        })
+        .await
+        .unwrap();
+    offline_wallet(
+        &cfg,
+        WalletRequest::Import {
+            token: exported(&grant)["token"].as_str().unwrap().into(),
+        },
+    )
+    .await
+    .unwrap();
+    // This existing keyset requires 63 real coins per token. Self-receive
+    // preserves the original 1024 sats while export and receipt history grows.
+    let mut originals = Vec::new();
+    let mut refused = None;
+    for id in 1..=129 {
+        let result = offline_wallet(&cfg, WalletRequest::Export { id, amount_sat: 63 }).await;
+        let summary = match result {
+            Ok(summary) => summary,
+            Err(error) => {
+                assert!(
+                    error.contains("wallet_storage_capacity")
+                        || error.contains("wallet request history lacks recovery space")
+                        || error.contains("export file limit"),
+                    "unexpected export refusal: {error}"
+                );
+                refused = Some(id);
+                break;
+            }
+        };
+        let path = Path::new(summary["path"].as_str().unwrap()).to_path_buf();
+        let raw = std::fs::read(&path).unwrap();
+        assert!(raw.len() >= 10 * 1024 && raw.len() <= 64 * 1024);
+        let payment: Value = serde_json::from_slice(&raw).unwrap();
+        let received = offline_wallet(
+            &cfg,
+            WalletRequest::Import {
+                token: payment["token"].as_str().unwrap().into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(received["amount_sat"], 63);
+        originals.push((path, raw));
+    }
+    let refused = refused.expect("bounded retained exports must reject another request");
+    assert!(!originals.is_empty() && originals.len() <= 128);
+    assert!(
+        originals
+            .iter()
+            .all(|(path, bytes)| std::fs::read(path).unwrap() == *bytes)
+    );
+    let (_, receipts) = export_custody(&cfg).await;
+    let wallet = cashu_service::CashuWalletService::open_existing_file_backed(
+        &cfg.state_directory.join("wallet"),
+    )
+    .await
+    .unwrap();
+    let pressure = wallet.storage_capacity().await.unwrap().unwrap();
+    assert_eq!(pressure.maximum_bytes, 20 * 1024 * 1024);
+    assert!(pressure.charged_bytes <= pressure.maximum_bytes);
+    drop(wallet);
+    let recovered = offline_wallet(&cfg, WalletRequest::Recover).await.unwrap();
+    assert_eq!(recovered["recovery_pass_complete"], true);
+    assert_eq!(recovered["minted_amount"], 0);
+    assert_eq!(
+        offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"],
+        1024
+    );
+    let started = Instant::now();
+    offline_wallet(&cfg, WalletRequest::AcknowledgeExports { through: refused })
+        .await
+        .unwrap();
+    let acknowledgement_us = started.elapsed().as_micros();
+    // A failed original is closed before a distinct, later spending request.
+    // Never reinterpret or replace an uncertain send under another identity.
+    let continued = offline_wallet(
+        &cfg,
+        WalletRequest::Export {
+            id: refused + 1,
+            amount_sat: 63,
+        },
+    )
+    .await
+    .unwrap();
+    offline_wallet(
+        &cfg,
+        WalletRequest::Import {
+            token: exported(&continued)["token"].as_str().unwrap().into(),
+        },
+    )
+    .await
+    .unwrap();
+    let final_export = offline_wallet(
+        &cfg,
+        WalletRequest::Export {
+            id: refused + 2,
+            amount_sat: 1024,
+        },
+    )
+    .await
+    .unwrap();
+    mint.handle(BenchRequest::Collect {
+        token: exported(&final_export)["token"].as_str().unwrap().into(),
+    })
+    .await
+    .unwrap();
+    let recovered = offline_wallet(&cfg, WalletRequest::Recover).await.unwrap();
+    assert_eq!(recovered["recovery_pass_complete"], true);
+    let history = offline_wallet(
+        &cfg,
+        WalletRequest::AcknowledgeExports {
+            through: refused + 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        history["cost"]["wallet_debit_sat"],
+        63 * (originals.len() as u64 + 1) + 1024
+    );
+    assert_eq!(
+        std::fs::read_dir(cfg.state_directory.join("exports"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        offline_wallet(&cfg, WalletRequest::Balance).await.unwrap()["balance_sat"],
+        0
+    );
+    assert_eq!(
+        std::fs::read(cfg.state_directory.join("buyer/buyer.json")).unwrap(),
+        buyer
+    );
+    let (_, retained) = export_custody(&cfg).await;
+    assert!(receipts.iter().all(|receipt| retained.contains(receipt)));
+    let report = mint.handle(BenchRequest::Report).await.unwrap();
+    assert_eq!(report["issued_sat"], 1024);
+    assert_eq!(report["collected_sat"], 1024);
+    assert_eq!(report["conserved"], true);
+    eprintln!(
+        "LARGE_EXPORT_PRESSURE {}",
+        json!({
+            "retained_exports": originals.len(),
+            "cached_bytes": originals.iter().map(|(_, bytes)| bytes.len()).sum::<usize>(),
+            "wallet_capacity_bytes": pressure.maximum_bytes,
+            "charged_bytes_at_refusal": pressure.charged_bytes,
+            "whole_offline_reopen_ack_us": acknowledgement_us,
+            "issued_and_collected_sat": 1024,
+            "continued_spending": true,
+        })
+    );
+    mint.shutdown().await;
 }

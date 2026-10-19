@@ -178,30 +178,31 @@ pub(super) async fn verify_settled_wallets(bench: &Bench, mint: &str, expected_s
             )
             .await
             .unwrap();
-        if coins.is_empty() {
-            continue;
-        }
-        let states = bench
-            .mint
-            .mint()
-            .check_state(&CheckStateRequest {
-                ys: coins.iter().map(|coin| coin.y).collect(),
-            })
-            .await
-            .unwrap()
-            .states;
-        assert_eq!(states.len(), coins.len());
-        for (coin, state) in coins.iter().zip(states) {
-            assert_eq!(coin.y, state.y);
-            if coin.state == State::Unspent {
-                assert_eq!(state.state, State::Unspent);
-                assert!(live.insert(coin.y), "duplicate live original coin");
-                total += coin.proof.amount.to_u64();
-            } else {
-                // A retained sent-token record can still mark its already-spent
-                // inputs PendingSpent. It is not an additional outstanding balance.
-                assert!(matches!(coin.state, State::Spent | State::PendingSpent));
-                assert_eq!(state.state, State::Spent);
+        // A retained-receipt workload can contain thousands of spent originals.
+        // Audit every identity without exceeding the mint's request bound.
+        for page in coins.chunks(128) {
+            let states = bench
+                .mint
+                .mint()
+                .check_state(&CheckStateRequest {
+                    ys: page.iter().map(|coin| coin.y).collect(),
+                })
+                .await
+                .unwrap()
+                .states;
+            assert_eq!(states.len(), page.len());
+            for (coin, state) in page.iter().zip(states) {
+                assert_eq!(coin.y, state.y);
+                if coin.state == State::Unspent {
+                    assert_eq!(state.state, State::Unspent);
+                    assert!(live.insert(coin.y), "duplicate live original coin");
+                    total += coin.proof.amount.to_u64();
+                } else {
+                    // A retained sent-token record can still mark its already-spent
+                    // inputs PendingSpent. It is not an additional outstanding balance.
+                    assert!(matches!(coin.state, State::Spent | State::PendingSpent));
+                    assert_eq!(state.state, State::Spent);
+                }
             }
         }
     }
