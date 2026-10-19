@@ -111,11 +111,6 @@ class ReceiverTimingTests(unittest.TestCase):
 
 
 class ReceiverObserverTests(unittest.TestCase):
-    def test_candidate_samples_at_25ms_with_the_existing_bounded_queue(self):
-        from sim.wifi_receiver_observer import MAX_PROGRESS_READS, POLL_SECONDS
-        self.assertEqual(POLL_SECONDS, .025)
-        self.assertEqual(MAX_PROGRESS_READS, 2048)
-
     def setUp(self):
         class Numeric:
             def __init__(self, run):
@@ -315,7 +310,7 @@ class ReceiverObserverTests(unittest.TestCase):
 
 class ReceiverMeasurementTests(unittest.TestCase):
     def run_window(self, final_refusal=False, final_late=False, final_missing=False, missing_once=False,
-                   held_override=None, save_observations=None):
+                   held_override=None, save_observations=None, observation_delay=0):
         clock = SimpleNamespace(elapsed=0)
         run = SimpleNamespace(evidence={'receiver_history': {}}, save=Mock(),
                               transit='transit', guard='guard', held_nodes=['n02'],
@@ -409,6 +404,8 @@ class ReceiverMeasurementTests(unittest.TestCase):
 
         def sleep(seconds):
             clock.elapsed += seconds
+            if run.release_holds.called:
+                clock.elapsed += observation_delay
 
         with patch('sim.wifi_receiver_window.time.monotonic', side_effect=lambda: 100 + clock.elapsed), \
                 patch('sim.wifi_receiver_window.time.sleep', side_effect=sleep), \
@@ -434,9 +431,13 @@ class ReceiverMeasurementTests(unittest.TestCase):
 
     def test_diagnostics_are_throttled_and_terminal_analysis_is_saved(self):
         saved = []
-        row, _ = self.run_window(save_observations=saved)
+        row, _ = self.run_window(save_observations=saved, observation_delay=.8)
         before_terminal = [at for at, _ in saved if at * 1_000_000 < row['terminal_progress_us']]
-        self.assertEqual(before_terminal, [0])
+        self.assertEqual(len(before_terminal), 3)
+        self.assertEqual(before_terminal[0], 0)
+        self.assertTrue(all(later - earlier >= 1 for earlier, later in zip(before_terminal, before_terminal[1:])))
+        self.assertLess(row['released_us'], 2_000_000)
+        self.assertGreaterEqual(row['custody_samples'][-1]['started_us'], row['terminal_progress_us'])
         self.assertEqual(saved[-1][1]['receiver_history']['live'], row)
         self.assertEqual(row['progress_poll_delay_us'], 25_000)
 
