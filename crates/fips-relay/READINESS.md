@@ -16,7 +16,7 @@ requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Eight diagnostic attempts are independently closed. The ninth stops during preparation when all three router SSH connections time out; normal baselines are restored and its original mint conserves all 3,072 sats. | Finish recovery of the ninth originals, address controller connectivity, then complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Nine diagnostic attempts are independently closed, including the management-outage case with expired unclaimed credit. A corrected complete-workload rehearsal is running from an independent Linux controller. | Complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
 | Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
@@ -207,8 +207,10 @@ Corrected recovery verifies all five stopped accounts against these committed
 totals, original policy and channel counts before collection. It reuses the shared
 collector with the five actual reports; the missing report's zero realized
 transfer follows from the final cumulative records. No per-channel report is
-fabricated. Collection and the queued independent audit are running with no new
-issuance, purchase commands or relay restarts. The rejected result, failed
+fabricated. Collection and independent auditing now reconcile all 3,072 original
+sats with no new issuance, purchase commands or relay restarts. The mint is
+stopped, all five wallets are empty, and normal router baselines are restored.
+All 104 case files have identical preserved copies. The rejected result, failed
 management observations and first recovery refusal remain unchanged in
 `work/receiver-history-router/short-burst-9`.
 
@@ -218,19 +220,35 @@ host, which has sufficient space. A private job key is generated there because
 its existing keys cannot administer the routers; the private key is not copied.
 All 32 focused harness checks pass on Linux/Python 3.14, including the check
 previously skipped on macOS; there are no failures or skips.
-No router authorization changes or new funded case have started. This preparation
-removes no acceptance requirement and does not yet prove stable connectivity.
+The job's public key is appended to each router after financial closure; existing
+authorized-key bytes are preserved exactly. Direct Linux access to all three
+routers and restricted loopback access for the mint are verified. The private
+key remains on Linux; key-installation records retain the backups and exact line
+needed for later revocation.
 
-Natural idle now has a prepared harness on branch `codex/receiver-setup-pacing`,
-commit `104f01754`. It refuses charging, simulated or forced idle before funding,
+The independently supervised Linux rehearsal `e458d621fe4f` is now running. Its
+producer and supervisor are confirmed live after the launching SSH command exits.
+It uses the same frozen 211-file harness, ordinary artifacts, one real receipt
+and full 28-channel preparation. Recorded 24–62-second per-channel steps plus two
+refund waits leave little margin in the earlier 2,400-second incoming lifetime.
+The new input explicitly gives that incoming channel 3,600 seconds and the
+scenario two hours. Onward terms, prices, spending/capacity limits, 84 measured
+packets, two-second progress and the 35-second observation remain unchanged.
+The original unfunded preparation is retained separately. There is no automatic
+retry or full-history launch, and stable long-run connectivity is not yet proven.
+
+The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
+`104f01754`. It refuses charging, simulated or forced idle before funding,
 then waits at most one hour for Android's own deep idle and opens fresh paid
 routes only afterward. It requires exact duplex delivery with the same process,
 screen off, no external power and foreground-service network allowance through
 at least 60 seconds of observed idle. Existing financial collection and
 restoration are shared. Fifty focused harness checks and the real CLI help pass;
 an initial missing test import is preserved in the failed check log. This is
-unfunded preparation, not natural-idle device acceptance. Integration waits for
-release of the router recovery's pinned source files.
+unfunded preparation, not natural-idle device acceptance. The integrated files
+match their verified branch exactly. Its clean temporary worktree and merged
+branch are removed; the implementation and evidence remain preserved. The Linux
+router job uses its frozen source copy and holds no primary-harness files.
 
 The fifth pilot's observer records all five daemons in 1,041 samples with no
 sampling errors: 373.5 observed process CPU seconds and maximum sampled RSS sums
@@ -250,10 +268,9 @@ history pressure.
    reused. Continue unattended checks through USB. Physical encounter/rejoin and
    natural off-charge idle remain unqualified; do not request manual phone actions
    or substitute simulated battery state for that evidence.
-3. The interrupted eighth router rehearsal is independently closed without
-   replacing its original funds. Close the ninth rehearsal's original accounts
-   after its management outage, qualify controller connectivity, and complete the
-   corrected short workflow. Once the full workflow passes,
+3. All nine earlier router diagnostics are independently closed without replacing
+   their original funds. Complete the running Linux rehearsal and its independent
+   financial audit. Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
@@ -268,7 +285,9 @@ history pressure.
 4. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
    verified changes and remove only completed, owned test installations and clean
-   merged worktrees. No further manual power cuts are planned; preserve the
+   merged worktrees. Revoke the owned Linux job's temporary SSH authorizations
+   after its last device case, preserving other keys and the closed records.
+   No further manual power cuts are planned; preserve the
    documented physical power-loss limitations.
 
 These cases share devices and run separately. Independent financial closure and
