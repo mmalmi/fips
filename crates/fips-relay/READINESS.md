@@ -21,7 +21,7 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. All eleven diagnostics are independently closed. The session correction passes 61 affected checks, strict lint and all eight paced launch/recovery cycles. Its qualified ARM build reaches eight settled channels, then loses 8 of 103 setup packets at 128 packets/s; all 3,072 test sats are independently conserved. | Complete the running 32-packet/s one-receipt rehearsal and full history workload. Fifteen channels have settled without a reported failure; the original channel timing still applies. One receipt cannot establish history pressure. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. All eleven diagnostics are independently closed. The session correction passes 61 affected checks, strict lint and all eight paced launch/recovery cycles. Its qualified ARM build reaches eight settled channels, then loses 8 of 103 setup packets at 128 packets/s; all 3,072 test sats are independently conserved. | Complete the running 32-packet/s one-receipt rehearsal and full history workload. Twenty-nine channels have settled without a reported failure; the original channel timing still applies. One receipt cannot establish history pressure. |
 | Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass with the same process and four original channels; all 512 test sats are independently reconciled and the temporary app removed. | Complete controlled disconnect/rejoin. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
 
@@ -33,6 +33,13 @@ Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/restart-recovery-carriers`. Earlier detailed run narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md`; failed verdicts and original financial
 records remain in their evidence bundles.
+
+Read-only integration reconciliation matches all 965 runtime/build-input files
+and the complete 761-file core inventory to the qualified ordinary Linux build.
+The SDK and CDK checkouts match their recorded commits and are clean; the user's
+lockfile remains unchanged. The source-size gate passes all 1,097 files with the
+three existing core exceptions. Evidence in `work/current-source-reconciliation`
+establishes source identity, not additional device or performance acceptance.
 
 ### ARM export acceptance
 
@@ -405,12 +412,20 @@ history pressure.
    Closure waits nine hours without terminating a still-live financial owner.
 4. Requalify the unchanged eight-trial native cadence matrix with the current
    ordinary daemon: 250/500/1000/2000 ms in forward and reverse order, including
-   steady, idle, bursty and high-rate traffic. Its current-graph integration
-   executable is being prepared separately. Run measurement only after the
-   device sequences and competing builds/tests stop; independently audit all
+   steady, idle, bursty and high-rate traffic. Its optimized current-graph
+   integration executable passes build-only qualification; the ordinary daemon
+   retains its independently checked optimized profile. A root-owned one-shot
+   sequence now waits for the exact router/phone financial releases and absent
+   owners before dispatch, then checks measurement quiescence and holds the real
+   cache lock. Run measurement only after the device sequences and competing
+   builds/tests stop; independently audit all
    40,960 test sats and retain original reports before accepting costs. Reuse the
    current seven-carrier evidence for fault progress. Keep earlier cost scopes
-   historical and the 500 ms default unchanged.
+   historical and the 500 ms default unchanged. Successful trials and an
+   analyzer-only failure have independent closure paths. An interrupted,
+   partially funded trial retains its exact original stores for root-owned
+   recovery; missing settlement or quota records must not be fabricated or
+   replaced with another grant. Staging and guards establish no measured costs.
 5. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
    verified changes and remove only completed, owned test installations and clean
