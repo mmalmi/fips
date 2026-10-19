@@ -311,9 +311,11 @@ the mocked second-call regression fails before correction and passes afterward.
 Artifacts, workload, financial terms and the unchanged 158-check harness are reused.
 The replacement passes the USB-connected phone acceptance and independent close
 described above. The corrected 32-packet/s router rehearsal is now running after
-that release. The independently reviewed disconnect/rejoin preparation remains
-unfunded until both exact device sequences have closed and exited. No full-history
-run is launched automatically.
+that release. The independently reviewed disconnect/rejoin case is queued once,
+remaining unfunded until both exact device sequences have closed and exited. Its
+owner then seals the inputs, runs the case and independently closes it; failed
+commands are preserved without automatic replay. No full-history run is launched
+automatically.
 
 The current ordinary Linux binary also passes the existing seven paid-carrier
 scenarios: TCP, configured and seeded WebSocket, self-signed and CA-validated TLS,
@@ -355,7 +357,7 @@ history pressure.
    records are preserved, all test funds collected and normal services restored.
 2. The current USB session-recovery phone regression, independent audit, archives
    and owned-app removal are complete. The unchanged 158-check harness is reused.
-   Complete the prepared controlled disconnect/rejoin case after the corrected
+   Complete the queued controlled disconnect/rejoin case after the corrected
    router rehearsal independently closes. Physical encounters and natural
    off-charge idle remain unqualified; do not request manual phone actions or
    substitute simulated battery state for that evidence.
@@ -374,6 +376,14 @@ history pressure.
    Preserve the historical guard-check results and failed prerequisite.
    Review preparation timing before launching full history: the
    earlier full receipt preparation took 17,713.54 seconds on the router.
+   Its 139 preparation snapshots already occupy about 1.427 GiB, with a measured
+   742,319,899-byte compressed case prefix. The existing 2 GiB evidence allowance
+   with 512 MiB reserved for recovery and 256 MiB archive limit are insufficient
+   for full continuation. Size the private diagnostic allowance and archive
+   transfer from the complete snapshot count and fresh host resources, preserving
+   every original receipt and the 20 MiB wallet limit. Full history also requires
+   the corrected rehearsal's functional pass, separate from financial release,
+   and the queued phone outage case's independent close and absent owners.
 4. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
    verified changes and remove only completed, owned test installations and clean
