@@ -120,6 +120,7 @@ class ReceiverWorkloadTests(unittest.TestCase):
                 def send(owner, destination, count, size, rate):
                     nonlocal charged
                     self.assertLess(len(batches), 6, 'setup exhausted its bounded transfer allowance')
+                    self.assertLessEqual(rate, 32, 'custody preparation exceeded the observed receiver pace')
                     charged += count * (260 if size == 1000 else 20)
                     self.assertLessEqual(charged, 32_000, 'exact payment target overshot')
                     record = dict(count=count, size=size)

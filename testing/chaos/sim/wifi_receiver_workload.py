@@ -149,7 +149,7 @@ class ReceiverWorkload:
                                                                [self.transit, self.guard], 92)
         return before, warm
 
-    def earn(self, owner, destination, channel, target, rate_pps=128):
+    def earn(self, owner, destination, channel, target, rate_pps=32):
         def evidence(state):
             return state['payment_progress'][channel]['evidence_msat']
         current, unit = self.warmup_payment(owner, destination, channel)
@@ -213,7 +213,7 @@ class ReceiverWorkload:
     def receiver_case(self):
         self.incoming = self.buy_route('n01', 'n03', 'n02', 960)
         deadline = self.intents[self.incoming]['refund_after_unix']
-        self.earn('n01', 'n03', self.incoming, 959, rate_pps=32)
+        self.earn('n01', 'n03', self.incoming, 959)
         self.settle_channel(self.incoming, 959)
         archive = self.stop_snapshot('n02', 'original-payout')
         custody.unchanged(archive, self.retained_history)
