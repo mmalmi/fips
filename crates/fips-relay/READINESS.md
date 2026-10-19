@@ -548,6 +548,13 @@ history pressure.
    A single n01 closed-profile preservation and a fresh all-three capacity gate
    are required before another namespace is created. The accepted n02 capacity
    and observer qualification remain valid; no hardware pass is implied.
+   `work/n01-closed-space-completion` passes three focused checks and is now
+   executing after root review. It reuses the six exact qualified representation
+   functions and unchanged custody/lock guards for only n01's closed D3 profile
+   (40 files, 60 archive members). Final sync measurements must establish
+   8/24/8 MiB flash on n01/n02/n03 and strictly more than 100 MiB RAM on each.
+   No observer source, financial terms or test limits change. A fresh runner
+   must bind both its actual closed result and the prior unfunded closure.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
