@@ -49,6 +49,14 @@ Accepted evidence:
   active profiles and original service configuration are unchanged. The prepared
   export case now selects the second router; its unchanged 24 MiB free-space
   requirement still needs the closed diagnostic profiles to release more space.
+  Six additional, independently closed diagnostic profiles are relocated from
+  the first two routers after both local archive copies and every device file
+  agree. This releases 15,184 KiB and 3,008 KiB of observed flash space, leaving
+  16,152 KiB and 22,740 KiB respectively before the next pilot. All files remain
+  preserved and normal-service baselines match. The second router still needs
+  more headroom for the 24 MiB export preflight; this is not a completed storage
+  acceptance result. Evidence is in
+  `work/receiver-history-router/closed-diagnostic-relocation`.
 - `work/confirmation-device-builds` preserves independently verified ordinary
   router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
   lifecycle tests, Android lint, signature and packaged-native checks pass.
@@ -211,6 +219,14 @@ final progress criteria are unchanged. This corrects the fixture schedule;
 complete workload and history-pressure acceptance remain open.
 Nine focused harness checks pass with one existing Linux-only check skipped;
 generated configurations preserve all other terms for every participant.
+The first corrected launch refuses insufficient flash before creating any device
+profile or funding a wallet; its failed preparation is retained as `short-burst-4`.
+After the verified relocations, `short-burst-5` runs the corrected one-receipt
+pilot on the existing ordinary ARM artifact. Its recorded incoming route has
+360 seconds of service. The read-only process observer now resolves the actual
+`purchase-source` and `purchase-destination` profiles and has observed all five
+daemons without errors. This remains an ongoing diagnostic, not history-pressure
+or resource acceptance; no firmware rebuild or production-default change occurs.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
