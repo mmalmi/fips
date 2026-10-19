@@ -12,6 +12,7 @@ async fn selected_inputs_hold_only_the_matching_committed_reply() {
             bind: "127.0.0.1:0".parse().unwrap(),
             max_issued_sat: 32,
             fragmented_channel_keyset: false,
+            receiver_history_keyset: false,
         })
         .await
         .unwrap();

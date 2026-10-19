@@ -18,10 +18,16 @@ pub(super) async fn original_subset(
     db: &cdk_sqlite::WalletSqliteDatabase,
     originals: &Coins,
 ) -> Coins {
-    records(db)
+    if originals.is_empty() {
+        return BTreeMap::new();
+    }
+    // Do not scan thousands of unrelated retained-history proofs on every
+    // progress sample. The exact payout identities define this observation.
+    db.get_proofs_by_ys(originals.values().map(|proof| proof.y).collect())
         .await
+        .unwrap()
         .into_iter()
-        .filter(|(y, _)| originals.contains_key(y))
+        .map(|proof| (proof.y.to_string(), proof))
         .collect()
 }
 
@@ -70,7 +76,15 @@ pub(super) async fn payout(
     assert_eq!(closed["sender_sum"], 1);
     let proofs: Vec<Proof> =
         serde_json::from_str(closed["receiver_proofs_json"].as_str().unwrap()).unwrap();
-    let rows = records(db).await;
+    // A held-writer observation needs only this payout. Scanning unrelated
+    // receipt history here can consume the outgoing channel's remaining life.
+    let rows: Coins = db
+        .get_proofs_by_ys(proofs.iter().map(|proof| proof.y().unwrap()).collect())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|proof| (proof.y.to_string(), proof))
+        .collect();
     let mut originals = BTreeMap::new();
     for proof in proofs {
         let key = proof.y().unwrap().to_string();
@@ -240,6 +254,7 @@ pub(super) fn transit_exposure(
     warm: [&Value; 2],
     current: [&Value; 2],
     channels: [&str; 2],
+    profile: Traffic,
     packets: u32,
 ) -> Value {
     let mut hops = Vec::new();
@@ -252,7 +267,7 @@ pub(super) fn transit_exposure(
         let delta = evidence(warm[index])
             .checked_sub(evidence(&before[index]))
             .unwrap();
-        // The first probe can include an extra priced control frame. Keep that
+        // The first probe can include additional priced traffic. Keep that
         // conservative exposure estimate, with one msat for cumulative rounding,
         // but bound steady cadence using only payload bytes at the accepted price.
         let upper = delta + 1;
@@ -265,7 +280,7 @@ pub(super) fn transit_exposure(
         let price: fips_relay::ledger::BytePrice =
             serde_json::from_value(purchase["contract"]["price"].clone()).unwrap();
         let lower = u64::try_from(
-            (PAYLOAD_BYTES as u128 * u128::from(price.msat)) / u128::from(price.per_bytes),
+            (profile.payload_bytes as u128 * u128::from(price.msat)) / u128::from(price.per_bytes),
         )
         .unwrap();
         assert!(
@@ -282,10 +297,11 @@ pub(super) fn transit_exposure(
              bound={upper} msat for {packets} remaining packets needs \
              {needed_msat} msat ({needed_sat} sat), capacity={capacity} sat"
         );
-        let quantization_us = 1_000_000_000u64.div_ceil(lower * u64::from(PACKET_RATE));
+        let rate = profile.packets_per_second;
+        let quantization_us = 1_000_000_000u64.div_ceil(lower * u64::from(rate));
         assert!(
             quantization_us + 500_000 < 2_000_000,
-            "hop {index}: payload floor={lower} msat at {PACKET_RATE} packets/s needs \
+            "hop {index}: payload floor={lower} msat at {rate} packets/s needs \
              {quantization_us} us plus 500000 us cadence; limit=2000000 us"
         );
         hops.push(

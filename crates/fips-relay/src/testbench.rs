@@ -9,7 +9,7 @@ use crate::{
 };
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
-    simulation::{IssuerMode, LocalMint, MonotonicClock, PaymentNetwork},
+    simulation::{IssuerMode, LocalMint, MonotonicClock, PaymentNetwork, claim_paid_quote},
 };
 use fips_core::Identity;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,9 @@ pub struct BenchConfig {
     /// Small disposable fixtures can retain many real coins without more value.
     #[serde(default)]
     pub fragmented_channel_keyset: bool,
+    /// The receiver-retirement fixture closes a 960-sat channel into 959 originals.
+    #[serde(default)]
+    pub receiver_history_keyset: bool,
 }
 
 impl BenchConfig {
@@ -63,6 +66,8 @@ impl BenchConfig {
             || self.max_issued_sat == 0
             || self.max_issued_sat > 10_000_000
             || (self.fragmented_channel_keyset && self.max_issued_sat > 512)
+            || (self.receiver_history_keyset
+                && (self.fragmented_channel_keyset || self.max_issued_sat != 3072))
         {
             return Err("test mint requires a private/loopback bind, absolute private state path and bounded test issuance".into());
         }
@@ -147,17 +152,34 @@ impl BenchMint {
                 start: Instant::now(),
             }),
         );
-        let mint = LocalMint::start(
-            &config.state_directory,
-            network.clone(),
-            "hardware-bench",
-            IssuerMode::ClosedLoop,
-        )
-        .await
+        let mint = if config.receiver_history_keyset {
+            LocalMint::start_with_limits(
+                &config.state_directory,
+                network.clone(),
+                "hardware-bench",
+                IssuerMode::ClosedLoop,
+                4096,
+                4096,
+            )
+            .await
+        } else {
+            LocalMint::start(
+                &config.state_directory,
+                network.clone(),
+                "hardware-bench",
+                IssuerMode::ClosedLoop,
+            )
+            .await
+        }
         .map_err(|e| e.to_string())?;
-        if config.fragmented_channel_keyset {
+        if config.fragmented_channel_keyset || config.receiver_history_keyset {
+            let denominations = if config.receiver_history_keyset {
+                vec![1, 960, 1024]
+            } else {
+                vec![1, 64, 128]
+            };
             mint.mint()
-                .rotate_keyset("sat".parse().unwrap(), vec![1, 64, 128], 0, false, None)
+                .rotate_keyset("sat".parse().unwrap(), denominations, 0, false, None)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -261,6 +283,11 @@ impl BenchMint {
                     .orchestrator_funding()
                     .settle_external(&quote.payment_request)
                     .map_err(|e| e.to_string())?;
+                if self.config.receiver_history_keyset {
+                    claim_paid_quote(&wallet, &self.url, &quote.quote_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
                 let overview = load_wallet_overview(&wallet, true)
                     .await
                     .map_err(|e| e.to_string())?;
