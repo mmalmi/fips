@@ -84,7 +84,7 @@ class ReceiverRetirementRun(ReceiverWorkload, PurchaseRetirementRun):
                                max_rate_msat_per_kib=2048, quote_max_units=self.quote_max_units,
                                # The paced 960-sat setup exceeds a 60-second quote.
                                # Onward setup also needs time for bounded restart recovery.
-                               quote_lifetime_secs=360 if name == 'n02' else 120 if name == 'n03' else 60,
+                               quote_lifetime_secs=360 if name == 'n02' else 180 if name == 'n03' else 60,
                                wallet_capacity_bytes=WALLET_BYTES)
         config['terms']['controller'].update(channel_lifetime_secs=CHANNEL_LIFETIMES.get(name, 120),
             channel_capacity_sat=960 if name in ('n01', 'n02') else 64 if name == 'source' else 32,

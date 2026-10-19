@@ -28,6 +28,7 @@ class ReceiverWorkloadTests(unittest.TestCase):
         configs = {name: run.terms(name, {'terms': {'controller': {}}})['terms']
                    for name in ('source', 'n02', 'n03')}
         # Preparation, retirement eligibility, held probe and the full observation.
+        self.assertGreaterEqual(TRANSIT_SETUP_SECONDS, 6 * 11 + 45)
         required_seconds = TRANSIT_SETUP_SECONDS + 3 + 3 + 37
         for buyer, provider in [('source', 'n02'), ('n02', 'n03')]:
             service = min(configs[buyer]['controller']['channel_lifetime_secs'] // 2,
@@ -130,6 +131,25 @@ class ReceiverWorkloadTests(unittest.TestCase):
                 run.earn('buyer', 'destination', 'original', 32)
                 self.assertEqual(status()['payment_progress']['original']['authorized_sat'], 32)
                 self.assertTrue(any(row['size'] == 40 for row in batches))
+
+    def test_transit_calibration_excludes_previous_billable_warmup_attempts(self):
+        run = ReceiverWorkload()
+        run.transit, run.guard = 'source-channel', 'relay-channel'
+        run.evidence = {'receiver_history': {}}
+        def state(channel, unit, capacity, count):
+            return {'payment_progress': {channel: {'evidence_msat': count * unit}},
+                    'purchases': [{'channel': {'id': channel, 'capacity_sat': capacity},
+                                   'contract': {'price': {'msat': unit, 'per_bytes': 1024}}}]}
+        before = [state(run.transit, 520, 64, 6), state(run.guard, 260, 32, 6)]
+        after = [state(run.transit, 520, 64, 7), state(run.guard, 260, 32, 7)]
+        run.warmup_payment = Mock(return_value=(before[0], 6 * 520))
+        run.payment = Mock(side_effect=[before[1], *after])
+        run.send = Mock()
+        self.assertEqual(run.warm_transit(), (before, after))
+        run.warmup_payment.assert_called_once_with('source', 'destination', run.transit)
+        run.send.assert_called_once_with('source', 'destination', 1, 1000, 1)
+        measured = run.evidence['receiver_history']['exposure']['hops']
+        self.assertEqual([row['calibrated_warmup_msat'] for row in measured], [520, 260])
 
     def test_full_reports_match_after_provider_release_without_replaying_settlement(self):
         terms = {'id': 'original', 'capacity_sat': 960}

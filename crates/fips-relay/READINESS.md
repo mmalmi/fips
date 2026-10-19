@@ -112,9 +112,21 @@ packets: it fails before correction; the related suite then passes 30 checks wit
 one existing Linux-only skip. This confirms the harness defect, not the cause of
 every warmup loss or a passing hardware result. Raw checks are in
 `work/receiver-history-router/earn-calibration-*.log`.
-The correction is integrated at `b3456dcb9`. The eighth rehearsal's exact
-211-file harness, inputs and successful unfunded preflight are preserved in
-`work/receiver-history-router/short-burst-8-*`. Its guarded queue waits for the
+The batch correction is integrated at `b3456dcb9`. Review also finds that the
+final transit setup still used a single strict probe after restart. It now reuses
+the bounded warmup, then calibrates a fresh packet after both paying directions
+catch up, keeping earlier billable attempts outside that per-packet estimate.
+Preparation has 120 seconds before incoming expiry; onward/source service has
+180 seconds and the writer watchdog 180 seconds. Prices, capacities, spending
+limits and the measured 84-packet, two-second/35-second acceptance remain unchanged.
+The stronger schedule check and new calibration case pass with the related suite:
+31 checks pass and one existing Linux-only check is skipped. Logs are in
+`work/receiver-history-router/transit-warmup-*.log`.
+
+The unfunded eighth-rehearsal queue was stopped before device actions to include
+that final-window correction; its earlier preparation is preserved separately.
+The corrected 211-file harness, inputs and preflight are retained in
+`work/receiver-history-router/short-burst-8-*`. The guarded queue requires the
 seventh run's original owner and independent financial closure, then checks device
 availability and space before running once. It does not launch full history.
 

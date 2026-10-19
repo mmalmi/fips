@@ -13,8 +13,8 @@ from .wifi_priority_checks import received, submitted
 from .wifi_retirement_live import maintenance_idle
 from .wifi_receiver_window import exposure, measure
 
-CHANNEL_LIFETIMES = {"n01": 2400, "n02": 240, "source": 240}
-TRANSIT_SETUP_SECONDS = 45
+CHANNEL_LIFETIMES = {"n01": 2400, "n02": 360, "source": 360}
+TRANSIT_SETUP_SECONDS = 120
 
 
 def caught_up(progress):
@@ -139,6 +139,16 @@ class ReceiverWorkload:
                 return current, unit
         raise RuntimeError('native session warmup failed; preserve all separately billable attempts')
 
+    def warm_transit(self):
+        source, _ = self.warmup_payment('source', 'destination', self.transit)
+        before = [source, self.payment('n02', self.guard)]
+        # Calibrate one fresh packet after earlier billable warmup has caught up.
+        self.send('source', 'destination', 1, 1000, 1)
+        warm = [self.payment('source', self.transit), self.payment('n02', self.guard)]
+        self.evidence['receiver_history']['exposure'] = exposure(before, warm, warm,
+                                                               [self.transit, self.guard], 92)
+        return before, warm
+
     def earn(self, owner, destination, channel, target, rate_pps=128):
         def evidence(state):
             return state['payment_progress'][channel]['evidence_msat']
@@ -258,18 +268,14 @@ class ReceiverWorkload:
             'retained_unspent': 31, 'wallet_debited_sat': self.ctl('n02', 'status')['funding_budget']['wallet_debited_sat']}
         require(self.evidence['receiver_history']['prepared']['wallet_debited_sat'] == 928,
                 'original receiver funding budget changed')
-        before_warm = [self.ctl('source', 'status'), self.ctl('n02', 'status')]
-        self.send('source', 'destination', 1, 1000, 1)
-        warm = [self.payment('source', self.transit), self.payment('n02', self.guard)]
-        self.evidence['receiver_history']['exposure'] = exposure(before_warm, warm, warm,
-                                                               [self.transit, self.guard], 92)
+        before_warm, warm = self.warm_transit()
         original_sale = self.journal()['seller_settlements'][self.incoming]
         require(original_sale['released']
                 and validate_report(original_sale['report'], capacity_sat=960) == self.reports[self.incoming]
                 and original_sale['report']['signed_sat'] == self.reports[self.incoming]['paid_sat'],
                 'original receiver settlement is not durably released')
         self.held_nodes.append('n02')
-        self.nodes['n02'].hold_wallet(self.args.sqlite_hold, seconds=150)
+        self.nodes['n02'].hold_wallet(self.args.sqlite_hold, seconds=TRANSIT_SETUP_SECONDS + 60)
         self.evidence['receiver_history']['transit_setup']['writer_held_unix'] = time.time()
         self.save()
         require(time.time() < deadline, 'writer hold began after original retirement deadline')
