@@ -31,6 +31,15 @@ Accepted evidence:
   acknowledgment takes 13.627 seconds on Linux. Controlled test-mint request
   pacing reduces the complete case from 1,008 to 137 seconds without changing
   production defaults. Large-payload device costs remain open.
+  The ordinary-ARM counterpart is prepared in `work/export-payload-device`,
+  reusing the existing CLI, timeout and archive helpers without another build.
+  Its configuration initializes successfully on the corrected ordinary Linux
+  binary; its shared financial auditor reconciles the original successful
+  Linux fixture's 1,024 sats with no unfinished wallet owners. Device execution
+  waits for the history run's closure. One fully archived, financially closed
+  earlier router profile is relocated from flash to temporary storage with every
+  file preserved, releasing 4,992 KiB of observed flash space. The active profile
+  and original service configuration are unchanged.
 - `work/confirmation-device-builds` preserves independently verified ordinary
   router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
   lifecycle tests, Android lint, signature and packaged-native checks pass.
