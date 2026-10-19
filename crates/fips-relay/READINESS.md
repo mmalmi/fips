@@ -152,11 +152,20 @@ next fixture even when the preceding functional test failed. The prepared ARM
 export and phone runners now check that closure separately from history acceptance;
 their source/artifact bindings verify, and the phone reuses its 158 unchanged
 harness checks. These cases still run separately when they share devices.
-A short diagnostic with one genuine receipt is prepared to repeat the failed
-burst and settlement before another full pressure run. It cannot qualify history
-pressure. It is now running after the failed attempt's independent closure and
-fresh checks of device space and process ownership. The same failed-run binary
-is retained for diagnosis; this is not acceptance of the newer candidate.
+A short diagnostic with one genuine receipt reproduces the burst failure on the
+same binary: 1,024 packets are submitted in 7.994 seconds and 417 arrive. It records
+15,043 credit-limit denial events and 18 checkpoint-window denials; these are
+events, not a one-to-one dropped-packet count. Three payment cycles average
+1.256 seconds of sender CPU and 2.465 seconds of provider CPU. The pinned Spilman
+source reconstructs receiver and refund outputs for each balance. This fixture's
+`[1, 960, 1024]` denominations require 960 one-sat outputs for a partial payment
+on its 960-sat channel, making its preparation unusually expensive. The evidence
+supports payment-credit pressure independently of receipt-history size; exact
+packet-loss attribution and a workable preparation rate still need verification.
+The short case has settled at 109 sats paid and 851 refunded and is completing
+its ordinary expiry/collection path. Observations and matching source hashes are
+in `work/receiver-history-router/short-burst-analysis.json`. This diagnoses the
+failed-run graph; it qualifies neither history pressure nor the newer candidate.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
