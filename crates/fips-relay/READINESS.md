@@ -74,6 +74,12 @@ pass and 513 evidence files have identical preserved copies. Natural idle,
 physical movement, battery costs and ad hoc radio operation are not established
 by this configured LAN/UDP test.
 
+The completed temporary acceptance app is now removed. Before removal, its
+stopped account files match the independently closed archive and its preserved
+copy exactly; all 512 sats remain collected. Original phone account files,
+foreground and normal Wi-Fi are verified unchanged afterward. Removal intent,
+result and the retained closed account are in `work/receiver-history-phone`.
+
 The phone stays plugged in at the user's request. Continue tests through its
 existing USB connection; no operator-assisted unplugging or movement is scheduled.
 Controlled link loss/rejoin and forced idle can be exercised remotely, but neither
