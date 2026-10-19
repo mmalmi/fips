@@ -23,7 +23,7 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | All twelve diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. | Correct the observer and qualify a fresh rehearsal before full history. Preserve the failed verdict and the two-second/35-second requirements. One receipt cannot establish history pressure. |
+| Router receiver retirement | All twelve diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The corrected harness passes 24 focused Linux checks. | Qualify a fresh rehearsal with the corrected observer before full history. Preserve the failed verdict and the two-second/35-second requirements. One receipt cannot establish history pressure. |
 | Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass with the same process and four original channels; all 512 test sats are independently reconciled and the temporary app removed. | Complete controlled disconnect/rejoin. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
 
@@ -377,9 +377,18 @@ history pressure.
    observation. All four failing payment intervals cross one 1.253-second
    seven-query batch; no individual read timestamps survive. Preserve that
    failure; all 3,072 original sats are now independently conserved with no
-   financial issues and both producer/supervisor stopped. Timestamp individual
-   reads and keep progress polling independent of slower custody queries. Qualify a
-   fresh rehearsal with the same traffic, prices, cadence and limits.
+   financial issues and both producer/supervisor stopped. Harness correction
+   `21bdaa0f8` timestamps individual reads and separates five progress readers
+   from one bounded pair of custody readers. Conservative timing bounds that
+   cross two seconds remain unqualified; missing historical intervals cannot
+   qualify the failed run. Final payment/credit observations follow complete
+   delivery and require a fresh complete-custody observation within 35 seconds.
+   All 24 affected checks pass on the exact frozen 213-file Linux harness;
+   macOS passes 23 with one existing Linux-only skip. An initial Linux staging
+   failure omitted the unchanged support-library layout; its records are
+   preserved separately. No production code, artifact, tariff or budget changes.
+   Evidence remains in `work/receiver-observer-timing`. Qualify a fresh rehearsal
+   with the same traffic, prices, cadence and limits.
    Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
