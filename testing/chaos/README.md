@@ -955,6 +955,14 @@ transfer and retains unrecovered originals; never rerun into the same output
 directory or replace its mint to hide a failure. Hardware acceptance also needs
 an independent audit of the original stopped wallets and mint.
 
+The shared `sim.offline_wallet.WalletCLI` helper retains command intents,
+deadlines and process epochs for offline wallet pressure checks. Optional GNU or
+BusyBox `time` capture records CPU and maximum resident memory outside the
+deadline supervisor; it includes that supervisor's overhead. A lost reply
+permits observation of the original command, never an automatic wallet retry.
+`tests/test_offline_wallet.py` covers completion, refusal, forced deadline and
+lost-reply ownership on Linux.
+
 ### Router load, restart and frame loss
 
 `sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped

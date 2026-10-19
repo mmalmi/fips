@@ -36,7 +36,14 @@ Accepted evidence:
   Its configuration initializes successfully on the corrected ordinary Linux
   binary; its shared financial auditor reconciles the original successful
   Linux fixture's 1,024 sats with no unfinished wallet owners. Device execution
-  waits for the history run's closure. One fully archived, financially closed
+  waits for the history run's closure. The prepared run also captures complete
+  offline-command CPU, maximum resident memory and acknowledgment duration using
+  the shared command helper. Three Linux checks and four empty router shell
+  commands qualify completion, refusal, deadline and lost-reply ownership; these
+  introduce no wallet operations and do not qualify the pending financial case.
+  Timing includes timeout supervision and excludes SSH/controller work. Evidence
+  in `work/offline-wallet-metrics` retains both corrected preparation-wrapper
+  failures. One fully archived, financially closed
   earlier router profile is relocated from flash to temporary storage with every
   file preserved, releasing 4,992 KiB of observed flash space. The active profile
   and original service configuration are unchanged.
