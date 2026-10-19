@@ -7,7 +7,7 @@ from . import wifi_probes as probes
 from . import wifi_receiver_custody as custody
 from .paid_relay import eventually
 from .paid_settlement import require, validate_report, verified_refund
-from .wifi_priority_checks import submitted
+from .wifi_priority_checks import received, submitted
 from .wifi_retirement_live import maintenance_idle
 from .wifi_receiver_window import exposure, measure
 
@@ -90,11 +90,27 @@ class ReceiverWorkload:
 
     def send(self, source, destination, count, size, rate):
         shape = probes.arm(self, source, destination, count, size, lifetime_secs=90)
-        sender = probes.send(self, source, destination, shape, rate, max_duration_secs=60, operation_timeout=75)
-        submitted(sender, shape)
-        received = eventually('all original paid payloads delivered', lambda:
-                              probes.receive(self, source, destination, shape, complete=True), 10)
-        return {'shape': shape, 'sender': sender, 'receiver': received}
+        record = dict(source=source, destination=destination, shape=shape, rate_pps=rate)
+        self.evidence['receiver_history'].setdefault('traffic', []).append(record)
+        self.save()
+
+        def complete():
+            report = self.ctl(destination, 'status')['probe']
+            record['receiver'] = report
+            received(report, shape, self.participants()[source].npub, complete=True)
+            return report
+
+        try:
+            record['sender'] = probes.send(self, source, destination, shape, rate,
+                                          max_duration_secs=60, operation_timeout=75)
+            submitted(record['sender'], shape)
+            eventually('all original paid payloads delivered', complete, 10)
+            return record
+        except Exception as error:
+            record['failure'] = str(error)
+            raise
+        finally:
+            self.save()
 
     def earn(self, owner, destination, channel, target):
         def evidence(state):
@@ -121,8 +137,12 @@ class ReceiverWorkload:
         report = eventually('original refund committed', lambda:
                             verified_refund(self.journal(owner), channel, terms), 120)
         checked = validate_report(report, capacity_sat=terms['capacity_sat'])
-        seller = self.journal(provider)['seller_settlements'][channel]
-        require(seller['released'] and seller['report'] == checked
+        def released():
+            seller = self.journal(provider)['seller_settlements'].get(channel)
+            return seller if seller and seller['released'] else None
+        seller = eventually('original provider settlement released', released, 120)
+        require(validate_report(seller['report'], capacity_sat=terms['capacity_sat']) == checked
+                and seller['report']['signed_sat'] == checked['paid_sat']
                 and (paid is None or checked['paid_sat'] == paid)
                 and (channel not in self.reports or self.reports[channel] == checked),
                 'original settled payment or provider payout differs')
@@ -205,7 +225,9 @@ class ReceiverWorkload:
         self.evidence['receiver_history']['exposure'] = exposure(before_warm, warm, warm,
                                                                [self.transit, self.guard], 92)
         original_sale = self.journal()['seller_settlements'][self.incoming]
-        require(original_sale['released'] and original_sale['report'] == self.reports[self.incoming],
+        require(original_sale['released']
+                and validate_report(original_sale['report'], capacity_sat=960) == self.reports[self.incoming]
+                and original_sale['report']['signed_sat'] == self.reports[self.incoming]['paid_sat'],
                 'original receiver settlement is not durably released')
         self.held_nodes.append('n02')
         self.nodes['n02'].hold_wallet(self.args.sqlite_hold, seconds=150)

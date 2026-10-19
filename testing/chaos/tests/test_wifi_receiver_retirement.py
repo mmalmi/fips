@@ -19,6 +19,53 @@ from sim import wifi_receiver_custody as custody
 from sim.remote_mint import RemoteMint
 from sim.wifi_receiver_window import exposure, progress
 from sim.wifi_receiver_retirement import ReceiverRetirementRun, SNAPSHOT_BUDGET, RECOVERY_RESERVE
+from sim.wifi_receiver_workload import ReceiverWorkload
+
+
+class ReceiverWorkloadTests(unittest.TestCase):
+    def test_incomplete_burst_keeps_both_packet_counts_without_replaying_send(self):
+        shape = dict(stream_id='original', packet_count=2, payload_bytes=1000)
+        sender = dict(stream_id='original', requested_packets=2, submitted_packets=2,
+                      submitted_bytes=2000, stopped_reason=None)
+        receiver = dict(stream_id='original', source='buyer', expected_packets=2,
+                        payload_bytes=1000, unique_packets=1, unique_bytes=1000,
+                        missing_packets=1, duplicate_packets=0, invalid_packets=0, latency=None)
+        run = ReceiverWorkload()
+        run.evidence, run.save = {'receiver_history': {}}, Mock()
+        run.ctl = Mock(return_value={'probe': receiver})
+        run.participants = lambda: {'buyer': SimpleNamespace(npub='buyer')}
+        with patch('sim.wifi_receiver_workload.probes.arm', return_value=shape), \
+                patch('sim.wifi_receiver_workload.probes.send', return_value=sender) as send, \
+                patch('sim.wifi_receiver_workload.eventually', side_effect=lambda _, check, __: check()):
+            with self.assertRaisesRegex(RuntimeError, 'delivery is incomplete'):
+                run.send('buyer', 'destination', 2, 1000, 128)
+        send.assert_called_once()
+        record, = run.evidence['receiver_history']['traffic']
+        self.assertEqual((record['sender'], record['receiver']), (sender, receiver))
+        self.assertIn('delivery is incomplete', record['failure'])
+        self.assertEqual(run.save.call_count, 2)
+
+    def test_full_reports_match_after_provider_release_without_replaying_settlement(self):
+        terms = {'id': 'original', 'capacity_sat': 960}
+        report = dict(channel_id='original', value_after_stage1_sat=960, signed_sat=92,
+                      paid_sat=92, refunded_sat=868, receiver_fee_reserve_sat=0, fee_sat=0)
+        buyer = dict(channel=terms, report=report, refunded=True, wallet_refund_sat=868)
+        run = ReceiverWorkload()
+        run.owners, run.providers = {'original': 'buyer'}, {'original': 'seller'}
+        run.intents = {'original': {'funded': {'terms': terms}}}
+        run.reports, run.evidence = {}, {'receiver_history': {}}
+        run.mutate, run.save = Mock(), Mock()
+        seller = iter([dict(released=False, report=report), dict(released=True, report=report)])
+        run.journal = lambda name: ({'buyer_settlements': {'original': buyer}} if name == 'buyer'
+                                   else {'seller_settlements': {'original': next(seller)}})
+        run.settle_channel('original', 92)
+        self.assertEqual(run.reports['original']['paid_sat'], 92)
+        run.mutate.assert_called_once_with('buyer', 'settle', channel='original')
+        for changed in (dict(report, paid_sat=91, refunded_sat=869), dict(report, signed_sat=91)):
+            run.journal = lambda name: ({'buyer_settlements': {'original': buyer}} if name == 'buyer'
+                                       else {'seller_settlements': {'original': dict(released=True, report=changed)}})
+            with self.assertRaisesRegex(RuntimeError, 'settled payment or provider payout differs'):
+                run.settle_channel('original', 92)
 
 
 class ReceiverWindowTests(unittest.TestCase):

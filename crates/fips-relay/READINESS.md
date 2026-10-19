@@ -61,21 +61,39 @@ Accepted evidence:
   limit. Cleanup finishes about 1.043 seconds after writer release while traffic
   continues. This is not evidence of multiple interior cleanup-overlap samples.
 
-The third router history attempt is running with the same 5,480 receipts, 20 MiB
-limit and two-second progress requirement. Its longer preparation allowance
-follows measured device speed. The preceding device attempt's 3,072 sats are
-fully collected, its original profiles and mint are archived, and baselines are
-restored. The current run retains its recorded CDK `bb9b87d8` graph; it will not
-be presented as execution of the newer binary.
-A separate read-only observer now samples the five owned relay daemons every
-five seconds during this same attempt. It reuses the existing process identity
-and resource parsers, makes no wallet requests and writes no router files. Its
-CPU/RSS observations will exclude the earlier receipt preparation and short-lived
-wallet commands; they are not payment-attributed costs or a memory-limit guarantee.
-Three real router proc records and six rejected malformed records qualify the
-parser adaptation in `work/receiver-history-router/attempt-3/resource-observation`.
-The live run has not yet reached the service phase, so these checks add no relay
-performance acceptance.
+The third router history attempt completed all 5,480 receipts and returned its
+borrowed setup value, then failed the first forwarding burst's complete-delivery
+check. The receiver-retirement workload was not reached. Automatic closure also
+failed a harness assertion: it compared a full seller report with a normalized
+buyer report that omits `signed_sat`. Stopped original journals agree on 92 sats
+paid and 868 refunded; both sides recorded release. The harness now waits for
+provider release and compares validated report fields while checking the signed
+amount, including the later retained-report check. Its regression fails before
+the fix; 37 focused checks pass afterward,
+with one existing Linux-only check skipped on macOS. An invocation import-path
+failure is retained; its nine previously unreached checks pass with the required
+test import path. The burst helper now retains both submitted and received packet
+counts on failure, with a focused check that it never replays the finite send.
+These changes fix closure and diagnostics, not the unresolved delivery failure.
+
+All five original accounts and the live mint are retained for recovery. The
+stopped router archives and restored original-service baselines are verified in
+`work/receiver-history-router/attempt-3/failure-inspection`. Recovery independently
+reconciles all 3,072 sats as spendable before and after retiring the original
+channel owners, preserving the 960-sat debit, 868-sat refund and 92-sat lifetime
+exposure. Collection and final closure are underway in `recovery-2`. The first
+recovery preflight refused before expiry and performed no financial action.
+No replacement funding or history reset is
+authorized as recovery. The failed verdict remains unchanged. The run retains
+its CDK `bb9b87d8` graph, distinct from the newer verified binary.
+
+The separate read-only observer completed 1,701 samples with no sampling errors.
+Its auxiliary-profile paths were wrong, so only the three main daemons were
+observed. The retained summary explicitly marks the observation partial and the
+history test failed. CPU/RSS measurements exclude earlier receipt preparation
+and short-lived wallet commands; they are neither payment-attributed costs nor
+a memory-limit guarantee. Evidence remains in
+`work/receiver-history-router/attempt-3/resource-observation`.
 
 The phone fixture now binds the matching corrected artifacts and reuses all 158
 unchanged harness checks. The updated isolated APK is installed, visually checked,
@@ -91,7 +109,7 @@ Their hashes match the accepted native history, export-pressure and cleanup
 evidence; the source-size check also passes after integration. The Python harness
 is also integrated locally. Its 64 passing Linux checks are reused against exact
 source hashes; four focused command checks verify the corrected eight-hour
-initial alarm and invalid-argument rejection. The live device run's 211 bound
+initial alarm and invalid-argument rejection. The original device run's 211 bound
 harness files remain unchanged. `work/harness-local-integration` records the
 comparison and command checks; source integration does not close device
 acceptance. The fixture branch is merged and its worktree is clean; it remains
@@ -112,9 +130,11 @@ Change it only to fix a demonstrated failure or an unmet requirement. Reuse vali
 checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
 full suites or creating additional reports without a concrete verification need.
 
-1. Finish the active router history workload and independently reconcile its
-   original funds, retained owners and restored baselines. Reuse the accepted
-   native workload and verified builds; do not restart completed preparation.
+1. Recover the failed router attempt's original funds and retire its owners.
+   Diagnose the delivery failure and qualify the missing receiver-retirement
+   workload. Reuse the accepted native workload, verified builds and preserved
+   genuine receipts; do not repeat completed preparation by default. Check
+   short traffic and settlement behavior before another lengthy device run.
 2. Run the prepared ordinary-ARM large-export case after that closure. Measure
    command CPU, memory, storage and acknowledgment time in the same run, then
    independently audit refusal, recovery and continued spending.
@@ -138,7 +158,7 @@ Reuse unchanged-code contract evidence, keeping historical cost figures attached
 to their measured binaries. Qualify the changed paths and their interactions with
 the current pressure, recovery and device cases. The final CDK correction affects
 pre-confirmation failures; it does not require another full history preparation
-after the current run passes and its originals are independently reconciled.
+after the remaining device workload passes and its originals are independently reconciled.
 
 ## Implementation and recovery evidence
 
