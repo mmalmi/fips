@@ -14,8 +14,10 @@ controlled phone cases and their independent audits pass. The current native
 eight-trial cadence matrix also passes, with every original test sat independently
 accounted for. The paced router
 rehearsal delivers every measured packet and finishes cleanup, but fails its
-payment-progress observation; a fresh rehearsal using the corrected observer is
-running. Router retirement acceptance remains pending.
+payment-progress observation. The next rehearsal records a failed bounded proof
+read and incomplete timing coverage; its original-fund recovery is running.
+Router retirement acceptance remains pending, with further observer correction
+required before another run.
 Earlier results remain attached to their recorded
 artifacts. Production readiness still depends
 on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
@@ -26,7 +28,7 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | All twelve diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The corrected harness passes 24 focused Linux checks. | The fresh corrected-observer rehearsal is running. A separate continuation requires its functional pass and independent financial release before verifying capacity and running full history. Preserve the failed verdict and the two-second/35-second requirements. One receipt cannot establish history pressure. |
+| Router receiver retirement | All twelve earlier diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The corrected harness passes 24 focused Linux checks. | The next rehearsal records a bounded proof-reader failure after 61 progress and 50 custody samples; all 31 settlements are recorded, but independent original-fund recovery remains live. Partial payment timing remains unqualified. Full history is ineligible until a later corrected-observer run actually passes and independently closes. Preserve both failures and the two-second/35-second requirements. One receipt cannot establish history pressure. |
 | Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass. A separate 3 MiB foreground/background/disconnect-rejoin case also passes using the same processes and four original channels. Each case independently reconciles its original 512 test sats and removes the temporary app. | Controlled LAN/UDP rejoin is complete. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The current ordinary native matrix passes all eight trials and 32 workload windows: all 285,696 packets arrive, all 48 channels close and independent audits account for 40,960 test sats across 96 complete SQLite sets. Original archives and 872 members are verified. Quote, payment scheduling, accounting, Spilman and payment-wire contracts remain unchanged; session recovery and authenticated fallback selection change. | Finish the pending router case. Keep earlier target costs attached to their measured binaries and retain the explicit shared/physical cost exclusions. |
 
@@ -406,9 +408,18 @@ history pressure.
    Evidence remains in `work/receiver-observer-timing`. A fresh rehearsal in
    `work/receiver-history-router/observer-rehearsal-07fc6123319e` starts after
    the phone and native matrix are independently closed and their owners exit.
-   It retains the same traffic, prices, cadence and limits. Its result is pending;
-   the root-owned sequence collects and independently audits its original funds
-   without operator actions or an automatic full-history launch.
+   It retains the same traffic, prices, cadence and limits. Its final window
+   records a bounded read-only proof-observation failure after 61 progress and
+   50 complete custody samples. The last checked delivery is 64 packets at
+   21.641 seconds; original custody has 63 remaining proofs but the receiver
+   settlement is still retained. Partial payment timing has conservative upper
+   gaps of 2.430–3.291 seconds with no proven two-second stall. A 1.094-second
+   relay-status read still delays the next batch of otherwise independent reads.
+   These observations neither qualify the full window nor establish a runtime
+   payment failure. Preserve the snapshot and partial analysis in
+   `work/observer-rehearsal-current-window`. All 31 settlements are subsequently
+   recorded; the root-owned sequence continues original-fund collection and
+   independent auditing without operator actions or a full-history launch.
    Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
@@ -454,9 +465,11 @@ history pressure.
    The replacement `work/full-history-observer-draft` passes five focused checks
    for the actual corrected-observer prerequisite and 213-file harness. It reuses
    the unchanged nine-check workload/deadline and qualified archive evidence.
-   A reviewed root continuation is now waiting for that actual rehearsal's
-   functional pass, independent 3,072-sat audit and exact owner/child exits;
-   no full-history namespace or new grant exists yet. After release it preserves
+   The reviewed root continuation remains gated while the failed rehearsal's
+   original funds close; its required functional pass cannot be replaced by
+   financial release. No full-history namespace or new grant exists. Preserve
+   this immutable continuation and its unexecuted capacity helper. A later
+   continuation needs a newly qualified passing prerequisite before it preserves
    closed router records as verified gzip copies, checks actual synced flash/RAM
    capacity, then stages and runs full history once. Thirteen focused capacity
    checks cover archive selection and guards. Every original financial byte and
