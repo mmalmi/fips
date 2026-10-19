@@ -16,8 +16,8 @@ requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. The latest six diagnostic attempts are closed; the sixth recovers all 3,072 sats with no unfinished financial owners and restored normal services. | The full history workload has not passed. The seventh one-receipt diagnostic is prepared, source-verified and unfunded. One receipt cannot establish history pressure. |
-| Android | The corrected artifact passes target lint, ten Java lifecycle tests, Android lint, signature and packaged-native checks. Five unchanged customer-profile tests are reused. Its isolated APK passed installation checks with original accounts, Wi-Fi and foreground preserved. | The prepared current-graph foreground/background and forced-idle regression is running after the export case released the devices. Physical encounter/rejoin and natural-idle observations remain open. Forced idle does not substitute for natural idle. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. The latest six diagnostic attempts are closed; the sixth recovers all 3,072 sats with no unfinished financial owners and restored normal services. | The full history workload has not passed. The seventh one-receipt diagnostic is running after export and phone closure. One receipt cannot establish history pressure. |
+| Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
@@ -59,7 +59,22 @@ and passes the unchanged 24 MiB requirement. Normal-service baselines remain
 unchanged. Recovery, relocation and preflight failures stay recorded separately;
 none counts as device pressure acceptance.
 
-### Prepared router correction
+### Current phone acceptance
+
+`work/receiver-history-phone` binds the corrected APK and ordinary relay artifacts
+to the existing 158 harness checks. The physical four-account UDP transit case
+passes foreground/background delivery, unpaid denial, 48.32 seconds of forced
+Doze and fresh paid delivery afterward without another purchase or app-process
+restart. The four original channels settle; independent auditing reconciles all
+512 test sats in the collector, with zero unaccounted value, unfinished mint
+operations or duplicate/mint-spent live proofs. All four receiver stores and
+retained exports are checked. The mint is stopped; original phone accounts,
+normal Wi-Fi, foreground and idle policy are restored. All 600 management checks
+pass and 513 evidence files have identical preserved copies. Natural idle,
+physical movement, battery costs and ad hoc radio operation are not established
+by this configured LAN/UDP test.
+
+### Router retirement diagnostic
 
 The failed long attempt preserves all 5,480 genuine receipts and independently
 recovers its original 3,072 sats. The later one-receipt diagnostics expose costly
@@ -99,11 +114,10 @@ history pressure.
 
 1. The ordinary-ARM export case and independent audit are complete. Its original
    records are preserved, all test funds collected and normal services restored.
-2. Finish the corrected phone regression, now running. Its 158 unchanged harness
-   checks are already verified and reused. Complete postflight, stopped-account/mint
-   archives and independent wallet audit before releasing the devices. Physical
-   encounter/rejoin and natural off-charge idle remain separate observations.
-3. Run the prepared seventh router diagnostic. Once the full workflow passes,
+2. The corrected phone regression, postflight, stopped-account/mint archives and
+   independent wallet audit are complete. Its 158 unchanged harness checks are
+   reused. Physical encounter/rejoin and natural off-charge idle remain open.
+3. Finish the seventh router diagnostic, now running. Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
@@ -115,9 +129,9 @@ history pressure.
 
 These cases share devices and run separately. Independent financial closure and
 restored services release devices even after a functional failure; the failed
-verdict remains. The pinned local sequence completed the export audit and started
-the phone regression. After phone closure, it invokes the prepared router runner,
-with fresh device/space checks between cases. It stops on failure
+verdict remains. The pinned local sequence completed both export and phone audits,
+then started the seventh router diagnostic after fresh device/space checks.
+It stops on failure
 without reissuing funds or replaying commands. Its plan and source are retained in
 `work/device-acceptance-sequence.json` and `work/continue-device-acceptance.py`.
 Reuse checks for unchanged inputs, rerun affected checks after a
