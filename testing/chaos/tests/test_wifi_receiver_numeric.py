@@ -49,7 +49,15 @@ import os, shlex, sys
 args=shlex.split(sys.argv[-1])
 assert args[:4]==['exec','setsid','sh','-c']
 # Popen already placed this local stand-in into its own process group.
-os.execv('/bin/bash',['bash','-c',args[4]])
+# BusyBox accepts the explicit signal followed by numeric PIDs, but treats a
+# following '--' as an invalid PID. Refuse it before dispatching any test signal.
+portable_kill = """
+kill() {
+  for argument in "$@"; do [ "$argument" != -- ] || return 64; done
+  builtin kill "$@"
+}
+"""
+os.execv('/bin/bash',['bash','-c',portable_kill+args[4]])
 '''
 
 

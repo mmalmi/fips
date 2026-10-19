@@ -80,12 +80,12 @@ def worker(state, channel, kind):
 reader=$$
 cleanup() {{
   trap '' HUP INT TERM
-  kill -TERM -- -"$reader" 2>/dev/null || :
+  kill -TERM -"$reader" 2>/dev/null || :
   wait "$watchdog" 2>/dev/null || :
 }}
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-(sleep {LIFETIME_SECONDS - 1}; kill -KILL -- -"$reader" 2>/dev/null) &
+(sleep {LIFETIME_SECONDS - 1}; kill -KILL -"$reader" 2>/dev/null) &
 watchdog=$!
 test "$(jsonfilter -q -s '{{"n":1,"s":"1"}}' -t '@.n' -t '@.s' -e '@.n')" = 'int
 string
