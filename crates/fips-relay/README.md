@@ -18,10 +18,12 @@ size-oriented ARM64 build, startup readiness checks and backup procedure.
 The v1 goal remains active. [Adaptive cadence](CADENCE.md), authenticated adjacent
 admission, UDP/TCP/native Ethernet/WebSocket forwarding and financial-history
 retirement have software and controlled device evidence. This includes open Wi-Fi
-joining, paid route recovery, phone transit and wallet failure/recovery. Whole-wallet
-resource bounds, router power-cut qualification, broader mobile acceptance and a
-common final target build remain open. The [acceptance checklist](READINESS.md#scope-and-outstanding-acceptance)
-distinguishes those requirements from historical results and unqualified extensions.
+joining, paid route recovery, phone transit and wallet failure/recovery. Current
+Linux/ARM64/Android builds and controlled phone acceptance are complete on their
+recorded graphs. Full-history router forwarding/resource acceptance and controlled
+open-radio recovery remain open. The [acceptance checklist](READINESS.md#acceptance-checklist)
+defines the remaining requirements and the explicit physical power-loss, storage
+and mobility limits.
 The prototype reports below describe the earlier r6 hardware build.
 
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
@@ -453,9 +455,10 @@ demonstration; [v1 readiness](READINESS.md) records subsequent verification and
 remaining work. Current software checks cover route changes during unfinished
 renewal, expired-offer fences, funded-channel recovery, safe cancellation of
 unsubmitted funding, abandoned committed sends and exact financial-history
-handoffs. Aggregate wallet storage, bounded enumeration and broader combined
-failures still need acceptance. Renewal can interrupt delivery; maximum throughput
-and indefinite hotspot service are not claimed.
+handoffs. The pending full-history router case checks forwarding and observed
+resources during retirement pressure; [the current assessment](READINESS.md#completion-sequence)
+defines its acceptance and the storage/power-loss limits. Renewal can interrupt
+delivery; maximum throughput and indefinite hotspot service are not claimed.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still

@@ -321,15 +321,17 @@ operator intervention after enough distinct unpaid peers. Active, unexpired,
 pending, legacy or otherwise unresolved records also retain slots.
 The controller and ledger's channel bounds now count retained records on both sides.
 
-**Remaining history work:** unreleased spent proof records, unreleased or unrelated
+**Retained owners and scope:** unreleased spent proof records, unreleased or unrelated
 transactions, mint/melt records and orphaned legacy receiver records remain.
 Completed CDK recovery operations remove their saga records after any required
 owner acknowledgment; unfinished creating and spending operations must retain
 their original coins. Spent proof
 evidence also supports the SDK's receiver-custody checks. Proof cleanup must
 coordinate all of those owners, not merely observe a spent state or completed
-spending operation. This is not yet a bound on total router database size or proof
-of indefinite operation under hostile identity churn.
+spending operation. Logical storage limits and finite retirement checks do not
+bound total physical database size or prove indefinite operation under hostile
+identity churn. The pending router pressure/resource acceptance is tracked in
+[the current completion sequence](READINESS.md#completion-sequence).
 
 The SDK provides an explicit local proof-release queue for that handoff.
 Its caller must durably release every external owner before adding the original
