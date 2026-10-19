@@ -180,6 +180,7 @@ impl Node {
         }
 
         let direct_validation_is_staged = current_next_hop == Some(source_addr)
+            && !self.session_direct_path_degradation_active(&source_addr, now_ms)
             && self
                 .session_direct_degradation
                 .has_pending_validation(&source_addr);

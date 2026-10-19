@@ -347,14 +347,16 @@ impl Node {
             )
             .with_class(PacketClass::Bulk),
         );
-        // A live direct peer is stronger than a routed handshake ingress. A
-        // SessionAck can race direct-link promotion and return through a
-        // transit peer; pinning that transient ingress would leave payload on
-        // the routed branch after the direct carrier is already usable.
-        let selected_next_hop = self
-            .find_next_hop(node_addr)
-            .map(|peer| *peer.node_addr());
-        let selected_direct = (selected_next_hop == Some(*node_addr)).then_some(*node_addr);
+        // Prefer direct over a routed handshake ingress while its session path
+        // is not degraded. A SessionAck can race direct-link promotion and return
+        // through a transit peer; pinning that transient ingress would leave
+        // payload on the routed branch after the direct carrier is usable.
+        let selected_next_hop = self.find_next_hop(node_addr).map(|peer| *peer.node_addr());
+        // Native routing may retain degraded direct as its last resort. An
+        // authenticated fallback must take precedence over that result.
+        let selected_direct = (selected_next_hop == Some(*node_addr)
+            && !self.session_direct_path_degradation_active(node_addr, Self::now_ms()))
+        .then_some(*node_addr);
 
         // A supplied handshake or established reply carrier remains preferred
         // while its adjacent FMP path can send. Initial tree-mode handshakes
@@ -363,9 +365,7 @@ impl Node {
         // refreshes it; falling back here can seed the new FSP owner onto an
         // unproven branch.
         let proven_next_hop = proven_next_hop.filter(|next_hop| {
-            self.peers
-                .get(next_hop)
-                .is_some_and(|peer| peer.can_send())
+            self.peers.get(next_hop).is_some_and(|peer| peer.can_send())
                 && self.dataplane_has_fmp_owner(next_hop)
         });
         let next = if self.source_routes.contains_key(node_addr) {
@@ -373,8 +373,7 @@ impl Node {
         } else {
             selected_direct.or(proven_next_hop).or(selected_next_hop)
         };
-        let Some(next_hop) = next
-        else {
+        let Some(next_hop) = next else {
             return DataplaneFspOwnerRouteUpdate {
                 routes,
                 wrap: None,
