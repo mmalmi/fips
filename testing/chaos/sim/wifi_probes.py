@@ -31,8 +31,9 @@ def send(run, source, destination, shape, rate, *, round_trip=False,
     }, **timeout)["probe"]
 
 
-def receive(run, source, destination, shape, *, complete=False, round_trip=False):
-    report = run.ctl(source if round_trip else destination, "status")["probe"]
+def receive(run, source, destination, shape, *, complete=False, round_trip=False, operation_timeout=None):
+    timeout = {} if operation_timeout is None else {"operation_timeout": operation_timeout}
+    report = run.ctl(source if round_trip else destination, "status", **timeout)["probe"]
     identity = run.participants()[destination if round_trip else source].npub
     received(report, shape, identity, complete=complete, round_trip=round_trip)
     return report

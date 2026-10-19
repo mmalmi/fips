@@ -1,7 +1,7 @@
 """Keep progress timing independent of bounded original-custody observation."""
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import json
+from queue import Full
 import subprocess
 import threading
 import time
@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.wifi_receiver_window import measure, progress
+from sim.wifi_receiver_window import measure, progress, reconciled
 from sim import wifi_receiver_custody as custody
 
 
 def point(at, value):
     return dict(elapsed_us=at, delivered=value,
-                payments=[{'authorized_sat': value}] * 2, credits=[value * 1000] * 2,
+                payments=[{'authorized_sat': value, 'signed_sat': value}] * 2, credits=[value * 1000] * 2,
                 counter_reads=[dict(started_us=at, finished_us=at) for _ in range(5)])
 
 
@@ -71,8 +71,49 @@ class ReceiverTimingTests(unittest.TestCase):
         self.assertTrue(result['within_limit'])
         self.assertEqual(result['observed_counter_reads'], [3, 2, 2, 2, 2])
 
+    def test_signature_progress_and_terminal_acknowledgment_are_distinct(self):
+        sample = point(1_000_000, 2)
+        states = {name: dict(started_us=1_000_000, finished_us=1_000_001,
+                            value=dict(authorized_sat=2, evidence_msat=2000,
+                                       acknowledged_msat=2000, in_flight=False)) for name in ('source', 'n02')}
+        self.assertTrue(reconciled(sample, states, 1_000_000))
+        for field, wrong in (('acknowledged_msat', 1999), ('in_flight', True), ('authorized_sat', 3)):
+            changed = json.loads(json.dumps(states))
+            changed['n02']['value'][field] = wrong
+            self.assertFalse(reconciled(sample, changed, 1_000_000))
+        self.assertFalse(reconciled(sample, states, 1_000_001))
+        sample['payments'] = [dict(authorized_sat=2, signed_sat=1)] * 2
+        self.assertFalse(reconciled(sample, states, 1_000_000))
+        samples = [point(500_000, 1), point(1_000_000, 2)]
+        for current in samples:
+            current['payments'] = [dict(authorized_sat=current['delivered'], signed_sat=0)] * 2
+        self.assertTrue(progress(point(0, 0), samples)['all_counters_advanced'])
+        self.assertFalse(progress(point(0, 0), samples, payment_field='signed_sat')['all_counters_advanced'])
+
 
 class ReceiverObserverTests(unittest.TestCase):
+    def setUp(self):
+        class Numeric:
+            def __init__(self, run):
+                self.run = run
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def payment(self, name, channel):
+                row = self.run.ctl(name, 'status')['payment_progress'][channel]
+                return dict(authorized_sat=row['authorized_sat'], signed_sat=row['authorized_sat'])
+
+            def credit(self, name, channel):
+                return self.run.credit(name, channel)
+
+        patcher = patch('sim.wifi_receiver_observer.NumericReaders', Numeric)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @staticmethod
     def fixture():
         run = SimpleNamespace(transit='transit', guard='guard', incoming='incoming',
@@ -105,21 +146,14 @@ class ReceiverObserverTests(unittest.TestCase):
 
         run.ctl.side_effect = status
         with patch('sim.wifi_receiver_observer.probes.receive', return_value={'unique_packets': 1}), \
-                ReceiverObserver(run, {}, time.monotonic()) as observer, \
-                ThreadPoolExecutor(max_workers=1) as caller:
-            baseline = observer.progress()
-            future = caller.submit(observer.progress)
+                ReceiverObserver(run, {}, time.monotonic()) as observer:
+            baseline = observer.baseline()
+            observer.start()
             try:
                 self.assertTrue(entered.wait(1))
-                try:
-                    future.result(timeout=.25)
-                except TimeoutError:
-                    self.fail('one slow counter blocked unrelated progress readers')
                 seen, deadline = [], time.monotonic() + 1
                 while len(seen) < 3 and time.monotonic() < deadline:
-                    sample = observer.progress()
-                    if sample is not None and 3 in sample['updated_counters']:
-                        seen.append(sample)
+                    seen.extend(sample for sample in observer.progress() if 3 in sample['updated_counters'])
                     time.sleep(.001)
                 self.assertEqual(len(seen), 3)
                 self.assertEqual(len(relay_calls), 2)
@@ -129,7 +163,51 @@ class ReceiverObserverTests(unittest.TestCase):
                                    seen[0]['counter_reads'][3]['finished_us'])
             finally:
                 release.set()
-                future.result(timeout=2)
+
+    def test_readers_continue_and_retain_every_read_while_main_thread_is_busy(self):
+        from sim.wifi_receiver_observer import ReceiverObserver
+        run, reads = self.fixture(), []
+
+        def credit(name, _channel):
+            if name == 'n02':
+                reads.append(len(reads) // 2)
+                return reads[-1]
+            return 1000
+
+        run.credit.side_effect = credit
+        with patch('sim.wifi_receiver_observer.probes.receive', return_value={'unique_packets': 1}), \
+                patch('sim.wifi_receiver_observer.POLL_SECONDS', .01), \
+                ReceiverObserver(run, {}, time.monotonic()) as observer:
+            baseline = observer.baseline()
+            observer.start()
+            time.sleep(.1)  # The release operation can occupy this caller.
+            samples = observer.stop_and_drain()
+            actual = [sample['credits'][0] for sample in samples if 3 in sample['updated_counters']]
+            self.assertGreaterEqual(len(actual), 3)
+            self.assertEqual([baseline['credits'][0], *actual], reads)
+            self.assertEqual([sample['elapsed_us'] for sample in samples],
+                             sorted(set(sample['elapsed_us'] for sample in samples)))
+            self.assertTrue(all(future.done() for future in observer.progress_pending.values()))
+
+    def test_overflow_and_reader_error_refuse_without_leaving_workers(self):
+        from sim.wifi_receiver_observer import ReceiverObserver
+        for fail in (False, True):
+            run = self.fixture()
+            with self.subTest(reader_error=fail), \
+                    patch('sim.wifi_receiver_observer.probes.receive', return_value={'unique_packets': 1}), \
+                    patch('sim.wifi_receiver_observer.MAX_PROGRESS_READS', 2 if not fail else 2048), \
+                    self.assertRaises(RuntimeError if fail else Full):
+                with ReceiverObserver(run, {}, time.monotonic()) as observer:
+                    observer.baseline()
+                    if fail:
+                        run.credit.side_effect = RuntimeError('owned numeric read failed')
+                    observer.start()
+                    time.sleep(.05)
+                    retained = observer.stop_and_drain()
+                    self.assertTrue(retained, 'fresh samples were lost before the reader failure')
+                    with self.assertRaises(RuntimeError if fail else Full):
+                        observer.stop_and_drain()
+            self.assertTrue(all(future.done() for future in observer.progress_pending.values()))
 
     def test_unavailable_custody_is_explicit_and_cannot_mask_changed_identity(self):
         from sim.wifi_receiver_observer import ReceiverObserver
@@ -172,11 +250,13 @@ class ReceiverObserverTests(unittest.TestCase):
             try:
                 observer.start_custody()
                 self.assertTrue(entered.wait(1))
-                first = observer.progress()
-                second, deadline = None, time.monotonic() + 1
-                while second is None and time.monotonic() < deadline:
-                    second = observer.progress()
+                first = observer.baseline()
+                observer.start()
+                later, deadline = [], time.monotonic() + 1
+                while not later and time.monotonic() < deadline:
+                    later = observer.progress()
                     time.sleep(.001)
+                second = later[-1]
                 self.assertIsNone(observer.poll_custody())
                 self.assertIsNone(observer.poll_custody())
                 self.assertFalse(observer.start_custody())
@@ -210,14 +290,18 @@ class ReceiverObserverTests(unittest.TestCase):
 
 
 class ReceiverMeasurementTests(unittest.TestCase):
-    def run_window(self, final_refusal=False, final_late=False, final_missing=False, missing_once=False):
+    def run_window(self, final_refusal=False, final_late=False, final_missing=False, missing_once=False,
+                   held_override=None):
         clock = SimpleNamespace(elapsed=0)
         run = SimpleNamespace(evidence={'receiver_history': {}}, save=Mock(),
                               transit='transit', guard='guard', held_nodes=['n02'],
                               nodes={'n02': SimpleNamespace(held=Mock(return_value=True))},
                               release_holds=Mock())
-        held = [dict(payment_progress={channel: {'authorized_sat': 0}})
+        held = [dict(payment_progress={channel: dict(authorized_sat=0, evidence_msat=0,
+                                                    in_flight=False, acknowledged_msat=0)})
                 for channel in ('transit', 'guard')]
+        if held_override:
+            held[0]['payment_progress']['transit'].update(held_override)
         shape = dict(stream_id='original', packet_count=84, payload_bytes=1000)
         sender = dict(stream_id='original', requested_packets=84, submitted_packets=84,
                       submitted_bytes=84000, stopped_reason=None)
@@ -230,7 +314,7 @@ class ReceiverMeasurementTests(unittest.TestCase):
 
         class Observer:
             def __init__(self, *_):
-                self.round, self.progress_calls, self.start, self.pending = 0, 0, 0, False
+                self.round, self.progress_calls, self.custody_started, self.pending = 0, 0, 0, False
 
             def __enter__(self):
                 return self
@@ -243,10 +327,27 @@ class ReceiverMeasurementTests(unittest.TestCase):
                     return False
                 self.pending = True
                 self.round += 1
-                self.start = int(clock.elapsed * 1_000_000)
+                self.custody_started = int(clock.elapsed * 1_000_000)
                 return True
 
+            def baseline(self):
+                return self.observe()
+
+            def start(self):
+                pass
+
             def progress(self):
+                return [self.observe()]
+
+            def stop_and_drain(self):
+                return []
+
+            def payment_status(self):
+                current = self.last_sample
+                return {name: dict(started_us=current['elapsed_us'], finished_us=current['elapsed_us'],
+                                   value=payment) for name, payment in zip(('source', 'n02'), current['payments'])}
+
+            def observe(self):
                 self.progress_calls += 1
                 clock.elapsed += .2
                 count = [0, 1, 40, 84, 84][self.progress_calls - 1]
@@ -256,8 +357,9 @@ class ReceiverMeasurementTests(unittest.TestCase):
                     for reading in sample['counter_reads'][1:3]:
                         reading['started_us'] -= 100_000
                         reading['finished_us'] -= 100_000
-                sample['payments'] = [dict(authorized_sat=count, evidence_msat=count * 1000,
+                sample['payments'] = [dict(authorized_sat=count, signed_sat=count, evidence_msat=count * 1000,
                                            in_flight=count != 84, acknowledged_msat=count * 1000)] * 2
+                self.last_sample = sample
                 return sample
 
             def poll_custody(self):
@@ -270,9 +372,9 @@ class ReceiverMeasurementTests(unittest.TestCase):
                     clock.elapsed = 35.1
                 if self.round >= 5 and final_missing and (self.round == 5 or not missing_once):
                     clock.elapsed += .5
-                    return dict(started_us=self.start, elapsed_us=int(clock.elapsed * 1_000_000),
+                    return dict(started_us=self.custody_started, elapsed_us=int(clock.elapsed * 1_000_000),
                                 complete=False, missing_reads=['proofs'])
-                return dict(started_us=self.start, elapsed_us=int(clock.elapsed * 1_000_000),
+                return dict(started_us=self.custody_started, elapsed_us=int(clock.elapsed * 1_000_000),
                             complete=True, cleanup_pending=self.round == 1)
 
         instance = Observer()
@@ -301,6 +403,12 @@ class ReceiverMeasurementTests(unittest.TestCase):
         self.assertGreaterEqual(row['custody_samples'][-1]['started_us'], row['terminal_progress_us'])
         self.assertFalse(row['custody_samples'][-1]['cleanup_pending'])
         self.assertTrue(row['passed'])
+
+    def test_baseline_must_match_the_acknowledged_pre_stream_payment(self):
+        for wrong in (dict(in_flight=True), dict(acknowledged_msat=None),
+                      dict(authorized_sat=1, acknowledged_msat=1000)):
+            with self.subTest(held=wrong), self.assertRaisesRegex(RuntimeError, 'baseline changed'):
+                self.run_window(held_override=wrong)
 
     def test_terminal_custody_failure_is_not_skipped_after_payments_finish(self):
         with self.assertRaisesRegex(RuntimeError, 'final original custody changed'):

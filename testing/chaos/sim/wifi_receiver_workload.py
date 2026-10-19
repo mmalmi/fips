@@ -11,16 +11,10 @@ from .paid_relay import eventually
 from .paid_settlement import require, validate_report, verified_refund
 from .wifi_priority_checks import received, submitted
 from .wifi_retirement_live import maintenance_idle
-from .wifi_receiver_window import exposure, measure
+from .wifi_receiver_window import caught_up, exposure, measure
 
 CHANNEL_LIFETIMES = {"n01": 2400, "n02": 360, "source": 360}
 TRANSIT_SETUP_SECONDS = 120
-
-
-def caught_up(progress):
-    return (not progress['in_flight'] and progress['acknowledged_msat'] is not None
-            and progress['acknowledged_msat'] >= max(progress['authorized_sat'] * 1000,
-                                                    progress['evidence_msat']))
 
 
 class ReceiverWorkload:
@@ -318,6 +312,8 @@ class ReceiverWorkload:
         self.restart('n02')
         for field in ('all_counters_advanced', 'within_limit', 'traffic_covers_cleanup'):
             require(result['progress'][field], 'receiver progress acceptance failed: ' + field)
+        require(result['passed'],
+                'receiver signature progress acceptance failed')
 
     def check_transit_opening(self):
         intent = self.intents[self.transit]
