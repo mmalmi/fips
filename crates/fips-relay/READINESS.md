@@ -16,7 +16,7 @@ requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Nine diagnostic attempts are independently closed, including the management-outage case with expired unclaimed credit. A corrected complete-workload rehearsal is running from an independent Linux controller. | Complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Nine diagnostic attempts are independently closed. The Linux rehearsal fails during restart warmup and is closing its original funds. An unfunded local reproduction exposes delayed session recovery during key-epoch drain. | Verify the recovery correction, then complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
 | Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
@@ -226,8 +226,11 @@ routers and restricted loopback access for the mint are verified. The private
 key remains on Linux; key-installation records retain the backups and exact line
 needed for later revocation.
 
-The independently supervised Linux rehearsal `e458d621fe4f` is now running. Its
-producer and supervisor are confirmed live after the launching SSH command exits.
+The independently supervised Linux rehearsal `e458d621fe4f` fails during warmup
+after its third onward purchase: all six fresh probes are submitted but not
+delivered. Its producer remains live to close the original channels and collect
+the original funds after refund eligibility. An independent stopped-account audit
+waits for that exact producer to exit. The failed verdict is preserved.
 It uses the same frozen 211-file harness, ordinary artifacts, one real receipt
 and full 28-channel preparation. Recorded 24–62-second per-channel steps plus two
 refund waits leave little margin in the earlier 2,400-second incoming lifetime.
@@ -236,6 +239,14 @@ scenario two hours. Onward terms, prices, spending/capacity limits, 84 measured
 packets, two-second progress and the 35-second observation remain unchanged.
 The original unfunded preparation is retained separately. There is no automatic
 retry or full-history launch, and stable long-run connectivity is not yet proven.
+
+An isolated, unfunded three-process reproduction separates session recovery from
+wallet work. Eight rapid source restarts deliver immediately; spacing restarts
+15 seconds apart exposes prolonged handshake deferral during the previous key
+epoch's drain. A focused regression fails on the original core at that refusal.
+The candidate correction is still under verification: authenticate the new process
+epoch without discarding current keys for an unauthenticated setup, and keep
+ordinary pending keys out of the draining epoch's one-bit receive slot.
 
 The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
 `104f01754`. It refuses charging, simulated or forced idle before funding,
@@ -269,8 +280,9 @@ history pressure.
    natural off-charge idle remain unqualified; do not request manual phone actions
    or substitute simulated battery state for that evidence.
 3. All nine earlier router diagnostics are independently closed without replacing
-   their original funds. Complete the running Linux rehearsal and its independent
-   financial audit. Once the full workflow passes,
+   their original funds. Close and independently audit the failed Linux rehearsal,
+   verify the session-recovery correction, and complete a corrected rehearsal.
+   Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
