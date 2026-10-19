@@ -2,13 +2,64 @@
 
 Each dated section applies to its recorded source, dependencies, workload and
 artifact. “Current” in a historical section means current at that observation.
-The latest complete comparisons below use FIPS `1b948a688`, SDK `dad0fc3` and
-CDK `04c37d5a`; they are not measurements of the newer wallet-capacity and
-recovery candidate. The cadence, forwarding and payment-wire implementations
-remain unchanged, while wallet admission, storage and recovery have changed.
+The latest native comparison uses the session-recovery candidate with fixes
+`c0a553201` and `2dbd97961`, SDK `715969e` and CDK `4f03d81b`. Earlier target,
+storage and capture comparisons retain their recorded graphs. The cadence,
+forwarding and payment-wire implementations remain unchanged, while wallet
+admission, storage and recovery have changed.
 Keep the observed CPU/storage/wire values attached to their measured builds;
 [readiness](READINESS.md#completion-sequence) describes affected-path validation
 and evidence reuse for the final candidate. The 500-ms default is unchanged.
+
+## Native session-recovery candidate — 19 October 2026
+
+The current optimized ordinary daemon passes all eight trials in
+250/500/1000/2000/2000/1000/500/250-ms order. Five Linux processes include three
+paid relays and two funded directions over UDP loopback, with identical prices,
+credit allowances and workloads. The measurement owns the cache lock and a
+two-core quota; no quota throttling is observed. All 285,696 payloads arrive,
+and the strict analyzer accepts all 32 idle, bursty, steady and high-rate windows.
+
+Independent original-state audits close all 48 channels and account for all
+40,960 test sats across 96 complete SQLite sets. All eight original archives and
+872 member files are verified and retained. Measurement, audit and sequence
+owners exit; no workload or financial operation is repeated. Parent review and
+verified final mirrors remain in `work/native-cadence-final`, with original
+reports and audits in `work/restart-recovery-native-cadence/matrix`.
+
+Values below average the two high-rate observations for each maximum age and
+sum the five processes. Each observation delivers 32,000,000 application bytes.
+Service bytes count local payment-service FIPS payload submissions, including
+their carrier traffic; they are distinct from the smaller payment records.
+
+| Maximum age | Updates | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Payment-service payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 61.5 | 11.07 | 0.014112 | 369 | 100,675 |
+| 500 ms | 44 | 8.19 | 0.010049 | 264 | 72,035 |
+| 1 s | 40 | 7.45 | 0.008970 | 240 | 65,491 |
+| 2 s | 40 | 7.45 | 0.008942 | 240 | 65,491 |
+
+Steady windows deliver 3,200,000 bytes: the four policies average 19/19/14/10
+updates, 34.91/35.17/25.48/18.26 scoped CPU seconds per GiB and 114/114/84/60
+journal syncs. Each bursty window delivers 512,000 bytes with two updates and
+12 syncs. Every idle window has zero payment updates, polls, signatures,
+payment CPU, payment-record bytes and payment-journal writes/syncs. Other
+transport traffic continues during idle. Reported latency histogram upper
+bounds are 0.5 ms at steady load and 1 ms at high rate; these are local loopback
+observations, not radio latency.
+
+At high rate, one second uses about 9% less scoped CPU, 11% fewer logical payment
+journal bytes and 9% fewer service payload bytes than 500 ms. Two seconds offers
+no observed update-count reduction over one second at that load. Two repeats
+describe this workload and do not establish an optimum or a throughput ceiling.
+The 500-ms default is unchanged.
+
+Scoped CPU covers exclusive controller spans, future polls and inherited
+blocking work. Shared core/TCP and transport CPU outside those spans, wallet
+SQLite and physical media writes, physical wire framing, radio airtime and
+battery costs are excluded. These logical counters do not replace the separately
+recorded storage traces or packet captures below, and are not total payment
+overhead.
 
 ## Storage syscalls on the current graph — 16 October 2026
 

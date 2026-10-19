@@ -9,10 +9,13 @@ The candidate adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
 `ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The corrected ordinary
 Linux build, paced restart regression and seven paid-carrier scenarios pass.
 The ordinary ARM64 OpenWrt build
-and Android build/lifecycle/package checks pass for the same core changes. The
-controlled phone regression and independent audit also pass. The paced router
+and Android build/lifecycle/package checks pass for the same core changes. Both
+controlled phone cases and their independent audits pass. The current native
+eight-trial cadence matrix also passes, with every original test sat independently
+accounted for. The paced router
 rehearsal delivers every measured packet and finishes cleanup, but fails its
-payment-progress observation; router retirement acceptance remains pending.
+payment-progress observation; a fresh rehearsal using the corrected observer is
+running. Router retirement acceptance remains pending.
 Earlier results remain attached to their recorded
 artifacts. Production readiness still depends
 on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
@@ -25,14 +28,16 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
 | Router receiver retirement | All twelve diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The corrected harness passes 24 focused Linux checks. | Qualify a fresh rehearsal with the corrected observer before full history. Preserve the failed verdict and the two-second/35-second requirements. One receipt cannot establish history pressure. |
 | Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass. A separate 3 MiB foreground/background/disconnect-rejoin case also passes using the same processes and four original channels. Each case independently reconciles its original 512 test sats and removes the temporary app. | Controlled LAN/UDP rejoin is complete. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
-| Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
+| Shared contracts and costs | The current ordinary native matrix passes all eight trials and 32 workload windows: all 285,696 packets arrive, all 48 channels close and independent audits account for 40,960 test sats across 96 complete SQLite sets. Original archives and 872 members are verified. Quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Finish the pending router case. Keep earlier target costs attached to their measured binaries and retain the explicit shared/physical cost exclusions. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,
 `work/receiver-history-native/run-8`, `work/export-payload/gate-3`,
 `work/export-payload-device`, `work/receiver-history-router` and
 `work/receiver-history-phone`. The current core's carrier reconciliation is in
-`work/restart-recovery-carriers`. Earlier detailed run narratives remain in Git at
+`work/restart-recovery-carriers`; its accepted native cost matrix and parent review
+are in `work/restart-recovery-native-cadence/matrix` and
+`work/native-cadence-final`. Earlier detailed run narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md`; failed verdicts and original financial
 records remain in their evidence bundles.
 
@@ -100,8 +105,8 @@ processes and all four paid channels survive; no additional purchase is made.
 Independent auditing reconciles all 512 original test sats with zero unaccounted
 value or pending mint operations. Normal services/accounts are restored and the
 temporary app is removed. This is a controlled link interruption, not a physical
-radio change or mobile encounter. The current native cost matrix starts only
-after both exact device sequence owners and their children exit.
+radio change or mobile encounter. The current native cost matrix subsequently
+passes after both exact device sequence owners and their children exit.
 
 The phone stays plugged in at the user's request. Continue tests through its
 existing USB connection; no operator-assisted unplugging or movement is scheduled.
@@ -398,8 +403,12 @@ history pressure.
    macOS passes 23 with one existing Linux-only skip. An initial Linux staging
    failure omitted the unchanged support-library layout; its records are
    preserved separately. No production code, artifact, tariff or budget changes.
-   Evidence remains in `work/receiver-observer-timing`. Qualify a fresh rehearsal
-   with the same traffic, prices, cadence and limits.
+   Evidence remains in `work/receiver-observer-timing`. A fresh rehearsal in
+   `work/receiver-history-router/observer-rehearsal-07fc6123319e` starts after
+   the phone and native matrix are independently closed and their owners exit.
+   It retains the same traffic, prices, cadence and limits. Its result is pending;
+   the root-owned sequence collects and independently audits its original funds
+   without operator actions or an automatic full-history launch.
    Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
@@ -442,22 +451,21 @@ history pressure.
    remaining-time rearming and collection before failure if time is exhausted.
    Existing six-hour new-history and financial cleanup bounds remain in force.
    Closure waits nine hours without terminating a still-live financial owner.
-4. Requalify the unchanged eight-trial native cadence matrix with the current
-   ordinary daemon: 250/500/1000/2000 ms in forward and reverse order, including
-   steady, idle, bursty and high-rate traffic. Its optimized current-graph
-   integration executable passes build-only qualification; the ordinary daemon
-   retains its independently checked optimized profile. A root-owned one-shot
-   sequence now waits for the exact router/phone financial releases and absent
-   owners before dispatch, then checks measurement quiescence and holds the real
-   cache lock. Run measurement only after the device sequences and competing
-   builds/tests stop; independently audit all
-   40,960 test sats and retain original reports before accepting costs. Reuse the
-   current seven-carrier evidence for fault progress. Keep earlier cost scopes
-   historical and the 500 ms default unchanged. Successful trials and an
-   analyzer-only failure have independent closure paths. An interrupted,
-   partially funded trial retains its exact original stores for root-owned
-   recovery; missing settlement or quota records must not be fabricated or
-   replaced with another grant. Staging and guards establish no measured costs.
+4. The current ordinary daemon's eight-trial native cadence matrix is complete:
+   all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
+   in forward/reverse order. The optimized integration executable and ordinary
+   daemon retain their qualified profiles. Measurement begins only after exact
+   device releases, absent owners and host quiescence, holds the real cache lock
+   and uses the qualified two-core quota without observed throttling. All 285,696
+   packets arrive; independent original-state audits close 48 channels and
+   conserve all 40,960 sats across 96 complete SQLite sets. Parent review verifies
+   all eight original archives and 872 members, and final mirrors match. Owners
+   are gone and the cache lock is released. Current costs are recorded in
+   [results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026);
+   the 500 ms default is unchanged. Reuse current seven-carrier fault evidence
+   and retain earlier target scopes as historical. Partial-failure recovery
+   retains exact original stores without replacement grants; no such recovery
+   or repeated workload is needed for this accepted matrix.
 5. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
    verified changes and remove only completed, owned test installations and clean
@@ -571,7 +579,7 @@ closed financial recovery and the remaining observations listed here.
 
 | Requirement | Existing evidence and canonical contract | Required to close v1 |
 | --- | --- | --- |
-| Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. Matched 250/500/1000/2000-ms comparisons in [results](CADENCE-RESULTS.md) retain spending/exposure bounds. | Qualify the final candidate under idle, bursty and high-rate traffic, including payment/renewal progress during faults; retain the same financial terms across comparisons. |
+| Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. The current native four-age matrix passes all 32 workload windows, and seven current paid-carrier scenarios cover fault progress. Matched comparisons in [results](CADENCE-RESULTS.md) retain spending/exposure bounds. | Current native reconciliation is complete. Finish pending router acceptance while retaining the same financial terms and historical target evidence. |
 | CPU, storage, wire and delivery costs | Current-graph native/Wi-Fi CPU, local payment-service packet captures, ARM64 storage syscalls and controlled phone-rate costs are reconciled in [results](CADENCE-RESULTS.md); [measurements](MEASUREMENTS.md) defines attribution limits. | Complete for these recorded scopes. Requalify affected observations if runtime/SDK changes; retain excluded shared work, physical-media/airtime and battery limitations rather than claiming complete attribution. |
 | Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. The current session-recovery graph passes all seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS, with independent 2,688-sat conservation; r531/r532 cover unchanged native quote/admission contracts. | Current Linux carrier reconciliation is complete. Physical target acceptance remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
@@ -988,7 +996,8 @@ Keep the three measurements distinct:
   relay journals, SDK snapshots, receiver databases and wallet shared memory.
   Logical bytes/syscalls do not measure physical media wear or mmap writes.
 
-The corrected candidate passes the r524 native and r526 Wi-Fi comparisons.
+The current session-recovery candidate passes the 19 October native comparison;
+the earlier r524 native and r526 Wi-Fi comparisons retain their recorded graphs.
 Complete shared-work attribution remains open and is required before claiming
 total payment overhead. Radio airtime, battery life, flash
 endurance and maximum throughput are separate experiments; their absence cannot
