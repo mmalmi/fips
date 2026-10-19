@@ -4,9 +4,9 @@ Each dated section applies to its recorded source, dependencies, workload and
 artifact. “Current” in a historical section means current at that observation.
 The latest native comparison uses the session-recovery candidate with fixes
 `c0a553201` and `2dbd97961`, SDK `715969e` and CDK `4f03d81b`. Earlier target,
-storage and capture comparisons retain their recorded graphs. The cadence,
-forwarding and payment-wire implementations remain unchanged, while wallet
-admission, storage and recovery have changed.
+storage and capture comparisons retain their recorded graphs. Payment cadence,
+accounting and payment-wire contracts remain unchanged; session recovery,
+authenticated fallback selection, wallet admission and storage have changed.
 Keep the observed CPU/storage/wire values attached to their measured builds;
 [readiness](READINESS.md#completion-sequence) describes affected-path validation
 and evidence reuse for the final candidate. The 500-ms default is unchanged.

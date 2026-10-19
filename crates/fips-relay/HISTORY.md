@@ -614,9 +614,10 @@ see the [accepted wallet scope](READINESS.md#scope-and-outstanding-acceptance).
 SQLite single-value writes finish their statement before returning, so a
 `RETURNING` value cannot hide a late commit failure.
 The SDK reserves logical completion space for channel refunds and abandoned
-funding. Fresh services may opt into a fixed native-wallet limit; that policy does
-not accept every other wallet path or store. Logical allowances do not reserve
-physical disk.
+funding. Every relay service requires a positive fixed native-wallet limit before
+initialization or recovery, as specified in [service operation](SERVICE.md).
+That policy does not accept every other wallet path or store. Logical allowances
+do not reserve physical disk.
 
 For incoming tokens, locally unfamiliar coins require one NUT-07 state query
 before native acquisition. Spent, pending, malformed or unavailable results leave
@@ -816,7 +817,7 @@ These coordinator tests do not establish whole-wallet storage bounds or physical
 power-loss recovery. Exact proof-history collection has the separate ownership
 and recovery requirements described above.
 
-The current paged-custody revision passes the complete 336-test SDK workspace
+The paged-custody revision recorded in `13717d0ff8` passes the complete 336-test SDK workspace
 suite, 290 relay library tests and all nine funding process scenarios. Feature
 matrix, strict lint, formatting and source-size checks pass with matching source
 and dependency fingerprints. This verifies the tested custody and recovery paths;
