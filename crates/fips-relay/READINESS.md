@@ -607,7 +607,7 @@ closed financial recovery and the remaining observations listed here.
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
 | Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
 | Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | The captured first-funding cut recovers with controller intervention as described above. Unattended recovery with the corrected runner and committed settlement/history handoff cuts remain unqualified. Additional manual cuts are cancelled; continue automated recovery checks without substituting them for physical evidence. Preserve originals and test-fund conservation. |
-| Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. | Finish the workflow/store/query resource audit, including aggregate pressure, maintenance duration and completion capacity. Finite cycles alone do not prove bounded indefinite operation. |
+| Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. Current source reconciliation matches all 34 catalog and 43 export review entries; the reachable service roles and exclusions are mapped below. | Complete current full-history pressure/progress and aggregate process-resource observation. Finite cycles do not establish an indefinite physical-storage plateau, hard RSS ceiling or generic whole-call deadline. |
 | Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | Freeze and qualify a common final graph on the intended targets. Exercise install/reopen/recovery with preserved accounts and remove owned test resources. Natural Android deep idle is still unqualified. |
 | Threat model and integration proposal | [Threat model below](#boundaries-and-threats), explicit mint trust and [local TollGate proposal](TOLLGATE.md). r618 checks the current interfaces against the proposal and its pinned upstream specifications, including price/quality trials and raw mint-bridge limits. | Recheck affected contracts if the final runtime changes. The deliverable is a proposal; actual TollGate interoperability needs its separate acceptance before it is claimed. |
 | Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. | Retain the 600-line relay/Android and 1000-line integration limits; remove superseded code/tests without losing distinct failure coverage. |
@@ -1142,8 +1142,16 @@ full-capacity regression completes two overlapping captures across reopen while
 unrelated writes fill the remaining wallet. This reserves logical native payload,
 not filesystem blocks. Receiver proof release retains its separate bounded queue.
 
-The remaining audit must include reachable workflows/stores/queries and aggregate
-memory, disk and maintenance work. Proof capture and owner/receipt scans can
+Current source reconciliation matches all 34 catalog and 43 export review entries
+to their recorded bytes. The configured service's open/balance, funding, incoming
+payment, settlement, retirement and offline-token paths retain their documented
+admission, count/byte and ownership bounds. The catalog uses bounded projections
+and scalar SQL balance sums; recurring payment updates do not reopen the wallet.
+This is source evidence, not a new whole-call timing or memory result. The receipt
+is in `work/current-resource-source-reconciliation.json`.
+
+The remaining current-target observation concerns aggregate memory, disk and
+maintenance interference during the full history workload. Proof capture and owner/receipt scans can
 traverse many bounded pages in one call; r515 removes the controller lock from
 that work but does not make the work constant-time. r527/r530/r533 measure receipt
 and operation scans, decoded large originals and shared capture. r534/r535 measure
@@ -1161,9 +1169,10 @@ cleanup takes about 1.043 seconds after writer release, with sampled peak RSS of
 124,392 KiB for the whole relay process. Device costs, other reachable workflows
 and physical-storage acceptance remain open.
 
-The remaining resource audit follows these production entry points. Shared SDK
-limits apply on every wallet open; a bounded record or page does not establish
-the total cost of the caller below.
+The resource audit follows these production entry points. Shared SDK limits
+apply on every wallet open; a bounded record or page does not establish a hard
+whole-call elapsed or RSS maximum. The queued independent full-run observer
+reports sampled process/host costs without making those stronger claims.
 
 Receiver cleanup selects one oldest eligible channel per upkeep. Its SDK handoff
 admits at most 1,024 payout proofs and releases them in batches of 128 into a
@@ -1293,11 +1302,11 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 
 | Reachable work | Production entry point | Resource acceptance to reconcile |
 | --- | --- | --- |
-| Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | r608 traces the configured-mint path through bounded catalog reads and SQL balance sums. Device reopen cost at retained-history limits and physical storage behavior remain open. |
+| Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | The current 34-source review retains bounded configured-mint catalog reads and scalar SQL balance sums. Current ordinary-ARM export acceptance measures reopen/acknowledgment at its retained-history limit. It supplies no generic catalog latency maximum or physical-storage reservation. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; the SDK `9626cd1` router case above closes new-purchase refusal/resumption on its recorded candidate. |
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
-| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size. The synthetic full-capacity observation below measures the complete receiver wallet handoff. Whole sender calls and aggregate device progress/memory acceptance remain open. |
+| Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. Earlier whole-sender timings retain their recorded graphs. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size; the synthetic full-capacity observation below measures its bounded receiver handoff. Current genuine-history aggregate progress/memory acceptance remains pending. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending; the router acknowledgment takes 29.75 s. The larger-token case in `work/export-payload/gate-3` fills the 20 MiB store after 79 exports and passes refusal, recovery, acknowledgment and continued spending on the corrected CDK; Linux reopen/acknowledgment takes 13.627 s. The ordinary-ARM counterpart also passes at 20 MiB after 79 exports: whole acknowledgment takes 199.18 s, 193.39 CPU seconds and 61,184 KiB peak RSS; all 1,024 sats are independently reconciled. These are exclusively owned offline commands, so their duration is administrative downtime. |
 
 These are the relay's wallet entry points, not every generic SDK API. The local
