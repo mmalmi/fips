@@ -231,6 +231,12 @@ must accompany the full run below.
    Only an exact proven-inactive regenerable helper may be removed if necessary;
    original financial bytes, profiles and artifacts remain protected.
 
+   Run subsequent local commands through `work/durable-root-command` so their
+   actual wait results survive a chat interruption. Its local completion/failure
+   checks supply no paid acceptance. `work/accept-full-capacity.py` binds the real
+   completed child to the capacity owner and reuses the unchanged floor and
+   original-archive checks before the full-history factory can release a run.
+
    The earlier genuine preparation takes 17,713.54 s and 139 snapshots occupy
    about 1.427 GiB; its compressed prefix is already 742,319,899 bytes. The small
    diagnostic's 2 GiB allowance/256 MiB archive cap is insufficient. The prepared
