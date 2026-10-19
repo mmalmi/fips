@@ -5,20 +5,22 @@
 
 ## Current state
 
-The candidate combines FIPS runtime `ab2b9246`, SDK `715969e` and CDK `4f03d81b`.
-Ordinary Linux, ARM64 OpenWrt and Android builds pass verification. Production
-readiness still depends on the [acceptance checklist](#acceptance-checklist).
-Keep this candidate fixed unless a demonstrated failure or unmet requirement
-requires a change.
+The candidate adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
+`ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The corrected ordinary
+Linux build and paced restart regression pass. ARM64 OpenWrt and Android
+qualification for these core changes remains pending; earlier device results
+remain attached to their recorded artifacts. Production readiness still depends
+on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
+unless a demonstrated failure or unmet requirement requires a change.
 
 | Area | Verified result | Remaining work |
 | --- | --- | --- |
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Nine diagnostic attempts are independently closed. The Linux rehearsal fails during restart warmup and is closing its original funds. An unfunded local reproduction exposes delayed session recovery during key-epoch drain. | Verify the recovery correction, then complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. All ten diagnostic attempts are independently closed. The Linux rehearsal fails during restart warmup; the isolated correction passes 61 affected checks, strict lint and all eight paced launch/recovery cycles. | Qualify the corrected device artifacts, then complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
 | Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
-| Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
+| Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,
@@ -228,9 +230,12 @@ needed for later revocation.
 
 The independently supervised Linux rehearsal `e458d621fe4f` fails during warmup
 after its third onward purchase: all six fresh probes are submitted but not
-delivered. Its producer remains live to close the original channels and collect
-the original funds after refund eligibility. An independent stopped-account audit
-waits for that exact producer to exit. The failed verdict is preserved.
+delivered. Its original producer completes channel closure and collection after
+refund eligibility. Independent stopped-account/mint auditing reconciles all
+3,072 original test sats, with no unfinished owners or financial issues, a stopped
+mint and normal baselines restored. All 95 evidence files have identical preserved
+copies in `work/receiver-history-router/linux-rehearsal-1`. The failed verdict
+remains unchanged.
 It uses the same frozen 211-file harness, ordinary artifacts, one real receipt
 and full 28-channel preparation. Recorded 24–62-second per-channel steps plus two
 refund waits leave little margin in the earlier 2,400-second incoming lifetime.
@@ -241,12 +246,28 @@ The original unfunded preparation is retained separately. There is no automatic
 retry or full-history launch, and stable long-run connectivity is not yet proven.
 
 An isolated, unfunded three-process reproduction separates session recovery from
-wallet work. Eight rapid source restarts deliver immediately; spacing restarts
-15 seconds apart exposes prolonged handshake deferral during the previous key
-epoch's drain. A focused regression fails on the original core at that refusal.
-The candidate correction is still under verification: authenticate the new process
-epoch without discarding current keys for an unauthenticated setup, and keep
-ordinary pending keys out of the draining epoch's one-bit receive slot.
+wallet work. Eight rapid launch/recovery cycles deliver immediately; adding
+15 seconds of idle between cycles exposes prolonged handshake deferral during
+the previous key epoch's drain. A focused regression fails on the original core
+at that refusal. The correction authenticates a new process epoch without
+discarding current or completed pending keys for an unauthenticated setup, keeps
+ordinary pending keys out of the draining epoch's receive slot, and preserves an
+independently armed handshake when older authenticated traffic arrives. A second
+regression reproduces the old packet-ordering race before its correction.
+
+The ten real-crypto recovery checks pass within 61 affected session, key-rotation
+and remote-restart checks; strict all-target core lint and source-size checks also
+pass. Two existing routing regressions expose degraded direct paths displacing
+authenticated fallback ingress; both pass after the bounded route-priority fix.
+The ordinary Linux daemon is rebuilt from the verified current dependency graph.
+Under the matched paced schedule, all eight cycles, including seven source
+restarts, deliver their first fresh probe; the original needs 34 separately
+recorded probes and only one cycle delivers its first. This is an unfunded
+three-process UDP result, not router history-pressure or physical movement
+acceptance. All children are stopped and 1,868 evidence files have identical
+preserved copies in `work/receiver-history-router/restart-recovery-debug`.
+The code is integrated locally and its clean temporary worktree and merged branch
+are removed. Corrected device builds and acceptance remain pending.
 
 The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
 `104f01754`. It refuses charging, simulated or forced idle before funding,
@@ -279,9 +300,9 @@ history pressure.
    reused. Continue unattended checks through USB. Physical encounter/rejoin and
    natural off-charge idle remain unqualified; do not request manual phone actions
    or substitute simulated battery state for that evidence.
-3. All nine earlier router diagnostics are independently closed without replacing
-   their original funds. Close and independently audit the failed Linux rehearsal,
-   verify the session-recovery correction, and complete a corrected rehearsal.
+3. All ten router diagnostics are independently closed without replacing their
+   original funds. The session-recovery correction passes focused and ordinary
+   Linux checks. Qualify it on devices and complete a corrected rehearsal.
    Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
