@@ -538,9 +538,16 @@ history pressure.
    three capacity paths and authority bindings; all 25 other source/evidence
    files and existing 7/5/30-check qualification remain unchanged. Its root-owned
    sequence stages, seals, verifies and dispatches one corrected rehearsal in
-   `work/receiver-history-router/observer-availability-b700b29f5a1d`, with
-   original-fund closure already waiting independently. No hardware pass or
-   full-history authority is implied by dispatch.
+   `work/receiver-history-router/observer-availability-b700b29f5a1d`. Its producer
+   exits at the unchanged pre-funding flash check: n01 has 6,560 KiB against the
+   8 MiB minimum. The case contains only its owner record; workload, mint and
+   funding never start. Root review preserves all 76 source/owner/log records
+   with a complete private mirror, verifies every local/Linux owner has exited,
+   and retains the failed attempt. Its generic funded-case closer cannot close
+   an absent run result; the separate unfunded closure records that boundary.
+   A single n01 closed-profile preservation and a fresh all-three capacity gate
+   are required before another namespace is created. The accepted n02 capacity
+   and observer qualification remain valid; no hardware pass is implied.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
