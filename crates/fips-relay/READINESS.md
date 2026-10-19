@@ -557,10 +557,17 @@ history pressure.
    Fresh flash availability is 6,560/23,364/6,940 KiB on n01/n02/n03; all three
    retain more than 100 MiB RAM. Preserve the failed attempt and inspect exact
    closed profiles on all three routers before another capacity operation.
-   The original installed runtime and saved accounts remain protected. No
-   observer source, financial terms or test limits change. Actual final sync
-   measurements must establish 8/24/8 MiB flash and strictly more than 100 MiB
-   RAM on every router before another rehearsal namespace is created.
+   The original installed runtime and saved accounts remain protected.
+   The qualified driver's actual flash gate is 8 MiB on every router for the
+   one-receipt rehearsal; n02's 24 MiB gate applies to 5,480 receipts. S6 applies
+   that later full-history requirement too early. Preserve its failed result;
+   a fresh preparation must bind the one-receipt scope and require 8/8/8 MiB
+   flash, with strictly more than 100 MiB RAM on every router. A 10 MiB
+   preparation target on n01/n03 provides margin for the observed free-space
+   changes; only the two explicitly closed D3/D2 profiles per node may be
+   represented if necessary. No observer source, financial terms or test limits
+   change. Full history still requires a new post-rehearsal 8/24/8 MiB measurement
+   and cannot use the smaller workload's capacity authority.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
