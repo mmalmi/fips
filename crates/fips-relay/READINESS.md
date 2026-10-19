@@ -239,9 +239,10 @@ must accompany the full run below.
    2 GiB local headroom. Preserve partial/uncertain transfers and reconcile an
    already completed archive rather than rewriting it.
 
-   Keep the six-hour history-preparation and existing financial-cleanup bounds,
-   eight-hour workload budget after original history value returns, and collection
-   before failure when time is exhausted. The independent closer waits up to nine
+   Keep the six-hour history-preparation and existing financial-cleanup bounds.
+   After original history value returns, rearm only the time remaining in the
+   eight-hour absolute workload budget; collect before failure if it is exhausted.
+   The independent closer waits up to nine
    hours without terminating a live financial owner. An independent five-profile
    observer samples read-only process/filesystem counters about every five seconds
    on this same full run,
