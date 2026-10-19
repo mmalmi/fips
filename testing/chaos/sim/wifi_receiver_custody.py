@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shlex
 import sqlite3
+import subprocess
 import tarfile
 import tempfile
 import uuid
@@ -19,6 +20,17 @@ RECEIVER = 'receiver/spilman-receiver.sqlite'
 FILES = (WALLET, WALLET + '-wal', RECEIVER, RECEIVER + '-wal',
          'wallet/spilman-client.json', 'controller/controller.json')
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
+class ReadUnavailable(RuntimeError):
+    """A bounded remote read returned no usable response; its cause is unknown."""
+
+
+def remote_read(profile, command, data=None):
+    try:
+        return profile.remote(command, data, timeout=3)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        raise ReadUnavailable('bounded remote custody read unavailable') from error
 
 
 def fingerprint(row):
@@ -203,8 +215,8 @@ def released_sends(archive, operations):
 def live(profile, keys):
     keys = sorted(keys)
     require(0 < len(keys) <= 1024, 'live observation requires bounded exact original identities')
-    raw = profile.remote([profile.temporary + '/sqlite-hold', 'observe', profile.state + '/' + WALLET],
-                         ('\n'.join(keys) + '\n').encode(), timeout=3)
+    raw = remote_read(profile, [profile.temporary + '/sqlite-hold', 'observe', profile.state + '/' + WALLET],
+                      ('\n'.join(keys) + '\n').encode())
     states = json.loads(raw)['states']
     require(len(states) == len(keys), 'live proof observation changed original identity count')
     return {key: state for key, state in zip(keys, states) if state is not None}

@@ -45,6 +45,7 @@ def progress(baseline, samples, custody_samples=()):
     previous_reads = baseline['counter_reads']
     lower, upper = [previous_time] * 5, [previous_time] * 5
     gaps, minimum, read_gaps, durations = [[0] * 5 for _ in range(4)]
+    observed = [0] * 5
     for sample in samples:
         now, current = sample['elapsed_us'], values(sample)
         require(now > previous_time, 'progress observation time did not advance')
@@ -52,8 +53,12 @@ def progress(baseline, samples, custody_samples=()):
         for index, value in enumerate(current):
             require(value >= previous[index], 'paid progress counter reset')
             reading, prior = sample['counter_reads'][index], previous_reads[index]
+            if reading == prior:
+                require(value == previous[index], 'cached progress changed without a fresh read')
+                continue
             start, end = reading['started_us'], reading['finished_us']
             require(prior['finished_us'] <= start <= end <= now, 'progress read intervals overlap or run backwards')
+            observed[index] += 1
             durations[index] = max(durations[index], end - start)
             read_gaps[index] = max(read_gaps[index], end - prior['started_us'])
             # An advance occurred after the previous read began, not at this
@@ -64,15 +69,16 @@ def progress(baseline, samples, custody_samples=()):
             else:
                 minimum[index] = max(minimum[index], start - upper[index])
         previous, previous_time, previous_reads = current, now, sample['counter_reads']
-    verdict = ['passed' if gap <= 2_000_000 else 'failed' if least > 2_000_000 else 'unqualified'
-               for gap, least in zip(gaps, minimum)]
-    pending = [sample for sample in custody_samples if sample['cleanup_pending']]
+    verdict = ['failed' if least > 2_000_000 else 'passed' if count >= 2 and gap <= 2_000_000 else 'unqualified'
+               for gap, least, count in zip(gaps, minimum, observed)]
+    pending = [sample for sample in custody_samples if sample.get('complete', True) and sample['cleanup_pending']]
     between = [sample for sample in samples if len(pending) >= 2
                and all(pending[0]['elapsed_us'] <= read['started_us']
                        and read['finished_us'] <= pending[-1]['started_us'] for read in sample['counter_reads'])]
     interior = len(between) >= 2 and all(y > x for x, y in zip(values(between[0]), values(between[-1])))
     return dict(result, max_observed_gap_us=gaps, minimum_gap_us=minimum,
                 max_read_interval_us=read_gaps, max_read_duration_us=durations,
+                observed_counter_reads=observed,
                 all_counters_advanced=all(last > start for last, start in zip(previous, first)),
                 within_limit=all(value == 'passed' for value in verdict),
                 timing_verdict=verdict, timing_resolution_sufficient='unqualified' not in verdict,
@@ -86,8 +92,9 @@ def measure(run, held, held_credits):
     held_values = [0, held[0]['payment_progress'][run.transit]['authorized_sat'],
                    held[1]['payment_progress'][run.guard]['authorized_sat'], *held_credits]
     row = dict(shape=shape, baseline=None, samples=[], custody_samples=[],
-               observer='independent timed progress and bounded read-only original-Y queries',
+               observer='independently polled counters and bounded read-only original-Y queries',
                observer_busy_timeout_ms=250, observer_query_timeout_ms=1000,
+               custody_minimum_start_interval_us=1_000_000, custody_remote_timeout_seconds=3,
                cleanup_finished_us=None, traffic_finished_us=None, passed=False)
     run.evidence['receiver_history']['live'] = row
     run.save()
@@ -103,10 +110,12 @@ def measure(run, held, held_credits):
         released, final_custody, terminal_progress = False, False, None
         try:
             while time.monotonic() - started < 35:
+                observer.start_custody()
                 if terminal_progress is None:
                     current = observer.progress()
-                    row['samples'].append(current)
-                    if current['delivered'] == 84:
+                    if current is not None:
+                        row['samples'].append(current)
+                    if current is not None and current['delivered'] == 84:
                         if row['traffic_finished_us'] is None:
                             row['traffic_finished_us'] = current['counter_reads'][0]['finished_us']
                         if all(read['started_us'] >= row['traffic_finished_us'] for read in current['counter_reads'][1:]) \
@@ -120,12 +129,16 @@ def measure(run, held, held_credits):
                 checked = observer.poll_custody()
                 if checked is not None:
                     row['custody_samples'].append(checked)
+                    if not checked.get('complete', True):
+                        run.save()
+                        time.sleep(.05)
+                        continue
                     if not released:
                         require(run.nodes['n02'].held() and checked['cleanup_pending'],
                                 'receiver cleanup escaped the original held writer')
                         require(time.monotonic() - started < 2 and not sending.done(),
                                 'original live stream did not begin before release')
-                        if current['delivered'] > 0:
+                        if row['samples'] and row['samples'][-1]['delivered'] > 0:
                             run.release_holds(run.held_nodes)
                             released = True
                             row['released_us'] = int((time.monotonic() - started) * 1_000_000)
@@ -137,7 +150,6 @@ def measure(run, held, held_credits):
                             and not checked['cleanup_pending'] and checked['elapsed_us'] <= 35_000_000:
                         final_custody = True
                         break
-                    observer.start_custody()
                 run.save()
                 time.sleep(.05)
             require(released and final_custody and row['cleanup_finished_us'] is not None
