@@ -75,7 +75,7 @@ Its old empty data and the rejected debug-signature update are retained in
 `work/receiver-history-phone`, together with the completed installation checks.
 Funded execution waits for closure of the active router case. Physical mobile
 encounter/rejoin, natural Android deep idle, remaining resource reconciliation
-and final local integration are still open.
+and final acceptance/cleanup are still open.
 
 The nine verified Rust fixture files are integrated locally in `c6f19dd91`.
 Their hashes match the accepted native history, export-pressure and cleanup
@@ -85,7 +85,9 @@ source hashes; four focused command checks verify the corrected eight-hour
 initial alarm and invalid-argument rejection. The live device run's 211 bound
 harness files remain unchanged. `work/harness-local-integration` records the
 comparison and command checks; source integration does not close device
-acceptance. The fixture cleanup removes 338 lines of superseded
+acceptance. The fixture branch is merged and its worktree is clean; it remains
+in place because the active run and pending device preparations bind its files.
+The fixture cleanup removes 338 lines of superseded
 synthetic-capacity helpers, with focused checks in `work/cleanup-history-gate-2`.
 Original failed fixtures remain preserved. In particular, the earlier synthetic capacity probe's erased
 admission cannot be reconstructed: its original funds are reconciled, but its
