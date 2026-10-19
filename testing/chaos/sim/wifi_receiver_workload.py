@@ -73,7 +73,8 @@ class ReceiverWorkload:
         self.intents[channel], self.owners[channel], self.providers[channel] = intent, owner, provider
         self.evidence['receiver_history'].setdefault('channels', {})[channel] = {
             'owner': owner, 'provider': provider, 'capacity_sat': capacity,
-            'created_unix': intent['created_unix'], 'refund_after_unix': intent['refund_after_unix']}
+            'created_unix': intent['created_unix'], 'refund_after_unix': intent['refund_after_unix'],
+            'route_expires_unix': purchase['contract']['expires_unix']}
         self.save()
         return channel
 

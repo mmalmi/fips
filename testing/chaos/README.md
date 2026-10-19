@@ -948,7 +948,9 @@ qualify the full-history workload.
 The initial 960-sat channel earns its payout at 32 packets/s. This sparse test
 keyset makes each partial payment reconstruct 960 one-sat outputs; 128 packets/s
 exhausted the unchanged credit allowance on the routers. The 32-sat onward
-channels retain their 128-packet/s setup rate.
+channels retain their 128-packet/s setup rate. The receiver's 360-second quote
+covers the paced preparation; later transit remains limited by its unchanged
+60-second service channel. Each purchased route's expiry is recorded.
 
 The receiver completes 28 onward channels before a controlled writer hold and
 release. The observation requires all 84 packets and both hops' payment/credit

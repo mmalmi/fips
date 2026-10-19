@@ -131,8 +131,8 @@ Change it only to fix a demonstrated failure or an unmet requirement. Reuse vali
 checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
 full suites or creating additional reports without a concrete verification need.
 
-1. Recover the failed router attempt's original funds and retire its owners.
-   Diagnose the delivery failure and qualify the missing receiver-retirement
+1. Original failed-run recovery and the single-burst comparison are closed.
+   Qualify the missing receiver-retirement
    workload. Reuse the accepted native workload, verified builds and preserved
    genuine receipts; do not repeat completed preparation by default. Check
    short traffic and settlement behavior before another lengthy device run.
@@ -163,7 +163,8 @@ source reconstructs receiver and refund outputs for each balance. This fixture's
 `[1, 960, 1024]` denominations require 960 one-sat outputs for a partial payment
 on its 960-sat channel, making its preparation unusually expensive. The evidence
 supports payment-credit pressure independently of receipt-history size; exact
-packet-loss attribution and a workable preparation rate still need verification.
+packet-loss attribution remains unestablished. The separate rate comparison below
+qualifies a single preparation burst, not the complete preparation schedule.
 The short case settled at 109 sats paid and 851 refunded and retired its original
 owners. Its final observation then failed because the harness omitted retired
 authorization when checking the lifetime budget. The observer now includes that
@@ -180,7 +181,10 @@ failed-run graph; it qualifies neither history pressure nor the newer candidate.
 The next diagnostic delivers all 1,024 packets at 32 packets/s in 31.969 seconds,
 with no missing, invalid or duplicate packets. Its nine payment cycles average
 1.250 seconds of sender CPU and 2.438 seconds of provider CPU, and the channel
-settles at 267 sats paid and 693 refunded. Financial closure is still running.
+settles at 267 sats paid and 693 refunded. Independent stopped-copy audits
+reconcile all 3,072 original sats, empty test wallets and no unfinished financial
+owners; the mint is stopped. Final evidence is preserved in
+`work/receiver-history-router/short-burst-2/postflight`.
 Prices, credit limits and the binary match the failed burst; unrelated closed
 history was relocated before this run, so filesystem pressure is not matched.
 Evidence is in `work/receiver-history-router/short-burst-2-analysis.json`.
@@ -192,6 +196,21 @@ ARM binary. Collection now passes the fixture's existing 330-second wallet timeo
 to both main and auxiliary profiles; it previously inherited the 45-second default.
 The new dispatch regression fails before the fix. All 88 focused checks pass,
 with one existing Linux-only check skipped on macOS; no retry is added.
+
+That full-workload pilot delivers its first 1,024-packet burst completely but only
+429 packets of the second burst. Its original buyer journal records the contract
+retired exactly 60 seconds after channel creation, while the channel itself has
+360 seconds of service. The slower preparation outlives its quote. The channel
+settles at 379 sats paid and 581 refunded. Independent stopped-copy audits
+reconcile all 3,072 original sats, empty test wallets and no unfinished financial
+owners, with the mint stopped. The failed workload verdict remains unchanged.
+The next fixture gives the receiver a 360-second quote for this setup and records
+each purchased route's expiry. Later transit still expires with its unchanged
+60-second service channel. Prices, credit, payment cadence, receipt count and
+final progress criteria are unchanged. This corrects the fixture schedule;
+complete workload and history-pressure acceptance remain open.
+Nine focused harness checks pass with one existing Linux-only check skipped;
+generated configurations preserve all other terms for every participant.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the

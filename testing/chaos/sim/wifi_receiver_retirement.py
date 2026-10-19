@@ -82,7 +82,10 @@ class ReceiverRetirementRun(ReceiverWorkload, PurchaseRetirementRun):
         config['terms'].update(billing='forwarding_data', buyer_budget_sat=self.budget(name),
                                fee_msat_per_kib=256 if name in ('n02', 'n03') else 32,
                                max_rate_msat_per_kib=2048, quote_max_units=self.quote_max_units,
-                               quote_lifetime_secs=60, wallet_capacity_bytes=WALLET_BYTES)
+                               # The paced 960-sat setup exceeds a 60-second quote.
+                               # Later transit is still capped by its 60-second channel.
+                               quote_lifetime_secs=360 if name == 'n02' else 60,
+                               wallet_capacity_bytes=WALLET_BYTES)
         config['terms']['controller'].update(channel_lifetime_secs=720 if name == 'n01' else 120,
             channel_capacity_sat=960 if name in ('n01', 'n02') else 64 if name == 'source' else 32,
             max_locked_sat=LIMITS[name], max_wallet_spend_sat=LIMITS[name], max_funding_overhead_sat=0)
