@@ -9,9 +9,10 @@ The candidate adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
 `ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The corrected ordinary
 Linux build, paced restart regression and seven paid-carrier scenarios pass.
 The ordinary ARM64 OpenWrt build
-and Android build/lifecycle/package checks pass for the same core changes. Their
-device acceptance remains pending; earlier device results remain attached to
-their recorded artifacts. Production readiness still depends
+and Android build/lifecycle/package checks pass for the same core changes. The
+controlled phone regression and independent audit also pass; router retirement
+acceptance remains pending. Earlier results remain attached to their recorded
+artifacts. Production readiness still depends
 on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
 unless a demonstrated failure or unmet requirement requires a change.
 
@@ -21,7 +22,7 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
 | Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. All eleven diagnostics are independently closed. The session correction passes 61 affected checks, strict lint and all eight paced launch/recovery cycles. Its qualified ARM build reaches eight settled channels, then loses 8 of 103 setup packets at 128 packets/s; all 3,072 test sats are independently conserved. | Complete the corrected one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
-| Android | The preceding artifact passes physical transit: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass, with all 512 test sats independently reconciled. The new session-recovery artifact passes build, feature, strict lint, ten lifecycle tests, package and signature checks; its USB-only device regression is running after router financial release. | Complete the new device regression and independent audit. Physical encounter/rejoin and natural off-charge idle remain open. The earlier 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
+| Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass with the same process and four original channels; all 512 test sats are independently reconciled and the temporary app removed. | Complete controlled disconnect/rejoin. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
@@ -66,24 +67,21 @@ none counts as device pressure acceptance.
 
 ### Current phone acceptance
 
-`work/receiver-history-phone` binds the corrected APK and ordinary relay artifacts
-to the existing 158 harness checks. The physical four-account UDP transit case
-passes foreground/background delivery, unpaid denial, 48.32 seconds of forced
-Doze and fresh paid delivery afterward without another purchase or app-process
-restart. The four original channels settle; independent auditing reconciles all
-512 test sats in the collector, with zero unaccounted value, unfinished mint
-operations or duplicate/mint-spent live proofs. All four receiver stores and
-retained exports are checked. The mint is stopped; original phone accounts,
-normal Wi-Fi, foreground and idle policy are restored. All 600 management checks
-pass and 513 evidence files have identical preserved copies. Natural idle,
-physical movement, battery costs and ad hoc radio operation are not established
-by this configured LAN/UDP test.
+`work/phone-restart-recovery-2` binds the current session-recovery APK and ordinary
+ARM relay artifacts to the existing 158 harness checks. The physical four-account
+UDP transit case passes unpaid denial and 4 MiB of paid foreground/background,
+forced-idle and fresh post-idle traffic using the same process and four original
+channels. Forced Doze lasts 48.07 seconds. All 600 management checks pass;
+normal Wi-Fi, original phone accounts, foreground and idle policy are restored.
+The router baselines are restored and candidate executables removed.
 
-The completed temporary acceptance app is now removed. Before removal, its
-stopped account files match the independently closed archive and its preserved
-copy exactly; all 512 sats remain collected. Original phone account files,
-foreground and normal Wi-Fi are verified unchanged afterward. Removal intent,
-result and the retained closed account are in `work/receiver-history-phone`.
+Independent stopped-account/mint auditing reconciles all 512 original test sats
+in the collector and checks all four native receiver stores. The mint is stopped,
+471 final evidence files have identical preserved copies, and the independently
+closed temporary app is removed. Producer, closer and sequence owners are gone.
+Natural idle, physical movement, battery costs and ad hoc radio operation are not
+established by this configured LAN/UDP test. The preceding artifact's acceptance
+remains preserved in `work/receiver-history-phone`.
 
 The phone stays plugged in at the user's request. Continue tests through its
 existing USB connection; no operator-assisted unplugging or movement is scheduled.
@@ -311,10 +309,11 @@ stopped and all original bytes preserved. The replacement in
 `work/phone-restart-recovery-2` uses a separate private directory per observation;
 the mocked second-call regression fails before correction and passes afterward.
 Artifacts, workload, financial terms and the unchanged 158-check harness are reused.
-The replacement is now running on the USB-connected Pixel with the original
-512-test-sat cap. Its independent close owns archival, financial auditing and
-removal of the temporary app. The corrected 32-packet/s router rehearsal is
-queued once after that close; no full-history run is launched automatically.
+The replacement passes the USB-connected phone acceptance and independent close
+described above. The corrected 32-packet/s router rehearsal is now running after
+that release. The independently reviewed disconnect/rejoin preparation remains
+unfunded until both exact device sequences have closed and exited. No full-history
+run is launched automatically.
 
 The current ordinary Linux binary also passes the existing seven paid-carrier
 scenarios: TCP, configured and seeded WebSocket, self-signed and CA-validated TLS,
@@ -354,13 +353,12 @@ history pressure.
 
 1. The ordinary-ARM export case and independent audit are complete. Its original
    records are preserved, all test funds collected and normal services restored.
-2. The preceding phone regression, postflight, stopped-account/mint archives and
-   independent wallet audit are complete. Its 158 unchanged harness checks are
-   reused for the running USB session-recovery regression. Finish its independent
-   close before releasing the devices to the queued router rehearsal. Physical
-   encounter/rejoin and
-   natural off-charge idle remain unqualified; do not request manual phone actions
-   or substitute simulated battery state for that evidence.
+2. The current USB session-recovery phone regression, independent audit, archives
+   and owned-app removal are complete. The unchanged 158-check harness is reused.
+   Complete the prepared controlled disconnect/rejoin case after the corrected
+   router rehearsal independently closes. Physical encounters and natural
+   off-charge idle remain unqualified; do not request manual phone actions or
+   substitute simulated battery state for that evidence.
 3. All eleven router diagnostics are independently closed without replacing
    their original funds. The session-recovery correction passes focused, ordinary Linux and target build
    checks. Complete the corrected device rehearsal with the verified setup pace.
