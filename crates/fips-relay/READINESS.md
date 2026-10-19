@@ -76,16 +76,15 @@ test import path. The burst helper now retains both submitted and received packe
 counts on failure, with a focused check that it never replays the finite send.
 These changes fix closure and diagnostics, not the unresolved delivery failure.
 
-All five original accounts and the live mint are retained for recovery. The
-stopped router archives and restored original-service baselines are verified in
-`work/receiver-history-router/attempt-3/failure-inspection`. Recovery independently
-reconciles all 3,072 sats as spendable before and after retiring the original
-channel owners, preserving the 960-sat debit, 868-sat refund and 92-sat lifetime
-exposure. Collection and final closure are underway in `recovery-2`. The first
-recovery preflight refused before expiry and performed no financial action.
-No replacement funding or history reset is
-authorized as recovery. The failed verdict remains unchanged. The run retains
-its CDK `bb9b87d8` graph, distinct from the newer verified binary.
+The failed attempt's original funds are fully recovered. Independent stopped-copy
+audits in `work/receiver-history-router/attempt-3/failure-closure` reconcile all
+3,072 sats in the collector, empty test/issuer wallets, no unfinished financial
+owners and unchanged genuine receipt fingerprints. The original 960-sat debit,
+868-sat refund and 92-sat lifetime exposure are preserved. The mint is stopped,
+all three normal-service baselines are restored, and 454 closure/evidence files
+are preserved locally. The first recovery preflight refused before expiry and
+performed no financial action. No replacement funding or history reset occurred;
+the hardware verdict remains failed on its recorded CDK `bb9b87d8` graph.
 
 The separate read-only observer completed 1,701 samples with no sampling errors.
 Its auxiliary-profile paths were wrong, so only the three main daemons were
@@ -100,7 +99,7 @@ unchanged harness checks. The updated isolated APK is installed, visually checke
 empty and stopped; original accounts, normal Wi-Fi and foreground are preserved.
 Its old empty data and the rejected debug-signature update are retained in
 `work/receiver-history-phone`, together with the completed installation checks.
-Funded execution waits for closure of the active router case. Physical mobile
+Funded execution waits for the shared routers to be free. Physical mobile
 encounter/rejoin, natural Android deep idle, remaining resource reconciliation
 and final acceptance/cleanup are still open.
 
@@ -155,7 +154,9 @@ their source/artifact bindings verify, and the phone reuses its 158 unchanged
 harness checks. These cases still run separately when they share devices.
 A short diagnostic with one genuine receipt is prepared to repeat the failed
 burst and settlement before another full pressure run. It cannot qualify history
-pressure, and it has not yet been funded or executed.
+pressure. It is now running after the failed attempt's independent closure and
+fresh checks of device space and process ownership. The same failed-run binary
+is retained for diagnosis; this is not acceptance of the newer candidate.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
