@@ -80,6 +80,10 @@ must preview them and preserve its immutable account policy. Treat the setup
 link as untrusted input: authenticating the advertised FIPS key establishes
 possession of that key, not that the advertised operator or mint is trustworthy.
 
+The customer profile also requires an explicit `wallet_capacity_bytes`. Include
+that storage limit in setup and preserve it with the account; the current client
+rejects missing limits and does not infer a replacement when reopening an account.
+
 Serve this information from explicit public configuration. Do not proxy the
 private operator socket or its full status response to a guest web client.
 Keys, tokens, wallet paths, topology and financial history stay private. MAC/IP

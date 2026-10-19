@@ -1,5 +1,15 @@
 # Paid-relay cadence measurements
 
+Each dated section applies to its recorded source, dependencies, workload and
+artifact. “Current” in a historical section means current at that observation.
+The latest complete comparisons below use FIPS `1b948a688`, SDK `dad0fc3` and
+CDK `04c37d5a`; they are not measurements of the newer wallet-capacity and
+recovery candidate. The cadence, forwarding and payment-wire implementations
+remain unchanged, while wallet admission, storage and recovery have changed.
+Keep the observed CPU/storage/wire values attached to their measured builds;
+[readiness](READINESS.md#completion-sequence) describes affected-path validation
+and evidence reuse for the final candidate. The 500-ms default is unchanged.
+
 ## Storage syscalls on the current graph — 16 October 2026
 
 r622's four accepted forward observations and r623's four reverse observations

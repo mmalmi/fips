@@ -100,6 +100,17 @@ full suites or creating additional reports without a concrete verification need.
 The checklist below remains the completion boundary. This sequence adds no feature
 scope and does not convert an unverified requirement into a passing result.
 
+Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
+quotes, payment scheduling, accounting and measurement implementations since the
+15–16 October comparisons; the Spilman and TCP/FIPS dependency inventories also
+match exactly. Changes affect saved wallet limits, wallet admission/completion,
+bounded storage/custody, settlement during maintenance and offline recovery.
+Reuse unchanged-code contract evidence, keeping historical cost figures attached
+to their measured binaries. Qualify the changed paths and their interactions with
+the current pressure, recovery and device cases. The final CDK correction affects
+pre-confirmation failures; it does not require another full history preparation
+after the current run passes and its originals are independently reconciled.
+
 ## Implementation and recovery evidence
 
 Acceptance applies to each recorded source/dependency graph, workload and target.
