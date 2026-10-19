@@ -520,12 +520,27 @@ history pressure.
    archives, restored n02 baseline, closed partial effects and absent owners;
    its complete failed source/execution mirror is retained. No tests or funding
    occur. Do not replay this attempt or treat partial space recovery as a pass.
-   A separately scoped completion is being prepared using one exact old daemon
-   copy from an independently closed test, with preserved native/ARM artifacts
-   and fresh process, inode and open-file checks required before reclamation.
+   The separate `work/n02-closed-space-execution-5` completion passes five new
+   focused checks, reuses unchanged preservation primitives and completes once.
+   It reclaims one exact old daemon copy from an independently closed test after
+   canonical local/Linux artifact, quiet-inode, process, mapping, open-file and
+   mount checks. It verifies the three prior compressed profiles in place and
+   preserves the remaining D3 profile before expanded-form removal. Root review
+   checks 209 members across seven private archives, absent local/Linux owners
+   and the complete 33-file final execution mirror. Measured final availability
+   is 26,333,184 flash bytes and 132,571,136 RAM bytes; net recovery across the
+   two attempts is about 6.6 MiB flash and 26.9 MiB RAM. Both earlier failed
+   attempts remain failed; no funding or tests occur during capacity work.
    The 24 MiB flash and strictly greater than 100 MiB RAM floors remain unchanged.
    Every financial byte must remain in verified archives before expanded-form
    removal. Capacity release alone grants no full-history launch authority.
+   The fresh same-leaf draft under `work/observer-availability-S5` changes only
+   three capacity paths and authority bindings; all 25 other source/evidence
+   files and existing 7/5/30-check qualification remain unchanged. Its root-owned
+   sequence stages, seals, verifies and dispatches one corrected rehearsal in
+   `work/receiver-history-router/observer-availability-b700b29f5a1d`, with
+   original-fund closure already waiting independently. No hardware pass or
+   full-history authority is implied by dispatch.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
