@@ -112,6 +112,11 @@ packets: it fails before correction; the related suite then passes 30 checks wit
 one existing Linux-only skip. This confirms the harness defect, not the cause of
 every warmup loss or a passing hardware result. Raw checks are in
 `work/receiver-history-router/earn-calibration-*.log`.
+The correction is integrated at `b3456dcb9`. The eighth rehearsal's exact
+211-file harness, inputs and successful unfunded preflight are preserved in
+`work/receiver-history-router/short-burst-8-*`. Its guarded queue waits for the
+seventh run's original owner and independent financial closure, then checks device
+availability and space before running once. It does not launch full history.
 
 The fifth pilot's observer records all five daemons in 1,041 samples with no
 sampling errors: 373.5 observed process CPU seconds and maximum sampled RSS sums
@@ -153,7 +158,9 @@ restored services release devices even after a functional failure; the failed
 verdict remains. The pinned local sequence completed both export and phone audits,
 then started the seventh router diagnostic after fresh device/space checks.
 It stops on failure
-without reissuing funds or replaying commands. Its plan and source are retained in
+without reissuing funds or replaying commands. The corrected rehearsal has its
+own `work/receiver-history-router/corrected-pilot-queue.json` with the same
+no-reissue rule and original-owner checks. The original sequence is retained in
 `work/device-acceptance-sequence.json` and `work/continue-device-acceptance.py`.
 Reuse checks for unchanged inputs, rerun affected checks after a
 change, and add no gate without an uncovered requirement or concrete risk. The
