@@ -269,6 +269,16 @@ retained. Original expiry/collection and independent financial closure are still
 running; the main receiver-retirement workload is not reached. No replacement
 funding or full-history rerun is authorized by a passing build alone.
 
+The next fixture allows 120 seconds of onward service and a 2,400-second
+incoming lifetime, covering the bounded warmup and the observed preparation
+cost across 28 channels. The prior 60-second window cannot cover six ten-second
+warmup attempts plus funding, custody and paid traffic. Prices, capacity,
+lifetime spending limits, 84 measured packets, the two-second progress limit
+and 35-second cleanup requirement are unchanged. Burst records now retain
+wall and monotonic start/end times so expiry can be checked directly. Focused
+checks pass 25 tests with one existing Linux-only skip; generated configurations
+for all five participants confirm that only the stated lifetimes changed.
+
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the
 15–16 October comparisons; the Spilman and TCP/FIPS dependency inventories also

@@ -13,7 +13,7 @@ from .wifi_priority_checks import received, submitted
 from .wifi_retirement_live import maintenance_idle
 from .wifi_receiver_window import exposure, measure
 
-SETUP_LIFETIME = 1200
+CHANNEL_LIFETIMES = {"n01": 2400, "n02": 240}
 
 
 def caught_up(progress):
@@ -65,7 +65,7 @@ class ReceiverWorkload:
         channel = purchase['channel']['id']
         intent, = [row for row in self.journal(owner)['funding'].values()
                    if row['funded'] and row['funded']['terms']['id'] == channel]
-        lifetime = SETUP_LIFETIME if owner == 'n01' else 120
+        lifetime = CHANNEL_LIFETIMES.get(owner, 120)
         require(channel not in self.intents and intent['funded']['terms'] == purchase['channel']
                 and intent['capacity_sat'] == capacity
                 and intent['max_wallet_debit_sat'] == capacity
@@ -95,7 +95,8 @@ class ReceiverWorkload:
 
     def send(self, source, destination, count, size, rate):
         shape = probes.arm(self, source, destination, count, size, lifetime_secs=90)
-        record = dict(source=source, destination=destination, shape=shape, rate_pps=rate)
+        record = dict(source=source, destination=destination, shape=shape, rate_pps=rate,
+                      started_unix=time.time(), started_monotonic=time.monotonic())
         self.evidence['receiver_history'].setdefault('traffic', []).append(record)
         self.save()
 
@@ -116,6 +117,7 @@ class ReceiverWorkload:
             self.record_probe_failure('receiver paid traffic', error, record)
             raise
         finally:
+            record.update(finished_unix=time.time(), finished_monotonic=time.monotonic())
             self.save()
 
     def warmup_payment(self, owner, destination, channel):
@@ -214,8 +216,7 @@ class ReceiverWorkload:
             self.restart('n02')
         require(len(self.old) == 28 and len(self.old_inputs) == 896 and time.time() < deadline - 40,
                 'preparation did not preserve original receiver owner and deadline')
-        # Funding lasts 120 seconds, but forwarding lasts only 60. Preserve
-        # enough service time after the incoming deadline for the live window.
+        # Preserve service time after the incoming refund deadline for the live window.
         self.until(deadline - 10)
         self.guard = self.buy_route('n02', 'destination', 'n03', 32)
         archive = self.stop_snapshot('n02', 'before-transit')
