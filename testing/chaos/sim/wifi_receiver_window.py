@@ -6,7 +6,7 @@ import time
 from . import wifi_probes as probes
 from .paid_settlement import require
 from .wifi_priority_checks import submitted
-from .wifi_receiver_observer import ReceiverObserver
+from .wifi_receiver_observer import POLL_SECONDS, ReceiverObserver
 
 
 def caught_up(progress):
@@ -25,7 +25,10 @@ def exposure(before, warm, current, channels, packets):
         needed = current[index]['payment_progress'][channel]['evidence_msat'] + (delta + 1) * packets
         require(delta > 0 and lower > 0 and (needed + 999) // 1000 < capacity,
                 f'hop{index}: warmup={delta}msat, bound={needed}msat for{packets} packets, capacity={capacity}sat')
-        quantization = (1_000_000_000 + lower * 3 - 1) // (lower * 3)
+        # A rounded-up claim can prepay almost one sat. Further debt must
+        # arrive in whole packets, rather than at a continuous byte rate.
+        packets_to_next_sat = (1000 + lower - 1) // lower
+        quantization = (packets_to_next_sat * 1_000_000 + 2) // 3
         require(quantization + 500_000 < 2_000_000, 'payload price/rate cannot ensure two-second whole-sat cadence')
         hops.append(dict(capacity_sat=capacity, maximum_evidence_msat=needed,
                          calibrated_warmup_msat=delta, price=price, minimum_payload_msat=lower,
@@ -115,11 +118,20 @@ def measure(run, held, held_credits):
                observer='independently polled counters and bounded read-only original-Y queries',
                observer_busy_timeout_ms=250, observer_query_timeout_ms=1000,
                custody_minimum_start_interval_us=1_000_000, custody_remote_timeout_seconds=3,
-               progress_poll_delay_us=100_000, maximum_queued_progress_reads=2048,
+               progress_poll_delay_us=int(POLL_SECONDS * 1_000_000), maximum_queued_progress_reads=2048,
                progress_payments='durable authorization and completed signature balances',
                cleanup_finished_us=None, traffic_finished_us=None, passed=False)
     run.evidence['receiver_history']['live'] = row
     run.save()
+    saved_at = time.monotonic()
+
+    def save_diagnostics():
+        nonlocal saved_at
+        now = time.monotonic()
+        if now - saved_at >= 1:
+            run.save()
+            saved_at = now
+
     with ThreadPoolExecutor(max_workers=1) as sender, ReceiverObserver(run, shape, started, row) as observer:
         observer.start_custody()
         baseline = observer.baseline()
@@ -156,7 +168,7 @@ def measure(run, held, held_credits):
                 if checked is not None:
                     row['custody_samples'].append(checked)
                     if not checked.get('complete', True):
-                        run.save()
+                        save_diagnostics()
                         time.sleep(.05)
                         continue
                     if not released:
@@ -176,7 +188,7 @@ def measure(run, held, held_credits):
                             and not checked['cleanup_pending'] and checked['elapsed_us'] <= 35_000_000:
                         final_custody = True
                         break
-                run.save()
+                save_diagnostics()
                 time.sleep(.05)
             require(released and final_custody and row['cleanup_finished_us'] is not None
                     and row['traffic_finished_us'] is not None,
@@ -202,4 +214,5 @@ def measure(run, held, held_credits):
                            traffic_covers_cleanup=row['cleanup_finished_us'] < earliest_final)
     row['passed'] = (all(row['progress'][key] for key in ('within_limit', 'all_counters_advanced', 'traffic_covers_cleanup'))
                      and row['signed_progress']['within_limit'] and row['signed_progress']['all_counters_advanced'])
+    run.save()
     return row

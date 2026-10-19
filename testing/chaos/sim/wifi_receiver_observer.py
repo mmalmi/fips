@@ -12,7 +12,7 @@ from . import wifi_receiver_custody as custody
 from .paid_settlement import require
 from .wifi_receiver_numeric import NumericReaders
 
-POLL_SECONDS = .1
+POLL_SECONDS = .025
 MAX_PROGRESS_READS = 2048
 
 

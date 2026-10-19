@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.wifi_receiver_window import measure, progress, reconciled
+from sim.wifi_receiver_window import exposure, measure, progress, reconciled
 from sim import wifi_receiver_custody as custody
 
 
@@ -20,6 +20,25 @@ def point(at, value):
 
 
 class ReceiverTimingTests(unittest.TestCase):
+    @staticmethod
+    def priced_state(cost, evidence):
+        return dict(payment_progress={'original': dict(evidence_msat=evidence)},
+                    purchases=[dict(channel=dict(id='original', capacity_sat=32),
+                                    contract=dict(price=dict(msat=cost, per_bytes=1000)))])
+
+    def test_discrete_244msat_packets_cannot_meet_the_admitted_cadence(self):
+        # Five discrete packets may be needed after rounding a prior claim up.
+        # 5/3 seconds plus the unchanged 500ms scheduler target exceeds 2s.
+        with self.assertRaisesRegex(RuntimeError, 'cadence'):
+            exposure([self.priced_state(244, 0)], [self.priced_state(244, 244)],
+                     [self.priced_state(244, 244)], ['original'], 84)
+
+    def test_actual_250msat_payload_keeps_its_four_packet_bound(self):
+        row = exposure([self.priced_state(250, 0)], [self.priced_state(250, 250)],
+                       [self.priced_state(250, 250)], ['original'], 84)
+        self.assertEqual(row['hops'][0]['maximum_quantization_us'], 1_333_334)
+        self.assertEqual(row['hops'][0]['minimum_payload_msat'], 250)
+
     def test_missing_timing_cannot_requalify_an_old_result(self):
         samples = [point(500_000, 1), point(1_000_000, 2)]
         samples[0].pop('counter_reads')
@@ -92,6 +111,11 @@ class ReceiverTimingTests(unittest.TestCase):
 
 
 class ReceiverObserverTests(unittest.TestCase):
+    def test_candidate_samples_at_25ms_with_the_existing_bounded_queue(self):
+        from sim.wifi_receiver_observer import MAX_PROGRESS_READS, POLL_SECONDS
+        self.assertEqual(POLL_SECONDS, .025)
+        self.assertEqual(MAX_PROGRESS_READS, 2048)
+
     def setUp(self):
         class Numeric:
             def __init__(self, run):
@@ -291,12 +315,16 @@ class ReceiverObserverTests(unittest.TestCase):
 
 class ReceiverMeasurementTests(unittest.TestCase):
     def run_window(self, final_refusal=False, final_late=False, final_missing=False, missing_once=False,
-                   held_override=None):
+                   held_override=None, save_observations=None):
         clock = SimpleNamespace(elapsed=0)
         run = SimpleNamespace(evidence={'receiver_history': {}}, save=Mock(),
                               transit='transit', guard='guard', held_nodes=['n02'],
                               nodes={'n02': SimpleNamespace(held=Mock(return_value=True))},
                               release_holds=Mock())
+        def saved():
+            if save_observations is not None:
+                save_observations.append((clock.elapsed, json.loads(json.dumps(run.evidence))))
+        run.save.side_effect = saved
         held = [dict(payment_progress={channel: dict(authorized_sat=0, evidence_msat=0,
                                                     in_flight=False, acknowledged_msat=0)})
                 for channel in ('transit', 'guard')]
@@ -403,6 +431,23 @@ class ReceiverMeasurementTests(unittest.TestCase):
         self.assertGreaterEqual(row['custody_samples'][-1]['started_us'], row['terminal_progress_us'])
         self.assertFalse(row['custody_samples'][-1]['cleanup_pending'])
         self.assertTrue(row['passed'])
+
+    def test_diagnostics_are_throttled_and_terminal_analysis_is_saved(self):
+        saved = []
+        row, _ = self.run_window(save_observations=saved)
+        before_terminal = [at for at, _ in saved if at * 1_000_000 < row['terminal_progress_us']]
+        self.assertEqual(before_terminal, [0])
+        self.assertEqual(saved[-1][1]['receiver_history']['live'], row)
+        self.assertEqual(row['progress_poll_delay_us'], 25_000)
+
+    def test_finally_preserves_every_sample_and_sender_on_custody_failure(self):
+        saved = []
+        with self.assertRaisesRegex(RuntimeError, 'final original custody changed'):
+            self.run_window(final_refusal=True, save_observations=saved)
+        final = saved[-1][1]['receiver_history']['live']
+        self.assertEqual(len(final['samples']), 4)
+        self.assertEqual(final['sender']['submitted_packets'], 84)
+        self.assertFalse(final['passed'])
 
     def test_baseline_must_match_the_acknowledged_pre_stream_payment(self):
         for wrong in (dict(in_flight=True), dict(acknowledged_msat=None),
