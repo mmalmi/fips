@@ -103,13 +103,16 @@ Change it only to fix a demonstrated failure or an unmet requirement. Reuse vali
 checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
 full suites or creating additional reports without a concrete verification need.
 
-1. The genuine 5,480-receipt Linux workload and original-fund reconciliation are
-   complete on build 14; reuse this evidence while its inputs remain unchanged.
-2. Matching OpenWrt and Android builds are complete. Independent builds may run
-   alongside setup where host capacity permits, outside timed observations.
-3. Complete the affected router/phone, recovery and resource checks, combining
-   compatible scenarios to avoid repeated setup. Close the existing mobility and
-   natural-idle requirements; retain the documented physical power-loss limits.
+1. Finish the active router history workload and independently reconcile its
+   original funds, retained owners and restored baselines. Reuse the accepted
+   native workload and verified builds; do not restart completed preparation.
+2. Run the prepared ordinary-ARM large-export case after that closure. Measure
+   command CPU, memory, storage and acknowledgment time in the same run, then
+   independently audit refusal, recovery and continued spending.
+3. Run the prepared corrected phone regression. Close physical encounter/rejoin
+   and natural-idle observations when the phone is available; forced idle and
+   controlled channel changes do not substitute for them. Retain the documented
+   physical power-loss limits; no further manual cuts are planned.
 4. Reconcile the checklist, threat model, operating/recovery documentation and
    local TollGate proposal. Integrate verified changes and remove only completed,
    owned test installations and clean merged worktrees.
@@ -1057,6 +1060,18 @@ charged logical history. These are exclusive local wallet commands, not anonymou
 forwarding requests. The 36 source bindings and
 existing tests inspected, without rerunning them, remain in
 `work/export-bounds-r612`.
+Its current-graph review reconciles all 36 prior bindings and seven additional
+reservation, custody and page-reader modules. All 37 runtime sources match the
+ordinary ARM build; the separate bench fixture has since been integrated locally.
+Mandatory native capacity removes the former unbounded-history configuration.
+Send, activity and custody completion now reserve their native storage before
+financial work; the release queue counts candidates and promised slots together
+within 1,024 slots and a 512 KiB journal. No additional source correction was
+identified by this review. Whole scans remain history-dependent, and logical
+capacity is not a filesystem or memory ceiling. Current Linux large-export
+evidence closes the reviewed refusal/recovery/custody contracts; the prepared ARM
+case still needs device cost and physical-storage acceptance. This reconciliation
+adds no test execution or performance claim.
 
 r614 exercises the existing opt-in export fixture on the current runtime/SDK
 graph. It retains 128 real exports, refuses a further request without changing
