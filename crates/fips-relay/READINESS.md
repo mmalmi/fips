@@ -15,9 +15,9 @@ requires a change.
 | --- | --- | --- |
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
-| Large cached exports | Linux passes pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Its 79 exports occupy 1,477,458 bytes; whole offline reopen/acknowledgment takes 13.627 s; all 1,024 sats are collected. | The ordinary-ARM case is running on the third router. Full-storage behavior, device costs and independent final acceptance are pending. |
+| Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
 | Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. The latest six diagnostic attempts are closed; the sixth recovers all 3,072 sats with no unfinished financial owners and restored normal services. | The full history workload has not passed. The seventh one-receipt diagnostic is prepared, source-verified and unfunded. One receipt cannot establish history pressure. |
-| Android | The corrected artifact passes target lint, ten Java lifecycle tests, Android lint, signature and packaged-native checks. Five unchanged customer-profile tests are reused. Its isolated APK is installed, empty and stopped, with original accounts, Wi-Fi and foreground preserved. | Run the prepared current-graph foreground/background and forced-idle regression, then physical encounter/rejoin and natural-idle observations when the phone is available. Forced idle does not substitute for natural idle. |
+| Android | The corrected artifact passes target lint, ten Java lifecycle tests, Android lint, signature and packaged-native checks. Five unchanged customer-profile tests are reused. Its isolated APK passed installation checks with original accounts, Wi-Fi and foreground preserved. | The prepared current-graph foreground/background and forced-idle regression is running after the export case released the devices. Physical encounter/rejoin and natural-idle observations remain open. Forced idle does not substitute for natural idle. |
 | Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
@@ -28,18 +28,26 @@ Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `9ad685d67:crates/fips-relay/READINESS.md`; failed verdicts and original financial
 records remain in their evidence bundles.
 
-### Active ARM export case
+### ARM export acceptance
 
-The corrected runner in `work/export-payload-device/reachable-mint` uses the
-configured mint port, verifies router access before issuing funds and preserves
-raw mint-recovery bytes. The initial import succeeds in 1.57 s. It circulates the
-original 1,024 test sats through retained exports until refusal, then must recover,
-acknowledge the prefix, continue spending, collect the original funds and pass an
-independent stopped-copy audit. Whole-command CPU, memory and acknowledgment costs
-are measured in the same run, including timeout supervision and excluding
-SSH/controller work. These are offline wallet costs, not concurrent forwarding or
-power-loss evidence. The existing command observer is qualified by three Linux
-checks and four empty router commands in `work/offline-wallet-metrics`.
+The corrected case in `work/export-payload-device/reachable-mint` passes on the
+ordinary ARM64 artifact. It retains 79 exports occupying 1,478,406 bytes and refuses
+the next at 20,782,752 charged bytes within the 20 MiB configured wallet allowance.
+Recovery takes 3.02 s and preserves all 1,024 sats. Acknowledgment, continued export
+and re-import, final collection and the independent stopped-copy audit all pass.
+Original incoming receipts, authority and lifetime budgets are preserved; there
+are no unfinished financial owners, the mint is stopped and normal-service
+baselines are restored. All 1,332 evidence files have identical preserved copies.
+
+Whole offline acknowledgment takes 199.18 s, consumes 193.39 CPU seconds and peaks
+at 61,184 KiB resident memory. The complete case takes 2,741.76 s; its 171 measured
+commands consume 1,959.46 CPU seconds. Measurements include timeout supervision
+and exclude SSH/controller work. These are offline-wallet costs and administrative
+downtime, not concurrent forwarding, a hard memory ceiling, physical write
+amplification or power-loss evidence. The existing command observer is qualified
+by three Linux checks and four empty router commands in `work/offline-wallet-metrics`.
+The runner verifies mint reachability before funding and preserves raw recovery
+bytes; it neither retries uncertain financial operations nor replaces their funds.
 
 The first attempt fails before import because its random mint port is unreachable.
 Independent auditing recovers its unchanged 1,024-sat grant, with zero router
@@ -89,10 +97,10 @@ history pressure.
 
 ## Completion sequence
 
-1. Finish and independently audit the active ARM export case. Preserve its
-   original records and restore normal services before releasing shared devices.
-2. Run the prepared corrected phone regression. Its 158 unchanged harness checks
-   are already verified; reuse them. Complete postflight, stopped-account/mint
+1. The ordinary-ARM export case and independent audit are complete. Its original
+   records are preserved, all test funds collected and normal services restored.
+2. Finish the corrected phone regression, now running. Its 158 unchanged harness
+   checks are already verified and reused. Complete postflight, stopped-account/mint
    archives and independent wallet audit before releasing the devices. Physical
    encounter/rejoin and natural off-charge idle remain separate observations.
 3. Run the prepared seventh router diagnostic. Once the full workflow passes,
@@ -107,9 +115,9 @@ history pressure.
 
 These cases share devices and run separately. Independent financial closure and
 restored services release devices even after a functional failure; the failed
-verdict remains. A pinned local sequence now waits for the active export owner,
-runs its existing independent audit, and then invokes the prepared phone and
-router runners with fresh device/space checks between them. It stops on failure
+verdict remains. The pinned local sequence completed the export audit and started
+the phone regression. After phone closure, it invokes the prepared router runner,
+with fresh device/space checks between cases. It stops on failure
 without reissuing funds or replaying commands. Its plan and source are retained in
 `work/device-acceptance-sequence.json` and `work/continue-device-acceptance.py`.
 Reuse checks for unchanged inputs, rerun affected checks after a
@@ -905,7 +913,7 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 | Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
 | Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size. The synthetic full-capacity observation below measures the complete receiver wallet handoff. Whole sender calls and aggregate device progress/memory acceptance remain open. |
-| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending; the router acknowledgment takes 29.75 s. The larger-token case in `work/export-payload/gate-3` fills the 20 MiB store after 79 exports and passes refusal, recovery, acknowledgment and continued spending on the corrected CDK; Linux reopen/acknowledgment takes 13.627 s. Large-payload device costs remain open. These are exclusively owned offline commands, so their duration is administrative downtime. |
+| Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending; the router acknowledgment takes 29.75 s. The larger-token case in `work/export-payload/gate-3` fills the 20 MiB store after 79 exports and passes refusal, recovery, acknowledgment and continued spending on the corrected CDK; Linux reopen/acknowledgment takes 13.627 s. The ordinary-ARM counterpart also passes at 20 MiB after 79 exports: whole acknowledgment takes 199.18 s, 193.39 CPU seconds and 61,184 KiB peak RSS; all 1,024 sats are independently reconciled. These are exclusively owned offline commands, so their duration is administrative downtime. |
 
 These are the relay's wallet entry points, not every generic SDK API. The local
 import/export/acknowledgment commands require the relay to be stopped: the CLI
@@ -1064,10 +1072,11 @@ Send, activity and custody completion now reserve their native storage before
 financial work; the release queue counts candidates and promised slots together
 within 1,024 slots and a 512 KiB journal. No additional source correction was
 identified by this review. Whole scans remain history-dependent, and logical
-capacity is not a filesystem or memory ceiling. Current Linux large-export
-evidence closes the reviewed refusal/recovery/custody contracts; the prepared ARM
-case still needs device cost and physical-storage acceptance. This reconciliation
-adds no test execution or performance claim.
+capacity is not a filesystem or memory ceiling. Current Linux and ordinary-ARM
+large-export evidence closes the reviewed refusal/recovery/custody contracts for
+these offline cases. The ARM run adds flash-backed operation and whole-command
+costs, as recorded above; concurrent history-pressure acceptance remains open.
+The source reconciliation itself adds no test execution or performance claim.
 
 r614 exercises the existing opt-in export fixture on the current runtime/SDK
 graph. It retains 128 real exports, refuses a further request without changing
