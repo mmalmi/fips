@@ -96,6 +96,23 @@ class PaidFinanceTests(unittest.TestCase):
             financial_snapshot(run, wallet=run.wallet)
         run.wallet.assert_not_called()
 
+    def test_retired_authorization_still_consumes_lifetime_budget(self):
+        run = JournalRun()
+        buyer = run.journals['n01']['buyer/buyer.json']
+        buyer['history'] = {'authorized_sat': 17}
+        run.statuses['n01']['remaining_budget_sat'] -= 17
+        for active in (True, False):
+            with self.subTest(active=active):
+                if not active:
+                    buyer['channels'].clear()
+                    run.statuses['n01']['remaining_budget_sat'] += 2
+                result = financial_snapshot(run, wallet=None)['n01']
+                self.assertEqual(result['authorized'], 2 if active else 0)
+                self.assertEqual(result['remaining'], 45 if active else 47)
+        run.statuses['n01']['remaining_budget_sat'] += 17
+        with self.assertRaisesRegex(RuntimeError, 'changed during sampling'):
+            financial_snapshot(run, wallet=None)
+
     def test_credit_is_bracketed_by_a_later_durable_authorization(self):
         run = JournalRun()
 

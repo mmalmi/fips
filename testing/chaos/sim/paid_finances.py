@@ -33,7 +33,8 @@ def financial_observation(run, *, wallet):
         seller = seller_journal["ledger"]
         journals[node] = {"buyer": buyer, "controller": controller, "seller": seller_journal}
         authorized = sum(channel["authorized_sat"] for channel in buyer["channels"].values())
-        if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized:
+        retired = (buyer.get("history") or {}).get("authorized_sat", 0)
+        if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized - retired:
             # Journals and status are individually atomic, not one snapshot.
             raise FinancialObservationChanged("financial observation changed during sampling")
         funding = {key: (item["funded"]["terms"]["id"], item["funded"]["wallet_operation_id"])

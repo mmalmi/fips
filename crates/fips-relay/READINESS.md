@@ -162,8 +162,14 @@ source reconstructs receiver and refund outputs for each balance. This fixture's
 on its 960-sat channel, making its preparation unusually expensive. The evidence
 supports payment-credit pressure independently of receipt-history size; exact
 packet-loss attribution and a workable preparation rate still need verification.
-The short case has settled at 109 sats paid and 851 refunded and is completing
-its ordinary expiry/collection path. Observations and matching source hashes are
+The short case settled at 109 sats paid and 851 refunded and retired its original
+owners. Its final observation then failed because the harness omitted retired
+authorization when checking the lifetime budget. The observer now includes that
+history while preserving the separate active-authorization counters. The new
+regression fails before the fix; 54 focused checks pass afterward, with one
+existing Linux-only check skipped on macOS. The original accounts and mint are
+retained for collection, and the failed delivery verdict is preserved.
+Observations and matching source hashes are
 in `work/receiver-history-router/short-burst-analysis.json`. This diagnoses the
 failed-run graph; it qualifies neither history pressure nor the newer candidate.
 
