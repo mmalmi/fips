@@ -138,6 +138,13 @@ third onward opening is funded but not observed earning. Inspection confirms no
 test processes remain and normal-service baselines are restored. The original
 mint accounts for all 3,072 sats, with zero collected. Its interrupted result is
 preserved; it does not pass the workload.
+An independent recheck of its 15 completed paid batches confirms exact submission
+and delivery counts. The first two onward payments reach 32 sats in five/four
+batches, with their last batch finishing 19.10/51.52 seconds after channel
+creation, inside 180-second service. Observed per-packet calibration converges
+after delayed warmup usage. These partial preparation observations are retained
+in `short-burst-8/setup-observation.json`; they are neither a matched performance
+comparison nor acceptance of the complete workflow.
 
 Recovery reuses the same accounts, artifacts and mint, without issuing funds or
 opening routes. A retained RAM executable first refuses the overly strict
