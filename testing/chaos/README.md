@@ -1560,7 +1560,11 @@ forced-idle continuity; it does not measure natural sleep, battery life or
 recovery from a network outage.
 
 Use `--natural-idle` with `--transit` for a separate off-charge observation.
-Disconnect external power before starting; the runner refuses charging, simulated
+Arrange a debugging connection that survives loss of external power, such as
+paired Android wireless debugging, before disconnecting power. An ordinary
+powered USB connection cannot qualify this mode. Keep an operator available to
+unlock afterward for settlement. Disconnect external power before starting;
+the runner refuses charging, simulated
 battery state or a forced idle policy before issuing test funds. It backgrounds
 the temporary app, switches the screen off and waits at most one hour for Android
 to enter deep idle by itself. The app must have no battery-optimization exemption.
