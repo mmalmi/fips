@@ -583,9 +583,10 @@ Current implementation and deployment boundaries:
   It remains an arm64 bench app, not a production wallet or general Internet VPN.
   The rebuilt capacity-limited app passes controlled foreground/background and
   forced-idle transit on its recorded graph; earlier cost observations retain their
-  original builds.
-  Natural idle and physical mobility remain open. Outstanding acceptance below
-  prevents treating it as a qualified production release.
+  original builds. Current controlled Pixel acceptance and independent recovery
+  are complete. Natural off-charge idle, physical movement and battery cost remain
+  unqualified capabilities; they do not require further operator actions.
+  The app remains a bench tool, and router/history acceptance below is still open.
 - Acceptance uses fresh profiles and test money. Legacy profile migration is
   outside this greenfield scope. Existing operator accounts must be preserved.
 - Public release, deployment, real-money operation and contacting upstream are
@@ -596,7 +597,9 @@ Current implementation and deployment boundaries:
 “Covered” below means the named tests or historical runs provide evidence for
 that requirement on their recorded builds. It does not certify a newer binary.
 Final sign-off requires the exact source/dependency/features and target artifacts,
-closed financial recovery and the remaining observations listed here.
+closed financial recovery and the remaining controlled observations listed here.
+An explicit unqualified capability is a limit on claims, not an added requirement
+for manual testing or an unlimited sequence of longer runs.
 
 | Requirement | Existing evidence and canonical contract | Required to close v1 |
 | --- | --- | --- |
@@ -604,11 +607,11 @@ closed financial recovery and the remaining observations listed here.
 | CPU, storage, wire and delivery costs | The latest candidate's native matrix and earlier recorded-graph Wi-Fi CPU, local payment-service packet captures, ARM64 storage syscalls and controlled phone-rate costs are reconciled in [results](CADENCE-RESULTS.md); [measurements](MEASUREMENTS.md) defines attribution limits. | Complete for these recorded scopes. Requalify affected observations if runtime/SDK changes; retain excluded shared work, physical-media/airtime and battery limitations rather than claiming complete attribution. |
 | Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. The current session-recovery graph passes all seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS, with independent 2,688-sat conservation; r531/r532 cover unchanged native quote/admission contracts. | Current Linux carrier reconciliation is complete. Physical target acceptance remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
-| Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
-| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
+| Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Qualify controlled open-radio departure/rejoin, root replacement and route recovery on the final graph, recording admission/resource bounds. Actual movement, seamless roaming, automatic channel selection and unrestricted-identity fairness are not established. |
+| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete current physical-radio route-recovery observations and final target reconciliation. No global-optimality claim. |
 | Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | The captured first-funding cut recovers with controller intervention as described above. Unattended recovery with the corrected runner and committed settlement/history handoff cuts remain unqualified. Additional manual cuts are cancelled; continue automated recovery checks without substituting them for physical evidence. Preserve originals and test-fund conservation. |
 | Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. Current source reconciliation matches all 34 catalog and 43 export review entries; the reachable service roles and exclusions are mapped below. | Complete current full-history pressure/progress and aggregate process-resource observation. Finite cycles do not establish an indefinite physical-storage plateau, hard RSS ceiling or generic whole-call deadline. |
-| Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | Freeze and qualify a common final graph on the intended targets. Exercise install/reopen/recovery with preserved accounts and remove owned test resources. Natural Android deep idle is still unqualified. |
+| Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | Freeze and qualify a common final graph on the intended targets. Current controlled Pixel installation/recovery and owned-app removal are complete; finish router acceptance and cleanup with preserved accounts. Natural Android deep idle remains an explicit limitation. |
 | Threat model and integration proposal | [Threat model below](#boundaries-and-threats), explicit mint trust and [local TollGate proposal](TOLLGATE.md). r618 checks the current interfaces against the proposal and its pinned upstream specifications, including price/quality trials and raw mint-bridge limits. | Recheck affected contracts if the final runtime changes. The deliverable is a proposal; actual TollGate interoperability needs its separate acceptance before it is claimed. |
 | Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. | Retain the 600-line relay/Android and 1000-line integration limits; remove superseded code/tests without losing distinct failure coverage. |
 
@@ -662,9 +665,10 @@ Reuse the existing harness for admission, rollback and reserved completion check
    must keep their labels; none is physical movement, natural sleep or a power cut.
 4. Preserve the management LAN, normal Wi-Fi/Internet, existing accounts and other
    services. Restore and independently verify each controlled device change.
-5. Close every checklist row before claiming v1 readiness. Limitations of optional
-   integrations and unqualified platforms remain explicit instead of becoming
-   accidental claims or silently disappearing from the assessment.
+5. Close each checklist row's required controlled acceptance and financial
+   recovery before claiming v1 readiness. Limitations of optional integrations,
+   unqualified platforms and untested capabilities remain explicit; they neither
+   become accidental claims nor introduce additional manual testing requirements.
 
 ## Recorded verification checkpoints
 
