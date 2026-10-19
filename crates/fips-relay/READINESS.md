@@ -393,6 +393,16 @@ history pressure.
    bytes with 2 GiB local headroom before transfer. The helper and evidence remain
    in `work/closed-case-archive-qualification-1`; this is archive qualification,
    not router history-pressure evidence. Existing case records are unchanged.
+   Unbound full-history helpers in `work/full-history-draft` pass nine focused
+   checks and keep actual predecessor receipts unbound until release. They reserve
+   20 GiB for private diagnostic evidence, 4 GiB for its archive and 256 MiB for
+   temporary work on Linux, plus staging bytes; wallet, per-snapshot and recovery
+   limits stay unchanged. The eight-hour workload budget resumes only after
+   history preparation returns its original value. A virtual-clock regression
+   reproduces the old outer-alarm gap and verifies uninterrupted reconciliation,
+   remaining-time rearming and collection before failure if time is exhausted.
+   Existing six-hour new-history and financial cleanup bounds remain in force.
+   Closure waits nine hours without terminating a still-live financial owner.
 4. Requalify the unchanged eight-trial native cadence matrix with the current
    ordinary daemon: 250/500/1000/2000 ms in forward and reverse order, including
    steady, idle, bursty and high-rate traffic. Its current-graph integration
