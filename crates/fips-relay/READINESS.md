@@ -16,7 +16,7 @@ requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. The latest six diagnostic attempts are closed; the sixth recovers all 3,072 sats with no unfinished financial owners and restored normal services. | The full history workload has not passed. The seventh one-receipt diagnostic is running after export and phone closure. One receipt cannot establish history pressure. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. Six diagnostic attempts are independently closed. The seventh settles its eight opened channels but fails preparation at route expiry; original expiry and independent closure are in progress. | The full history workload has not passed. Correct the demonstrated setup-calibration problem and pass a complete one-receipt rehearsal before repeating history preparation. One receipt cannot establish history pressure. |
 | Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
@@ -101,6 +101,18 @@ before correction; 27 checks pass afterward with one existing Linux-only skip.
 These are harness results, not device acceptance. The exact prepared source and
 inputs are archived under `work/receiver-history-router/short-burst-7-*`.
 
+The seventh pilot's final preparation packet starts only 41 ms before the
+120-second route expires and is not delivered. Five lost warmup probes precede
+one successful probe; the subsequent 31 transfers shrink to single small packets.
+Warmup accounting can include delayed earlier usage, but the harness previously
+kept that inferred packet cost for every subsequent batch. It now recalibrates
+from each completely delivered, paid batch, retaining exact-target and no-replay
+checks. One regression covers ordinary and delayed warmup plus smaller tail
+packets: it fails before correction; the related suite then passes 30 checks with
+one existing Linux-only skip. This confirms the harness defect, not the cause of
+every warmup loss or a passing hardware result. Raw checks are in
+`work/receiver-history-router/earn-calibration-*.log`.
+
 The fifth pilot's observer records all five daemons in 1,041 samples with no
 sampling errors: 373.5 observed process CPU seconds and maximum sampled RSS sums
 of 47,068, 32,196 and 46,688 KiB. Earlier preparation and wallet commands are
@@ -117,7 +129,8 @@ history pressure.
 2. The corrected phone regression, postflight, stopped-account/mint archives and
    independent wallet audit are complete. Its 158 unchanged harness checks are
    reused. Physical encounter/rejoin and natural off-charge idle remain open.
-3. Finish the seventh router diagnostic, now running. Once the full workflow passes,
+3. Close the seventh router diagnostic without replacing its original funds, then
+   run the corrected short rehearsal. Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
@@ -126,7 +139,8 @@ history pressure.
    `full-history-inputs.json`. It reuses the qualified harness and financial
    auditors and refuses a live predecessor. The initial guard-check ordering
    failure is preserved; corrected preflight and live-owner refusal pass without
-   device actions. Review the completed pilot's timing before launching it: the
+   device actions. Its original seventh-pilot prerequisite has failed; rebind it
+   only after the corrected rehearsal passes. Review that pilot's timing before launching it: the
    earlier full receipt preparation took 17,713.54 seconds on the router.
 4. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate

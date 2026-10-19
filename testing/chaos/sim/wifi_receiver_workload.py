@@ -143,14 +143,25 @@ class ReceiverWorkload:
         def evidence(state):
             return state['payment_progress'][channel]['evidence_msat']
         current, unit = self.warmup_payment(owner, destination, channel)
+        size = 1000
         for _ in range(100):
             signed = current['payment_progress'][channel]['authorized_sat']
             require(signed <= target and evidence(current) <= target * 1000, 'target payment overshot')
             if signed == target:
                 return
             count = min(1024, ((target - 1) * 1000 + 1 - evidence(current)) // unit)
-            self.send(owner, destination, max(1, count), 1000 if count else 40, rate_pps)
+            if count == 0:
+                count, size = 1, 40
+            before = evidence(current)
+            record = self.send(owner, destination, count, size, rate_pps)
             current = self.payment(owner, channel)
+            delta = evidence(current) - before
+            require(delta > 0, 'delivered batch did not accrue paid evidence')
+            # Warmup can include delayed usage from earlier lost probes.
+            unit = (delta + count - 1) // count
+            record['payment'] = dict(before_msat=before, after_msat=evidence(current),
+                                     observed_msat_per_packet=unit)
+            self.save()
         raise RuntimeError('ordinary paid traffic did not reach its exact target')
 
     def settle_channel(self, channel, paid=None):

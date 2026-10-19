@@ -105,6 +105,32 @@ class ReceiverWorkloadTests(unittest.TestCase):
                 run.warmup_payment('buyer', 'destination', 'original')
         self.assertEqual(send.call_count, 6)
 
+    def test_exact_payment_finishes_with_delayed_warmup_usage_and_small_tail_packets(self):
+        for warmup_packets in (1, 6):
+            with self.subTest(warmup_packets=warmup_packets):
+                run = ReceiverWorkload()
+                charged = warmup_packets * 260
+                batches = []
+
+                def status(*_):
+                    return {'payment_progress': {'original': {
+                        'evidence_msat': charged, 'authorized_sat': (charged + 999) // 1000}}}
+
+                def send(owner, destination, count, size, rate):
+                    nonlocal charged
+                    self.assertLess(len(batches), 6, 'setup exhausted its bounded transfer allowance')
+                    charged += count * (260 if size == 1000 else 20)
+                    self.assertLessEqual(charged, 32_000, 'exact payment target overshot')
+                    record = dict(count=count, size=size)
+                    batches.append(record)
+                    return record
+
+                run.warmup_payment = Mock(return_value=(status(), charged))
+                run.send, run.payment, run.save = send, status, Mock()
+                run.earn('buyer', 'destination', 'original', 32)
+                self.assertEqual(status()['payment_progress']['original']['authorized_sat'], 32)
+                self.assertTrue(any(row['size'] == 40 for row in batches))
+
     def test_full_reports_match_after_provider_release_without_replaying_settlement(self):
         terms = {'id': 'original', 'capacity_sat': 960}
         report = dict(channel_id='original', value_after_stage1_sat=960, signed_sat=92,
