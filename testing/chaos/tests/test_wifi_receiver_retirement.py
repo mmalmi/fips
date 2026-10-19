@@ -179,10 +179,13 @@ class ReceiverWindowTests(unittest.TestCase):
     def test_progress_includes_whole_sat_credit_and_first_and_last_partial_windows(self):
         def sample(at, value, pending=True):
             return dict(elapsed_us=at, delivered=value, payments=[{'authorized_sat': value}] * 2,
+                        counter_reads=[dict(started_us=at, finished_us=at) for _ in range(5)],
                         credits=[value * 1000] * 2, cleanup_pending=pending)
         baseline = sample(0, 0)
         samples = [sample(1_000_000, 1), sample(2_000_000, 2), sample(3_000_000, 3, False)]
-        result = progress(baseline, samples)
+        custody_samples = [dict(started_us=0, elapsed_us=100_000, cleanup_pending=True),
+                           dict(started_us=3_000_000, elapsed_us=3_100_000, cleanup_pending=True)]
+        result = progress(baseline, samples, custody_samples)
         self.assertTrue(result['within_limit'])
         self.assertTrue(result['all_counters_advanced'])
         self.assertTrue(result['progress_between_unfinished_cleanup_samples'])

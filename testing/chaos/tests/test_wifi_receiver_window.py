@@ -1,0 +1,216 @@
+"""Keep progress timing independent of bounded original-custody observation."""
+
+import threading
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+from sim.wifi_receiver_window import measure, progress
+
+
+def point(at, value):
+    return dict(elapsed_us=at, delivered=value,
+                payments=[{'authorized_sat': value}] * 2, credits=[value * 1000] * 2,
+                counter_reads=[dict(started_us=at, finished_us=at) for _ in range(5)])
+
+
+class ReceiverTimingTests(unittest.TestCase):
+    def test_missing_timing_cannot_requalify_an_old_result(self):
+        samples = [point(500_000, 1), point(1_000_000, 2)]
+        samples[0].pop('counter_reads')
+        result = progress(point(0, 0), samples, [])
+        self.assertFalse(result['within_limit'])
+        self.assertFalse(result['timing_resolution_sufficient'])
+
+    def test_mixed_read_intervals_are_not_one_batch_timestamp(self):
+        first, second = point(1_500_000, 1), point(1_990_000, 2)
+        ends = [250_000, 500_000, 1_500_000, 600_000, 700_000]
+        first['counter_reads'] = [dict(started_us=end - 50_000, finished_us=end) for end in ends]
+        ends = [1_850_000, 1_900_000, 1_900_000, 1_950_000, 1_990_000]
+        second['counter_reads'] = [dict(started_us=1_550_000, finished_us=end) for end in ends]
+        result = progress(point(0, 0), [first, second], [])
+        self.assertEqual(result['max_observed_gap_us'], ends)
+        self.assertTrue(result['within_limit'])
+        self.assertTrue(result['timing_resolution_sufficient'])
+
+    def test_real_two_second_stall_fails_and_ambiguous_timing_is_unqualified(self):
+        stalled = [point(500_000, 1), point(1_000_000, 1), point(2_600_000, 1), point(2_800_000, 2)]
+        result = progress(point(0, 0), stalled, [])
+        self.assertFalse(result['within_limit'])
+        self.assertEqual(result['timing_verdict'], ['failed'] * 5)
+        self.assertTrue(all(gap > 2_000_000 for gap in result['minimum_gap_us']))
+        ambiguous = [point(500_000, 1), point(2_000_000, 1), point(2_300_000, 2)]
+        result = progress(point(0, 0), ambiguous, [])
+        self.assertFalse(result['within_limit'])
+        self.assertFalse(result['timing_resolution_sufficient'])
+        self.assertEqual(result['timing_verdict'], ['unqualified'] * 5)
+
+    def test_only_checked_pending_custody_brackets_prove_overlap(self):
+        samples = [point(500_000, 1), point(1_000_000, 2), point(1_500_000, 3)]
+        custody = [dict(started_us=0, elapsed_us=100_000, cleanup_pending=True),
+                   dict(started_us=1_200_000, elapsed_us=1_300_000, cleanup_pending=True),
+                   dict(started_us=1_600_000, elapsed_us=1_700_000, cleanup_pending=False)]
+        self.assertTrue(progress(point(0, 0), samples, custody)['progress_between_unfinished_cleanup_samples'])
+        self.assertFalse(progress(point(0, 0), samples, custody[:1])['progress_between_unfinished_cleanup_samples'])
+
+
+class ReceiverObserverTests(unittest.TestCase):
+    def test_slow_custody_never_retimes_or_blocks_progress_or_starts_overlapping_reads(self):
+        from sim.wifi_receiver_observer import ReceiverObserver
+        entered, release = threading.Event(), threading.Event()
+        proof_calls = []
+
+        def proofs(*_):
+            proof_calls.append(1)
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError('test did not release its owned observation')
+            return {'guard': 'SPENT', 'spendable': 'UNSPENT'}
+
+        run = SimpleNamespace(transit='transit', guard='guard', incoming='incoming',
+                              nodes={'n02': object()}, originals={'guard', 'spendable'},
+                              guard_inputs={'guard'}, unspent={'spendable'},
+                              intents={'guard': {'original': True}})
+        run.ctl = Mock(return_value={'payment_progress': {'transit': {'authorized_sat': 1},
+                                                         'guard': {'authorized_sat': 1}}})
+        run.credit = Mock(return_value=1000)
+        run.journal = Mock(return_value={'funding': {'guard': {'original': True}},
+                                        'seller_settlements': {'incoming': {}}})
+        with patch('sim.wifi_receiver_observer.custody.live', side_effect=proofs), \
+                patch('sim.wifi_receiver_observer.probes.receive', return_value={'unique_packets': 1}), \
+                ReceiverObserver(run, {}, time.monotonic()) as observer:
+            try:
+                observer.start_custody()
+                self.assertTrue(entered.wait(1))
+                first, second = observer.progress(), observer.progress()
+                self.assertIsNone(observer.poll_custody())
+                self.assertIsNone(observer.poll_custody())
+                with self.assertRaisesRegex(RuntimeError, 'observations cannot overlap'):
+                    observer.start_custody()
+                self.assertEqual(len(proof_calls), 1)
+                self.assertGreater(second['elapsed_us'], first['elapsed_us'])
+                self.assertEqual(len(first['counter_reads']), 5)
+                release.set()
+                deadline = time.monotonic() + 2
+                checked = None
+                while checked is None and time.monotonic() < deadline:
+                    checked = observer.poll_custody()
+                    time.sleep(.001)
+                self.assertIsNotNone(checked)
+                self.assertLess(second['elapsed_us'], checked['elapsed_us'])
+                self.assertTrue(checked['cleanup_pending'])
+                self.assertEqual(checked['remaining_originals'], 2)
+            finally:
+                release.set()
+
+    def test_changed_original_custody_still_refuses(self):
+        from sim.wifi_receiver_observer import ReceiverObserver
+        run = SimpleNamespace(guard='guard', incoming='incoming', nodes={'n02': object()},
+                              originals={'guard'}, guard_inputs={'guard'}, unspent=set(),
+                              intents={'guard': {'original': True}})
+        run.journal = Mock(return_value={'funding': {'guard': {'original': True}},
+                                        'seller_settlements': {}})
+        with patch('sim.wifi_receiver_observer.custody.live', return_value={'guard': 'UNSPENT'}), \
+                ReceiverObserver(run, {}, time.monotonic()) as observer:
+            observer.start_custody()
+            deadline = time.monotonic() + 2
+            with self.assertRaisesRegex(RuntimeError, 'exact guard or spendable original'):
+                while time.monotonic() < deadline:
+                    observer.poll_custody()
+                    time.sleep(.001)
+
+
+class ReceiverMeasurementTests(unittest.TestCase):
+    def run_window(self, final_refusal=False, final_late=False):
+        clock = SimpleNamespace(elapsed=0)
+        run = SimpleNamespace(evidence={'receiver_history': {}}, save=Mock(),
+                              transit='transit', guard='guard', held_nodes=['n02'],
+                              nodes={'n02': SimpleNamespace(held=Mock(return_value=True))},
+                              release_holds=Mock())
+        held = [dict(payment_progress={channel: {'authorized_sat': 0}})
+                for channel in ('transit', 'guard')]
+        shape = dict(stream_id='original', packet_count=84, payload_bytes=1000)
+        sender = dict(stream_id='original', requested_packets=84, submitted_packets=84,
+                      submitted_bytes=84000, stopped_reason=None)
+        future = Mock()
+        future.done.return_value, future.result.return_value = False, sender
+        pool = Mock()
+        pool.__enter__ = Mock(return_value=pool)
+        pool.__exit__ = Mock(return_value=False)
+        pool.submit.return_value = future
+
+        class Observer:
+            def __init__(self, *_):
+                self.round, self.progress_calls, self.start = 0, 0, 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def start_custody(self):
+                self.round += 1
+                self.start = int(clock.elapsed * 1_000_000)
+
+            def progress(self):
+                self.progress_calls += 1
+                clock.elapsed += .2
+                count = [0, 1, 40, 84, 84][self.progress_calls - 1]
+                sample = point(int(clock.elapsed * 1_000_000), count)
+                if self.progress_calls == 4:
+                    # Buyer snapshots predate the newly observed final packet.
+                    for reading in sample['counter_reads'][1:3]:
+                        reading['started_us'] -= 100_000
+                        reading['finished_us'] -= 100_000
+                sample['payments'] = [dict(authorized_sat=count, evidence_msat=count * 1000,
+                                           in_flight=count != 84, acknowledged_msat=count * 1000)] * 2
+                return sample
+
+            def poll_custody(self):
+                if self.round == 5 and final_refusal:
+                    raise RuntimeError('final original custody changed')
+                if self.round == 5 and final_late:
+                    clock.elapsed = 35.1
+                return dict(started_us=self.start, elapsed_us=int(clock.elapsed * 1_000_000),
+                            cleanup_pending=self.round == 1)
+
+        instance = Observer()
+
+        def sleep(seconds):
+            clock.elapsed += seconds
+
+        with patch('sim.wifi_receiver_window.time.monotonic', side_effect=lambda: 100 + clock.elapsed), \
+                patch('sim.wifi_receiver_window.time.sleep', side_effect=sleep), \
+                patch('sim.wifi_receiver_window.ReceiverObserver', return_value=instance), \
+                patch('sim.wifi_receiver_window.ThreadPoolExecutor', return_value=pool), \
+                patch('sim.wifi_receiver_window.probes.arm', return_value=shape), \
+                patch('sim.wifi_receiver_window.probes.receive', return_value={'unique_packets': 84}):
+            result = measure(run, held, [0, 0])
+        run.release_holds.assert_called_once_with(['n02'])
+        pool.submit.assert_called_once()
+        return result, instance
+
+    def test_terminal_payment_waits_for_fresh_checked_complete_custody(self):
+        row, observer = self.run_window()
+        self.assertEqual(observer.progress_calls, 5)
+        self.assertEqual(len(row['samples']), 4)
+        self.assertEqual(len(row['custody_samples']), 5)
+        self.assertLess(row['cleanup_finished_us'], row['terminal_progress_us'])
+        self.assertGreater(row['terminal_progress_us'], row['traffic_finished_us'])
+        self.assertGreaterEqual(row['custody_samples'][-1]['started_us'], row['terminal_progress_us'])
+        self.assertFalse(row['custody_samples'][-1]['cleanup_pending'])
+        self.assertTrue(row['passed'])
+
+    def test_terminal_custody_failure_is_not_skipped_after_payments_finish(self):
+        with self.assertRaisesRegex(RuntimeError, 'final original custody changed'):
+            self.run_window(final_refusal=True)
+
+    def test_late_final_custody_cannot_pass_the_original_35_second_deadline(self):
+        with self.assertRaisesRegex(RuntimeError, 'inside35 seconds'):
+            self.run_window(final_late=True)
+
+
+if __name__ == '__main__':
+    unittest.main()
