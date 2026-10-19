@@ -5,327 +5,127 @@
 
 ## Current state
 
-The current candidate combines FIPS runtime `ab2b9246`, SDK `715969e` and CDK
-`4f03d81b`. Ordinary Linux, ARM64 OpenWrt and Android builds pass verification.
-The latest CDK production change fixes cancellation after a failed local write
-before send confirmation; the regression also verifies that an uncertain write
-which committed confirmation retains its original coins for recovery. FIPS,
-SDK, Spilman, forwarding and cadence code are unchanged by this correction.
+The candidate combines FIPS runtime `ab2b9246`, SDK `715969e` and CDK `4f03d81b`.
+Ordinary Linux, ARM64 OpenWrt and Android builds pass verification. Production
+readiness still depends on the [acceptance checklist](#acceptance-checklist).
+Keep this candidate fixed unless a demonstrated failure or unmet requirement
+requires a change.
 
-Accepted evidence:
+| Area | Verified result | Remaining work |
+| --- | --- | --- |
+| Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
+| Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
+| Large cached exports | Linux passes pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Its 79 exports occupy 1,477,458 bytes; whole offline reopen/acknowledgment takes 13.627 s; all 1,024 sats are collected. | The ordinary-ARM case is running on the third router. Full-storage behavior, device costs and independent final acceptance are pending. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. The latest six diagnostic attempts are closed; the sixth recovers all 3,072 sats with no unfinished financial owners and restored normal services. | The full history workload has not passed. The seventh one-receipt diagnostic is prepared, source-verified and unfunded. One receipt cannot establish history pressure. |
+| Android | The corrected artifact passes target lint, ten Java lifecycle tests, Android lint, signature and packaged-native checks. Five unchanged customer-profile tests are reused. Its isolated APK is installed, empty and stopped, with original accounts, Wi-Fi and foreground preserved. | Run the prepared current-graph foreground/background and forced-idle regression, then physical encounter/rejoin and natural-idle observations when the phone is available. Forced idle does not substitute for natural idle. |
+| Shared contracts and costs | `work/final-graph-review` confirms unchanged forwarding, quotes, payment scheduling, accounting and measurement code since the 15–16 October comparisons; Spilman and TCP/FIPS inventories also match. | Reuse valid unchanged-code evidence. Qualify changed wallet admission/completion, custody, settlement during maintenance and offline recovery through the pending device cases. Keep historical costs attached to their measured binaries. |
 
-- CDK's new regression fails before the fix and passes after fresh compilation.
-  All 561 wallet tests pass, as do formatting and strict lint. Evidence in
-  `work/cdk-confirmation-cancel/gate-1` retains the initial stale executable and
-  wrapper metadata failures alongside their independently verified resolution.
-- The ordinary Linux relay passes strict lint, compilation, production-feature
-  and source checks in `work/confirmation-native/gate-1`. It recovers both failed
-  export originals with their mints stopped. Independent stopped-copy audits
-  reconcile all 2,048 original test sats as spendable, preserve coin identities,
-  receipts, cached exports, mint ledgers and buyer budgets, and find no unfinished
-  wallet owners. No mint starts or new funding occurs; the original test verdicts
-  remain failed in `work/export-original-recovery/run-1`.
-- The larger-token case in `work/export-payload/gate-3` passes pressure, refusal,
-  recovery, acknowledgment and continued spending at 20 MiB, then collects all
-  1,024 test sats. Its 79 exports occupy 1,477,458 bytes. Whole offline reopen and
-  acknowledgment takes 13.627 seconds on Linux. Controlled test-mint request
-  pacing reduces the complete case from 1,008 to 137 seconds without changing
-  production defaults. Large-payload device costs remain open.
-  The ordinary-ARM counterpart is prepared in `work/export-payload-device`,
-  reusing the existing CLI, timeout and archive helpers without another build.
-  Its configuration initializes successfully on the corrected ordinary Linux
-  binary; its shared financial auditor reconciles the original successful
-  Linux fixture's 1,024 sats with no unfinished wallet owners. Device execution
-  waits for the current diagnostics to release the routers. The prepared run also captures complete
-  offline-command CPU, maximum resident memory and acknowledgment duration using
-  the shared command helper. Three Linux checks and four empty router shell
-  commands qualify completion, refusal, deadline and lost-reply ownership; these
-  introduce no wallet operations and do not qualify the pending financial case.
-  Timing includes timeout supervision and excludes SSH/controller work. Evidence
-  in `work/offline-wallet-metrics` retains both corrected preparation-wrapper
-  failures. Closed diagnostic profiles have been verified against two local
-  archive copies, checked for active owners, and relocated from flash to temporary
-  router storage with every file preserved. After the fifth diagnostic's
-  relocation, the first two routers have 20,140 KiB and 25,688 KiB available,
-  before the sixth pilot. Normal-service baselines remain unchanged. The prepared
-  export case uses the second router and retains its 24 MiB free-space preflight.
-  The sixth pilot is now independently closed. Its stopped profiles are also
-  preserved and relocated, releasing another 3,436 and 2,948 KiB of observed
-  flash space, with 20,104 and 25,704 KiB available at the final check. Every file
-  and normal-service baseline is preserved. The first ordinary-ARM export attempt
-  fails before import because its randomly assigned mint port is unreachable
-  from the router. Independent stopped-copy auditing recovers the unchanged
-  1,024-sat grant into the collector, with zero router balance, preserved
-  authority and a stopped mint. The failed verdict and both audit-format
-  corrections remain in `work/export-payload-device`.
-  The corrected runner retains the configured port, checks router access before
-  issuing funds, and preserves the mint-recovery file's original bytes. Two
-  subsequent space preflights refuse without creating device/mint profiles or
-  issuing funds. More independently closed profiles are preserved and moved off
-  flash; flushing pending writes then leaves 26,392 KiB available on the third
-  router. The unchanged 24 MiB requirement passes there. The corrected case in
-  `work/export-payload-device/reachable-mint` is running; its initial import
-  succeeds in 1.57 seconds. Pressure and independent final acceptance remain
-  pending. The relocation evidence remains in `work/receiver-history-router`
-  and `work/export-payload-device/recovered-export-relocation`.
-- `work/confirmation-device-builds` preserves independently verified ordinary
-  router and Android artifacts on CDK `4f03d81b`. Android target lint, ten Java
-  lifecycle tests, Android lint, signature and packaged-native checks pass.
-  The five unchanged customer-profile tests are reused. These are build results;
-  physical acceptance of the updated artifacts is pending.
-- The genuine 5,480-receipt native workload passes at 20 MiB in
-  `work/receiver-history-native/run-8`, on the preceding CDK `bb9b87d8` graph.
-  All 28 onward openings, settlements and both retirement cohorts complete.
-  The independent audit reconciles all 3,072 original test sats as spendable,
-  with no unfinished financial owners. All five delivery/payment counters
-  advance; the largest observed gap is 1.398 seconds against the two-second
-  limit. Cleanup finishes about 1.043 seconds after writer release while traffic
-  continues. This is not evidence of multiple interior cleanup-overlap samples.
+Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
+`work/confirmation-native/gate-1`, `work/confirmation-device-builds`,
+`work/receiver-history-native/run-8`, `work/export-payload/gate-3`,
+`work/export-payload-device`, `work/receiver-history-router` and
+`work/receiver-history-phone`. Earlier detailed run narratives remain in Git at
+`9ad685d67:crates/fips-relay/READINESS.md`; failed verdicts and original financial
+records remain in their evidence bundles.
 
-The third router history attempt completed all 5,480 receipts and returned its
-borrowed setup value, then failed the first forwarding burst's complete-delivery
-check. The receiver-retirement workload was not reached. Automatic closure also
-failed a harness assertion: it compared a full seller report with a normalized
-buyer report that omits `signed_sat`. Stopped original journals agree on 92 sats
-paid and 868 refunded; both sides recorded release. The harness now waits for
-provider release and compares validated report fields while checking the signed
-amount, including the later retained-report check. Its regression fails before
-the fix; 37 focused checks pass afterward,
-with one existing Linux-only check skipped on macOS. An invocation import-path
-failure is retained; its nine previously unreached checks pass with the required
-test import path. The burst helper now retains both submitted and received packet
-counts on failure, with a focused check that it never replays the finite send.
-These changes fix closure and diagnostics, not the unresolved delivery failure.
+### Active ARM export case
 
-The failed attempt's original funds are fully recovered. Independent stopped-copy
-audits in `work/receiver-history-router/attempt-3/failure-closure` reconcile all
-3,072 sats in the collector, empty test/issuer wallets, no unfinished financial
-owners and unchanged genuine receipt fingerprints. The original 960-sat debit,
-868-sat refund and 92-sat lifetime exposure are preserved. The mint is stopped,
-all three normal-service baselines are restored, and 454 closure/evidence files
-are preserved locally. The first recovery preflight refused before expiry and
-performed no financial action. No replacement funding or history reset occurred;
-the hardware verdict remains failed on its recorded CDK `bb9b87d8` graph.
+The corrected runner in `work/export-payload-device/reachable-mint` uses the
+configured mint port, verifies router access before issuing funds and preserves
+raw mint-recovery bytes. The initial import succeeds in 1.57 s. It circulates the
+original 1,024 test sats through retained exports until refusal, then must recover,
+acknowledge the prefix, continue spending, collect the original funds and pass an
+independent stopped-copy audit. Whole-command CPU, memory and acknowledgment costs
+are measured in the same run, including timeout supervision and excluding
+SSH/controller work. These are offline wallet costs, not concurrent forwarding or
+power-loss evidence. The existing command observer is qualified by three Linux
+checks and four empty router commands in `work/offline-wallet-metrics`.
 
-The separate read-only observer completed 1,701 samples with no sampling errors.
-Its auxiliary-profile paths were wrong, so only the three main daemons were
-observed. The retained summary explicitly marks the observation partial and the
-history test failed. CPU/RSS measurements exclude earlier receipt preparation
-and short-lived wallet commands; they are neither payment-attributed costs nor
-a memory-limit guarantee. Evidence remains in
-`work/receiver-history-router/attempt-3/resource-observation`.
+The first attempt fails before import because its random mint port is unreachable.
+Independent auditing recovers its unchanged 1,024-sat grant, with zero router
+balance, preserved authority and a stopped mint. Two subsequent space preflights
+refuse before creating profiles or issuing funds. Independently closed profiles
+are verified against two local archives and moved off flash with every file
+preserved. After pending writes are flushed, the third router has 26,392 KiB free
+and passes the unchanged 24 MiB requirement. Normal-service baselines remain
+unchanged. Recovery, relocation and preflight failures stay recorded separately;
+none counts as device pressure acceptance.
 
-The phone fixture now binds the matching corrected artifacts and reuses all 158
-unchanged harness checks. The updated isolated APK is installed, visually checked,
-empty and stopped; original accounts, normal Wi-Fi and foreground are preserved.
-Its old empty data and the rejected debug-signature update are retained in
-`work/receiver-history-phone`, together with the completed installation checks.
-Funded execution waits for the shared routers to be free. Physical mobile
-encounter/rejoin, natural Android deep idle, remaining resource reconciliation
-and final acceptance/cleanup are still open.
+### Prepared router correction
 
-The nine verified Rust fixture files are integrated locally in `c6f19dd91`.
-Their hashes match the accepted native history, export-pressure and cleanup
-evidence; the source-size check also passes after integration. The Python harness
-is also integrated locally. Its 64 passing Linux checks are reused against exact
-source hashes; four focused command checks verify the corrected eight-hour
-initial alarm and invalid-argument rejection. The original device run's 211 bound
-harness files remain unchanged. `work/harness-local-integration` records the
-comparison and command checks; source integration does not close device
-acceptance. The fixture branch is merged and its worktree is clean; it remains
-in place because the active run and pending device preparations bind its files.
-The fixture cleanup removes 338 lines of superseded
-synthetic-capacity helpers, with focused checks in `work/cleanup-history-gate-2`.
-Original failed fixtures remain preserved. In particular, the earlier synthetic capacity probe's erased
-admission cannot be reconstructed: its original funds are reconciled, but its
-unfunded controller record stays pending and that profile will not be reused.
-Earlier run narratives remain in Git at `69aa4072d:crates/fips-relay/READINESS.md`
-and in the evidence table below. The [acceptance checklist](#acceptance-checklist)
-remains the full completion boundary.
+The failed long attempt preserves all 5,480 genuine receipts and independently
+recovers its original 3,072 sats. The later one-receipt diagnostics expose costly
+setup payments and preparation schedules that expire too early. A 32-packet/s
+comparison delivers a complete 1,024-packet burst; 128 packets/s does not. Its
+nine payment cycles average 1.250 sender CPU seconds and 2.438 provider CPU seconds.
+The fixture's `[1, 960, 1024]` denominations require 960 one-sat outputs for a
+partial payment on the 960-sat channel. This diagnoses preparation cost, not
+maximum throughput or the exact cause of every missing packet.
+
+The sixth pilot still loses a later preparation packet near its 60-second route
+expiry. Its incoming channel settles at 959/1 sats and the first two onward
+channels at 32/0 and 30/2. Original expiry, collection and independent auditing
+close all 3,072 sats; the receiver-retirement window is not reached.
+
+The seventh pilot gives the incoming channel 2,400 seconds and onward routes
+120 seconds, uses at most six fresh billable warmup probes with losses retained,
+waits for original refund eligibility before timing maintenance, and starts final
+setup 45 seconds before expiry. Uncertain sends are never replayed. Burst and
+writer-hold timestamps are retained. Prices, capacity, lifetime spending limits,
+5,480-receipt pressure requirement, 84 measured packets, two-second progress bound
+and 35-second cleanup requirement are unchanged. Two schedule regressions fail
+before correction; 27 checks pass afterward with one existing Linux-only skip.
+These are harness results, not device acceptance. The exact prepared source and
+inputs are archived under `work/receiver-history-router/short-burst-7-*`.
+
+The fifth pilot's observer records all five daemons in 1,041 samples with no
+sampling errors: 373.5 observed process CPU seconds and maximum sampled RSS sums
+of 47,068, 32,196 and 46,688 KiB. Earlier preparation and wallet commands are
+excluded. The shared summarizer records an observed 28 KiB high-water-counter
+decrease and labels Linux RSS readings approximate while retaining process,
+clock and CPU checks; all 20 focused checks pass. Original rejected analysis is
+preserved. These measurements do not establish a hard memory ceiling or passing
+history pressure.
 
 ## Completion sequence
 
-Keep the current candidate fixed while closing the existing acceptance checklist.
-Change it only to fix a demonstrated failure or an unmet requirement. Reuse valid
-checks for unchanged inputs; rerun affected checks after a change. Avoid repeating
-full suites or creating additional reports without a concrete verification need.
+1. Finish and independently audit the active ARM export case. Preserve its
+   original records and restore normal services before releasing shared devices.
+2. Run the prepared corrected phone regression. Its 158 unchanged harness checks
+   are already verified; reuse them. Complete postflight, stopped-account/mint
+   archives and independent wallet audit before releasing the devices. Physical
+   encounter/rejoin and natural off-charge idle remain separate observations.
+3. Run the prepared seventh router diagnostic. Once the full workflow passes,
+   finish genuine-history acceptance using preserved receipts and verified builds
+   wherever valid. Do not repeat lengthy preparation merely because CDK's latest
+   correction affects a separate pre-confirmation failure path.
+4. Reconcile every checklist row with the final target evidence, threat model,
+   operating/recovery documentation and local TollGate proposal. Integrate
+   verified changes and remove only completed, owned test installations and clean
+   merged worktrees. No further manual power cuts are planned; preserve the
+   documented physical power-loss limitations.
 
-1. The sixth diagnostic's original expiry, collection and independent closure
-   are complete. All 3,072 test sats are recovered, with no unfinished financial
-   owners and the mint stopped. Its failed verdict stays recorded.
-2. Finish the corrected ordinary-ARM large-export case, now active after original
-   grant recovery and unfunded preflight corrections. Measure command CPU, memory,
-   storage and acknowledgment time in the same run, then independently audit
-   refusal, recovery and continued spending. This independent case need not wait
-   for a passing receiver-retirement workload.
-3. Run the prepared corrected phone regression when the devices are released.
-   Close physical encounter/rejoin and natural-idle observations when the phone
-   is available; forced idle and controlled channel changes do not substitute
-   for them. Retain the documented physical power-loss limits; no further manual
-   cuts are planned. The existing postflight, stopped-account archives and
-   independent wallet audit provide the complete closure sequence.
-4. Finish the missing router receiver-retirement acceptance. The seventh
-   one-receipt diagnostic is prepared, with source hashes and its archive saved;
-   it is not launched or funded. It also waits for the export case to release
-   the devices. Reuse verified builds and preserved genuine receipts; qualify
-   the full workflow before repeating lengthy preparation. One receipt does not
-   establish history pressure.
-5. Reconcile the checklist, threat model, operating/recovery documentation and
-   local TollGate proposal. Integrate verified changes and remove only completed,
-   owned test installations and clean merged worktrees.
+These cases share devices and run separately. Independent financial closure and
+restored services release devices even after a functional failure; the failed
+verdict remains. Reuse checks for unchanged inputs, rerun affected checks after a
+change, and add no gate without an uncovered requirement or concrete risk. The
+existing mint-over-FIPS implementation and recovery cases are documented in
+[TESTBENCH.md](TESTBENCH.md#mint-http-over-fips); the LAN mint used by a storage
+fixture does not replace that separate evidence.
 
-The checklist below remains the completion boundary. This sequence adds no feature
-scope and does not convert an unverified requirement into a passing result.
-Independent financial closure and restored services release the devices for the
-next fixture even when the preceding functional test failed. The prepared ARM
-export and phone runners now check that closure separately from history acceptance;
-their source/artifact bindings verify, and the phone reuses its 158 unchanged
-harness checks. These cases still run separately when they share devices.
-A short diagnostic with one genuine receipt reproduces the burst failure on the
-same binary: 1,024 packets are submitted in 7.994 seconds and 417 arrive. It records
-15,043 credit-limit denial events and 18 checkpoint-window denials; these are
-events, not a one-to-one dropped-packet count. Three payment cycles average
-1.256 seconds of sender CPU and 2.465 seconds of provider CPU. The pinned Spilman
-source reconstructs receiver and refund outputs for each balance. This fixture's
-`[1, 960, 1024]` denominations require 960 one-sat outputs for a partial payment
-on its 960-sat channel, making its preparation unusually expensive. The evidence
-supports payment-credit pressure independently of receipt-history size; exact
-packet-loss attribution remains unestablished. The separate rate comparison below
-qualifies a single preparation burst, not the complete preparation schedule.
-The short case settled at 109 sats paid and 851 refunded and retired its original
-owners. Its final observation then failed because the harness omitted retired
-authorization when checking the lifetime budget. The observer now includes that
-history while preserving the separate active-authorization counters. The new
-regression fails before the fix; 54 focused checks pass afterward, with one
-existing Linux-only check skipped on macOS. Original recovery and the independent
-stopped-copy audit reconcile all 3,072 test sats, with every test wallet empty,
-no unfinished financial owners and the mint stopped. No new funds are issued;
-all original files and the failed delivery verdict are preserved.
-Observations and matching source hashes are
-in `work/receiver-history-router/short-burst-analysis.json`. This diagnoses the
-failed-run graph; it qualifies neither history pressure nor the newer candidate.
-
-The next diagnostic delivers all 1,024 packets at 32 packets/s in 31.969 seconds,
-with no missing, invalid or duplicate packets. Its nine payment cycles average
-1.250 seconds of sender CPU and 2.438 seconds of provider CPU, and the channel
-settles at 267 sats paid and 693 refunded. Independent stopped-copy audits
-reconcile all 3,072 original sats, empty test wallets and no unfinished financial
-owners; the mint is stopped. Final evidence is preserved in
-`work/receiver-history-router/short-burst-2/postflight`.
-Prices, credit limits and the binary match the failed burst; unrelated closed
-history was relocated before this run, so filesystem pressure is not matched.
-Evidence is in `work/receiver-history-router/short-burst-2-analysis.json`.
-The prepared harness paces only the initial 960-sat setup channel at this measured
-rate. Complete workload timing and genuine history pressure still require device
-acceptance; the 5,480-receipt, 84-packet and two-second progress criteria remain.
-The complete-workload pilot uses one receipt and the corrected `4f03d81b` ordinary
-ARM binary. Collection now passes the fixture's existing 330-second wallet timeout
-to both main and auxiliary profiles; it previously inherited the 45-second default.
-The new dispatch regression fails before the fix. All 88 focused checks pass,
-with one existing Linux-only check skipped on macOS; no retry is added.
-
-That full-workload pilot delivers its first 1,024-packet burst completely but only
-429 packets of the second burst. Its original buyer journal records the contract
-retired exactly 60 seconds after channel creation, while the channel itself has
-360 seconds of service. The slower preparation outlives its quote. The channel
-settles at 379 sats paid and 581 refunded. Independent stopped-copy audits
-reconcile all 3,072 original sats, empty test wallets and no unfinished financial
-owners, with the mint stopped. The failed workload verdict remains unchanged.
-The next fixture gives the receiver a 360-second quote for this setup and records
-each purchased route's expiry. Later transit still expires with its unchanged
-60-second service channel. Prices, credit, payment cadence, receipt count and
-final progress criteria are unchanged. This corrects the fixture schedule;
-complete workload and history-pressure acceptance remain open.
-Nine focused harness checks pass with one existing Linux-only check skipped;
-generated configurations preserve all other terms for every participant.
-The first corrected launch refuses insufficient flash before creating any device
-profile or funding a wallet; its failed preparation is retained as `short-burst-4`.
-After the verified relocations, `short-burst-5` runs the corrected one-receipt
-pilot on the existing ordinary ARM artifact. Its recorded incoming route has
-360 seconds of service. The read-only process observer now resolves the actual
-`purchase-source` and `purchase-destination` profiles and has observed all five
-daemons without errors. It earns and settles the full 959-sat setup payout and one
-32-sat onward channel. The next channel's first packet after a stopped custody
-observation is submitted but does not arrive; that channel settles at zero paid
-and 32 refunded. Independent stopped-copy audits reconcile all 3,072 original
-test sats, zero unfinished financial owners and a stopped mint. The original
-failed verdict remains. Its read-only observer captures all five daemons in
-1,041 samples without errors. The shared summarizer retains 373.5 observed
-process CPU seconds and maximum sampled RSS sums of 47,068, 32,196 and 46,688 KiB
-for the three hosts. These exclude earlier preparation and wallet commands.
-A 28 KiB decrease in the kernel high-water counter rejected the first analysis;
-that rejection remains preserved. The corrected analysis records the decrease
-and labels Linux RSS/high-water readings approximate, while preserving process,
-clock and CPU checks. All 20 focused measurement checks pass. This is diagnostic
-resource evidence, not history-pressure acceptance or a hard memory limit.
-
-The next fixture reuses the existing finite native-session warmup, allowing at
-most six fresh, separately billable preparation attempts with their losses
-retained. An uncertain send is never replayed. This matches existing service and
-router restart fixtures without changing the measured retirement stream's
-complete-delivery requirement. Failed measured traffic now records all five
-participants through the shared failure observer before closure. The focused
-checks pass 37 tests, with one existing Linux-only check skipped; a missing field
-in the new test's sample report and its correction are retained in the logs.
-The exact native mechanism of the first-packet loss remains unproven; the later
-observation of a historical neighbor error does not establish causation.
-No firmware rebuild or production-default change occurs.
-The first onward opening and the next are 26 seconds apart, after about 199
-seconds of incoming preparation. Extrapolating that single cycle across 28
-channels already exceeds the original 720-second incoming lifetime; this is a
-schedule estimate, not a completed throughput measurement. The next fixture uses
-one shared 1,200-second incoming lifetime in configuration and validation, with
-the same 360-second preparation quote and unchanged 120-second onward lifetimes.
-The 84-packet stream, two-second progress bound, 35-second cleanup deadline and
-original financial conservation requirements remain unchanged.
-
-The sixth one-receipt pilot uses those changes and the same ordinary ARM binary.
-Its second onward channel recovers from two lost warmup probes, but a later
-preparation packet is missing near the end of its 60-second forwarding window.
-The incoming payout settles at 959/1 sats, the first onward channel at 32/0, and
-the second at 30/2. Its failed verdict and five-profile failure observations are
-retained. Original expiry/collection and the independent stopped-copy audit
-recover all 3,072 test sats, with no unfinished financial owners or audit issues;
-the mint is stopped and normal-service baselines are restored. The main
-receiver-retirement workload is not reached. The original failed verdict stays
-recorded in `work/receiver-history-router/short-burst-6/postflight`.
-
-The next fixture allows 120 seconds of onward service and a 2,400-second
-incoming lifetime, covering the bounded warmup and the observed preparation
-cost across 28 channels. The prior 60-second window cannot cover six ten-second
-warmup attempts plus funding, custody and paid traffic. Prices, capacity,
-lifetime spending limits, 84 measured packets, the two-second progress limit
-and 35-second cleanup requirement are unchanged. Burst records now retain
-wall and monotonic start/end times so expiry can be checked directly. Focused
-checks pass 25 tests with one existing Linux-only skip; generated configurations
-for all five participants confirm that only the stated lifetimes changed.
-
-A full-sequence review also catches two conflicts before another funded run:
-retained sender prefixes could wait longer for eligibility than the fixed
-180-second maintenance timeout, and the final setup started only ten seconds
-before receiver expiry. The fixture now waits for the original prefix's maximum
-refund deadline before timing maintenance, starts final preparation 45 seconds
-early, and gives the independent source 120 seconds of service. Both final hops
-therefore cover preparation, eligibility, the held probe and the unchanged
-35-second observation. Setup and writer-hold wall times are retained. Two focused
-checks fail before the correction; 27 checks pass afterward with one existing
-Linux-only skip. These verify fixture scheduling, not hardware acceptance.
-
-Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
-quotes, payment scheduling, accounting and measurement implementations since the
-15–16 October comparisons; the Spilman and TCP/FIPS dependency inventories also
-match exactly. Changes affect saved wallet limits, wallet admission/completion,
-bounded storage/custody, settlement during maintenance and offline recovery.
-Reuse unchanged-code contract evidence, keeping historical cost figures attached
-to their measured binaries. Qualify the changed paths and their interactions with
-the current pressure, recovery and device cases. The final CDK correction affects
-pre-confirmation failures; it does not require another full history preparation
-after the remaining device workload passes and its originals are independently reconciled.
+Source integration is complete for the verified Rust fixtures and Python harness.
+Source-size checks pass; 338 lines of superseded synthetic-capacity helpers are
+removed. The clean, merged fixture worktrees remain because pending verifiers
+bind their files; remove them after those owners finish. The old synthetic
+capacity profile's erased admission cannot be reconstructed: its original funds
+are reconciled, but its unfunded controller record remains pending and the
+profile will not be reused. See `work/harness-local-integration` and
+`work/cleanup-history-gate-2` for exact source and check evidence.
 
 ## Implementation and recovery evidence
 
 Acceptance applies to each recorded source/dependency graph, workload and target.
-The latest accepted graph is identified in [Current state](#current-state); older
+The current candidate is identified in [Current state](#current-state); older
 results below provide regression evidence, not acceptance of a newer binary.
 
 | Evidence | Verified result | Remaining boundary |
