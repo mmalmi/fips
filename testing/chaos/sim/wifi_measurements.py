@@ -6,6 +6,7 @@ never zeroes. Kernel-reported RSS/high-water readings remain raw observations.
 """
 
 import json
+import math
 import shlex
 import time
 
@@ -203,3 +204,81 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=
                               "io_available": parts[6] == "available", **io}
     status["sample_timing"] = {"started_monotonic_ns": started, "finished_monotonic_ns": finished}
     return status
+
+
+def _finite(value):
+    assert type(value) in (int, float) and math.isfinite(value) and value >= 0
+    return value
+
+def summarize_process_samples(rows, intent, expected):
+    """Keep process epochs exact and report approximate memory-counter behavior."""
+    hosts = {name: dict(samples=0, errors=0, live_profile_samples=0, unavailable_profiles=0,
+                       maximum_capture_seconds=0, maximum_sample_gap_seconds=0,
+                       maximum_recorded_rss_sum_kib=None, minimum_host_available_kib=None)
+             for name in expected}
+    epochs, last_time = {}, {}
+    for row in rows:
+        name = row['host']
+        host = hosts[name]
+        host['samples'] += 1
+        start, end = _finite(row['started_monotonic']), _finite(row['finished_monotonic'])
+        assert end >= start
+        if name in last_time:
+            assert start > last_time[name]
+            host['maximum_sample_gap_seconds'] = max(host['maximum_sample_gap_seconds'], start-last_time[name])
+        last_time[name] = start
+        if 'observation_error' in row:
+            host['errors'] += 1
+            continue
+        assert row['boot_id'] == intent['boot_ids'][name]
+        device_start = _finite(row['device_uptime_start'])
+        device_end = _finite(row['device_uptime_end'])
+        assert device_end >= device_start
+        host['maximum_capture_seconds'] = max(host['maximum_capture_seconds'], device_end-device_start)
+        memory = row['host_memory_kib']
+        available, total = _finite(memory['MemAvailable']), _finite(memory['MemTotal'])
+        assert available <= total and total > 0
+        assert host.setdefault('host_total_kib', total) == total
+        previous = host['minimum_host_available_kib']
+        host['minimum_host_available_kib'] = available if previous is None else min(previous, available)
+        assert set(row['profiles']) == expected[name]
+        rss_sum = 0
+        for profile, sample in row['profiles'].items():
+            if sample['state'] == 'unavailable':
+                host['unavailable_profiles'] += 1
+                continue
+            assert sample['state'] == 'live'
+            host['live_profile_samples'] += 1
+            key = (name, profile, sample['pid'], sample['start_ticks'])
+            assert all(type(value) is int and value > 0 for value in key[2:])
+            assert process_identity(sample['stat_before']) == process_identity(sample['stat_after']) == key[2:]
+            ticks = _finite(sample['cpu_ticks'])
+            fields = sample['stat_after'].strip().rpartition(') ')[2].split()
+            assert ticks == int(fields[11]) + int(fields[12])
+            assert sample['cpu_seconds'] == ticks / intent['tick_hz'][name]
+            rss, peak = _finite(sample['rss_kib']), _finite(sample['peak_rss_kib'])
+            assert rss <= peak
+            rss_sum += rss
+            current = epochs.setdefault(key, dict(host=name, profile=profile, pid=key[2],
+                start_ticks=key[3], samples=0, first_monotonic=start, last_monotonic=start,
+                first_cpu_ticks=ticks, last_cpu_ticks=ticks, peak_rss_kib=peak,
+                last_peak_rss_kib=peak, peak_counter_decreases=0))
+            assert ticks >= current['last_cpu_ticks']
+            if peak < current['last_peak_rss_kib']:
+                current['peak_counter_decreases'] += 1
+            current.update(samples=current['samples']+1, last_monotonic=end,
+                           last_cpu_ticks=ticks, peak_rss_kib=max(peak, current['peak_rss_kib']),
+                           last_peak_rss_kib=peak)
+        assert row['observed_profile_rss_sum_kib'] == rss_sum
+        if any(sample['state'] == 'live' for sample in row['profiles'].values()):
+            host['maximum_recorded_rss_sum_kib'] = max(host['maximum_recorded_rss_sum_kib'] or 0, rss_sum)
+    for epoch in epochs.values():
+        epoch['observed_cpu_delta_seconds'] = (
+            epoch['last_cpu_ticks']-epoch['first_cpu_ticks']) / intent['tick_hz'][epoch['host']]
+    observed = {(row['host'], row['profile']) for row in epochs.values()}
+    return dict(hosts=hosts, process_epochs=list(epochs.values()), memory_counters_approximate=True,
+                missing_profiles=[name for host, names in expected.items() for name in sorted(names)
+                                  if (host, name) not in observed],
+                observed_cpu_delta_seconds=(sum(row['observed_cpu_delta_seconds'] for row in epochs.values())
+                                            if epochs else None),
+                scope='Whole-process CPU deltas between observed samples of the same epoch, excluding missed start/end intervals and epochs. Linux VmRSS/VmHWM are approximate; maxima refer to sampled readings. RSS sums can count shared pages more than once. No payment attribution, physical-media count, hard memory ceiling or complete phase coverage is inferred.')

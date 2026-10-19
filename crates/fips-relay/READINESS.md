@@ -228,8 +228,17 @@ pilot on the existing ordinary ARM artifact. Its recorded incoming route has
 daemons without errors. It earns and settles the full 959-sat setup payout and one
 32-sat onward channel. The next channel's first packet after a stopped custody
 observation is submitted but does not arrive; that channel settles at zero paid
-and 32 refunded. Original financial closure is running. This remains a failed
-diagnostic, not history-pressure or resource acceptance.
+and 32 refunded. Independent stopped-copy audits reconcile all 3,072 original
+test sats, zero unfinished financial owners and a stopped mint. The original
+failed verdict remains. Its read-only observer captures all five daemons in
+1,041 samples without errors. The shared summarizer retains 373.5 observed
+process CPU seconds and maximum sampled RSS sums of 47,068, 32,196 and 46,688 KiB
+for the three hosts. These exclude earlier preparation and wallet commands.
+A 28 KiB decrease in the kernel high-water counter rejected the first analysis;
+that rejection remains preserved. The corrected analysis records the decrease
+and labels Linux RSS/high-water readings approximate, while preserving process,
+clock and CPU checks. All 20 focused measurement checks pass. This is diagnostic
+resource evidence, not history-pressure acceptance or a hard memory limit.
 
 The next fixture reuses the existing finite native-session warmup, allowing at
 most six fresh, separately billable preparation attempts with their losses
@@ -250,6 +259,15 @@ one shared 1,200-second incoming lifetime in configuration and validation, with
 the same 360-second preparation quote and unchanged 120-second onward lifetimes.
 The 84-packet stream, two-second progress bound, 35-second cleanup deadline and
 original financial conservation requirements remain unchanged.
+
+The sixth one-receipt pilot uses those changes and the same ordinary ARM binary.
+Its second onward channel recovers from two lost warmup probes, but a later
+preparation packet is missing near the end of its 60-second forwarding window.
+The incoming payout settles at 959/1 sats, the first onward channel at 32/0, and
+the second at 30/2. Its failed verdict and five-profile failure observations are
+retained. Original expiry/collection and independent financial closure are still
+running; the main receiver-retirement workload is not reached. No replacement
+funding or full-history rerun is authorized by a passing build alone.
 
 Source comparison in `work/final-graph-review` verifies unchanged core forwarding,
 quotes, payment scheduling, accounting and measurement implementations since the

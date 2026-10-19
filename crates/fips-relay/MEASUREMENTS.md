@@ -167,6 +167,14 @@ a respawn starts a new measurement epoch. Record endpoint CPU too, so a small
 endpoint host is not mistaken for a router bottleneck. Keep unrelated host
 services available and include their competing load in the results.
 
+Linux `VmRSS` and `VmHWM` are approximate counters, as documented in
+[`proc_pid_status(5)`](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html).
+The shared process summarizer retains the maximum sampled reading and records
+high-water counter decreases without treating them as process restarts. It still
+rejects inconsistent process identities, clocks and CPU counters. Missing
+observations remain unavailable. Sampled maxima do not establish a hard memory
+ceiling or include unobserved processes and intervals.
+
 For efficiency, divide process user-plus-system CPU seconds by GiB successfully
 delivered at the destination. Obtain Linux clock ticks per second from
 `sysconf(_SC_CLK_TCK)` or `AT_CLKTCK`; do not assume a tick frequency. Retain
