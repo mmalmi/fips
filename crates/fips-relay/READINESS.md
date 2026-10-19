@@ -163,7 +163,10 @@ that missing report and checks original cumulative debits/refunds, spending
 authority, stopped-wallet custody and the mint independently. Its existing
 three recorded net transfers feed the shared collection distribution check;
 no per-channel report is fabricated. Original incoming expiry and retirement are
-still pending. Evidence is in `work/receiver-history-router/short-burst-8`.
+complete. All five accounts match their original cumulative debit, refund,
+exposure and remaining-budget totals, with no unfinished channel owners. Collection
+of the original funds and the independent stopped-wallet/mint audit are still
+running. Evidence is in `work/receiver-history-router/short-burst-8`.
 The recovery and independent closure run independently of the chat command
 session. The ninth rehearsal's unchanged harness, verified artifact and unfunded
 preflight are preserved in `work/receiver-history-router/short-burst-9-*`.
