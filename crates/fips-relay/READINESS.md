@@ -72,9 +72,13 @@ and final local integration are still open.
 
 The nine verified Rust fixture files are integrated locally in `c6f19dd91`.
 Their hashes match the accepted native history, export-pressure and cleanup
-evidence; the source-size check also passes after integration. The live Python
-harness remains unchanged and will be integrated after its timeout correction
-and device closure. The fixture cleanup removes 338 lines of superseded
+evidence; the source-size check also passes after integration. The Python harness
+is also integrated locally. Its 64 passing Linux checks are reused against exact
+source hashes; four focused command checks verify the corrected eight-hour
+initial alarm and invalid-argument rejection. The live device run's 211 bound
+harness files remain unchanged. `work/harness-local-integration` records the
+comparison and command checks; source integration does not close device
+acceptance. The fixture cleanup removes 338 lines of superseded
 synthetic-capacity helpers, with focused checks in `work/cleanup-history-gate-2`.
 Original failed fixtures remain preserved. In particular, the earlier synthetic capacity probe's erased
 admission cannot be reconstructed: its original funds are reconciled, but its

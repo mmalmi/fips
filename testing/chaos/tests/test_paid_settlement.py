@@ -118,6 +118,19 @@ class SettlementTests(unittest.TestCase):
                          [32, 32, 32, 25, 32, 32, 32, 32, 16, 32, 32, 32, 23])
         self.assertNotIn('private-token', json.dumps(run.evidence))
 
+    def test_collection_respects_each_original_durable_export_floor(self):
+        run = FakeRun()
+        floors = dict(zip(NODES, (1, 137, 0)))
+        for node, floor in floors.items():
+            run.exports.update({(node, number): {'token': None} for number in range(1, floor + 1)})
+        collect_settled_wallets(run, run.settled, {}, {}, MINT, execute=run.execute,
+            stop=Mock(), export_path=lambda _n, p: f'/tmp/bench-state/{p}',
+            export_start=lambda name: floors[name] + 1)
+        self.assertEqual(run.collected, 384)
+        self.assertEqual(run.balances, dict.fromkeys(NODES, 0))
+        for name, floor in floors.items():
+            self.assertIsNotNone(run.exports[name, floor + 1]['token'])
+
     def test_chunk_failure_preserves_remaining_value_without_repeating_export(self):
         run = FakeRun()
         def fail_second(action, result):

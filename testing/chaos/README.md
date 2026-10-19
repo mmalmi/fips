@@ -935,6 +935,26 @@ new provider credit. All five wallets enter the same final conservation check.
 This mixed-link case keeps the existing deadlines and needs its own hardware run
 and independent audit; it does not qualify a second radio route or performance.
 
+Add `--receiver-history-rows 5480` to the base retirement command for genuine
+receiver receipt pressure. This mode is separate from `--fragmented-live` and
+uses the ordinary router executable with a test mint supporting
+`receiver_history_keyset`. Its 3,072-sat issuance cap covers all five isolated
+profiles. Ordinary export/import commands create the retained receipts at the
+unchanged 20 MiB wallet limit; no synthetic financial records are inserted.
+Preparation has a six-hour allowance, and the command's initial alarm is eight
+hours. Smaller values from 1 to 5,480 are useful for setup checks but do not
+qualify the full-history workload.
+
+The receiver completes 28 onward channels before a controlled writer hold and
+release. The observation requires all 84 packets and both hops' payment/credit
+counters to advance without gaps exceeding two seconds, with cleanup completing
+before the last send. Stopped copies preserve receipt fingerprints and original
+ownership through collection of all 3,072 sats. Evidence is limited to 2 GiB,
+including a 512 MiB recovery reserve. A failed preparation resumes only its saved
+transfer and retains unrecovered originals; never rerun into the same output
+directory or replace its mint to hide a failure. Hardware acceptance also needs
+an independent audit of the original stopped wallets and mint.
+
 ### Router load, restart and frame loss
 
 `sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped

@@ -123,7 +123,8 @@ class PaidWifiRun(WifiRun):
                     "instrumented promotion artifact changed before setup")
         self.mint_url = self.mint.start()
         self.evidence["mint_process"] = self.mint.info
-        self.phase("fresh test mint started with a 384-sat issuance cap")
+        cap = getattr(self.mint, 'settings', {}).get('max_issued_sat', 384)
+        self.phase(f"fresh test mint started with a {cap}-sat issuance cap")
         super().setup()
 
     def before_launch(self):

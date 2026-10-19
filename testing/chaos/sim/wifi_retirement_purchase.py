@@ -57,11 +57,15 @@ def completed_purchase(original, current, state, active, provider, requested):
 
 class PurchaseRetirementRun(LiveRetirementRun):
     completion_phase = 'new provider purchase rejected during cleanup, then funded once and both routes delivered'
+    auxiliary_hosts = {'provider': 'n02', 'destination': 'n03'}
+    expected_links = {'n01': {'n02': 'ethernet', 'provider': 'udp'},
+                      'n02': {'n01': 'ethernet', 'n03': 'ethernet'}, 'n03': {'n02': 'ethernet'},
+                      'provider': {'n01': 'udp', 'destination': 'udp'}, 'destination': {'provider': 'udp'}}
 
     def __init__(self, args):
         super().__init__(args)
-        self.extra = {'provider': self.nodes['n02'].add_profile('purchase-provider'),
-                      'destination': self.nodes['n03'].add_profile('purchase-destination')}
+        self.extra = {name: self.nodes[host].add_profile('purchase-' + name)
+                      for name, host in self.auxiliary_hosts.items()}
         self.addresses, self.listeners = {}, {}
         self.evidence.update(new_route_transport='management_lan_udp', performance_test=False)
         for name in ('wifi_retirement_purchase.py', 'wifi_diamond_checks.py'):
@@ -142,9 +146,7 @@ class PurchaseRetirementRun(LiveRetirementRun):
         self.phase('two unfunded auxiliary profiles formed a separate provider route', topology=topology)
 
     def fork_ready(self):
-        expected = {'n01': {'n02': 'ethernet', 'provider': 'udp'},
-                    'n02': {'n01': 'ethernet', 'n03': 'ethernet'}, 'n03': {'n02': 'ethernet'},
-                    'provider': {'n01': 'udp', 'destination': 'udp'}, 'destination': {'provider': 'udp'}}
+        expected = self.expected_links
         profiles = self.participants()
         require(len({p.npub for p in profiles.values()}) == 5, 'fork identities are not distinct')
         states = {name: self.ctl(name, 'status') for name in profiles}
