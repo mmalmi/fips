@@ -568,6 +568,22 @@ history pressure.
    represented if necessary. No observer source, financial terms or test limits
    change. Full history still requires a new post-rehearsal 8/24/8 MiB measurement
    and cannot use the smaller workload's capacity authority.
+   The separately reviewed `work/rehearsal-space-completion-7` completes once
+   with that one-receipt scope. It preserves n01's D3/D2 and n03's D3 records
+   in verified archives before removing only their inactive expanded copies;
+   n03's D2 copy and n02 remain untouched. Root review verifies all 234 members
+   of the four private archives, restored baselines, absent owners and the
+   complete 38-file source/execution mirror. Net measured flash availability
+   increases by 9.1 MiB across n01/n03; retaining compressed router copies uses
+   8.9 MiB of RAM. Fresh all-three availability is 13,602,816/26,214,400/12,386,304
+   flash bytes and 143,126,528/132,571,136/128,458,752 RAM bytes. Storage work
+   issues no funds and starts no tests. A sealed root release binds that fresh
+   measurement and the two preceding closed failed attempts before a new
+   namespace. The corrected rehearsal is dispatched in
+   `work/receiver-history-router/observer-availability-b8a0363f3ce3`; both actual
+   Linux owners are observed live. Its root runner always collects the original
+   financial state after a launch attempt. Functional and financial acceptance
+   remain pending; full history is still unlaunched.
 4. The current ordinary daemon's eight-trial native cadence matrix is complete:
    all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
    in forward/reverse order. The optimized integration executable and ordinary
