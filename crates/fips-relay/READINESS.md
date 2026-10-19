@@ -12,7 +12,7 @@ Android build/lifecycle/package checks pass. Both controlled phone cases and the
 current native eight-trial cadence matrix pass with independent original-fund
 closure. Earlier measurements remain attached to their recorded graphs.
 
-**The fresh router rehearsal is running; it has no passing result yet.** Its
+**The fresh router window is unqualified; original financial collection continues.** Its
 frozen 215-file observer at `f9ffb844c` passes 41 Linux checks and 40 macOS checks
 with one existing Linux-only skip. The unfunded installed-reader check and recovery
 of the preceding failed smoke are independently accepted: four sessions exit
@@ -21,6 +21,13 @@ Accepted storage preparation preserves 78 files and 117 archive members while
 recovering 6.1 MiB of flash; all three routers meet the one-receipt capacity floors.
 The active case is
 `work/receiver-history-router/observer-availability-8b694b85a709`.
+All 84 packets arrive and cleanup finishes in 13.496 seconds. Delivery and the
+source payment/first-provider series pass; relay authorization, relay signatures
+and second-provider credit remain unqualified. Their conservative upper gaps are
+2.172/2.042/2.041 seconds, with minimum gaps below two seconds. No two-second
+runtime stall is proved. All 31 settlement reports are present; original-fund
+collection, restored baselines, stopped-owner/archive verification and independent
+financial reconciliation still have to finish.
 Its local supervising process was interrupted after dispatch. The original
 producer and independent closer continue; final acceptance requires a separate
 stopped-original audit while preserving the missing local exit status. Neither
@@ -37,7 +44,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | Funded predecessors are independently closed with all 3,072 original sats conserved in each. The last closed rehearsal delivers 84 packets and finishes cleanup in 18.728 s, but all four payment timing series remain unqualified; no two-second payment stall is proved. | The corrected rehearsal is running. Require its functional pass and independent original-fund closure before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | Funded predecessors are independently closed with all 3,072 original sats conserved in each. The current window delivers 84 packets and finishes cleanup in 13.496 s; relay payment and second-provider timing remain unqualified, without proving a two-second stall. | Close the current original funds and qualify finer observation before another paid case. A genuine functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
@@ -207,8 +214,16 @@ must accompany the full run below.
    [the native candidate results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026).
    Reuse these accepted inputs; partial-failure recovery would retain original
    stores and require original-state recovery, not replacement grants or repeats.
-2. **Finish the running corrected rehearsal.** Require its actual functional
-   pass, all 31 settlements, independent 3,072-sat conservation, stopped original
+2. **Close the current unqualified rehearsal and resolve its timing evidence.**
+   Preserve its result and original funds. First qualify denser measurement and
+   its 35-second retention/serialization cost using the existing unfunded reader
+   machinery; increased polling must not create the problem being measured.
+   The separate discrete-packet quantization precondition also needs correction;
+   it does not explain this run's exact 250-msat packet price. Keep the two-second
+   progress bound, 35-second cleanup bound and original financial/workload terms.
+   A subsequent paid case requires a meaningful qualified change, not a blind
+   repeat. Require its actual functional pass, all 31 settlements, independent
+   3,072-sat conservation, stopped original
    producer/supervisor/root children and restored baselines. A failed functional
    verdict can release devices after financial closure, but cannot authorize
    full history. Existing Q2 source/smoke and S8 storage acceptance do not supply
@@ -260,11 +275,13 @@ must accompany the full run below.
    cannot block financial closure or alter the two-second/35-second acceptance.
    Report sampled CPU/RSS/HWM and host headroom, not hard memory, generic whole-call
    or physical-write maxima. Reuse qualified workload/archive/resource helpers;
-   The current reviewed sources are `work/full-history-autonomous-v5`,
+   The prepared reviewed sources are `work/full-history-autonomous-v5`,
    `work/full-history-resource-observer-autonomous-v2` and
    `work/post-pass-autonomous-capacity-v4`. The resource metadata matches all
    seven pinned helpers in the qualified 215-file graph. Actual configuration
    still requires the passing rehearsal, independent recovery and fresh capacity.
+   These drafts cannot activate from the current unqualified run; rebind and
+   review them against the actual next qualified source and passing originals.
    Earlier sources and refused bindings remain preserved separately.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
