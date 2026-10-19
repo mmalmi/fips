@@ -7,7 +7,8 @@
 
 The candidate adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
 `ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The corrected ordinary
-Linux build and paced restart regression pass. The ordinary ARM64 OpenWrt build
+Linux build, paced restart regression and seven paid-carrier scenarios pass.
+The ordinary ARM64 OpenWrt build
 and Android build/lifecycle/package checks pass for the same core changes. Their
 device acceptance remains pending; earlier device results remain attached to
 their recorded artifacts. Production readiness still depends
@@ -27,7 +28,8 @@ Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,
 `work/receiver-history-native/run-8`, `work/export-payload/gate-3`,
 `work/export-payload-device`, `work/receiver-history-router` and
-`work/receiver-history-phone`. Earlier detailed run narratives remain in Git at
+`work/receiver-history-phone`. The current core's carrier reconciliation is in
+`work/restart-recovery-carriers`. Earlier detailed run narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md`; failed verdicts and original financial
 records remain in their evidence bundles.
 
@@ -309,6 +311,18 @@ stopped and all original bytes preserved. The replacement in
 the mocked second-call regression fails before correction and passes afterward.
 Artifacts, workload, financial terms and the unchanged 158-check harness are reused.
 
+The current ordinary Linux binary also passes the existing seven paid-carrier
+scenarios: TCP, configured and seeded WebSocket, self-signed and CA-validated TLS,
+and sustained UDP/Ethernet loss. Exhaustion, renewal, restart and final settlement
+retain their original assertions. Independent stopped-wallet/mint auditing and a
+second local audit reconcile all 2,688 test sats across seven fixtures. Both build
+owners and the case owner are stopped; 86 preserved files, including the original
+fixture archives, have identical copies in `work/restart-recovery-carriers`.
+Only the generated-CA case uses the dedicated test-root daemon; the other six
+reuse the qualified ordinary binary. The source graph differs from native4 only
+in four successful-fixture retention flags across three test files. This closes
+the current Linux carrier check, not physical mobility or target history pressure.
+
 The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
 `104f01754`. It refuses charging, simulated or forced idle before funding,
 then waits at most one hour for Android's own deep idle and opens fresh paid
@@ -472,7 +486,7 @@ closed financial recovery and the remaining observations listed here.
 | --- | --- | --- |
 | Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. Matched 250/500/1000/2000-ms comparisons in [results](CADENCE-RESULTS.md) retain spending/exposure bounds. | Qualify the final candidate under idle, bursty and high-rate traffic, including payment/renewal progress during faults; retain the same financial terms across comparisons. |
 | CPU, storage, wire and delivery costs | Current-graph native/Wi-Fi CPU, local payment-service packet captures, ARM64 storage syscalls and controlled phone-rate costs are reconciled in [results](CADENCE-RESULTS.md); [measurements](MEASUREMENTS.md) defines attribution limits. | Complete for these recorded scopes. Requalify affected observations if runtime/SDK changes; retain excluded shared work, physical-media/airtime and battery limitations rather than claiming complete attribution. |
-| Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. r613 qualifies seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS on the current graph; r531/r532 close recorded-graph native quote/admission reconciliation. | Native reconciliation is complete on the recorded graphs. Final target-artifact reconciliation remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
+| Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. The current session-recovery graph passes all seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS, with independent 2,688-sat conservation; r531/r532 cover unchanged native quote/admission contracts. | Current Linux carrier reconciliation is complete. Physical target acceptance remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Current native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Close physical mobile encounter/rejoin acceptance and record admission/resource bounds. Automatic channel selection and unrestricted-identity fairness are not established. |
 | Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete physical mobile observations and final target reconciliation. No global-optimality claim. |
