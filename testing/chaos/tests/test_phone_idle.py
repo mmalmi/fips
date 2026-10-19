@@ -5,12 +5,49 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sim.phone_idle import IdleGuard, foreground_network_policy, guard_script, idle_state
+from sim.phone_natural_idle import NaturalIdleRun, natural_state
+
+BATTERY = 'AC powered: false\nUSB powered: false\nWireless powered: false\nDock powered: false\n'
+NATURAL = 'mForceIdle=false mState=IDLE mLightState=OVERRIDE mCharging=false mScreenOn=false'
 
 
 class PhoneIdleTests(unittest.TestCase):
+    def test_natural_idle_refuses_power_simulation_forcing_and_ambiguous_observations(self):
+        self.assertEqual(natural_state(BATTERY, NATURAL)['deep'], 'IDLE')
+        for battery in (BATTERY.replace('AC powered: false', 'AC powered: true'),
+                        BATTERY.replace('USB powered: false', 'USB powered: true'),
+                        BATTERY.replace('Dock powered: false\n', ''),
+                        BATTERY + 'AC powered: false\n', 'UPDATES STOPPED\n' + BATTERY):
+            with self.subTest(battery=battery), self.assertRaises(RuntimeError):
+                natural_state(battery, NATURAL)
+        for idle in (NATURAL.replace('mForceIdle=false', 'mForceIdle=true'),
+                     NATURAL.replace('mCharging=false', 'mCharging=true'),
+                     NATURAL + ' mCharging=false', NATURAL.replace(' mScreenOn=false', '')):
+            with self.subTest(idle=idle), self.assertRaises(RuntimeError):
+                natural_state(BATTERY, idle)
+
+    def test_natural_observer_requires_same_process_screen_off_and_foreground_idle_allowance(self):
+        run = NaturalIdleRun.__new__(NaturalIdleRun)
+        run.phone, run.monitor, run.screen = Mock(), Mock(), Mock(return_value={})
+        run.phone.shell.return_value = (
+            b'Device idle: true\n UID=12345 state={procState=FGS ,seq=1,cap=NF} '
+            b'blocked_state={blocked=DOZE,allowed=FOREGROUND,effective=NONE}')
+        run.environment = Mock(return_value=natural_state(BATTERY, NATURAL))
+        row = dict(before_process={'pid': 7}, uid=12345)
+        with patch('sim.phone_natural_idle.process', return_value={'pid': 7}):
+            self.assertEqual(run.observe(row, ready=True)['network_policy']['effective'], 'NONE')
+            for field, value in [('deep', 'ACTIVE'), ('mScreenOn', True)]:
+                run.environment.return_value = dict(natural_state(BATTERY, NATURAL), **{field: value})
+                with self.subTest(field=field), self.assertRaises(RuntimeError):
+                    run.observe(row, ready=True)
+        run.environment.return_value = natural_state(BATTERY, NATURAL)
+        with patch('sim.phone_natural_idle.process', return_value={'pid': 8}):
+            with self.assertRaisesRegex(RuntimeError, 'restarted'):
+                run.observe(row, ready=True)
+
     def test_network_policy_requires_observed_foreground_doze_allowance(self):
         text = ('Device idle: true\n'
                 ' UID=12345 state={procState=FGS ,seq=1,cap=NF} '

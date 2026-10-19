@@ -31,6 +31,8 @@ def main():
                         help='compare four MiB per direction in five-minute background windows at 32 and 256 KiB/s')
     parser.add_argument('--forced-idle', action='store_true',
                         help='verify paid foreground-service transit during and after forced Android Doze')
+    parser.add_argument('--natural-idle', action='store_true',
+                        help='wait up to one hour for real unplugged deep idle, then test fresh paid transit')
     parser.add_argument('--phone-outage', action='store_true',
                         help='cut one phone UDP link, verify peer loss, then recover original paid channels')
     parser.add_argument('--impaired-transit', nargs='?', const='drop', choices=('drop', 'corrupt'),
@@ -46,20 +48,23 @@ def main():
     )
     args = parser.parse_args()
     for name in ('screen_off', 'sustained_transit', 'compare_transit_rates',
-                 'forced_idle', 'phone_outage', 'phone_renewal', 'phone_expiry'):
+                 'forced_idle', 'natural_idle', 'phone_outage', 'phone_renewal', 'phone_expiry'):
         if getattr(args, name) and not args.transit:
             parser.error('--' + name.replace('_', '-') + ' requires --transit')
     if args.impaired_transit and not (args.transit and args.sustained_transit):
         parser.error('--impaired-transit requires --transit --sustained-transit')
     os.umask(0o077)
-    seconds = 1500 if args.load else 1200
+    seconds = 5400 if args.natural_idle else 1500 if args.load else 1200
 
     def deadline(_signal, _frame):
         raise TimeoutError(f'phone mesh acceptance exceeded {seconds} seconds')
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(seconds)
-    if args.phone_expiry:
+    if args.natural_idle:
+        from .phone_natural_idle import NaturalIdleRun
+        run = NaturalIdleRun(args)
+    elif args.phone_expiry:
         from .phone_expiry import PhoneExpiryRun
         run = PhoneExpiryRun(args)
     elif args.phone_renewal == 'sustained':
