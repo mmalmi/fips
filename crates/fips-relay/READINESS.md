@@ -70,9 +70,13 @@ Funded execution waits for closure of the active router case. Physical mobile
 encounter/rejoin, natural Android deep idle, remaining resource reconciliation
 and final local integration are still open.
 
-The candidate also removes 338 lines of superseded synthetic-capacity helpers;
-focused checks pass in `work/cleanup-history-gate-2`. Original failed fixtures
-remain preserved. In particular, the earlier synthetic capacity probe's erased
+The nine verified Rust fixture files are integrated locally in `c6f19dd91`.
+Their hashes match the accepted native history, export-pressure and cleanup
+evidence; the source-size check also passes after integration. The live Python
+harness remains unchanged and will be integrated after its timeout correction
+and device closure. The fixture cleanup removes 338 lines of superseded
+synthetic-capacity helpers, with focused checks in `work/cleanup-history-gate-2`.
+Original failed fixtures remain preserved. In particular, the earlier synthetic capacity probe's erased
 admission cannot be reconstructed: its original funds are reconciled, but its
 unfunded controller record stays pending and that profile will not be reused.
 Earlier run narratives remain in Git at `69aa4072d:crates/fips-relay/READINESS.md`
