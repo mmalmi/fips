@@ -1559,6 +1559,20 @@ budgets, without another purchase. This mode cannot be combined with
 forced-idle continuity; it does not measure natural sleep, battery life or
 recovery from a network outage.
 
+Use `--natural-idle` with `--transit` for a separate off-charge observation.
+Disconnect external power before starting; the runner refuses charging, simulated
+battery state or a forced idle policy before issuing test funds. It backgrounds
+the temporary app, switches the screen off and waits at most one hour for Android
+to enter deep idle by itself. The app must have no battery-optimization exemption.
+Only then does it open fresh paid channels and require acknowledged, digest-verified
+512 KiB delivery in each direction with the same routing process and Android's
+foreground-service network allowance. Idle, screen-off and off-charge conditions
+must continue for at least 60 seconds. Existing account collection and restoration
+apply. Allow up to 90 minutes overall and keep the phone stationary. Failure to
+observe idle preserves a failed result; it does not force idle or simulate an
+unplugged battery. This mode runs separately from other transit variants and
+does not measure battery life or physical mobility.
+
 Use `--phone-outage` with `--transit` to interrupt the phone's UDP link to the
 middle router after paid background delivery. An exact address/port filter
 blocks both directions under the existing router cleanup lease; normal LAN

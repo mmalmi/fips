@@ -207,14 +207,20 @@ class PhoneTransitRun(PaidPhoneRun):
             self.phone.launch()
             self.background = False
 
-    def exercise(self):
-        eventually('exact four-node phone transit line', self.topology, 90)
+    def check_unpaid(self):
         self.stream('foreground', unpaid=True)
         require(all(not self.accounts.ctl(name, 'status')['purchases'] for name in self.accounts.nodes),
                 'unpaid check created a purchase')
+
+    def buy_routes(self):
         for name, other in (('n01', 'n03'), ('n03', 'n01')):
             self.once('buy-' + name, lambda name=name, other=other:
                       self.ctl(name, 'buy', destination=self.nodes[other].npub))
+
+    def exercise(self):
+        eventually('exact four-node phone transit line', self.topology, 90)
+        self.check_unpaid()
+        self.buy_routes()
         self.stream('foreground')
         self.background = True
         self.phone.shell('input', 'keyevent', 'KEYCODE_HOME')
@@ -246,6 +252,9 @@ class PhoneTransitRun(PaidPhoneRun):
             self.phone.shell('input', 'keyevent', 'KEYCODE_SLEEP')
             eventually('phone screen off or ambient display', lambda: self.screen('screen_off'), 10)
             self.stream('screen_off')
+        self.complete_transit()
+
+    def complete_transit(self):
         self.restore_foreground()
         eventually('unchanged paid transit line', self.topology, 30)
         def paid():
