@@ -7,9 +7,10 @@
 
 The candidate adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
 `ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The corrected ordinary
-Linux build and paced restart regression pass. ARM64 OpenWrt and Android
-qualification for these core changes remains pending; earlier device results
-remain attached to their recorded artifacts. Production readiness still depends
+Linux build and paced restart regression pass. The ordinary ARM64 OpenWrt build
+and Android build/lifecycle/package checks pass for the same core changes. Their
+device acceptance remains pending; earlier device results remain attached to
+their recorded artifacts. Production readiness still depends
 on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
 unless a demonstrated failure or unmet requirement requires a change.
 
@@ -18,8 +19,8 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. All ten diagnostic attempts are independently closed. The Linux rehearsal fails during restart warmup; the isolated correction passes 61 affected checks, strict lint and all eight paced launch/recovery cycles. | Qualify the corrected device artifacts, then complete the one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
-| Android | The corrected artifact passes its build checks and current-graph physical transit regression: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass. Independent stopped-account/mint auditing reconciles all 512 original test sats. | Physical encounter/rejoin and natural off-charge idle remain open. The 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
+| Router receiver retirement | Earlier bounded retirement, renewal and paid forwarding cases pass on their recorded builds. All ten earlier diagnostics are independently closed. The session correction passes 61 affected checks, strict lint and all eight paced launch/recovery cycles. Its qualified ARM build reaches eight settled channels, then loses 8 of 103 setup packets at 128 packets/s; original custody is closing. | Complete independent financial closure, the corrected one-receipt rehearsal and full history workload. One receipt cannot establish history pressure. |
+| Android | The preceding artifact passes physical transit: unpaid traffic is denied; foreground, background, forced-idle and fresh post-idle paid traffic pass, with all 512 test sats independently reconciled. The new session-recovery artifact passes build, feature, strict lint, ten lifecycle tests, package and signature checks; its USB-only device regression is prepared. | Run the new device regression after router financial release. Physical encounter/rejoin and natural off-charge idle remain open. The earlier 48.32-second forced-idle observation does not substitute for natural idle. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
@@ -267,7 +268,30 @@ three-process UDP result, not router history-pressure or physical movement
 acceptance. All children are stopped and 1,868 evidence files have identical
 preserved copies in `work/receiver-history-router/restart-recovery-debug`.
 The code is integrated locally and its clean temporary worktree and merged branch
-are removed. Corrected device builds and acceptance remain pending.
+are removed. The ordinary ARM64 OpenWrt build and Android build, feature, strict
+lint, ten lifecycle tests, package and signature checks now pass. They bind the
+same core source and SDK/CDK graph as the accepted Linux binary. Build evidence
+is retained in `work/restart-recovery-builds`; the two Android verification
+refusals and the successful continuation preserve the original native compilation.
+
+The corrected one-receipt rehearsal `b4b683012ddd` reaches eight channels and
+eight settlements, then fails after submitting 103 setup packets at 128 packets/s
+and receiving 95. Its original 3,072 test sats remain with the active closure
+owner; independent auditing is waiting for original refund eligibility. This is
+not a passing retirement observation. The harness correction `f26a198d1` caps
+all custody setup at the previously observed 32-packet/s pace; the incoming
+setup already used that rate. Its existing exact-payment regression fails before
+the correction and all 15 focused Linux checks pass afterward, without skips.
+The first Linux check's missing shared-test import is preserved separately.
+This setup cap does not establish maximum throughput or diagnose every missing
+packet; the 84 measured packets at 3 packets/s, two-second progress and 35-second
+cleanup requirements are unchanged.
+
+The new USB-only phone regression seals the qualified artifacts without device
+actions or funding. It requires this exact router run's independent financial
+closure, stopped original owners/mint and restored normal baselines before
+launch. A failed hardware verdict is preserved and does not prevent financial
+release. No manual unplugging, movement or pairing is scheduled.
 
 The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
 `104f01754`. It refuses charging, simulated or forced idle before funding,
@@ -295,25 +319,27 @@ history pressure.
 
 1. The ordinary-ARM export case and independent audit are complete. Its original
    records are preserved, all test funds collected and normal services restored.
-2. The corrected phone regression, postflight, stopped-account/mint archives and
+2. The preceding phone regression, postflight, stopped-account/mint archives and
    independent wallet audit are complete. Its 158 unchanged harness checks are
-   reused. Continue unattended checks through USB. Physical encounter/rejoin and
+   reused for the prepared session-recovery regression. Run it through USB after
+   the active router run's independent financial release. Physical encounter/rejoin and
    natural off-charge idle remain unqualified; do not request manual phone actions
    or substitute simulated battery state for that evidence.
-3. All ten router diagnostics are independently closed without replacing their
-   original funds. The session-recovery correction passes focused and ordinary
-   Linux checks. Qualify it on devices and complete a corrected rehearsal.
+3. All ten earlier router diagnostics are independently closed without replacing
+   their original funds. Close the latest failed setup run independently. The
+   session-recovery correction passes focused, ordinary Linux and target build
+   checks. Complete the corrected device rehearsal with the verified setup pace.
    Once the full workflow passes,
    finish genuine-history acceptance using preserved receipts and verified builds
    wherever valid. Do not repeat lengthy preparation merely because CDK's latest
    correction affects a separate pre-confirmation failure path.
-   The final 5,480-receipt driver is prepared and unfunded in
-   `work/receiver-history-router/full-history-driver.py`, with exact bindings in
-   `full-history-inputs.json`. It reuses the qualified harness and financial
-   auditors and refuses a live predecessor. The initial guard-check ordering
-   failure is preserved; corrected preflight and live-owner refusal pass without
-   device actions. Its original seventh-pilot prerequisite has failed; rebind it
-   only after the corrected rehearsal passes. Review that pilot's timing before launching it: the
+   The historical unfunded driver in
+   `work/receiver-history-router/full-history-driver.py` and its
+   `full-history-inputs.json` have stale harness, artifact and predecessor
+   bindings; do not launch them. Prepare fresh immutable bindings only after the
+   corrected rehearsal passes and its original custody is independently closed.
+   Preserve the historical guard-check results and failed prerequisite.
+   Review preparation timing before launching full history: the
    earlier full receipt preparation took 17,713.54 seconds on the router.
 4. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
