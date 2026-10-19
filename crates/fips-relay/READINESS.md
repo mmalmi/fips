@@ -6,62 +6,66 @@
 ## Current state
 
 The candidate adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
-`ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The corrected ordinary
-Linux build, paced restart regression and seven paid-carrier scenarios pass.
-The ordinary ARM64 OpenWrt build
-and Android build/lifecycle/package checks pass for the same core changes. Both
-controlled phone cases and their independent audits pass. The current native
-eight-trial cadence matrix also passes, with every original test sat independently
-accounted for. The paced router rehearsal fails payment-progress observation;
-the next rehearsal fails a bounded proof read and has incomplete timing coverage.
-Both failed runs are independently closed, with all 3,072 original test sats
-conserved in each. The corrected observer passes its focused Linux/macOS checks.
-After verified storage preparation and fresh capacity checks on all three routers,
-the next rehearsal delivers all 84 packets and completes cleanup in 18.728 s.
-Its four payment timing series remain unqualified: read latency spans the
-two-second limit without proving a payment stall. Independent auditing closes
-all 3,072 original test sats without financial issues and preserves the failed
-verdict. All 224 archived profile members and both preserved copies are verified;
-the producer, supervisor and root sequence are stopped. The next observer revision preserves every fresh reading while
-the main thread releases the writer and reads authorization, completed signatures
-and provider credit through persistent connections. Revision `f9ffb844c` passes
-41 Linux checks and 40 macOS checks with one existing Linux-only skip. Its unfunded
-installed-reader check passes on all three routers: all four sessions exit
-normally, their process groups are gone and temporary fixtures are removed.
-Verified preservation of two closed profiles recovers 6.1 MiB of flash space;
-all three routers pass the one-receipt capacity check. Fresh paid timing and
-router retirement acceptance remain pending.
-Earlier results remain attached to their recorded
-artifacts. Production readiness still depends
-on the [acceptance checklist](#acceptance-checklist). Keep this candidate fixed
-unless a demonstrated failure or unmet requirement requires a change.
+`ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The ordinary Linux build,
+paced restart regression, seven paid-carrier scenarios, ARM64 OpenWrt build and
+Android build/lifecycle/package checks pass. Both controlled phone cases and the
+current native eight-trial cadence matrix pass with independent original-fund
+closure. Earlier measurements remain attached to their recorded graphs.
 
-| Area | Verified result | Remaining work |
+**The fresh router rehearsal is running; it has no passing result yet.** Its
+frozen 215-file observer at `f9ffb844c` passes 41 Linux checks and 40 macOS checks
+with one existing Linux-only skip. The unfunded installed-reader check and recovery
+of the preceding failed smoke are independently accepted: four sessions exit
+normally, exact process groups are absent and all synthetic fixtures are removed.
+Accepted storage preparation preserves 78 files and 117 archive members while
+recovering 6.1 MiB of flash; all three routers meet the one-receipt capacity floors.
+The active case is
+`work/receiver-history-router/observer-availability-8b694b85a709`.
+
+Production readiness still depends on the
+[acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
+Keep the runtime fixed unless a demonstrated failure or unmet requirement needs a
+change. Source, build or unfunded harness qualification is not paid hardware
+acceptance; financial closure does not turn a failed functional result into a pass.
+
+| Area | Verified result | Current boundary |
 | --- | --- | --- |
-| Latest dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete affected device acceptance; no change to FIPS forwarding, payment cadence or Spilman. |
-| Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
-| Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
-| Router receiver retirement | Earlier failed diagnostics are independently closed, with each original 3,072-sat grant conserved. The latest rehearsal delivers all 84 measured packets, records all 31 settlements and completes cleanup in 18.728 s. Delivery timing passes; all four payment timing series remain unqualified. Their conservative upper gaps reach 2.931 s, but their minimum gaps stay below two seconds, so no payment stall is proved. Independent auditing closes all 3,072 original sats without financial issues; both owners and the test mint are stopped. The corrected observer passes focused source and unfunded installed-reader checks; one-receipt capacity is verified on all three routers. | Run a fresh paid rehearsal. Full history is ineligible until that hardware run passes and independently closes. The harness removes connection/command startup from counter reads and restarts readers independently of writer release, retaining all observations and checking completed signatures separately from authorization liability. Preserve all failed results and the two-second/35-second requirements. One receipt cannot establish history pressure. |
-| Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass. A separate 3 MiB foreground/background/disconnect-rejoin case also passes using the same processes and four original channels. Each case independently reconciles its original 512 test sats and removes the temporary app. | Controlled LAN/UDP rejoin is complete. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
-| Shared contracts and costs | The current ordinary native matrix passes all eight trials and 32 workload windows: all 285,696 packets arrive, all 48 channels close and independent audits account for 40,960 test sats across 96 complete SQLite sets. Original archives and 872 members are verified. Quote, payment scheduling, accounting, Spilman and payment-wire contracts remain unchanged; session recovery and authenticated fallback selection change. | Finish the pending router case. Keep earlier target costs attached to their measured binaries and retain the explicit shared/physical cost exclusions. |
+| Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
+| Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
+| Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
+| Router receiver retirement | Funded predecessors are independently closed with all 3,072 original sats conserved in each. The last closed rehearsal delivers 84 packets and finishes cleanup in 18.728 s, but all four payment timing series remain unqualified; no two-second payment stall is proved. | The corrected rehearsal is running. Require its functional pass and independent original-fund closure before full history; one receipt cannot establish history pressure. |
+| Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
+| Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,
 `work/receiver-history-native/run-8`, `work/export-payload/gate-3`,
-`work/export-payload-device`, `work/receiver-history-router` and
-`work/receiver-history-phone`. The current core's carrier reconciliation is in
-`work/restart-recovery-carriers`; its accepted native cost matrix and parent review
-are in `work/restart-recovery-native-cadence/matrix` and
-`work/native-cadence-final`. Earlier detailed run narratives remain in Git at
-`9ad685d67:crates/fips-relay/READINESS.md`; failed verdicts and original financial
-records remain in their evidence bundles.
+`work/export-payload-device`, `work/receiver-history-router`,
+`work/phone-restart-recovery-2` and `work/phone-restart-recovery-outage-2`.
+Current carrier and cadence reconciliation is in `work/restart-recovery-carriers`,
+`work/restart-recovery-native-cadence/matrix` and `work/native-cadence-final`.
+The current core's target builds and source bindings remain in
+`work/restart-recovery-builds`, including the preserved verification refusals.
+Only the generated-CA carrier case uses the dedicated test-root daemon; the other
+six use the qualified ordinary binary. Their fixture-retention edits are recorded
+separately from the native4 production graph.
+Observer, installed-reader and capacity authority is retained in
+`work/receiver-observer-autonomous-qualification-2`,
+`work/receiver-numeric-smoke-2-38fc43ef8219`,
+`work/receiver-numeric-recovery-2-917f74d8a51f` and
+`work/rehearsal-space-completion-8`.
 
 Read-only integration reconciliation matches all 965 runtime/build-input files
 and the complete 761-file core inventory to the qualified ordinary Linux build.
 The SDK and CDK checkouts match their recorded commits and are clean; the user's
 lockfile remains unchanged. The source-size gate passes all 1,097 files with the
-three existing core exceptions. Evidence in `work/current-source-reconciliation`
-establishes source identity, not additional device or performance acceptance.
+three existing core exceptions. `work/current-source-reconciliation` establishes
+source identity, not additional device or performance acceptance.
+
+Detailed superseded run and preparation narratives remain in Git at
+`9ad685d67:crates/fips-relay/READINESS.md` and
+`668f86b8d:crates/fips-relay/READINESS.md`. Their failed verdicts and original
+financial records remain in the named evidence bundles.
 
 ### ARM export acceptance
 
@@ -138,541 +142,150 @@ is changed. The matching private records remain in
 
 ### Router retirement diagnostic
 
-The failed long attempt preserves all 5,480 genuine receipts and independently
-recovers its original 3,072 sats. The later one-receipt diagnostics expose costly
-setup payments and preparation schedules that expire too early. A 32-packet/s
-comparison delivers a complete 1,024-packet burst; 128 packets/s does not. Its
-nine payment cycles average 1.250 sender CPU seconds and 2.438 provider CPU seconds.
-The fixture's `[1, 960, 1024]` denominations require 960 one-sat outputs for a
-partial payment on the 960-sat channel. This diagnoses preparation cost, not
-maximum throughput or the exact cause of every missing packet.
+The hardware contract remains a 20 MiB wallet, 5,480 genuine retained receipts
+for full pressure, original channel capacities/prices/lifetime limits, and one
+84-packet stream of 1,000-byte payloads at 3 packets/s. Delivery, authorization,
+completed signatures and provider credit must meet the unchanged two-second
+conservative progress bound; cleanup and fresh complete post-terminal custody
+must finish within 35 seconds while the original traffic covers cleanup. Setup
+uses at most six fresh billable warmup probes, corrected calibration and at most
+32 packets/s; losses and uncertain sends are recorded and never replayed. The
+one-receipt rehearsal retains the full 31-channel workload and original 3,072-sat
+cap, but cannot qualify history pressure. Its incoming channel lasts one hour and
+its scenario is bounded to two hours; original onward terms and refund eligibility
+remain in force.
 
-The sixth pilot still loses a later preparation packet near its 60-second route
-expiry. Its incoming channel settles at 959/1 sats and the first two onward
-channels at 32/0 and 30/2. Original expiry, collection and independent auditing
-close all 3,072 sats; the receiver-retirement window is not reached.
+The current observer samples each counter independently and retains every fresh
+event through reader shutdown. It timestamps read start/end, distinguishes
+completed signatures from authorization liability, and reconciles final numerical
+values with acknowledged payment status. Cached values do not count as fresh
+reads. Bounded custody queries run at most once per second; remote unavailability
+is an explicit missing observation, while JSON/schema/count/identity failures are
+fatal. Missing custody cannot prove cleanup overlap or completion. Ambiguous
+counter intervals crossing two seconds remain unqualified, and fresh complete
+custody is mandatory after all terminal payment observations within 35 seconds.
+The four persistent numerical-reader sessions must close normally with exact
+group absence. Their accepted synthetic smoke observes 3.1–6.3 ms steady reads;
+it does not establish the paid window's timing.
 
-The seventh pilot gives the incoming channel 2,400 seconds and onward routes
-120 seconds, uses at most six fresh billable warmup probes with losses retained,
-waits for original refund eligibility before timing maintenance, and starts final
-setup 45 seconds before expiry. Uncertain sends are never replayed. Burst and
-writer-hold timestamps are retained. Prices, capacity, lifetime spending limits,
-5,480-receipt pressure requirement, 84 measured packets, two-second progress bound
-and 35-second cleanup requirement are unchanged. Two schedule regressions fail
-before correction; 27 checks pass afterward with one existing Linux-only skip.
-These are harness results, not device acceptance. The exact prepared source and
-inputs are archived under `work/receiver-history-router/short-burst-7-*`.
+#### Preserved failures
 
-The seventh pilot's final preparation packet starts only 41 ms before the
-120-second route expires and is not delivered. Five lost warmup probes precede
-one successful probe; the subsequent 31 transfers shrink to single small packets.
-Warmup accounting can include delayed earlier usage, but the harness previously
-kept that inferred packet cost for every subsequent batch. It now recalibrates
-from each completely delivered, paid batch, retaining exact-target and no-replay
-checks. One regression covers ordinary and delayed warmup plus smaller tail
-packets: it fails before correction; the related suite then passes 30 checks with
-one existing Linux-only skip. This confirms the harness defect, not the cause of
-every warmup loss or a passing hardware result. Raw checks are in
-`work/receiver-history-router/earn-calibration-*.log`.
-The batch correction is integrated at `b3456dcb9`. Review also finds that the
-final transit setup still used a single strict probe after restart. It now reuses
-the bounded warmup, then calibrates a fresh packet after both paying directions
-catch up, keeping earlier billable attempts outside that per-packet estimate.
-Preparation has 120 seconds before incoming expiry; onward/source service has
-180 seconds and the writer watchdog 180 seconds. Prices, capacities, spending
-limits and the measured 84-packet, two-second/35-second acceptance remain unchanged.
-The stronger schedule check and new calibration case pass with the related suite:
-31 checks pass and one existing Linux-only check is skipped. Logs are in
-`work/receiver-history-router/transit-warmup-*.log`.
+| Evidence | Retained conclusion |
+| --- | --- |
+| Original full-history and `short-burst-*` diagnostics | Preparation loss, expiry/calibration defects, controller interruption and management outages prevent acceptance. Each funded predecessor's 3,072 original sats is independently recovered without replacement grants; interrupted/missing reports remain explicit. The ninth diagnostic retains 31 sats of signed but unrealized provider credit after refund eligibility. No report or realized payout is fabricated. |
+| `work/receiver-history-router/restart-recovery-debug` | An unfunded three-process reproduction exposes the 45-second previous-key drain defect. The original focused regression fails; ten real-crypto cases within 61 affected checks, strict core lint and source-size checks pass after the session and fallback fixes. All eight paced cycles deliver their first fresh probe; ordinary Linux/ARM/Android builds bind the same accepted graph. This is not history-pressure or mobile acceptance. |
+| `work/receiver-history-router/restart-recovery-burst-diagnosis` | The first corrected-core rehearsal receives 95 of 103 setup packets at 128 packets/s. Eight admission-wait expirations support payment-backpressure expiry, but cumulative counters cannot attribute individual packets or diagnose every loss. The 32-packet/s setup correction does not establish maximum throughput; measured traffic and timing limits are unchanged. |
+| `work/receiver-observer-timing` and `work/observer-rehearsal-current-window` | Batched reads and a later bounded proof-read failure leave payment timing incomplete. The cause of the remote proof failure is not proved. Conservative upper gaps crossing two seconds are neither a pass nor proof of a runtime stall. All 31 settlements and original-fund closure are independently verified; no old interval is retroactively qualified. |
+| `work/receiver-history-router/observer-availability-b8a0363f3ce3` | All 84 packets arrive and cleanup takes 18.728 s. Delivery timing passes; four payment series remain unqualified, with conservative upper gaps up to 2.931 s and minimum gaps below two seconds. All 31 settlements, 3,072 original sats, 224 archived profile members, mirrors and exact owner exits are verified. The failed verdict is preserved. |
+| Earlier capacity and installed-reader attempts | Refusals and partial preservation remain separate from successful closure. The first installed smoke's BusyBox signal-syntax failure is preserved; its old fixtures/groups are independently closed before the portable Q2 smoke. Neither storage recovery nor an unfunded smoke counts as a paid hardware pass. |
 
-The unfunded eighth-rehearsal queue was stopped before device actions to include
-that final-window correction; its earlier preparation is preserved separately.
-The corrected 211-file harness, inputs and preflight are retained in
-`work/receiver-history-router/short-burst-8-*`. The guarded queue requires the
-seventh run's original owner and independent financial closure, then checks device
-availability and space before running once. It does not launch full history.
-The seventh run is now independently closed with all 3,072 sats recovered and no
-financial issues. The eighth run, `6e1a70ddeff7`, started after that closure and
-fresh preflight; it uses the corrected `0ce84f608` harness and the unchanged
-ordinary ARM artifact. Its local controller subsequently disappears before a
-terminal result, after incoming payment and two onward payments complete. The
-third onward opening is funded but not observed earning. Inspection confirms no
-test processes remain and normal-service baselines are restored. The original
-mint accounts for all 3,072 sats, with zero collected. Its interrupted result is
-preserved; it does not pass the workload.
-An independent recheck of its 15 completed paid batches confirms exact submission
-and delivery counts. The first two onward payments reach 32 sats in five/four
-batches, with their last batch finishing 19.10/51.52 seconds after channel
-creation, inside 180-second service. Observed per-packet calibration converges
-after delayed warmup usage. These partial preparation observations are retained
-in `short-burst-8/setup-observation.json`; they are neither a matched performance
-comparison nor acceptance of the complete workflow.
+Sources, exact checks, artifact identities and the longer failure genealogy remain
+in the Git checkpoints named above and `work/receiver-history-router` bundles.
+Financial recovery always uses the original accounts, mint, authority and lifetime
+totals. Signed liability, claimed payout and refund are separate quantities.
 
-Recovery reuses the same accounts, artifacts and mint, without issuing funds or
-opening routes. A retained RAM executable first refuses the overly strict
-absence check; that unfunded recovery preflight is preserved. The next attempt
-confirms the last opening has already expired and retired, so its individual
-report cannot be captured through the live journal. The final recovery preserves
-that missing report and checks original cumulative debits/refunds, spending
-authority, stopped-wallet custody and the mint independently. Its existing
-three recorded net transfers feed the shared collection distribution check;
-no per-channel report is fabricated. Original incoming expiry and retirement are
-complete. All five accounts match their original cumulative debit, refund,
-exposure and remaining-budget totals, with no unfinished channel owners. Collection
-and the independent stopped-wallet/mint audit now reconcile all 3,072 original
-sats with no financial issues, zero new issuance, a stopped mint and every
-normal-service baseline restored. The missing individual report and interrupted
-failed verdict remain preserved. All 79 case files have identical archived
-copies. Evidence is in `work/receiver-history-router/short-burst-8`.
-The recovery and independent closure run independently of the chat command
-session. The ninth rehearsal's unchanged harness, verified artifact and unfunded
-preflight are preserved in `work/receiver-history-router/short-burst-9-*`.
-`after-interrupted-recovery.json` pins a one-shot continuation: it waits for the
-exact audit owner to exit, requires independently conserved originals and a
-stopped mint, then repeats device/space preflight before launching the rehearsal.
-Interrupted predecessor handling verifies its actual recovery directory and
-preserves the missing individual report. There is no automatic funding retry or
-full-history launch. The ninth rehearsal, `c9d13bc1c5da`, starts after that
-independent closure and fresh device preflight. It uses the same verified ARM
-artifact and corrected 211-file harness, with one real receipt and the complete
-workload. Incoming settlement and four onward settlements complete. All three
-management SSH connections then time out, and the monitor stops the case before
-the final measurement. Later inspection confirms restored normal baselines,
-stopped test processes and all 3,072 sats conserved at the original mint. This
-does not establish a forwarding failure or identify which part of the management
-path was interrupted.
-
-Original-only recovery preserves the last channel's 31-sat buyer authorization
-and matching provider credit, alongside the five actual settlement reports.
-Its first accounting check refuses to equate signed credit with realized payout.
-The provider was stopped past refund eligibility: the last 32-sat deposit returns
-to the sender and its 31-sat signed credit expires unclaimed. The five onward
-channels retain 159 sats of signed lifetime charges, 128 sats of realized payments,
-160 sats of gross debits and 32 sats of refunds. Buyer lifetime authority is not
-reset to the smaller realized payment.
-
-Corrected recovery verifies all five stopped accounts against these committed
-totals, original policy and channel counts before collection. It reuses the shared
-collector with the five actual reports; the missing report's zero realized
-transfer follows from the final cumulative records. No per-channel report is
-fabricated. Collection and independent auditing now reconcile all 3,072 original
-sats with no new issuance, purchase commands or relay restarts. The mint is
-stopped, all five wallets are empty, and normal router baselines are restored.
-All 104 case files have identical preserved copies. The rejected result, failed
-management observations and first recovery refusal remain unchanged in
-`work/receiver-history-router/short-burst-9`.
-
-The Linux controller preparation in `work/receiver-history-router/controller-host-probe`
-stages the same 211-file harness and hash-matched artifacts on the existing Linux
-host, which has sufficient space. A private job key is generated there because
-its existing keys cannot administer the routers; the private key is not copied.
-All 32 focused harness checks pass on Linux/Python 3.14, including the check
-previously skipped on macOS; there are no failures or skips.
-The job's public key is appended to each router after financial closure; existing
-authorized-key bytes are preserved exactly. Direct Linux access to all three
-routers and restricted loopback access for the mint are verified. The private
-key remains on Linux; key-installation records retain the backups and exact line
-needed for later revocation.
-
-The independently supervised Linux rehearsal `e458d621fe4f` fails during warmup
-after its third onward purchase: all six fresh probes are submitted but not
-delivered. Its original producer completes channel closure and collection after
-refund eligibility. Independent stopped-account/mint auditing reconciles all
-3,072 original test sats, with no unfinished owners or financial issues, a stopped
-mint and normal baselines restored. All 95 evidence files have identical preserved
-copies in `work/receiver-history-router/linux-rehearsal-1`. The failed verdict
-remains unchanged.
-It uses the same frozen 211-file harness, ordinary artifacts, one real receipt
-and full 28-channel preparation. Recorded 24–62-second per-channel steps plus two
-refund waits leave little margin in the earlier 2,400-second incoming lifetime.
-The new input explicitly gives that incoming channel 3,600 seconds and the
-scenario two hours. Onward terms, prices, spending/capacity limits, 84 measured
-packets, two-second progress and the 35-second observation remain unchanged.
-The original unfunded preparation is retained separately. There is no automatic
-retry or full-history launch, and stable long-run connectivity is not yet proven.
-
-An isolated, unfunded three-process reproduction separates session recovery from
-wallet work. Eight rapid launch/recovery cycles deliver immediately; adding
-15 seconds of idle between cycles exposes prolonged handshake deferral during
-the previous key epoch's drain. A focused regression fails on the original core
-at that refusal. The correction authenticates a new process epoch without
-discarding current or completed pending keys for an unauthenticated setup, keeps
-ordinary pending keys out of the draining epoch's receive slot, and preserves an
-independently armed handshake when older authenticated traffic arrives. A second
-regression reproduces the old packet-ordering race before its correction.
-
-The ten real-crypto recovery checks pass within 61 affected session, key-rotation
-and remote-restart checks; strict all-target core lint and source-size checks also
-pass. Two existing routing regressions expose degraded direct paths displacing
-authenticated fallback ingress; both pass after the bounded route-priority fix.
-The ordinary Linux daemon is rebuilt from the verified current dependency graph.
-Under the matched paced schedule, all eight cycles, including seven source
-restarts, deliver their first fresh probe; the original needs 34 separately
-recorded probes and only one cycle delivers its first. This is an unfunded
-three-process UDP result, not router history-pressure or physical movement
-acceptance. All children are stopped and 1,868 evidence files have identical
-preserved copies in `work/receiver-history-router/restart-recovery-debug`.
-The code is integrated locally and its clean temporary worktree and merged branch
-are removed. The ordinary ARM64 OpenWrt build and Android build, feature, strict
-lint, ten lifecycle tests, package and signature checks now pass. They bind the
-same core source and SDK/CDK graph as the accepted Linux binary. Build evidence
-is retained in `work/restart-recovery-builds`; the two Android verification
-refusals and the successful continuation preserve the original native compilation.
-
-The corrected one-receipt rehearsal `b4b683012ddd` reaches eight channels and
-eight settlements, then fails after submitting 103 setup packets at 128 packets/s
-and receiving 95. Independent stopped-wallet/mint auditing now accounts for all
-3,072 original test sats, with no unfinished financial owners, a stopped mint and
-restored normal-service baselines. The 45 original case files and 72 preserved
-closure files have identical copies. The failed hardware verdict remains; this
-is not a passing retirement observation. The harness correction `f26a198d1` caps
-all custody setup at the previously observed 32-packet/s pace; the incoming
-setup already used that rate. Its existing exact-payment regression fails before
-the correction and all 15 focused Linux checks pass afterward, without skips.
-The first Linux check's missing shared-test import is preserved separately.
-This setup cap does not establish maximum throughput or diagnose every missing
-packet; the 84 measured packets at 3 packets/s, two-second progress and 35-second
-cleanup requirements are unchanged.
-
-A later read-only capture confirms eight admission-wait expirations on the
-forwarding router, totaling 8,584 bytes: exactly eight normal 1,000-byte probes
-with their 73-byte transit envelopes. There are no queue-full, invalidation,
-send-error or background-full drops. The separate eight no-route drops total
-only 792 bytes. These cumulative counters strongly support expiry during payment
-backpressure; absent pre-burst deltas or packet identities, they do not prove
-individual attribution or why replenishment was delayed. Original analysis and
-the source-bound supplement remain in
-`work/receiver-history-router/restart-recovery-burst-diagnosis`.
-
-The new USB-only phone regression starts only after this exact router run's
-independent financial closure, stopped original owners/mint and restored normal
-baselines. A failed hardware verdict is preserved and does not prevent financial
-release. No manual unplugging, movement or pairing is scheduled.
-Before any installation or funding, review catches a repeated-observation
-directory collision in the first phone preparation. Its two unfunded waiters are
-stopped and all original bytes preserved. The replacement in
-`work/phone-restart-recovery-2` uses a separate private directory per observation;
-the mocked second-call regression fails before correction and passes afterward.
-Artifacts, workload, financial terms and the unchanged 158-check harness are reused.
-The replacement passes the USB-connected phone acceptance and independent close
-described above. The corrected 32-packet/s router rehearsal is now running after
-that release. The independently reviewed disconnect/rejoin case is queued once,
-remaining unfunded until both exact device sequences have closed and exited. Its
-owner then seals the inputs, runs the case and independently closes it; failed
-commands are preserved without automatic replay. No full-history run is launched
-automatically.
-
-The current ordinary Linux binary also passes the existing seven paid-carrier
-scenarios: TCP, configured and seeded WebSocket, self-signed and CA-validated TLS,
-and sustained UDP/Ethernet loss. Exhaustion, renewal, restart and final settlement
-retain their original assertions. Independent stopped-wallet/mint auditing and a
-second local audit reconcile all 2,688 test sats across seven fixtures. All build
-and case owners are stopped; 86 preserved files, including the original
-fixture archives, have identical copies in `work/restart-recovery-carriers`.
-Only the generated-CA case uses the dedicated test-root daemon; the other six
-reuse the qualified ordinary binary. The source graph differs from native4 only
-in four successful-fixture retention flags across three test files. This closes
-the current Linux carrier check, not physical mobility or target history pressure.
-
-The natural-idle harness is integrated by merge `01fc7b74d`, including implementation
-`104f01754`. It refuses charging, simulated or forced idle before funding,
-then waits at most one hour for Android's own deep idle and opens fresh paid
-routes only afterward. It requires exact duplex delivery with the same process,
-screen off, no external power and foreground-service network allowance through
-at least 60 seconds of observed idle. Existing financial collection and
-restoration are shared. Fifty focused harness checks and the real CLI help pass;
-an initial missing test import is preserved in the failed check log. This is
-unfunded preparation, not natural-idle device acceptance. The integrated files
-match their verified branch exactly. Its clean temporary worktree and merged
-branch are removed; the implementation and evidence remain preserved. The Linux
-router job uses its frozen source copy and holds no primary-harness files.
-
-The fifth pilot's observer records all five daemons in 1,041 samples with no
-sampling errors: 373.5 observed process CPU seconds and maximum sampled RSS sums
-of 47,068, 32,196 and 46,688 KiB. Earlier preparation and wallet commands are
-excluded. The shared summarizer records an observed 28 KiB high-water-counter
-decrease and labels Linux RSS readings approximate while retaining process,
-clock and CPU checks; all 20 focused checks pass. Original rejected analysis is
-preserved. These measurements do not establish a hard memory ceiling or passing
-history pressure.
+Historical fifth-pilot process sampling records 1,041 samples without sampling
+errors: 373.5 observed daemon CPU seconds and maximum sampled RSS sums of
+47,068/32,196/46,688 KiB across the three routers. Preparation and wallet commands
+are excluded. The summarizer retains a 28 KiB high-water-counter decrease and
+labels Linux RSS approximate. These recorded-graph observations establish no hard
+memory ceiling or passing full-history workload; the current aggregate observation
+must accompany the full run below.
 
 ## Completion sequence
 
-1. The ordinary-ARM export case and independent audit are complete. Its original
-   records are preserved, all test funds collected and normal services restored.
-2. The current USB session-recovery phone regression, independent audit, archives
-   and owned-app removal are complete. The unchanged 158-check harness is reused.
-   The controlled disconnect/rejoin case, independent 512-sat audit, restoration
-   and owned-app removal are also complete. Physical encounters and natural
-   off-charge idle remain unqualified; do not request manual phone actions or
-   substitute simulated battery state for that evidence.
-3. All twelve router diagnostics are independently closed without replacing
-   their original funds. The session-recovery correction passes
-   focused, ordinary Linux and target build checks. The later 32-packet/s
-   rehearsal completes setup and forwarding but fails payment-progress
-   observation. All four failing payment intervals cross one 1.253-second
-   seven-query batch; no individual read timestamps survive. Preserve that
-   failure; all 3,072 original sats are now independently conserved with no
-   financial issues and both producer/supervisor stopped. Harness correction
-   `21bdaa0f8` timestamps individual reads and separates five progress readers
-   from one bounded pair of custody readers. Conservative timing bounds that
-   cross two seconds remain unqualified; missing historical intervals cannot
-   qualify the failed run. Final payment/credit observations follow complete
-   delivery and require a fresh complete-custody observation within 35 seconds.
-   All 24 affected checks pass on the exact frozen 213-file Linux harness;
-   macOS passes 23 with one existing Linux-only skip. An initial Linux staging
-   failure omitted the unchanged support-library layout; its records are
-   preserved separately. No production code, artifact, tariff or budget changes.
-   Evidence remains in `work/receiver-observer-timing`. A fresh rehearsal in
-   `work/receiver-history-router/observer-rehearsal-07fc6123319e` starts after
-   the phone and native matrix are independently closed and their owners exit.
-   It retains the same traffic, prices, cadence and limits. Its final window
-   records a bounded read-only proof-observation failure after 61 progress and
-   50 complete custody samples. The last checked delivery is 64 packets at
-   21.641 seconds; original custody has 63 remaining proofs but the receiver
-   settlement is still retained. Partial payment timing has conservative upper
-   gaps of 2.430–3.291 seconds with no proven two-second stall. A 1.094-second
-   relay-status read still delays the next batch of otherwise independent reads.
-   These observations neither qualify the full window nor establish a runtime
-   payment failure. Preserve the snapshot and partial analysis in
-   `work/observer-rehearsal-current-window`. All 31 settlements are subsequently
-   recorded. Independent audits now conserve all 3,072 original test sats with
-   no financial issues. Parent review verifies every member of all four stopped
-   profile archives (224 members), restored baselines, stopped mint and absent
-   producer, supervisor and local sequence owners. The queued full-history
-   continuation exits on its failed prerequisite without commands or funding;
-   no full-history namespace exists. Its failed verdict remains unchanged.
-   Integrated correction `be3c18f6d` keeps one outstanding read per progress
-   counter, so a slow status query cannot delay unrelated readers. Cached values
-   do not count as fresh observations. Custody pairs run at most once per second;
-   bounded remote-read failures remain explicit missing observations, while
-   JSON/schema/count/identity failures remain fatal. Missing custody cannot prove
-   overlap, completion or fresh post-terminal custody. The same two-second and
-   35-second limits, original stream and financial terms remain unchanged.
-   All 30 focused checks pass on the exact 213-file Linux harness; macOS passes
-   29 with one existing Linux-only skip. All 209 other harness files match the
-   preceding qualified bundle. A local qualifier preflight initially selected
-   the overlaid test fixture instead of its paced base; it fails before remote
-   staging and is preserved separately. The corrected qualifier pins both layers.
-   Sources, logs and integration bindings remain in
-   `work/receiver-observer-availability`. This is harness qualification, not a
-   hardware pass or proof that the failed SQLite read was busy or timed out.
-   Once the full workflow passes,
-   finish genuine-history acceptance using preserved receipts and verified builds
-   wherever valid. Do not repeat lengthy preparation merely because CDK's latest
-   correction affects a separate pre-confirmation failure path.
-   The historical unfunded driver in
-   `work/receiver-history-router/full-history-driver.py` and its
-   `full-history-inputs.json` have stale harness, artifact and predecessor
-   bindings; do not launch them. Prepare fresh immutable bindings only after the
-   corrected rehearsal passes and its original custody is independently closed.
-   Preserve the historical guard-check results and failed prerequisite.
-   Review preparation timing before launching full history: the
-   earlier full receipt preparation took 17,713.54 seconds on the router.
-   Its 139 preparation snapshots already occupy about 1.427 GiB, with a measured
-   742,319,899-byte compressed case prefix. The existing 2 GiB evidence allowance
-   with 512 MiB reserved for recovery and 256 MiB archive limit are insufficient
-   for full continuation. Size the private diagnostic allowance and archive
-   transfer from the complete snapshot count and fresh host resources, preserving
-   every original receipt and the 20 MiB wallet limit. Full history also requires
-   the corrected rehearsal's functional pass, separate from financial release,
-   and the queued phone outage case's independent close and absent owners.
-   The replacement archive boundary passes six local preservation/refusal checks
-   and three unfunded checks over the qualified Linux connection. It refuses a
-   still-live exact supervisor, preserves every stopped member by its manifest,
-   and reconciles an already completed archive without rewriting it. It retains
-   Linux originals plus a compressed archive, one verified expanded local copy
-   and one verified compressed mirror, checking actual expanded-plus-compressed
-   bytes with 2 GiB local headroom before transfer. The helper and evidence remain
-   in `work/closed-case-archive-qualification-1`; this is archive qualification,
-   not router history-pressure evidence. Existing case records are unchanged.
-   Unbound full-history helpers in `work/full-history-draft` pass nine focused
-   checks, but pin the now-failed rehearsal and remain ineligible to stage.
-   Preserve their checks; bind a later genuine passing rehearsal only after its
-   independent release, never substitute financial closure for functional pass.
-   They reserve
-   20 GiB for private diagnostic evidence, 4 GiB for its archive and 256 MiB for
-   temporary work on Linux, plus staging bytes; wallet, per-snapshot and recovery
-   limits stay unchanged. The eight-hour workload budget resumes only after
-   history preparation returns its original value. A virtual-clock regression
-   reproduces the old outer-alarm gap and verifies uninterrupted reconciliation,
-   remaining-time rearming and collection before failure if time is exhausted.
-   Existing six-hour new-history and financial cleanup bounds remain in force.
-   Closure waits nine hours without terminating a still-live financial owner.
-   The replacement `work/full-history-observer-draft` passes five focused checks
-   for the actual corrected-observer prerequisite and 213-file harness. It reuses
-   the unchanged nine-check workload/deadline and qualified archive evidence.
-   The reviewed root continuation exits on the failed rehearsal prerequisite;
-   its required functional pass cannot be replaced by financial release.
-   No full-history namespace or new grant exists. Preserve
-   this immutable continuation and its unexecuted capacity helper. A later
-   continuation needs a newly qualified passing prerequisite before it preserves
-   closed router records as verified gzip copies, checks actual synced flash/RAM
-   capacity, then stages and runs full history once. Thirteen focused capacity
-   checks cover archive selection and guards. Every original financial byte and
-   failed verdict remains archived; only an exact, proven inactive temporary
-   helper binary may be removed if necessary. No operator action is required.
-   An independent five-profile resource observer joins that same full run,
-   using read-only process/filesystem counters every five seconds. Its six
-   focused checks reuse the qualified parser and ownership command. Observer
-   errors cannot skip or mask financial close; three fault-injection checks
-   cover that separation. Sampling reports observed CPU/RSS/HWM and host
-   headroom, with missed epochs/endpoints explicit; it establishes no hard
-   memory ceiling or physical-write maximum. Sources, reviews and initial
-   sequence bindings remain in `work/full-history-observer-draft`,
-   `work/n02-closed-space-execution-2`, `work/full-history-resource-observer`
-   and `work/current-device-sequences/full-history-observer-initial`.
-   The separate `work/n02-closed-space-execution-3` passes 17 offline checks and
-   the actual financial-release gate, then stops before its first mutation:
-   stripping leading BusyBox inode padding breaks the exact metadata guard.
-   Its failed attempt is closed with zero representations, helper removals,
-   financial operations or tests; original forms and private mirrors survive.
-   A read-only inspection confirms the unchanged guard accepts preserved padding.
-   The fresh `work/n02-closed-space-execution-4` passes 20 focused checks and runs
-   once after root review. It preserves that padding and the prior failed
-   execution, binds exact owner absence, and reclaims two exact inactive
-   regenerable helper copies (4,579,328 allocated bytes). Three closed profiles
-   are preserved as verified compressed copies before expanded-form removal.
-   It then stops: staging the remaining archive with its scratch reserve would
-   breach the RAM floor. Root review verifies all 180 members of six private
-   archives, restored n02 baseline, closed partial effects and absent owners;
-   its complete failed source/execution mirror is retained. No tests or funding
-   occur. Do not replay this attempt or treat partial space recovery as a pass.
-   The separate `work/n02-closed-space-execution-5` completion passes five new
-   focused checks, reuses unchanged preservation primitives and completes once.
-   It reclaims one exact old daemon copy from an independently closed test after
-   canonical local/Linux artifact, quiet-inode, process, mapping, open-file and
-   mount checks. It verifies the three prior compressed profiles in place and
-   preserves the remaining D3 profile before expanded-form removal. Root review
-   checks 209 members across seven private archives, absent local/Linux owners
-   and the complete 33-file final execution mirror. Measured final availability
-   is 26,333,184 flash bytes and 132,571,136 RAM bytes; net recovery across the
-   two attempts is about 6.6 MiB flash and 26.9 MiB RAM. Both earlier failed
-   attempts remain failed; no funding or tests occur during capacity work.
-   The 24 MiB flash and strictly greater than 100 MiB RAM floors remain unchanged.
-   Every financial byte must remain in verified archives before expanded-form
-   removal. Capacity release alone grants no full-history launch authority.
-   The fresh same-leaf draft under `work/observer-availability-S5` changes only
-   three capacity paths and authority bindings; all 25 other source/evidence
-   files and existing 7/5/30-check qualification remain unchanged. Its root-owned
-   sequence stages, seals, verifies and dispatches one corrected rehearsal in
-   `work/receiver-history-router/observer-availability-b700b29f5a1d`. Its producer
-   exits at the unchanged pre-funding flash check: n01 has 6,560 KiB against the
-   8 MiB minimum. The case contains only its owner record; workload, mint and
-   funding never start. Root review preserves all 76 source/owner/log records
-   with a complete private mirror, verifies every local/Linux owner has exited,
-   and retains the failed attempt. Its generic funded-case closer cannot close
-   an absent run result; the separate unfunded closure records that boundary.
-   A single n01 closed-profile preservation and a fresh all-three capacity gate
-   are required before another namespace is created. The accepted n02 capacity
-   and observer qualification remain valid; no hardware pass is implied.
-   `work/n01-closed-space-completion` passes three focused checks and executes
-   once after root review. It reuses the six exact qualified representation
-   functions and unchanged custody/lock guards for only n01's closed D3 profile
-   (40 files, 60 archive members). Its initial all-three check stops before any
-   representation because n02 is again below 24 MiB. Root verifies absent
-   owners, zero actions and the complete 30-file failed execution mirror.
-   Fresh flash availability is 6,560/23,364/6,940 KiB on n01/n02/n03; all three
-   retain more than 100 MiB RAM. Preserve the failed attempt and inspect exact
-   closed profiles on all three routers before another capacity operation.
-   The original installed runtime and saved accounts remain protected.
-   The qualified driver's actual flash gate is 8 MiB on every router for the
-   one-receipt rehearsal; n02's 24 MiB gate applies to 5,480 receipts. S6 applies
-   that later full-history requirement too early. Preserve its failed result;
-   a fresh preparation must bind the one-receipt scope and require 8/8/8 MiB
-   flash, with strictly more than 100 MiB RAM on every router. A 10 MiB
-   preparation target on n01/n03 provides margin for the observed free-space
-   changes; only the two explicitly closed D3/D2 profiles per node may be
-   represented if necessary. No observer source, financial terms or test limits
-   change. Full history still requires a new post-rehearsal 8/24/8 MiB measurement
-   and cannot use the smaller workload's capacity authority.
-   The separately reviewed `work/rehearsal-space-completion-7` completes once
-   with that one-receipt scope. It preserves n01's D3/D2 and n03's D3 records
-   in verified archives before removing only their inactive expanded copies;
-   n03's D2 copy and n02 remain untouched. Root review verifies all 234 members
-   of the four private archives, restored baselines, absent owners and the
-   complete 38-file source/execution mirror. Net measured flash availability
-   increases by 9.1 MiB across n01/n03; retaining compressed router copies uses
-   8.9 MiB of RAM. Fresh all-three availability is 13,602,816/26,214,400/12,386,304
-   flash bytes and 143,126,528/132,571,136/128,458,752 RAM bytes. Storage work
-   issues no funds and starts no tests. A sealed root release binds that fresh
-   measurement and the two preceding closed failed attempts before a new
-   namespace. The rehearsal in
-   `work/receiver-history-router/observer-availability-b8a0363f3ce3` delivers all
-   84 packets and completes cleanup in 18.728 s, but its four payment timing
-   series remain unqualified. Independent auditing closes all 3,072 original
-   sats without financial issues; all 224 archived profile members, the complete
-   original-case mirror and exact owner exits are verified. Its failed verdict
-   remains preserved. Full history is still unlaunched.
-   The reviewed replacement `work/full-history-availability-v2` passes seven
-   focused checks and requires that actual functional pass, original-fund close
-   and a new full-history capacity release. The source-only
-   `work/post-pass-full-history-capacity-draft` passes ten focused checks and
-   reuses that same prerequisite validator. It measures all three routers first;
-   only a measured n02 shortfall can select up to four explicitly archived old
-   profiles. Root verifies its source and complete 19-file private mirror.
-   Materialization, execution and capacity acceptance remain pending; these
-   preparations start no device operations, tests or funding. Both must be
-   rebound to the newly qualified 215-file observer harness and an actual
-   passing rehearsal. The prerequisite check must distinguish the verified
-   controller collection wrapper from its embedded raw archive receipt.
-4. The current ordinary daemon's eight-trial native cadence matrix is complete:
-   all 32 steady, idle, bursty and high-rate windows pass at 250/500/1000/2000 ms
-   in forward/reverse order. The optimized integration executable and ordinary
-   daemon retain their qualified profiles. Measurement begins only after exact
-   device releases, absent owners and host quiescence, holds the real cache lock
-   and uses the qualified two-core quota without observed throttling. All 285,696
-   packets arrive; independent original-state audits close 48 channels and
-   conserve all 40,960 sats across 96 complete SQLite sets. Parent review verifies
-   all eight original archives and 872 members, and final mirrors match. Owners
-   are gone and the cache lock is released. Current costs are recorded in
-   [results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026);
-   the 500 ms default is unchanged. Reuse current seven-carrier fault evidence
-   and retain earlier target scopes as historical. Partial-failure recovery
-   retains exact original stores without replacement grants; no such recovery
-   or repeated workload is needed for this accepted matrix.
-5. After genuine full-history acceptance, original-fund collection and all owner
-   exits, run the controlled stationary open-radio departure/rejoin and root
-   replacement case. The source-only draft under
-   `work/current-radio-rejoin-after-full-v2` passes three changed-contract checks
-   and reuses nine unchanged checks. Root verifies its complete 30-file private
-   mirror. It binds the actual full-history root, sequence and resource records;
-   radio, financial, archive and acceptance algorithms remain unchanged. Its
-   384-sat limit, two original 32-sat channels and fresh all-three capacity checks
-   remain in force. No radio case is staged or funded yet. Derive any necessary
-   post-full storage preservation from then-current closed custody; do not replay
-   old capacity targets. This establishes no physical-motion or fading claim.
-6. Reconcile every checklist row with the final target evidence, threat model,
-   operating/recovery documentation and local TollGate proposal. Integrate
-   verified changes and remove only completed, owned test installations and clean
-   merged worktrees. Revoke the owned Linux job's temporary SSH authorizations
-   after its last device case, preserving other keys and the closed records.
-   No further manual power cuts are planned; preserve the
-   documented physical power-loss limitations.
+1. **Completed scoped acceptance:** ordinary-ARM cached exports, both controlled
+   USB phone cases, seven current paid carriers and the current native cadence
+   matrix have independent original-fund closure and preserved archives. The
+   native matrix retains all 32 windows at 250/500/1000/2000 ms in forward/reverse
+   order, exact executable/compiler profiles, host quiescence, the real cache
+   lock and two-core quota. The 500 ms default is unchanged; scoped costs remain in
+   [the native candidate results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026).
+   Reuse these accepted inputs; partial-failure recovery would retain original
+   stores and require original-state recovery, not replacement grants or repeats.
+2. **Finish the running corrected rehearsal.** Require its actual functional
+   pass, all 31 settlements, independent 3,072-sat conservation, stopped original
+   producer/supervisor/root children and restored baselines. A failed functional
+   verdict can release devices after financial closure, but cannot authorize
+   full history. Existing Q2 source/smoke and S8 storage acceptance do not supply
+   that pass. The one-receipt flash floors are 8/8/8 MiB, with strictly more than
+   100 MiB RAM on each router; the live seal and driver recheck them before funding.
+3. **Run genuine full history and its aggregate observer once after that pass.**
+   Rebind the passing rehearsal's exact 215-file source, artifact, independent
+   collection and owner records; older full-history drafts remain ineligible.
+   The verified controller collection wrapper and its embedded raw Linux archive
+   receipt are distinct records and must match. Financial closure cannot replace
+   functional acceptance. Closed old histories cannot be made into a fresh fixture
+   by rolling back mint state, recreating spent originals or resetting ownership,
+   lifetime budgets or admission; synthetic ballast is not genuine history.
 
-These cases share devices and run separately. Independent financial closure and
-restored services release devices even after a functional failure; the failed
-verdict remains. The pinned local sequence completed both export and phone audits,
-then started the seventh router diagnostic after fresh device/space checks.
-It stops on failure
-without reissuing funds or replaying commands. The corrected rehearsal has its
-own `work/receiver-history-router/corrected-pilot-queue.json` with the same
-no-reissue rule and original-owner checks. The original sequence is retained in
-`work/device-acceptance-sequence.json` and `work/continue-device-acceptance.py`.
-Reuse checks for unchanged inputs, rerun affected checks after a
-change, and add no gate without an uncovered requirement or concrete risk. The
-existing mint-over-FIPS implementation and recovery cases are documented in
-[TESTBENCH.md](TESTBENCH.md#mint-http-over-fips); the LAN mint used by a storage
-fixture does not replace that separate evidence.
+   Preserve any closed profiles as verified archives before removing their
+   inactive expanded forms. Measure current synced capacity on every router:
+   full history requires 8/24/8 MiB flash and more than 100 MiB RAM on each.
+   One-receipt capacity authority does not authorize this larger workload. Select
+   preservation targets from then-current custody; never replay an old target list.
+   Only an exact proven-inactive regenerable helper may be removed if necessary;
+   original financial bytes, profiles and artifacts remain protected.
 
-Source integration is complete for the verified Rust fixtures and Python harness.
-Source-size checks pass; 338 lines of superseded synthetic-capacity helpers are
-removed. The clean, merged fixture worktrees remain because pending verifiers
-bind their files; remove them after those owners finish. The old synthetic
-capacity profile's erased admission cannot be reconstructed: its original funds
-are reconciled, but its unfunded controller record remains pending and the
-profile will not be reused. See `work/harness-local-integration` and
-`work/cleanup-history-gate-2` for exact source and check evidence.
+   The earlier genuine preparation takes 17,713.54 s and 139 snapshots occupy
+   about 1.427 GiB; its compressed prefix is already 742,319,899 bytes. The small
+   diagnostic's 2 GiB allowance/256 MiB archive cap is insufficient. The prepared
+   full contract reserves 20 GiB diagnostic space, 4 GiB archive space and 256 MiB
+   temporary work plus staging bytes on Linux; the 20 MiB wallet, per-snapshot and
+   512 MiB recovery limits stay unchanged. The final case collector refuses a
+   still-live exact producer or supervisor. Preserve Linux originals and their
+   sealed archive, one verified expanded local copy and a verified compressed
+   mirror, checking manifests/checksums and expanded-plus-compressed space with
+   2 GiB local headroom. Preserve partial/uncertain transfers and reconcile an
+   already completed archive rather than rewriting it.
+
+   Keep the six-hour history-preparation and existing financial-cleanup bounds,
+   eight-hour workload budget after original history value returns, and collection
+   before failure when time is exhausted. The independent closer waits up to nine
+   hours without terminating a live financial owner. An independent five-profile
+   observer samples read-only process/filesystem counters about every five seconds
+   on this same full run,
+   with exact process identity and missed epochs/endpoints explicit. Its errors
+   cannot block financial closure or alter the two-second/35-second acceptance.
+   Report sampled CPU/RSS/HWM and host headroom, not hard memory, generic whole-call
+   or physical-write maxima. Reuse qualified workload/archive/resource helpers;
+   sources and earlier refused bindings remain in `work/full-history-draft`,
+   `work/full-history-observer-draft`, `work/full-history-availability-v2` and
+   `work/full-history-resource-observer`.
+4. **Complete controlled radio recovery after full-history closure.** With all
+   previous owners gone, run stationary open-radio departure/rejoin, root
+   replacement and route recovery on the final graph. The prepared
+   `work/current-radio-rejoin-after-full-v2` retains its 384-sat cap, two original
+   32-sat channels, original accounting and fresh all-three capacity checks;
+   rebind it to the actual accepted full run before staging. This does not claim
+   physical movement, fading, seamless roaming or automatic channel selection.
+5. **Reconcile and integrate the whole result.** Check every checklist row against
+   final source/dependency/features/artifacts, target evidence, threat model,
+   operating/recovery documentation and the local TollGate proposal. Remove only
+   completed owned test installations and clean merged worktrees after their
+   verifiers finish. Private control keys stay on their owning host. Revoke only
+   the job's temporary authorizations after its last device case, preserving
+   other keys and all closed records. Public release, deployment and real-money
+   operation retain their separate authority boundary.
+
+Device cases run separately. Failed attempts retain their original results,
+partial effects and funds. Never replace a failed case's original funds or
+automatically replay its commands. An
+unfunded early refusal needs its actual owner/absence closure, not a fabricated
+funded result. Preserve normal services, original accounts and the management
+path. The phone stays plugged in; no manual movement, pairing or unplugging is
+scheduled. No further manual power cuts are planned; the documented physical
+power-loss limits remain. Existing mint-over-FIPS lifecycle/recovery evidence in
+[TESTBENCH.md](TESTBENCH.md#mint-http-over-fips) is separate from a storage fixture's
+LAN mint and does not qualify Android mint-over-FIPS integration.
+
+Source integration is complete for the verified Rust fixtures and Python harness;
+source-size checks pass. Clean merged fixture worktrees still bound by pending
+verifiers must wait for those owners before cleanup. The old synthetic profile's
+erased admission cannot be reconstructed: original funds are reconciled, but its
+unfunded controller record remains pending and the profile will not be reused.
+Evidence remains in `work/harness-local-integration` and
+`work/cleanup-history-gate-2`.
 
 ## Implementation and recovery evidence
 
@@ -682,20 +295,20 @@ results below provide regression evidence, not acceptance of a newer binary.
 
 | Evidence | Verified result | Remaining boundary |
 | --- | --- | --- |
-| Latest native artifacts, `work/receiver-history-native/build-11` and `build-14` | Build 11's ordinary daemon, test mint and both test executables pass formatting, size, strict lint, four mint tests and four controller-cancellation tests on SDK `715969e`. The sparse-proof payout/export case passes. Build 14 reuses the exact daemon, mint and bench binaries; only the observer test changes, with focused build/lint/format/size checks passing. Run 8 qualifies the complete corrected workload. | Matching OpenWrt and Android build verification is complete; final device acceptance remains pending. |
+| Historical native artifacts, `work/receiver-history-native/build-11` and `build-14` | Build 11's ordinary daemon, test mint and both test executables pass formatting, size, strict lint, four mint tests and four controller-cancellation tests on SDK `715969e`. The sparse-proof payout/export case passes. Build 14 reuses the exact daemon, mint and bench binaries; only the observer test changes, with focused build/lint/format/size checks passing. Run 8 qualifies that native workload. | These recorded builds precede the current session-recovery artifacts. Current target status is listed above; no historical result qualifies a newer binary. |
 | Genuine history, `work/receiver-history-native/run-8` | The complete corrected case passes at 20 MiB with 5,480 genuine receipts. All 3,072 original test sats are independently reconciled as spendable. All delivery/payment counters advance with a maximum observed gap of 1.398 seconds; cleanup finishes about 1.043 seconds after writer release while the traffic window continues. | Native process evidence, not physical storage, mobile or power-loss qualification. No multiple-interior-sample cleanup-overlap claim. |
 | Genuine history, `work/receiver-history-native/run-6` and `run-7` | Each run retains 5,480 ordinary receipts, completes 28 onward channels and retires both cohorts at 20 MiB. Each independent stopped-original audit reconciles 3,072 spendable test sats without unresolved operations. Run 7 records successful cleanup, a 75,660-microsecond held inspection and 73 of 84 delivered packets. | Both runs retain their failed verdicts. Run 7 confirms that the outgoing channel has only 25 seconds left when the approximately 28-second stream begins. Build 14 corrects this schedule; the separate run-8 result above closes the native workload and progress acceptance. |
 | Dependency checks, `work/cdk-sparse-selection/gate-6` | CDK `bb9b87d8` passes 560 wallet tests; SDK `8855afe` passes 454 workspace tests, with three existing optional measurements ignored. Both selection regressions fail before the fix and pass afterward; lint, formatting and the wallet-only build pass. | These checks qualify dependencies, not the complete relay workload. |
-| Activity completion space, `work/activity-storage/gate-9` | SDK `16a80cee` has 457 passing workspace tests and three existing optional tests ignored; lint, formatting, source size, documentation and the wallet-only build pass. Coverage combines 378 unchanged passing tests from gate 6 with 79 rerun or previously unreached tests. The corrected fault targets the refund owner's release; production code is unchanged between those runs. | The original full invocation remains recorded as failed. SDK verification and local integration are complete; relay history-pressure and device qualification remain pending. |
-| Rejected first wallet write, `work/rejected-admission/gate-1` through `gate-3` | The new regression fails before the correction with missing cancellation evidence. SDK `715969e` passes the complete workspace invocation: 458 tests, zero failures and three existing optional tests ignored. Formatting, strict lint and the wallet-only build pass; the exact verified fix is integrated locally. | Native build checks pass; live-workload and device qualification remain pending. The fix cannot reconstruct the erased admission from the old failed profile. |
+| Activity completion space, `work/activity-storage/gate-9` | SDK `16a80cee` has 457 passing workspace tests and three existing optional tests ignored; lint, formatting, source size, documentation and the wallet-only build pass. Coverage combines 378 unchanged passing tests from gate 6 with 79 rerun or previously unreached tests. The corrected fault targets the refund owner's release; production code is unchanged between those runs. | The original full invocation remains failed. This is dependency/integration evidence on its recorded graph; current full-history acceptance is separate. |
+| Rejected first wallet write, `work/rejected-admission/gate-1` through `gate-3` | The new regression fails before the correction with missing cancellation evidence. SDK `715969e` passes the complete workspace invocation: 458 tests, zero failures and three existing optional tests ignored. Formatting, strict lint and the wallet-only build pass; the exact verified fix is integrated locally. | The fix cannot reconstruct the erased admission from the old failed profile. Current controlled phone acceptance is complete; current router/history acceptance remains above. |
 | Failed native preparations, `work/receiver-history-native/build-6` through `build-8` | Original recovery audits reconcile all 3,072 test sats from each run without new funding. The original mint policy and financial evidence remain retained. | Token-size, collection-time and sparse-selection failures retain their failed verdicts. The later build does not change them. |
-| Latest capacity probe, `work/receiver-history-native/capacity-2` | Incoming payout and four onward channel settlements succeed at 20 MiB. Original recovery completes the native send and retires four paid channels. The independent partial-recovery audit conserves 3,072 spendable test sats, unchanged mint financial records and the 128-sat lifetime debit. | The fifth channel is refused and its unfunded controller request remains pending after its admission record was removed. Synthetic ballast retains the old starting charge and does not qualify genuine receipt history or sustained forwarding. The preceding capacity-1 failure remains fully recovered. |
-| Genuine history, `work/receiver-history-native/run-2` through `run-4` | All 5,480 original receipts remain preserved. Separate recovery audits reconcile all 3,072 test sats from each failed run. The latest completes two paid channels before the third opening is refused. | The complete cleanup/forwarding observation has not passed. Replacing genuine receipts with ballast or raising capacity would not close it. |
+| Historical capacity probe, `work/receiver-history-native/capacity-2` | Incoming payout and four onward channel settlements succeed at 20 MiB. Original recovery completes the native send and retires four paid channels. The independent partial-recovery audit conserves 3,072 spendable test sats, unchanged mint financial records and the 128-sat lifetime debit. | The fifth channel is refused and its unfunded controller request remains pending after its admission record was removed. Synthetic ballast retains the old starting charge and does not qualify genuine receipt history or sustained forwarding. The preceding capacity-1 failure remains fully recovered. |
+| Genuine history, `work/receiver-history-native/run-2` through `run-4` | All 5,480 original receipts remain preserved. Separate recovery audits reconcile all 3,072 test sats from each failed run. Run 4 completes two paid channels before the third opening is refused. | These runs stay failed; later run 8 supplies the separate native pass. Ballast, larger limits or the native result cannot substitute for current router acceptance. |
 | Initial-funding physical cut, `work/power-cut-sender-handoff-attempt3` | The captured cut preserves original funding authority. A continuation recovers the original channels, delivers 1,280 payloads in each direction and collects all 384 test sats; normal baselines are restored. | Recovery required controller intervention after the runner lost its SSH connection. It does not establish unattended recovery, flash-write atomicity or settlement/retirement power-loss safety. Further manual cuts are cancelled. |
 | Paid carriers, r613 | Seven recorded-graph cases cover TCP, configured/seeded WebSocket, self-signed/CA-validated TLS and sustained UDP/Ethernet loss. Independent audits conserve all 2,688 test sats with no unfinished operations. | Native processes and virtual links; no physical mobility or final-device claim. |
 | Native/router costs, r613/r620 and the ARM64 storage comparison | [Cadence results](CADENCE-RESULTS.md) retain the matched four-policy matrices, independently reconciled payment-service captures and storage traces, including failed attempts and original financial closure. | Shared/opaque traffic, physical media, airtime and battery costs remain outside the reported attribution. The 500-ms default is unchanged; no general optimum is established. |
-| Phone transit and costs, r615/r621 | Foreground/background and forced-Doze transit pass on their recorded graph. The cost comparison delivers all 17 MiB in its two background windows. Original funds are reconciled and owned temporary apps/profiles are removed. | Natural deep idle, physical mobility and the final dependency graph remain unqualified. USB power and unequal idle tails do not establish battery cost or an optimum rate. |
-| Paid cleanup and renewal, r624/r626 | Original delivery, authorization and credit advance during fragmented cleanup; the renewal case funds exactly one successor. Both reconcile their 384 test sats and restore normal device baselines. | These are bounded observations on their recorded graph. They do not close the aggregate history/resource audit or physical power-loss gaps. |
+| Phone transit and costs, r615/r621 | Foreground/background and forced-Doze transit pass on their recorded graph. The cost comparison delivers all 17 MiB in its two background windows. Original funds are reconciled and owned temporary apps/profiles are removed. | Historical costs retain that graph; current controlled phone acceptance is complete above. Natural deep idle, physical mobility, battery cost and a general optimum remain unqualified. |
+| Paid cleanup and renewal, r624/r626 | Original delivery, authorization and credit advance during fragmented cleanup; the renewal case funds exactly one successor. Both reconcile their 384 test sats and restore normal device baselines. | These bounded recorded-graph observations do not close the current aggregate history/resource observation or establish physical power-loss safety. |
 
 Current fixes retain the original request identities, financial ownership,
 lifetime totals and configured storage limits. Completion allowances are admitted
@@ -773,7 +386,8 @@ for manual testing or an unlimited sequence of longer runs.
 Native admission reconciliation is complete for the recorded graph: r528 covers
 contract/startup boundaries, r613 supported carriers, r531 quote/free-route cases
 and r532 the four funded bootstrap, return, newcomer and contention scenarios.
-Physical mobility, resource and target acceptance remain separate requirements.
+Current controlled radio recovery and router history/resource acceptance remain
+separate requirements; the physical-movement limitations above remain explicit.
 
 The manual power-cut harness supports both initial funding and committed
 settlement, sharing operator confirmation, outage/boot evidence and original
@@ -801,9 +415,10 @@ ARM64 router: six 256-sat channels under a 16 MiB native allowance, and four
 budget. Exact coins and lifetime totals survive retirement, reopen and replay.
 This covers completion reservations, not a literally full 32 MiB client file.
 r550/r554 cover synthetic retirement, collection and capture on the router;
-identity reuse reduces large-history retirement to 68.346 seconds. Remaining
-reachable workflows, maintenance interference and physical-storage behavior
-still need qualification. A page-size limit does not itself bound a whole call.
+identity reuse reduces large-history retirement to 68.346 seconds. The current
+source audit maps the reachable roles; aggregate maintenance interference during
+full history remains to be observed. Physical-storage and generic whole-call
+bounds are not established. A page-size limit does not itself bound a whole call.
 Reuse the existing harness for admission, rollback and reserved completion checks.
 
 ### Evidence and stopping rules
@@ -834,28 +449,29 @@ checks remain covered. The native relay regression conserves all 384 test sats,
 retires 480 refund coins and observes paid progress through cleanup. Two new
 purchase attempts are refused during the held plan, then exactly one purchase
 succeeds after cleanup. These are native results, not device or power-loss
-qualification. The affected relay format, size and strict-lint gates pass;
-whole-workspace formatting still reports unrelated changes in two core tests.
+qualification. At that checkpoint the affected relay format, size and strict-lint
+gates pass, while whole-workspace formatting reports unrelated changes in two
+core tests; this is not a new current-check result.
 
 | Evidence | What it establishes | Limit |
 | --- | --- | --- |
-| Control reuse after r611 | Runtime `1b948a688` fixes two demonstrated TCP/FIPS races: a responder's idle timer closes a connection still reusable by the requester, and connection-pressure eviction discards an already buffered request. Both fail before the fix; 18 control unit and 16 integration tests pass with strict affected lint, formatting and source-size gates. Shared setup avoids duplicating the native connection fixture. | No-money regressions; the matching stream error does not prove the exact r611 trigger. Idle entries retain the existing eight-entry/per-peer bounds, requester expiry and peer-FIN cleanup; arbitrary eviction or network failure can still fail an exchange. No transmitted request is replayed. Exact sources, failures and successful gates remain in `work/control-reuse-r611`; r613 reconciles paid carriers and native/router cadence; r615 reconciles controlled phone transit. Natural Android idle remains open. |
+| Control reuse after r611 | Runtime `1b948a688` fixes two demonstrated TCP/FIPS races: a responder's idle timer closes a connection still reusable by the requester, and connection-pressure eviction discards an already buffered request. Both fail before the fix; 18 control unit and 16 integration tests pass with strict affected lint, formatting and source-size gates. Shared setup avoids duplicating the native connection fixture. | No-money regressions; the matching stream error does not prove the exact r611 trigger. Idle entries retain the existing eight-entry/per-peer bounds, requester expiry and peer-FIN cleanup; arbitrary eviction or network failure can still fail an exchange. No transmitted request is replayed. Exact sources, failures and successful gates remain in `work/control-reuse-r611`; r613 reconciles paid carriers and native/router cadence; r615 reconciles controlled phone transit. Natural Android idle remains unqualified. |
 | r611 rejected native cadence | All 285,696 payloads arrive and independent original-state audits conserve 40,960 test sats across 48 closed channels. Sources/artifacts are unchanged; all 872 original files and 96 complete SQLite sets remain retained, with owned processes/file handles absent. | The strict analyzer rejects a usage-request stream error in trial 5. Later payment progress does not clear the historical failure. No overhead comparison is accepted; no retries, replacement grants or device runs follow. Raw evidence and closure remain in `work/cadence-final-r611/native`. |
 | r607 common graph and paid carriers | FIPS `718cfe5be`, SDK `dad0fc3` and Spilman `669fbdd943` pass all seven existing paid carrier scenarios with canonical manifests. Credit exhaustion, renewal, restart and settlement preserve the tested limits. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples; 39,899–39,914 of 42,000 payloads arrive per direction under counted every-twentieth-frame loss. Independent original mint/wallet checks conserve all 2,688 test sats, with no unfinished operations or duplicate/mint-spent live coins. Ordinary Linux/ARM64 builds, affected strict lint and size checks pass. | Linux processes and virtual links; no device, physical power-loss, mobility or throughput claim. Only the generated-CA case uses the dedicated test-root daemon. Original coin identities, all 445 archived files, source/artifact bindings and stopped processes/file owners are verified in `work/current-carriers-r607/attempt-2`; no retries or replacement funding. The earlier attempt remains an unfunded native-build-only result. |
 | r610 bounded settlement replies | Spilman `669fbdd943` shares one streaming reader across metadata, restore and swap responses. Swap success/error bodies are limited before parsing, using declared length and streamed bytes; each request has a 30-second deadline. The baseline accepts an oversized signed reply and waits beyond the test's 35-second guard. The fix passes 15 networking, closing and restore checks, including the actual deadline and preservation of original funding, payment signature and blinded outputs across retry. | Loopback HTTP and synthetic signed recovery, not a new real-mint spent-input recovery result. A full close can make several requests. Production lint is strict; unit-test lint permits only the repository's existing `unwrap` convention. The isolated test copy omits an inactive optional axum/macros resolver request; active features and all selected package versions/checksums match the accepted graph, and canonical manifests are unchanged. Setup and initial lint failures remain preserved in `work/settlement-http-r610`. r613 qualifies the common native and router graph; r615 adds controlled phone transit. The remaining resource and recovery acceptance is separate. |
 | r609 bounded receiver retirement | Three individually valid 400-proof payouts reproduce the aggregate 1,024-coin handoff refusal. Runtime `718cfe5be` starts one eligible channel per upkeep, ordered by refund deadline then ID, while preserving saved-plan recovery. All 15 seller-history checks, strict library lint, focused formatting and size gates pass; the regression preserves cumulative totals and unrelated authority through each retirement and reload. | Storage-only proof identities exercise the real controller and SDK plan validation; no mint funds or devices are involved. Existing pending plans resume unchanged. The two-second upkeep cadence adds roughly up to 32 seconds for 16 eligible channels, plus processing and retries; this is not a measured completion bound. Receiver pressure, concurrent forwarding and final target acceptance remain open. Sources and both red/green receipts remain in `work/receiver-bounds-r609`. |
 | r606 new purchase during retirement | The existing ordinary Linux fixture adds a distinct provider with no initial funds. With 480 refund coins and one pending cleanup plan, two Buy requests reject in 33/26 ms without funding, reservation or route changes; original paid delivery continues. After cleanup, exactly one new 32-sat channel funds, with both routes delivering and earning credit. All 5,249 originals arrive. Build, strict affected lint, formatting and size checks pass. Independent wallet/mint and native authority audits conserve all 384 test sats, retire 15 old channels and close both remaining channels at 21/1 sats paid and 11/31 refunded. Lifetime debit/refund remain 544/522, with zero locks, reservations or unfinished operations. | Test-only changes on runtime `4cb34fe19`, SDK `dad0fc3`; loopback links and deliberate SQLite contention. The first attempt completed behavioral and settlement checks but failed its final empty-wallet query; its failed verdict and independently closed originals are retained. The corrected helper skips only the empty query. This qualifies native contention, not hardware new purchases, physical power loss, signing latency or performance. Sources, stopped archives and both audits remain in `work/purchase-retirement-r606`. |
-| r605 idle recovery after key change | Runtime `d0a29e889` tracks whether application data used the current epoch before retrying unanswered-data recovery. Lifetime delivery history, pending exchanges and explicit decrypt-failure recovery remain intact. The real 45-second drain regression fails on the baseline and passes with the fix, including seven idle seconds and recovery/delivery after fresh demand. Ten relevant compatibility checks pass. The ordinary native paid fixture observes 7,026 ms with unchanged endpoint epochs, per-channel priced evidence and all five payment request counters; 16/16 fresh packets, restart/reverse boundaries, three settlements and 1,024-sat conservation then pass. Strict affected lint, focused formatting and size gates pass. | The focused regression is native UDP only; final router/phone reconciliation remains. The earlier accelerated-drain candidate failure remains unexplained and preserved. Full-tree formatting still differs in two untouched core test files. Successful-fixture financial evidence is source/output assertions with normal cleanup, not an independent post-success SQLite audit. The long core regression is opt-in and was explicitly run; no longer-window zero-cost claim follows. Exact sources and receipts remain in `work/idle-recovery-r605`. |
-| r624 router delivery during retirement | Ordinary ARM64 runtime `1b948a688` with SDK `dad0fc3` repeats r604's workload with 480 real refund coins in a 1,649,458-byte client store. All 4,609 original packets arrive: one warmup, 512 while the writer is held and 4,096 after release. Both stages observe new authorization, provider credit and delivery during one contiguous pending retirement plan; all 15 old channels finish retiring. The original active channel closes with 19 sats paid and 13 refunded. Independent checks of all nine complete SQLite sets reconcile the original 384 sats into the collector, with no duplicate/mint-spent live funds or pending mint operations. All 2,394 management checks pass; normal baselines are restored and the stopped test profiles are archived and removed. | This reconciles the accepted r604 cleanup/delivery case on the current graph. It is not a physical power cut, maximum-throughput test, CPU attribution, signing-latency bound or hardware renewal/new-purchase qualification. Four completed export records retain 129 pending-spent proofs worth 192 sats, all proven spent at the original mint; they carry no outstanding value. Failed r601 evidence is preserved. Current source, artifact, archive, audit and cleanup bindings remain in `work/retirement-current-r624`; the earlier accepted result and cleanup remain in `work/cudy-retirement-r604`. |
+| r605 idle recovery after key change | Runtime `d0a29e889` tracks whether application data used the current epoch before retrying unanswered-data recovery. Lifetime delivery history, pending exchanges and explicit decrypt-failure recovery remain intact. The real 45-second drain regression fails on the baseline and passes with the fix, including seven idle seconds and recovery/delivery after fresh demand. Ten relevant compatibility checks pass. The ordinary native paid fixture observes 7,026 ms with unchanged endpoint epochs, per-channel priced evidence and all five payment request counters; 16/16 fresh packets, restart/reverse boundaries, three settlements and 1,024-sat conservation then pass. Strict affected lint, focused formatting and size gates pass. | The focused regression is native UDP only; current phone acceptance is complete above and current router/history acceptance remains separate. The earlier accelerated-drain candidate failure remains unexplained and preserved. That checkpoint retains a full-tree formatting difference in two untouched core test files. Successful-fixture financial evidence is source/output assertions with normal cleanup, not an independent post-success SQLite audit. The long core regression is opt-in and was explicitly run; no longer-window zero-cost claim follows. Exact sources and receipts remain in `work/idle-recovery-r605`. |
+| r624 router delivery during retirement | Ordinary ARM64 runtime `1b948a688` with SDK `dad0fc3` repeats r604's workload with 480 real refund coins in a 1,649,458-byte client store. All 4,609 original packets arrive: one warmup, 512 while the writer is held and 4,096 after release. Both stages observe new authorization, provider credit and delivery during one contiguous pending retirement plan; all 15 old channels finish retiring. The original active channel closes with 19 sats paid and 13 refunded. Independent checks of all nine complete SQLite sets reconcile the original 384 sats into the collector, with no duplicate/mint-spent live funds or pending mint operations. All 2,394 management checks pass; normal baselines are restored and the stopped test profiles are archived and removed. | This reconciles the accepted r604 cleanup/delivery case on its recorded graph. It is not a physical power cut, maximum-throughput test, CPU attribution, signing-latency bound or hardware renewal/new-purchase qualification. Four completed export records retain 129 pending-spent proofs worth 192 sats, all proven spent at the original mint; they carry no outstanding value. Failed r601 evidence is preserved. Recorded source, artifact, archive, audit and cleanup bindings remain in `work/retirement-current-r624`; the earlier accepted result and cleanup remain in `work/cudy-retirement-r604`. |
 | r626 router renewal during retirement | The same ordinary ARM64 runtime and dependency graph retains 480 refund coins from 15 old channels. Both held stages advance authorization, provider credit and delivery; the due-renewal stage preserves the selected predecessor and original funding authority. After cleanup, exactly one 32-sat successor funds automatically and delivers 64 packets for 1 sat. All 1,089 original packets arrive. Independent audits of nine complete SQLite sets close all 17 originals and conserve the original 384 sats; lifetime debit/refund are 544/538, with zero final locks, reservations or unfinished operations. All 2,395 management checks pass and normal network baselines are restored. | This qualifies hardware renewal deferral/resumption on runtime `1b948a688`, SDK `dad0fc3`, without a held successor mint reply. It does not qualify hardware new purchases, maximum resource costs, physical power loss or a later SDK runtime. All four original archives and mint recovery identity are retained; the stopped test profiles are archived and removed. Evidence remains in `work/retirement-renewal-r626`. |
-| r603 one-way key confirmation | Runtime `4cb34fe19` adds a fixed 28-byte authenticated rekey proof within the existing handshake limits. It reserves nonce zero before exposing the new epoch and retries identical bytes, preserving replay authority and MMP counters. Seven focused core checks cover confirmation, malformed/replayed/wrong-key traffic, response gates, dropped handshake/proof retry and ordinary-report recovery. Both ordinary native fixtures pass, including 16/16 fresh packets after a real drain with `return_allowance=false`, restart, reverse-payment limits and 1,024-sat conservation per fixture. Strict affected lint, format, size and ordinary ARM64 build checks pass. | The original runtime's 0/16 failure is preserved. The first fixed fixture delivers 16/16 but fails an idle assertion placed after the new long workload; the final fixture restores the original idle check's placement and accepts a drain already in progress. Both failed originals are independently reconciled. The latter's signed payments 13/9/5 and refunds 19/23/27 are recovered into wallets `[243,260,260,261,0]`; retained grace debt is 3,012/3,008/3,004 msat. Successful-fixture evidence is source/output verification, not a post-success database audit. [Wire format and upgrade requirements](../../docs/design/fips-wire-formats.md#sessionconfirm-phase-0x4) apply; r604 separately qualifies the three-router cleanup case, and r605 qualifies a bounded idle window after full drain; mixed-version operation and longer-term control costs remain open. Exact evidence stays in `work/one-way-rekey-r603`. |
-| r602 renewal during retirement | The existing ordinary-process fixture now also makes renewal due while 15 closed channels retain 480 refund coins. Across 32 status samples, payments and delivery advance while retirement prevents new funding IDs or reservations. After release, exactly one successor reserves 32 sats; payments on the predecessor continue while its mint reply is held. The original successor completes automatically with preserved lifetime totals. The new case and original payment case pass, and independent SQLite checks conserve all 768 test sats without pending operations or duplicate/mint-spent live coins. Build, strict affected lint, formatting and size checks pass. | Test-only changes on the current ordinary Linux runtime, with `return_allowance=false`. This qualifies the recorded native renewal/retirement overlap; hardware renewal, signing-latency and performance acceptance remain separate. r606 closes native new-purchase contention; r603/r604 close the recorded session regression. Both setup-only failures are preserved with zero issuance. Sources, logs and original stopped fixtures are bound in `work/renewal-retirement-r602`. |
+| r603 one-way key confirmation | Runtime `4cb34fe19` adds a fixed 28-byte authenticated rekey proof within the existing handshake limits. It reserves nonce zero before exposing the new epoch and retries identical bytes, preserving replay authority and MMP counters. Seven focused core checks cover confirmation, malformed/replayed/wrong-key traffic, response gates, dropped handshake/proof retry and ordinary-report recovery. Both ordinary native fixtures pass, including 16/16 fresh packets after a real drain with `return_allowance=false`, restart, reverse-payment limits and 1,024-sat conservation per fixture. Strict affected lint, format, size and ordinary ARM64 build checks pass. | The original runtime's 0/16 failure is preserved. The first fixed fixture delivers 16/16 but fails an idle assertion placed after the new long workload; the final fixture restores the original idle check's placement and accepts a drain already in progress. Both failed originals are independently reconciled. The latter's signed payments 13/9/5 and refunds 19/23/27 are recovered into wallets `[243,260,260,261,0]`; retained grace debt is 3,012/3,008/3,004 msat. Successful-fixture evidence is source/output verification, not a post-success database audit. [Wire format and upgrade requirements](../../docs/design/fips-wire-formats.md#sessionconfirm-phase-0x4) apply; r604 separately qualifies the three-router cleanup case, and r605 qualifies a bounded idle window after full drain; mixed-version operation and control costs beyond the recorded window remain unqualified. Exact evidence stays in `work/one-way-rekey-r603`. |
+| r602 renewal during retirement | The existing ordinary-process fixture now also makes renewal due while 15 closed channels retain 480 refund coins. Across 32 status samples, payments and delivery advance while retirement prevents new funding IDs or reservations. After release, exactly one successor reserves 32 sats; payments on the predecessor continue while its mint reply is held. The original successor completes automatically with preserved lifetime totals. The new case and original payment case pass, and independent SQLite checks conserve all 768 test sats without pending operations or duplicate/mint-spent live coins. Build, strict affected lint, formatting and size checks pass. | Test-only changes on the recorded ordinary Linux runtime, with `return_allowance=false`. This qualifies native renewal/retirement overlap; r626 separately qualifies recorded hardware renewal. This fixture does not isolate signing latency or performance. r606 closes native new-purchase contention; r603/r604 close the recorded session regression. Both setup-only failures are preserved with zero issuance. Sources, logs and original stopped fixtures are bound in `work/renewal-retirement-r602`. |
 | r601 fragmented-router attempt | The ordinary ARM64 build includes runtime `2aaef7cc8` and SDK `dad0fc3`. Corrected fixture qualification passes six native mint cases, 43 harness checks and strict affected lint/format/size checks. Three routers retain 480 original refund coins, then submit 512 paid packets while cleanup is held. Signing and provider credit advance, but all six receiver samples report zero delivery and the destination reports session decryption failures. Normal closure retires all 15 old channels and collects all 384 original test sats; independent checks cover all nine databases and preserve lifetime debits/refunds. | **Delivery acceptance failed; post-release traffic was not reached.** One warmup packet arrived. The 2,354 management checks pass, normal services/accounts are restored, and closed profiles are archived before removal. r603 separately reproduces the session failure without wallet maintenance; this is not evidence that payment signing caused it. Failed results and exact source/artifact/archive bindings remain in `work/cudy-retirement-r601`. |
-| r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. r600/r601 qualify its ordinary ARM64 build; final physical acceptance remains open. |
+| r599 completed handover recovery | The regression reproduces a reload rejection after expiry converts a completed cooperative handover's predecessor settlement. Runtime `2aaef7cc8` permits that completed transition while preserving its refund, report, payment and successor authority; nine corruption cases are rejected. All 25 affected preopening, retirement, settlement and expiry checks pass, with strict library lint and source-size checks. The ordinary Linux daemon recovers the two original r529 failures: 768 test sats remain in their wallets, with zero channels or pending wallet/mint operations. | Exact identities, keysets, issuance, configurations and funding sequences are unchanged. The original failed r529 verdicts and intermediate r598 failure remain preserved. Independent archive/SQLite checks cover all 126 recovered original files in `work/handover-expiry-r599/recovery`. r600/r601 qualify its ordinary ARM64 build; that recovery result does not replace current target acceptance. |
 | r566/r576 sender retirement | The existing interrupted-handoff regression fails before the fix and passes with SDK `dad0fc3`: an unrelated funded channel pays successfully, and its saved balance survives resumed cleanup. All 444 workspace tests pass, with strict all-target lint and formatting. The existing lock test now allows bounded fork/exec descriptor-release latency; the earlier failed full run is retained. | Three opt-in tests remain excluded from the default suite. No new wire messages, lock files or store versions. [Paired router observations](#payments-during-sender-retirement) establish sampled availability, not live payment latency during a large cleanup. Funding and renewal still share the wallet owner. |
-| r572/r577/r578 ordinary relay | Three Linux wallet-retirement cycles conserve all 384 test sats including mint fees. The ordinary ARM64 build delivers all 2,048 paid packets across three routers, retires two sender and two receiver channels, and collects all 384 test sats. Six controller reads take 166–179 ms during SQLite writer contention; all 282 management checks pass. Original services/accounts are restored and closed profiles are archived before removal. | Small-channel forwarding and recovery on the same production SDK graph, not concurrent paid forwarding during large-history cleanup. Physical power loss and final broader target reconciliation remain open. Source/artifact/log bindings are retained in `work/retirement-relay-r572`, `work/retirement-arm-r577` and `work/retirement-router-r578`. |
+| r572/r577/r578 ordinary relay | Three Linux wallet-retirement cycles conserve all 384 test sats including mint fees. The ordinary ARM64 build delivers all 2,048 paid packets across three routers, retires two sender and two receiver channels, and collects all 384 test sats. Six controller reads take 166–179 ms during SQLite writer contention; all 282 management checks pass. Original services/accounts are restored and closed profiles are archived before removal. | Small-channel forwarding and recovery on the same production SDK graph, not concurrent paid forwarding during large-history cleanup. These results do not establish physical power-loss safety or replace current router/history acceptance. Source/artifact/log bindings are retained in `work/retirement-relay-r572`, `work/retirement-arm-r577` and `work/retirement-router-r578`. |
 | r592 paid retirement liveness | Three ordinary Linux processes deliver all 4,609 original packets with 480 real refund coins retained. After the external writer is released, adjacent observations show new provider credit and destination deliveries during the same pending retirement plan. Independent mint/wallet checks account for all 384 test sats; the existing three-cycle case separately accounts for 384 sats including 13 in fees. Formatting, strict affected-target lint and source-size checks pass. | Linux loopback liveness, not uninterrupted native execution, signing-latency bounds, CPU attribution or router performance. Original fixtures and source/artifact/log bindings are preserved in `work/live-retirement-r592`. Funding and renewal still share the wallet owner. |
-| r615 current Android | Runtime `1b948a688` and SDK `dad0fc3` pass the ordinary arm64 build, strict target lint, ten Java tests, Android lint, signature and packaged-native checks; 153 Linux harness checks pass without skips. The Pixel rejects unpaid transit and forwards 4 MiB across foreground, background, forced Doze and after idle, using the same process and four original paid channels. All 594 management checks pass. Independent audits of 11 complete SQLite sets, including four native receiver stores, account for all 512 test sats in the collector and preserve the original spending limits. | Controlled LAN/UDP adjacency on the charging, ADB-connected phone; forced Doze lasts 47.949 seconds. Natural idle, battery life, performance and physical mobility remain unqualified. The r617 mint's private recovery record matches the original database identity and all six cached public keysets; no mint restart is performed. Five completed export records retain 100 `PENDING_SPENT` rows, all proven spent at the original mint with zero outstanding value. Sources, artifacts, stopped originals and audits remain in `work/android-current-r615` and `work/phone-current-r615`. |
+| r615 historical Android | Runtime `1b948a688` and SDK `dad0fc3` pass the ordinary arm64 build, strict target lint, ten Java tests, Android lint, signature and packaged-native checks; 153 Linux harness checks pass without skips. The Pixel rejects unpaid transit and forwards 4 MiB across foreground, background, forced Doze and after idle, using the same process and four original paid channels. All 594 management checks pass. Independent audits of 11 complete SQLite sets, including four native receiver stores, account for all 512 test sats in the collector and preserve the original spending limits. | Controlled LAN/UDP adjacency on the charging, ADB-connected phone; forced Doze lasts 47.949 seconds. Natural idle, battery life, performance and physical mobility remain unqualified. The r617 mint's private recovery record matches the original database identity and all six cached public keysets; no mint restart is performed. Five completed export records retain 100 `PENDING_SPENT` rows, all proven spent at the original mint with zero outstanding value. Sources, artifacts, stopped originals and audits remain in `work/android-current-r615` and `work/phone-current-r615`. |
 | r597 paid carriers | Runtime `d6874c3bf` with SDK `dad0fc3` passes the same seven scenarios as r529: mixed UDP/TCP, configured and URL-seeded WebSocket, self-signed and CA-validated TLS, and sustained UDP/Ethernet loss. Paid/unpaid boundaries, exhaustion, renewal, restart and final conservation pass. Independent mint/wallet checks account for all 2,688 test sats, with no unfinished wallet operations or duplicate/mint-spent live coins. Both five-minute loss cases observe three renewals per direction, key rotation and no disconnected-neighbor samples. Strict service lint and source-size checks pass. | Linux process/virtual-link evidence; Ethernet runs in an isolated namespace. Only the generated-CA case uses the explicit test-root executable. Loss cases deliver 39,900–39,905 of 42,000 payloads per direction while counting every-twentieth-frame loss; they do not measure maximum throughput or physical mobility. All 445 original files and 13 command logs are retained and hash-verified in `work/carriers-current-r597`. |
 | r531 quotes and free routes | Six existing cases pass on their recorded graph: paid/free quote composition over native neighbor control, an explicitly free destination across three relays, arbitrary free destinations, free price-selection recovery and rejection of a paid prefix under a zero-price ceiling. The ordinary daemon's free-route cases preserve monetary journals through restart and make no mint requests. | Unchanged production and test source. Linux loopback evidence without funded wallets; it does not replace the four funded admission scenarios above. Artifact/log hashes, stopped processes and removal of successful temporary state are verified in the private `work/admission-current-r531` bundle. |
 | r532 funded admission | Both unfunded-recipient bootstrap/earned-return cases, fresh paying-neighbor admission under full-wallet pressure, and mixed free/paid contention pass on the current ordinary runtime. All 2,816 test sats are conserved. The contention case delivers all 24 paid payloads and reconciles payment while the free stream is active; background-queue overflow is observed and free traffic resumes after refill. Strict affected-target lint, formatting and source-size checks pass. | Test-state retention is shared and extended; runtime unchanged. Linux loopback contention is pinned to two CPUs with mandatory observed background pressure. This establishes local scheduling, not Wi-Fi airtime or unrestricted-identity fairness. Sources/artifacts/logs and successful cleanup are verified in `work/funded-admission-r532`. |
@@ -1101,10 +717,9 @@ native automatic renewal across the same maintenance boundary and a held mint
 reply; r604 qualifies the recorded router forwarding/cleanup overlap below.
 r606 also verifies native new-purchase rejection during the same pending plan,
 then one successful purchase after cleanup with original route payments intact.
-Signing delays remain open; r626 qualifies the recorded hardware renewal case.
-Wallet ownership still serializes maintenance
-and funding; this change promises neither constant-time work nor uninterrupted
-traffic.
+Signing costs are not isolated here; r626 qualifies the recorded hardware renewal
+case. Wallet ownership still serializes maintenance and funding; this change
+promises neither constant-time work nor uninterrupted traffic.
 
 The hardware new-purchase case on SDK `9626cd1` delivers all 5,633 original
 packets. Signing, provider credit and delivery advance during both held-writer
@@ -1231,21 +846,22 @@ an RF anti-jamming guarantee.
 The Pixel has acted as both customer and transit router using the shared service.
 Recorded cases include background traffic, route/socket loss and rebind,
 renewal, corrupted/lost traffic, and forced Doze with continuing payments.
-The latest controlled expiry check uses SDK `1a558a9` on the phone and all three
-routers. Unpaid transit is denied; all 2 MiB of paid duplex traffic arrive across
-foreground and background windows. The original channels recover their refunds
-after a controlled app stop and reopen, without replacement purchases. All 753
+The historical controlled expiry check uses SDK `1a558a9` on the phone and all
+three routers; [current phone acceptance](#current-phone-acceptance) uses the later
+session-recovery artifact. Unpaid transit is denied; all 2 MiB of paid duplex
+traffic arrive across foreground and background windows. The original channels
+recover their refunds after a controlled app stop and reopen, without replacement purchases. All 753
 management checks pass. Independent original-state audits reconcile four channels
 and all 512 test sats into the collector, preserving original accounts and normal
-Wi-Fi. Native receiver-history retirement, natural deep idle, battery cost and
-actual moving-radio behavior remain unqualified. The production-wallet/VPN
-capabilities of a phone app are not supplied by the bench UI.
+Wi-Fi. That case does not qualify phone receiver-history pressure, natural deep
+idle, battery cost or actual moving-radio behavior. The bench UI supplies no
+production-wallet/VPN capability.
 The archived temporary app and closed router test profiles have been removed;
 the original app, accounts and mint recovery evidence remain preserved.
 
-The ordinary Android build passes native/feature/lint checks, ten Java tests,
-package and signature verification, and embedded-library identity checks. The
-three rendered screens match r615. Sources and build owners are reconciled in
+The matching historical Android build passes native/feature/lint checks, ten
+Java tests, package/signature verification and embedded-library identity checks.
+The three rendered screens match r615. Sources and build owners are reconciled in
 `work/android-rejected-funding`; the phone originals and acceptance evidence are
 in `work/phone-expiry-rejected-funding`. An app restart lost the local supervisor's
 exit status; the original runner continued once, and its terminal result, device
@@ -1291,7 +907,7 @@ use the bounded constructor. Profile, service terms and database capacity must
 agree when reopening. Existing uncapped accounts are rejected without conversion.
 The 20 MiB example value is explicit in generated profiles, not inferred from
 missing saved data. These are logical storage reservations; filesystem/WAL
-headroom and physical power-loss acceptance remain separate requirements.
+headroom and physical power-loss safety are not supplied by logical admission.
 
 Custody archive format 7 reserves its pages, native ownership metadata and maximum
 cursor growth in the same transaction as its exact registry checkpoint. Other
@@ -1310,28 +926,29 @@ This is source evidence, not a new whole-call timing or memory result. The recei
 is in `work/current-resource-source-reconciliation.json`.
 
 The remaining current-target observation concerns aggregate memory, disk and
-maintenance interference during the full history workload. Proof capture and owner/receipt scans can
-traverse many bounded pages in one call; r515 removes the controller lock from
-that work but does not make the work constant-time. r527/r530/r533 measure receipt
-and operation scans, decoded large originals and shared capture. r534/r535 measure
+maintenance interference during the full history workload. Proof capture and
+owner/receipt scans can traverse many bounded pages in one call; r515 removes the
+controller lock from that work but does not make the work constant-time.
+r527/r530/r533 measure receipt and operation scans, decoded large originals and shared capture. r534/r535 measure
 actual native sender retirement and reduce repeated source authorization through
 capture-scoped reuse. r541/r549 measure sender refunds through full retirement,
 including saturation of native and client admission budgets. r562/r565 qualify
 both aggregate profiles on one ARM64 router. r592 verifies Linux paid progress
 during fragmented retirement; r624 reconciles r604's three-router overlap on the
-current runtime and dependency graph. r626 adds automatic router renewal after
+recorded runtime and dependency graph. r626 adds automatic router renewal after
 that cleanup, with continued predecessor payments while renewal is deferred.
 The paired receiver admission check below covers logical storage pressure. The
-latest run 8 also passes genuine retained-receipt pressure and paid progress at
-20 MiB, preserving all 5,480 receipts and all original value. Its observed receiver
-cleanup takes about 1.043 seconds after writer release, with sampled peak RSS of
-124,392 KiB for the whole relay process. Device costs, other reachable workflows
-and physical-storage acceptance remain open.
+historical native run 8 passes genuine retained-receipt pressure and paid progress
+at 20 MiB, preserving all 5,480 receipts and all original value. Its observed
+receiver cleanup takes about 1.043 seconds after writer release, with sampled
+peak RSS of 124,392 KiB for the whole relay process. This does not replace the current
+router full-history/aggregate observation or establish physical-storage bounds.
 
 The resource audit follows these production entry points. Shared SDK limits
 apply on every wallet open; a bounded record or page does not establish a hard
-whole-call elapsed or RSS maximum. The queued independent full-run observer
-reports sampled process/host costs without making those stronger claims.
+whole-call elapsed or RSS maximum. The independent observer prepared for the
+pending full run reports sampled process/host costs without making those stronger
+claims.
 
 Receiver cleanup selects one oldest eligible channel per upkeep. Its SDK handoff
 admits at most 1,024 payout proofs and releases them in batches of 128 into a
@@ -1404,7 +1021,8 @@ Across its eight-call drain, 53,744 individual saga reads and decoding take
 These wall-time components motivated bounded batching; they are not CPU costs.
 Instrumentation is excluded from production source. Batching is retained after
 the matched comparison above. The native case below checks complete cleanup
-with a genuine payout; saturated handoffs and device interference remain open.
+with a genuine payout. Current full history must still observe aggregate device
+interference; these isolated fixtures establish no generic worst-case handoff.
 
 The [spent-payout forwarding fixture](HISTORY.md) passes with the ordinary Linux
 relay rebuilt against SDK `033eea6`, CDK `c203b84f613d` and Spilman `669fbdd943`.
@@ -1463,8 +1081,8 @@ forwarding or performance acceptance. These failed/recovered originals remain in
 | --- | --- | --- |
 | Initialize/open and read balance | [Service](src/service.rs), [local wallet commands](src/wallet_tools.rs) | The current 34-source review retains bounded configured-mint catalog reads and scalar SQL balance sums. Current ordinary-ARM export acceptance measures reopen/acknowledgment at its retained-history limit. It supplies no generic catalog latency maximum or physical-storage reservation. |
 | Fund or recover an outgoing channel | [Purchase](src/controller/purchases.rs), [original funding recovery](src/controller/funding.rs) | Input/output limits, native and client completion reservations, interrupted funding and aggregate pressure. r602 covers native renewal deferral/resumption through sender retirement and a held mint reply; r606 covers rejection/resumption of a distinct new purchase. r626 adds hardware renewal deferral/resumption; the SDK `9626cd1` router case above closes new-purchase refusal/resumption on its recorded candidate. |
-| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. Aggregate costs under concurrent forwarding and final relay acceptance remain open. |
-| Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565; receiver completion on devices and aggregate costs under concurrent forwarding still need resource reconciliation. |
+| Accept and update an incoming payment | [Wallet admission](src/payment_control/wallet.rs), [payment control](src/payment_control.rs) | r619 checks paired receiver/native reservations at full logical capacity: admitted work completes and rejected admissions preserve both stores. SDK `ef294e5` adds the maximum 1,024-proof payout through reopen, import and retirement at full logical capacity. r628 measures the same four-case regression on one ARM64 router. The current full-history run retains the remaining aggregate forwarding/resource observation; this isolated payout test supplies no whole-process ceiling. |
+| Settle and recover refunds | [Cooperative settlement](src/controller/settlement.rs), [expiry recovery](src/controller/unilateral.rs) | r610 bounds settlement replies and preserves original closing authority on refusal/retry. Sender refund profiles pass r562/r565 and the isolated receiver payout is measured by r628. Current full history must still observe combined forwarding/resource behavior; these whole-call measurements retain their recorded scopes. |
 | Retire and collect history | [History coordination](src/controller/channel_history.rs), [receiver handoff](src/payment_control/retirement.rs) | r609 closes oversized aggregate receiver handoffs with one oldest eligible channel per upkeep. r624 verifies payment and forwarding progress during the 15-channel fragmented sender retirement case on three routers. Earlier whole-sender timings retain their recorded graphs. The native spent-payout case preserves exact active/unspent owners and bounds observed delivery/payment gaps at its recorded history size; the synthetic full-capacity observation below measures its bounded receiver handoff. Current genuine-history aggregate progress/memory acceptance remains pending. |
 | Import/export and acknowledge local tokens | [Wallet commands](src/wallet_tools.rs), [export handoff](src/wallet_tools/history.rs) | r614/r616 accept full 128-export caches on Linux and one ARM64 router, including refusal, acknowledgement and continued spending; the router acknowledgment takes 29.75 s. The larger-token case in `work/export-payload/gate-3` fills the 20 MiB store after 79 exports and passes refusal, recovery, acknowledgment and continued spending on the corrected CDK; Linux reopen/acknowledgment takes 13.627 s. The ordinary-ARM counterpart also passes at 20 MiB after 79 exports: whole acknowledgment takes 199.18 s, 193.39 CPU seconds and 61,184 KiB peak RSS; all 1,024 sats are independently reconciled. These are exclusively owned offline commands, so their duration is administrative downtime. |
 
@@ -1631,7 +1249,7 @@ these offline cases. The ARM run adds flash-backed operation and whole-command
 costs, as recorded above; concurrent history-pressure acceptance remains open.
 The source reconciliation itself adds no test execution or performance claim.
 
-r614 exercises the existing opt-in export fixture on the current runtime/SDK
+r614 exercises the existing opt-in export fixture on its recorded runtime/SDK
 graph. It retains 128 real exports, refuses a further request without changing
 the cache or spending state, acknowledges the full prefix, then exports the
 remaining balance. The whole offline reopen/acknowledgement takes 1.328 seconds
@@ -1698,9 +1316,11 @@ compatibility and recovery acceptance, not merely a successful compile.
 Mint issuance keeps the exact original operation, outputs and completion capacity
 through recovery. Retirement/release must not discard an unfinished owner or
 credit a result twice. Existing issue-ownership tests belong to the shared wallet
-implementation; relay code must reuse it. Melt, incoming receipt, external proof
-and other owners still require their own audit. [History](HISTORY.md) describes
-the caller's durable handoff and recovery obligations.
+implementation; relay code must reuse it. Existing incoming-receipt and
+external-proof owners retain their durable handoff and recovery obligations.
+The source reviews above cover the reachable relay roles; generic SDK workflows
+outside them, including Lightning melt creation, need their own audit before
+being added. [History](HISTORY.md) retains the caller's original-evidence duties.
 
 ## Boundaries and threats
 
