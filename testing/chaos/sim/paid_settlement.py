@@ -266,7 +266,7 @@ def settle_and_collect(run, prior_finances, *, execute=None, stop=None, export_p
 
 
 def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, stop,
-                           export_path, fixture=None, max_export_sat=None):
+                           export_path, fixture=None, max_export_sat=None, export_start=None):
     """Collect only after the caller has verified every channel's final settlement.
 
     This tail neither discovers funding nor relaxes the caller's financial
@@ -293,7 +293,9 @@ def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, sto
             expected[fixture.channel_providers[channel]] += paid
         require(balances == expected, "settled wallet distribution differs from verified payments")
     for node, balance in balances.items():
-        remaining, export_id, operations = balance, 1, set()
+        export_id = 1 if export_start is None else export_start(node)
+        require(type(export_id) is int and export_id > 0, 'invalid original export sequence floor')
+        remaining, operations = balance, set()
         while remaining:
             # Fragmented fixtures can bound each original transfer without
             # changing ordinary callers' single-export behavior.

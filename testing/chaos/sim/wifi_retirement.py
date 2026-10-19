@@ -198,9 +198,13 @@ def main():
                         help='one automatic successor deferred by fragmented retirement')
     variant.add_argument('--retirement-purchase', action='store_true',
                         help='one distinct provider purchase deferred by fragmented retirement')
+    variant.add_argument('--receiver-history-rows', type=int,
+                        help='1..5480 real completed receipts during spent receiver payout cleanup')
     args = parser.parse_args()
     if (args.retirement_renewal or args.retirement_purchase) and not args.fragmented_live:
         parser.error('retirement variants require --fragmented-live')
+    if args.receiver_history_rows is not None and (args.fragmented_live or not 1 <= args.receiver_history_rows <= 5480):
+        parser.error('receiver history requires1..5480 rows and is separate from --fragmented-live')
     args.mint_ssh_forward = False
     os.umask(0o077)
 
@@ -208,7 +212,11 @@ def main():
         raise TimeoutError('router retirement acceptance exceeded its bounded window')
 
     signal.signal(signal.SIGALRM, deadline)
-    if args.fragmented_live:
+    if args.receiver_history_rows is not None:
+        from .wifi_receiver_retirement import ReceiverRetirementRun
+        signal.alarm(7200)
+        ReceiverRetirementRun(args).execute()
+    elif args.fragmented_live:
         from .wifi_retirement_live import LiveRetirementRun, RUN_WINDOW
         signal.alarm(RUN_WINDOW)
         if args.retirement_renewal:

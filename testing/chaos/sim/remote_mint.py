@@ -14,13 +14,17 @@ from .wifi_remote import checked_name, checked_path
 
 
 class RemoteMint(SshCommands):
-    def __init__(self, spec, binary, run, root, address, max_issued_sat=512):
+    def __init__(self, spec, binary, run, root, address, max_issued_sat=512, *, receiver_history=False):
         if not re.fullmatch(r"[0-9a-f]{12}", run):
             raise ValueError("invalid mint run identity")
         ip = ipaddress.IPv4Address(address)
         if not ip.is_private or ip.is_loopback or ip.is_unspecified or ip.is_multicast:
             raise ValueError("mint requires an assigned private LAN address")
-        if type(max_issued_sat) is not int or not 1 <= max_issued_sat <= 512:
+        if type(receiver_history) is not bool:
+            raise ValueError('receiver history profile must be explicit')
+        if receiver_history and max_issued_sat != 3072:
+            raise ValueError('receiver history requires exactly 3072 test sats')
+        if type(max_issued_sat) is not int or not 1 <= max_issued_sat <= (3072 if receiver_history else 512):
             raise ValueError("phone acceptance issuance is capped at 512 test sats")
         port = spec.get('port', 0)
         if type(port) is not int or not 0 <= port <= 65535:
@@ -42,6 +46,8 @@ class RemoteMint(SshCommands):
             raise ValueError("mint control socket path is too long")
         self.settings = {"state_directory": state, "bind": f"{ip}:{port}",
                          "max_issued_sat": max_issued_sat}
+        if receiver_history:
+            self.settings['receiver_history_keyset'] = True
         self.info = {"host": self.host, "binary": self.binary, "config": self.config,
                      "address": str(ip), "binary_sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}
         self.output = root / "mint-host"
