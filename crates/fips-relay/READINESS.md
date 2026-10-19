@@ -107,7 +107,12 @@ history pressure.
 
 These cases share devices and run separately. Independent financial closure and
 restored services release devices even after a functional failure; the failed
-verdict remains. Reuse checks for unchanged inputs, rerun affected checks after a
+verdict remains. A pinned local sequence now waits for the active export owner,
+runs its existing independent audit, and then invokes the prepared phone and
+router runners with fresh device/space checks between them. It stops on failure
+without reissuing funds or replaying commands. Its plan and source are retained in
+`work/device-acceptance-sequence.json` and `work/continue-device-acceptance.py`.
+Reuse checks for unchanged inputs, rerun affected checks after a
 change, and add no gate without an uncovered requirement or concrete risk. The
 existing mint-over-FIPS implementation and recovery cases are documented in
 [TESTBENCH.md](TESTBENCH.md#mint-http-over-fips); the LAN mint used by a storage
