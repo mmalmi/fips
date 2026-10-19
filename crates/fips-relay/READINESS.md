@@ -24,7 +24,7 @@ unless a demonstrated failure or unmet requirement requires a change.
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original test sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | Qualify the router workload. The native result uses the preceding CDK `bb9b87d8` graph and does not establish physical storage behavior or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass pressure, refusal, recovery, acknowledgment and continued spending at 20 MiB. Both retain 79 exports and independently reconcile all 1,024 original sats. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these offline-wallet cases. Router acknowledgment is administrative downtime; this does not qualify concurrent forwarding, a hard memory ceiling or power-loss behavior. |
 | Router receiver retirement | All twelve diagnostics are independently closed. The 32-packet/s rehearsal settles all 31 channels, delivers all 84 measured packets and completes cleanup in 20.168 s; its original 3,072 test sats are independently conserved with no financial issues and both owners stopped. Its sampled payment gaps reach 2.337 s, failing the unchanged two-second gate. A seven-query barrier assigns mixed-time readings the slowest completion timestamp, so the result cannot distinguish a real payment stall from observer latency. The corrected harness passes 24 focused Linux checks. | Qualify a fresh rehearsal with the corrected observer before full history. Preserve the failed verdict and the two-second/35-second requirements. One receipt cannot establish history pressure. |
-| Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass with the same process and four original channels; all 512 test sats are independently reconciled and the temporary app removed. | Complete controlled disconnect/rejoin. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
+| Android | The current session-recovery artifact passes build, strict lint, lifecycle, package and signature checks. Physical unpaid denial and 4 MiB of foreground/background/forced-idle transit pass. A separate 3 MiB foreground/background/disconnect-rejoin case also passes using the same processes and four original channels. Each case independently reconciles its original 512 test sats and removes the temporary app. | Controlled LAN/UDP rejoin is complete. Physical encounters and natural off-charge idle remain unqualified; the 48.07-second forced-idle observation does not substitute for them. This is a bench app, not a production Android wallet or VPN. |
 | Shared contracts and costs | The earlier `work/final-graph-review` matches its recorded runtime. The new fixes change session recovery and authenticated fallback selection; quotes, payment scheduling, accounting, Spilman and TCP/FIPS remain unchanged. | Reuse valid unchanged-code evidence; qualify the changed networking behavior and pending device cases. Keep historical costs attached to their measured binaries. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
@@ -91,6 +91,17 @@ closed temporary app is removed. Producer, closer and sequence owners are gone.
 Natural idle, physical movement, battery costs and ad hoc radio operation are not
 established by this configured LAN/UDP test. The preceding artifact's acceptance
 remains preserved in `work/receiver-history-phone`.
+
+The separate controlled disconnect/rejoin case in
+`work/phone-restart-recovery-outage-2` also passes: three duplex windows deliver
+3 MiB across foreground, background and fresh post-outage traffic. The owned UDP
+filter remains active for 12.922 seconds and is removed afterward. Original
+processes and all four paid channels survive; no additional purchase is made.
+Independent auditing reconciles all 512 original test sats with zero unaccounted
+value or pending mint operations. Normal services/accounts are restored and the
+temporary app is removed. This is a controlled link interruption, not a physical
+radio change or mobile encounter. The current native cost matrix starts only
+after both exact device sequence owners and their children exit.
 
 The phone stays plugged in at the user's request. Continue tests through its
 existing USB connection; no operator-assisted unplugging or movement is scheduled.
@@ -366,8 +377,8 @@ history pressure.
    records are preserved, all test funds collected and normal services restored.
 2. The current USB session-recovery phone regression, independent audit, archives
    and owned-app removal are complete. The unchanged 158-check harness is reused.
-   The controlled disconnect/rejoin case has now started after the router
-   rehearsal's independent financial close and exact owner exit. Physical encounters and natural
+   The controlled disconnect/rejoin case, independent 512-sat audit, restoration
+   and owned-app removal are also complete. Physical encounters and natural
    off-charge idle remain unqualified; do not request manual phone actions or
    substitute simulated battery state for that evidence.
 3. All twelve router diagnostics are independently closed without replacing
