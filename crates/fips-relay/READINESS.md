@@ -1,7 +1,7 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-19 October 2026.
+20 October 2026.
 
 ## Current state
 
@@ -118,6 +118,11 @@ qualifies actual movement or natural off-charge operation. A secure wireless
 pairing attempt fails before connection; wireless debugging is restored to its
 original disabled state and USB access remains available. This setup attempt
 issues no funds and changes no phone accounts.
+
+A read-only package check confirms the Pixel retains the original bench app and
+neither connected phone has a temporary acceptance package installed. No app data
+is changed. The matching private records remain in
+`work/phone-package-cleanup-check-20261019.json`.
 
 ### Router retirement diagnostic
 
@@ -609,7 +614,18 @@ history pressure.
    and retain earlier target scopes as historical. Partial-failure recovery
    retains exact original stores without replacement grants; no such recovery
    or repeated workload is needed for this accepted matrix.
-5. Reconcile every checklist row with the final target evidence, threat model,
+5. After genuine full-history acceptance, original-fund collection and all owner
+   exits, run the controlled stationary open-radio departure/rejoin and root
+   replacement case. The source-only draft under
+   `work/current-radio-rejoin-after-full-v2` passes three changed-contract checks
+   and reuses nine unchanged checks. Root verifies its complete 30-file private
+   mirror. It binds the actual full-history root, sequence and resource records;
+   radio, financial, archive and acceptance algorithms remain unchanged. Its
+   384-sat limit, two original 32-sat channels and fresh all-three capacity checks
+   remain in force. No radio case is staged or funded yet. Derive any necessary
+   post-full storage preservation from then-current closed custody; do not replay
+   old capacity targets. This establishes no physical-motion or fading claim.
+6. Reconcile every checklist row with the final target evidence, threat model,
    operating/recovery documentation and local TollGate proposal. Integrate
    verified changes and remove only completed, owned test installations and clean
    merged worktrees. Revoke the owned Linux job's temporary SSH authorizations
