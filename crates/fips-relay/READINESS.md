@@ -157,6 +157,11 @@ checks pass; existing workload, accounting, archive and recovery checks remain.
 The resource recorder retains its five helpers and seven audited harness inputs.
 The radio resource auditor now resolves its hash-verified qualification to the
 actual frozen source tree, independently of the manifest's receipt location.
+The full test's evidence reservation exceeds the controller home volume's free
+space. Its reviewed staging helper now uses a separately verified private parent
+on the larger volume, retaining the complete reservation and requiring an owned,
+canonical directory before creating a new case. Three focused placement checks
+pass. Two radio binding checks retain the same runtime and acceptance algorithms.
 These sources remain unbound. They require the launched rehearsal's genuine
 functional pass and independently closed original funds, followed by fresh full
 capacity. No full-history or radio case has been launched; older unqualified
@@ -423,7 +428,7 @@ must accompany the full run below.
    cannot block financial closure or alter the two-second/35-second acceptance.
    Report sampled CPU/RSS/HWM and host headroom, not hard memory, generic whole-call
    or physical-write maxima. Reuse qualified workload/archive/resource helpers.
-   The prepared reviewed sources are `work/full-history-autonomous-v7`,
+   The prepared reviewed sources are `work/full-history-autonomous-v8`,
    `work/full-history-resource-observer-autonomous-v4` and
    `work/post-pass-autonomous-capacity-v6`. The resource metadata matches all
    seven pinned helpers in the qualified 217-file graph. Actual configuration
@@ -435,10 +440,11 @@ must accompany the full run below.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
-   `work/current-radio-autonomous-v7` retains its 384-sat cap, two original
+   `work/current-radio-autonomous-v8` retains its 384-sat cap, two original
    32-sat channels, original accounting and fresh all-three capacity checks;
-   five focused binding checks qualify its current source and full/resource
-   metadata. Bind it to the actual accepted full run before staging. This does not claim
+   five original binding checks and two volume-rebinding checks qualify its
+   current source and full/resource metadata. Bind it to the actual accepted full
+   run before staging. This does not claim
    physical movement, fading, seamless roaming or automatic channel selection.
    Resource-process exit alone is insufficient: the saved capture and summary
    must reconcile useful observations of all five profiles on the three hosts.
