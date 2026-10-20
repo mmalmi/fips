@@ -17,6 +17,7 @@ import threading
 import time
 
 from .wifi_remote import checked_path
+from .ssh_commands import remote_slot, remaining
 
 
 READ_SECONDS = 3
@@ -103,18 +104,21 @@ class NumericReader:
     """One owned SSH process, one exact channel, no retry after uncertainty."""
 
     def __init__(self, profile, channel, kind):
-        owner = getattr(profile, 'owner', profile)
-        command = worker(profile.state, channel, kind)
-        self.process = subprocess.Popen([*owner.ssh_args(), owner.host, command],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, start_new_session=True)
+        self.owner = getattr(profile, 'owner', profile)
+        self.command = worker(profile.state, channel, kind)
+        self.process = self.selector = None
         self.kind, self.sequence = kind, 0
         self.expires = time.monotonic() + LIFETIME_SECONDS
         self.lock = threading.Lock()
         self.failed = self.closed = False
+        self.receipt = None
+
+    def start(self):
+        self.process = subprocess.Popen([*self.owner.ssh_args(), self.owner.host, self.command],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, start_new_session=True)
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
-        self.receipt = None
 
     def read(self):
         if not self.lock.acquire(blocking=False):
@@ -122,42 +126,54 @@ class NumericReader:
         try:
             if self.failed or self.closed or time.monotonic() >= self.expires:
                 raise RuntimeError('numeric reader is unavailable')
-            self.sequence += 1
-            deadline = min(self.expires, time.monotonic() + READ_SECONDS)
-            self.process.stdin.write(f'{self.sequence}\n'.encode())
-            self.process.stdin.flush()
-            raw = bytearray()
-            while b'\n' not in raw:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or not self.selector.select(remaining):
-                    raise TimeoutError('numeric reader exceeded its read deadline')
-                part = os.read(self.process.stdout.fileno(), MAX_REPLY_BYTES + 1 - len(raw))
-                if not part:
-                    raise RuntimeError('numeric reader exited before its reply')
-                raw.extend(part)
-                if len(raw) > MAX_REPLY_BYTES:
-                    raise RuntimeError('numeric reader reply exceeded its bound')
-            count = 3 if self.kind == 'payment' else 2
-            fields = bytes(raw).rstrip(b'\n').split(b' ')
-            if (len(fields) != count or bytes(raw).count(b'\n') != 1
-                    or fields[0] != str(self.sequence).encode()
-                    or any(not re.fullmatch(rb'0|[1-9][0-9]{0,19}', f) for f in fields[1:])):
-                raise RuntimeError('numeric reader returned an invalid reply')
-            numbers = [int(f) for f in fields[1:]]
-            if any(value > U64_MAX for value in numbers):
-                raise RuntimeError('numeric reader counter overflowed')
-            return dict(authorized_sat=numbers[0], signed_sat=numbers[1]) if count == 3 else numbers[0]
+            if self.process is None:
+                with remote_slot(self.owner, min(READ_SECONDS, remaining(self.expires))) as deadline:
+                    deadline = min(self.expires, deadline)
+                    remaining(deadline)
+                    self.start()
+                    return self.reply(deadline)
+            return self.reply(min(self.expires, time.monotonic() + READ_SECONDS))
         except BaseException:
             self.failed = True
             raise
         finally:
             self.lock.release()
 
+    def reply(self, deadline):
+        remaining(deadline)
+        self.sequence += 1
+        self.process.stdin.write(f'{self.sequence}\n'.encode())
+        self.process.stdin.flush()
+        raw = bytearray()
+        while b'\n' not in raw:
+            if not self.selector.select(remaining(deadline)):
+                raise TimeoutError('numeric reader exceeded its read deadline')
+            part = os.read(self.process.stdout.fileno(), MAX_REPLY_BYTES + 1 - len(raw))
+            if not part:
+                raise RuntimeError('numeric reader exited before its reply')
+            raw.extend(part)
+            if len(raw) > MAX_REPLY_BYTES:
+                raise RuntimeError('numeric reader reply exceeded its bound')
+        count = 3 if self.kind == 'payment' else 2
+        fields = bytes(raw).rstrip(b'\n').split(b' ')
+        if (len(fields) != count or bytes(raw).count(b'\n') != 1
+                or fields[0] != str(self.sequence).encode()
+                or any(not re.fullmatch(rb'0|[1-9][0-9]{0,19}', f) for f in fields[1:])):
+            raise RuntimeError('numeric reader returned an invalid reply')
+        numbers = [int(f) for f in fields[1:]]
+        if any(value > U64_MAX for value in numbers):
+            raise RuntimeError('numeric reader counter overflowed')
+        return dict(authorized_sat=numbers[0], signed_sat=numbers[1]) if count == 3 else numbers[0]
+
     def close(self):
         if self.closed:
             return
         self.closed = True
         process, forced = self.process, False
+        if process is None:
+            self.receipt = dict(pid=None, exit_code=None, forced=False, reaped=False,
+                                read_failed=self.failed, group_absent=True)
+            raise RuntimeError('numeric reader did not start')
         try:
             try:
                 process.stdin.close()
@@ -174,7 +190,8 @@ class NumericReader:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=1)
         finally:
-            self.selector.close()
+            if self.selector is not None:
+                self.selector.close()
             process.stdout.close()
         self.receipt = dict(pid=process.pid, exit_code=process.returncode, forced=forced,
                             reaped=process.returncode is not None, read_failed=self.failed)

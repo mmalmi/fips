@@ -1,6 +1,7 @@
 """Command keepalives must detect a lost peer, not a merely silent command."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import pwd
@@ -14,8 +15,86 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
-from sim.ssh_commands import SshCommands
+from sim.ssh_commands import SshCommands, remote_slot
+
+
+class SshCapacityTests(unittest.TestCase):
+    def node(self, host, output):
+        node = SshCommands()
+        node.host, node.output, node.spec = host, output, {}
+        return node
+
+    def test_same_host_commands_share_three_slots_and_other_hosts_remain_independent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node('capacity-test', Path(directory))
+            condition, release = threading.Condition(), threading.Event()
+            active = maximum = calls = 0
+
+            def run(*args, **kwargs):
+                nonlocal active, maximum, calls
+                with condition:
+                    active += 1; calls += 1
+                    maximum = max(maximum, active)
+                    condition.notify_all()
+                try:
+                    self.assertTrue(release.wait(2))
+                    return subprocess.CompletedProcess(args, 0, stdout=b'original', stderr=b'')
+                finally:
+                    with condition:
+                        active -= 1
+
+            with patch('sim.ssh_commands.subprocess.run', side_effect=run), ThreadPoolExecutor(max_workers=8) as pool:
+                pending = [pool.submit(node.remote, 'original', timeout=2) for _ in range(8)]
+                try:
+                    with condition:
+                        self.assertTrue(condition.wait_for(lambda: calls >= 3, timeout=1))
+                    time.sleep(.03)
+                    self.assertEqual(calls, 3)
+                    other = self.node('independent-test-host', node.output)
+                    with remote_slot(other, .1):
+                        pass
+                    config = Path(directory)/'other-config'
+                    config.write_text('')
+                    other.host, other.spec = node.host, {'ssh_config': str(config)}
+                    with remote_slot(other, .1):
+                        pass
+                finally:
+                    release.set()
+                self.assertEqual([p.result(timeout=2) for p in pending], [b'original'] * 8)
+            self.assertEqual((calls, maximum), (8, 3))
+
+    def test_queue_consumes_deadline_and_expired_wait_never_dispatches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node('deadline-test', Path(directory))
+            with ExitStack() as held, patch('sim.ssh_commands.subprocess.run') as run:
+                for _ in range(3): held.enter_context(remote_slot(node, 1))
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):node.remote('never-dispatched', timeout=.04)
+                self.assertLess(time.monotonic() - started, .2)
+                run.assert_not_called()
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(node.remote, 'queued', timeout=.3)
+                    time.sleep(.04)
+                    held.close()
+                    run.return_value = subprocess.CompletedProcess([], 0, stdout=b'queued', stderr=b'')
+                    self.assertEqual(pending.result(timeout=1), b'queued')
+                self.assertGreater(run.call_args.kwargs['timeout'], 0)
+                self.assertLess(run.call_args.kwargs['timeout'], .28)
+
+    def test_timeout_or_remote_failure_releases_capacity_without_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node('failure-test', Path(directory))
+            for failure in (subprocess.TimeoutExpired('owned-ssh', .01),
+                            subprocess.CompletedProcess([], 255, stdout=b'', stderr=b'failed')):
+                with patch('sim.ssh_commands.subprocess.run', side_effect=failure if isinstance(failure, Exception) else None,
+                           return_value=failure) as run:
+                    with self.assertRaises((subprocess.TimeoutExpired, RuntimeError)):
+                        node.remote('one-attempt', timeout=.1)
+                    self.assertEqual(run.call_count, 1)
+                with ExitStack() as released:
+                    for _ in range(3): released.enter_context(remote_slot(node, .1))
 
 
 @unittest.skipUnless(shutil.which('ssh'), 'requires the OpenSSH client')

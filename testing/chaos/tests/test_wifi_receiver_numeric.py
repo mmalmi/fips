@@ -1,16 +1,20 @@
 """Exercise the real shell protocol locally; no SSH hosts or finances are used."""
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from sim.wifi_receiver_numeric import NumericReaders, worker
+from sim.ssh_commands import remote_slot
 
 
 # This small jsonfilter stand-in preserves its documented type/value behavior.
@@ -121,6 +125,52 @@ class NumericReaderTests(unittest.TestCase):
                             for row in readers.cleanup_receipts))
         with self.assertRaisesRegex(RuntimeError, 'closed'):
             readers.payment('source', 'channel')
+
+    def test_first_reply_shares_command_slots_without_holding_other_reader_creation(self):
+        with NumericReaders(self.run) as readers, ThreadPoolExecutor(max_workers=2) as pool:
+            with ExitStack() as held:
+                for _ in range(3):held.enter_context(remote_slot(self.owner, 2))
+                first = pool.submit(readers.payment, 'source', 'channel')
+                second = pool.submit(readers.credit, 'n02', 'channel')
+                deadline = time.monotonic() + 1
+                while len(readers.readers) != 2 and time.monotonic() < deadline:time.sleep(.001)
+                self.assertEqual(len(readers.readers), 2)
+                self.assertEqual(self.ssh_calls, [])
+                self.assertFalse(first.done() or second.done())
+            self.assertEqual(first.result(timeout=2), {'authorized_sat': 8, 'signed_sat': 7})
+            self.assertEqual(second.result(timeout=2), 7000)
+            self.assertEqual([reader.sequence for reader in readers.readers.values()], [1, 1])
+            # Already authenticated sessions do not compete with new commands;
+            # this is the second original RPC, not a replayed/discarded first read.
+            with ExitStack() as held:
+                for _ in range(3):held.enter_context(remote_slot(self.owner, 1))
+                self.assertEqual(readers.payment('source', 'channel'), {'authorized_sat': 8, 'signed_sat': 7})
+                self.assertEqual(len(self.ssh_calls), 2)
+
+    def test_first_read_queue_and_startup_share_one_original_deadline(self):
+        executable = self.binary/'ssh'
+        executable.write_text('#!' + sys.executable + '\nimport time; time.sleep(.12)\n' + SSH)
+        with patch('sim.wifi_receiver_numeric.READ_SECONDS', .15):
+            with self.assertRaisesRegex(RuntimeError, 'cleanup failed'), NumericReaders(self.run) as readers:
+                with ThreadPoolExecutor(max_workers=1) as pool, ExitStack() as held:
+                    for _ in range(3):held.enter_context(remote_slot(self.owner, 1))
+                    started = time.monotonic()
+                    first = pool.submit(readers.payment, 'source', 'channel')
+                    time.sleep(.08)
+                    held.close()
+                    with self.assertRaises(TimeoutError):first.result(timeout=.3)
+                    self.assertLess(time.monotonic() - started, .24)
+                    self.assertEqual(len(self.ssh_calls), 1)
+
+    def test_reader_expiring_in_the_queue_never_starts_ssh(self):
+        with patch('sim.wifi_receiver_numeric.LIFETIME_SECONDS', .04):
+            with self.assertRaisesRegex(RuntimeError, 'cleanup failed'), NumericReaders(self.run) as readers:
+                with ExitStack() as held:
+                    for _ in range(3):held.enter_context(remote_slot(self.owner, 1))
+                    with self.assertRaises(TimeoutError):readers.payment('source', 'channel')
+                    self.assertEqual(self.ssh_calls, [])
+                    reader, = readers.readers.values()
+                    self.assertIsNone(reader.process)
 
     def test_wrong_schema_numeric_types_channel_and_duplicate_rows_fail_closed(self):
         cases = [
