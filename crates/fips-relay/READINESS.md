@@ -12,7 +12,22 @@ Android build/lifecycle/package checks pass. Both controlled phone cases and the
 current native eight-trial cadence matrix pass with independent original-fund
 closure. Earlier measurements remain attached to their recorded graphs.
 
-**The fresh router window is unqualified; its original funds are independently closed.** Its
+**A new paid router rehearsal is running; no result is established yet.** It uses
+the qualified 217-file observer, ordinary commit-trace ARM binary and independently
+accepted installed check. After the third router's fresh ARM-only space shortfall,
+one exact unused executable is removed under the existing guards, recovering
+26,079,232 bytes (24.87 MiB). Independent checks verify normal command exit,
+stopped owners, canonical copies and restored baselines. A new all-router
+measurement leaves more than 100 MiB temporary capacity after staging the ARM
+binary on each router, with at least 8 MiB flash each. The reviewed one-shot
+sequence has passed staging, the live release seal and input verification; its
+original financial closer is supervising the launched case. The unchanged
+two-second progress, 35-second cleanup, 84-packet workload and 3,072-test-sat cap
+apply. A genuine functional pass and independent original-fund closure are still
+required before full history. All testing is agent-operated; no further phone
+handling or physical power cut is required from the user.
+
+**The preceding router windows remain unqualified; their original funds are independently closed.** The first
 frozen 215-file observer at `f9ffb844c` passes 41 Linux checks and 40 macOS checks
 with one existing Linux-only skip. The unfunded installed-reader check and recovery
 of the preceding failed smoke are independently accepted: four sessions exit
@@ -326,20 +341,18 @@ must accompany the full run below.
    [the native candidate results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026).
    Reuse these accepted inputs; partial-failure recovery would retain original
    stores and require original-state recovery, not replacement grants or repeats.
-2. **Resolve the current unqualified rehearsal's timing evidence.** Its original
-   funds, processes and archives are independently closed; preserve that result.
-   Denser measurement and its 35-second retention/serialization cost are now
-   qualified using the existing unfunded reader machinery. The matched installed
-   comparison and complete trace/closure checks remain in
-   `work/receiver-observer-dense-installed-comparison`; frozen source checks remain
-   in `work/receiver-observer-dense-qualification-2`. Fresh one-receipt capacity
-   needs no cleanup and is recorded in `work/next-rehearsal-capacity-measurement`.
-   The reviewed source at `work/dense-rehearsal-factory` has launched the fresh
-   case above through `work/availability-rehearsal-4-durable-owner`. Its normal
-   final auditor is source-qualified in `work/rehearsal-4-final-audit-draft` and
-   requires actual completion, original owner absence and the true functional
-   verdict before producing a receipt. No further physical phone or power-cut
-   action is required from the user.
+2. **Complete the launched commit-trace router rehearsal.** Preserve both older
+   unqualified windows and their independently closed original funds. The new
+   observer qualifies authorization from durable commit events, independently of
+   signature completion. Its exact 217-file graph passes 55 Linux and 54 macOS
+   checks with one existing Linux-only skip; the corrected installed check
+   independently retains all 4,718 samples and closes without funds. Accepted
+   flash preservation and inactive-binary cleanup precede the fresh all-router
+   measurement in `work/current-rehearsal-capacity-1`. The reviewed source at
+   `work/authorization-trace-rehearsal-3` has launched the new case through
+   `work/availability-rehearsal-5-durable-owner`. Its final independent audit must
+   verify actual completion, owner absence and the true functional verdict before
+   producing a receipt. No user-operated phone or power-cut test remains.
    The candidate also corrects the separate discrete-packet quantization precondition;
    that defect does not explain this run's exact 250-msat packet price. Keep the two-second
    progress bound, 35-second cleanup bound and original financial/workload terms.
@@ -352,7 +365,7 @@ must accompany the full run below.
    that pass. The one-receipt flash floors are 8/8/8 MiB, with strictly more than
    100 MiB RAM on each router; the live seal and driver recheck them before funding.
 3. **Run genuine full history and its aggregate observer once after that pass.**
-   Rebind the passing rehearsal's exact 215-file source, artifact, independent
+   Rebind the passing rehearsal's exact 217-file source, artifact, independent
    collection and owner records; older full-history drafts remain ineligible.
    The verified controller collection wrapper and its embedded raw Linux archive
    receipt are distinct records and must match. Financial closure cannot replace
