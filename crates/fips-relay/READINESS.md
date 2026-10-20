@@ -75,9 +75,17 @@ consumer `621dd95cb` are integrated locally. The exact 217-file observer bundle
 passes all 48 focused Linux checks and 47 macOS checks with one Linux-only skip.
 It retains 212 unchanged files and two unchanged shared library inputs. A redundant
 custody test is removed while its stronger sample-preservation test remains.
-Focused runtime checks and ordinary Linux/ARM artifact qualification are running;
-installed observation still needs qualification before another paid case. The
-two-second and 35-second requirements stay unchanged.
+All 13 focused buyer/measurement tests, strict library lint, the feature-disabled
+check and ordinary Linux/ARM builds pass. Exact source, dependency, feature,
+artifact and normal command-exit checks qualify those builds; no device is used
+and no funds are issued. Installed observation still needs qualification before
+another paid case. The two-second and 35-second requirements stay unchanged.
+
+Fresh post-closure measurements find 6.55/19.14/6.63 MiB free flash on the three
+routers, with more than 100 MiB temporary capacity each. The first and third
+routers need space before the next one-receipt preflight. Preservation of only
+their independently closed current profiles is being prepared; no cleanup has
+been performed for this observation.
 
 Source-only full-history and capacity preparations now consume the normal
 independent receipt from this exact new case and require its genuine functional
@@ -124,11 +132,19 @@ Observer, installed-reader and capacity authority is retained in
 The preceding integration reconciliation matches all 965 runtime/build-input
 files and the complete 761-file core inventory to the qualified ordinary Linux
 build before the optional commit trace. That trace changes four existing source
-paths and adds three; its artifact qualification is separate.
+paths and adds three. Its new ordinary Linux/ARM qualification binds all 968
+runtime source files and preserves the exact SDK/CDK inputs. Earlier phone,
+carrier and cadence measurements retain their original artifacts and scopes.
 The SDK and CDK checkouts match their recorded commits and are clean; the user's
 lockfile remains unchanged. The source-size gate passes all 1,100 files with the
 three existing core exceptions. `work/current-source-reconciliation` establishes
 source identity, not additional device or performance acceptance.
+
+The independent dense-window closure is retained in
+`work/current-device-sequences/availability-rehearsal-4-final`. New trace source,
+builds, logs and matching preserved copies are in
+`work/authorization-trace-build-1` and
+`work/authorization-trace-harness-qualification-2`.
 
 Detailed superseded run and preparation narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md` and
