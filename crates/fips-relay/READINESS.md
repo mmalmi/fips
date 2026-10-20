@@ -53,12 +53,12 @@ release seal and input verification, then launches normally through the qualifie
 durable owner. Its original producer, supervisor, financial closer and separate
 resource recorder are verified running. Genuine generation of the required 5,480
 receipts remains in progress; its observations do not establish acceptance.
-During preparation, two supervised filesystem flushes complete normally on all
-three routers. The latest reported free flash reads 9,556/20,548/12,048 KiB. No
+During preparation, three supervised filesystem flushes complete normally on all
+three routers. The latest reported free flash reads 9,556/19,836/12,048 KiB. No
 profile records are removed. Actual waits, source and observations are preserved in
-`work/full-history-filesystem-sync-1-owner` and `work/full-history-filesystem-sync-2-owner`;
-both actions precede the measured
-forwarding window and supplies no durability or performance verdict.
+`work/full-history-filesystem-sync-1-owner`, `work/full-history-filesystem-sync-2-owner`
+and `work/full-history-filesystem-sync-3-owner`. These actions precede the measured
+forwarding window and supply no durability or performance verdict.
 The 3,072-test-sat cap,
 original accounting, two-second progress and 35-second cleanup requirements stay
 unchanged. The test's evidence reservation uses a separately verified private
