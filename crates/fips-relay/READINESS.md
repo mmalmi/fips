@@ -155,6 +155,15 @@ inherited integration fixtures are unchanged and unexecuted by these library and
 binary checks. This is a reproduced scheduler defect, not established
 attribution of the router gap or new hardware acceptance; the 500 ms default and
 two-second/35-second requirements remain unchanged.
+The matching Android build also passes in `work/payment-age-android-build-1`:
+all six compile/package checks finish normally in 268 seconds, with fresh link
+evidence for the six core crates, ordinary features, matching packaged native
+code and the existing signing certificate. The 21 unchanged Android shell files
+retain their ten lifecycle tests and lint evidence. All build owners stop, the
+shared cache is released and the complete 153-file bundle is preserved. An initial
+supervisor namespace check failed before any build; its diagnostic remains intact
+and the first actual build passes. This qualifies compilation and packaging;
+the earlier controlled phone observations retain their recorded scope.
 All five relay daemons were intentionally stopped during receipt preparation;
 unavailable daemon samples in that phase were expected. The recorder excludes
 short-lived offline wallet commands and supplies the useful window coverage
