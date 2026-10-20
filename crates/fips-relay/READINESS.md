@@ -81,11 +81,16 @@ artifact and normal command-exit checks qualify those builds; no device is used
 and no funds are issued. Installed observation still needs qualification before
 another paid case. The two-second and 35-second requirements stay unchanged.
 
-Fresh post-closure measurements find 6.55/19.14/6.63 MiB free flash on the three
-routers, with more than 100 MiB temporary capacity each. The first and third
-routers need space before the next one-receipt preflight. Preservation of only
-their independently closed current profiles is being prepared; no cleanup has
-been performed for this observation.
+Post-closure measurements find insufficient flash on the first and third
+routers. S9 preserves all 78 original files and 117 archive members, then removes
+only their redundant expanded closed profiles. Fresh owner, file-use, mount,
+quiet-period and held-lock checks pass; the real supervised command exits zero.
+Independent acceptance verifies all original archive bytes and complete preserved
+copies. Measured flash recovery totals 6,627,328 bytes (6.32 MiB). Final free flash
+is 9.84/19.03/9.32 MiB, with more than 100 MiB temporary capacity each. Normal
+baselines are restored and the second router's profiles are unchanged. New binary
+staging still needs its own RAM headroom check; this is one-receipt capacity and
+grants no paid or full-history launch authority.
 
 Source-only full-history and capacity preparations now consume the normal
 independent receipt from this exact new case and require its genuine functional
@@ -144,7 +149,8 @@ The independent dense-window closure is retained in
 `work/current-device-sequences/availability-rehearsal-4-final`. New trace source,
 builds, logs and matching preserved copies are in
 `work/authorization-trace-build-1` and
-`work/authorization-trace-harness-qualification-2`.
+`work/authorization-trace-harness-qualification-2`. Closed-profile preservation
+and measured space recovery are retained in `work/rehearsal-space-completion-9`.
 
 Detailed superseded run and preparation narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md` and
