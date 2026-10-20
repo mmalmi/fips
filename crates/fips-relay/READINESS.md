@@ -12,15 +12,17 @@ Android build/lifecycle/package checks pass. Both controlled phone cases and the
 current native eight-trial cadence matrix pass with independent original-fund
 closure. Earlier measurements remain attached to their recorded graphs.
 
-**The new measured router window passes; original-fund closure is pending.**
+**The commit-trace router rehearsal passes with independent original-fund closure.**
 Independent recomputation verifies all 84 delivered packets, 3,397 retained
 samples, 31 custody observations, four normally closed readers and fresh terminal
 custody. Cleanup finishes in 14.400855 seconds. All five progress and all five
 signature series pass the unchanged two-second limit. Complete durable commit
 traces establish conservative maximum authorization gaps of 1.355819 seconds at
-the source and 1.978059 seconds at the relay. The overall run, original-fund
-recovery, stopped owners and final archives still require normal completion and
-independent acceptance; this provisional window cannot release full history.
+the source and 1.978059 seconds at the relay. Independent acceptance rechecks all
+31 settlements, conserves all 3,072 original test sats and verifies normal root
+and closer exits, stopped owners, restored baselines and complete archives. The
+preserved copies retain 222 profile files and 69 controller originals. This
+one-receipt pass does not establish full-history acceptance.
 
 The run uses the qualified 217-file observer, ordinary commit-trace ARM binary and
 independently accepted installed check. After the third router's fresh ARM-only space shortfall,
@@ -28,12 +30,11 @@ one exact unused executable is removed under the existing guards, recovering
 26,079,232 bytes (24.87 MiB). Independent checks verify normal command exit,
 stopped owners, canonical copies and restored baselines. A new all-router
 measurement leaves more than 100 MiB temporary capacity after staging the ARM
-binary on each router, with at least 8 MiB flash each. The reviewed one-shot
-sequence has passed staging, the live release seal and input verification; its
-original financial closer is supervising the launched case. The unchanged
+binary on each router, with at least 8 MiB flash each before that case. The
+reviewed one-shot sequence completes staging, the live release seal, input
+verification, its paid workload and independent closure. The unchanged
 two-second progress, 35-second cleanup, 84-packet workload and 3,072-test-sat cap
-apply. A genuine functional pass and independent original-fund closure are still
-required before full history. All testing is agent-operated; no further phone
+apply. Fresh capacity is required before full history. All testing is agent-operated; no further phone
 handling or physical power cut is required from the user.
 
 **The preceding router windows remain unqualified; their original funds are independently closed.** The first
@@ -130,7 +131,7 @@ This qualifies empty-trace/static-counter instrumentation with a copied 49-row
 closed database. The subsequent paid window above establishes its live
 959-original custody query and populated commit traces under the unchanged timing
 requirements. The unfunded check itself supplies no paid forwarding or
-retirement-contention verdict, and the passing window still needs final closure.
+retirement-contention verdict; the subsequent paid case above has final closure.
 
 Post-closure measurements find insufficient flash on the first and third
 routers. S9 preserves all 78 original files and 117 archive members, then removes
@@ -162,9 +163,9 @@ space. Its reviewed staging helper now uses a separately verified private parent
 on the larger volume, retaining the complete reservation and requiring an owned,
 canonical directory before creating a new case. Three focused placement checks
 pass. Two radio binding checks retain the same runtime and acceptance algorithms.
-These sources remain unbound. They require the launched rehearsal's genuine
-functional pass and independently closed original funds, followed by fresh full
-capacity. No full-history or radio case has been launched; older unqualified
+These sources remain unbound. The rehearsal's genuine functional pass and
+independent original-fund closure are accepted; fresh full capacity remains
+required. No full-history or radio case has been launched; older unqualified
 windows cannot activate them.
 
 Production readiness still depends on the
@@ -178,7 +179,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The corrected installed instrumentation check retains all 4,718 samples and closes without funds. The subsequent paid window independently delivers all 84 packets, finishes cleanup in 14.401 s and passes all progress/signature series, with a maximum relay authorization bound of 1.978059 s. | The overall paid run and original-fund closure remain pending. Normal independent acceptance is required before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | The corrected installed check retains all 4,718 samples and closes without funds. The paid rehearsal independently delivers all 84 packets, finishes cleanup in 14.401 s and passes all progress/signature series, with a maximum relay authorization bound of 1.978059 s. All 31 settlements and 3,072 original sats are independently closed, with normal exits, restored baselines and complete archives. | One receipt cannot establish history pressure. Full-history capacity and the genuine larger workload remain required. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
@@ -359,7 +360,7 @@ must accompany the full run below.
    [the native candidate results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026).
    Reuse these accepted inputs; partial-failure recovery would retain original
    stores and require original-state recovery, not replacement grants or repeats.
-2. **Complete the launched commit-trace router rehearsal.** Preserve both older
+2. **Reuse the accepted commit-trace router rehearsal.** Preserve both older
    unqualified windows and their independently closed original funds. The new
    observer qualifies authorization from durable commit events, independently of
    signature completion. Its exact 217-file graph passes 55 Linux and 54 macOS
@@ -367,10 +368,12 @@ must accompany the full run below.
    independently retains all 4,718 samples and closes without funds. Accepted
    flash preservation and inactive-binary cleanup precede the fresh all-router
    measurement in `work/current-rehearsal-capacity-1`. The reviewed source at
-   `work/authorization-trace-rehearsal-3` has launched the new case through
-   `work/availability-rehearsal-5-durable-owner`. Its final independent audit must
-   verify actual completion, owner absence and the true functional verdict before
-   producing a receipt. No user-operated phone or power-cut test remains.
+   `work/authorization-trace-rehearsal-3` completes the case through
+   `work/availability-rehearsal-5-durable-owner`. Its final independent audit at
+   `work/current-device-sequences/availability-rehearsal-5-final` verifies the
+   functional pass, all 31 settlements, original 3,072-sat conservation, normal
+   completion, owner absence, restored baselines and full preserved copies.
+   No user-operated phone or power-cut test remains.
    The candidate also corrects the separate discrete-packet quantization precondition;
    that defect does not explain this run's exact 250-msat packet price. Keep the two-second
    progress bound, 35-second cleanup bound and original financial/workload terms.
@@ -432,7 +435,7 @@ must accompany the full run below.
    `work/full-history-resource-observer-autonomous-v4` and
    `work/post-pass-autonomous-capacity-v6`. The resource metadata matches all
    seven pinned helpers in the qualified 217-file graph. Actual configuration
-   still requires the active rehearsal's real pass, independent recovery and fresh
+   still requires the accepted rehearsal's exact independent receipt and fresh
    capacity. The capacity acceptance helper is bound to these sources in
    `work/accept-full-capacity-v7.py`. These drafts require the exact normal
    independent receipt and cannot activate from a failed or unqualified run.
