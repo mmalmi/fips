@@ -51,9 +51,14 @@ canonical copies, original financial profiles and archives remain preserved.
 **One genuine full-history case is running.** It completes staging, its live
 release seal and input verification, then launches normally through the qualified
 durable owner. Its original producer, supervisor, financial closer and separate
-resource recorder are verified running. An initial controller-only observation
-records 33 of 5,480 genuine receipts and 54 resource samples without sampling
-errors. These are progress observations, not acceptance. The 3,072-test-sat cap,
+resource recorder are verified running. Genuine generation of the required 5,480
+receipts remains in progress; its observations do not establish acceptance.
+During preparation, one supervised filesystem flush completes normally on all
+three routers. Reported free flash then reads 9,556/21,280/12,048 KiB. No profile
+records are removed. Actual waits, source and observations are preserved in
+`work/full-history-filesystem-sync-1-owner`; this action precedes the measured
+forwarding window and supplies no durability or performance verdict.
+The 3,072-test-sat cap,
 original accounting, two-second progress and 35-second cleanup requirements stay
 unchanged. The test's evidence reservation uses a separately verified private
 parent on the larger controller volume; three focused placement checks pass.
