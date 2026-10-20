@@ -34,12 +34,23 @@ supervisor and original local children are gone; the missing local closer exit
 status remains explicitly unknown and the incomplete sequence bytes are unchanged.
 Neither the paid workload nor its financial close is replayed.
 
-The next observer candidate, `a788602aa` plus `21b1ede54`, passes 45 Linux checks
+The next observer, integrated as `49ab8874f` plus `824131a9b`, passes 45 Linux checks
 on the exact 215-file harness and 44 macOS checks with one existing Linux-only
 skip. Two unchanged shared library files complete that source bundle. The new
-25-ms sampling and one-second diagnostic checkpoint are undergoing an unfunded
-installed comparison; integration and paid acceptance remain pending. Runtime,
-dependencies, financial terms and conservative progress/custody checks are unchanged.
+25-ms sampling and one-second diagnostic checkpoint pass the unfunded installed
+comparison. Its maximum observed numeric read interval falls from 115.046 ms at
+100-ms polling to 50.163 ms at 25-ms polling. All 6,126 dense-phase events are
+retained in a 5,487,748-byte trace; maximum controller serialization takes 28.397 ms.
+All eight reader sessions close normally, their groups are absent and hash-verified
+synthetic fixtures are removed. These static-counter observations qualify the
+instrumentation, not paid forwarding under cleanup pressure. Runtime, dependencies,
+financial terms and conservative progress/custody checks are unchanged.
+
+Fresh synced measurements confirm restored baselines and 8/8/8 MiB flash plus
+more than 100 MiB temporary capacity on all three routers, without cleanup. This
+qualifies only the next one-receipt rehearsal; full-history capacity is separate.
+The new paid case still requires its reviewed predecessor/source binding and live
+preflight. The original unqualified window is unchanged.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -224,9 +235,12 @@ must accompany the full run below.
    stores and require original-state recovery, not replacement grants or repeats.
 2. **Resolve the current unqualified rehearsal's timing evidence.** Its original
    funds, processes and archives are independently closed; preserve that result.
-   First qualify denser measurement and
-   its 35-second retention/serialization cost using the existing unfunded reader
-   machinery; increased polling must not create the problem being measured.
+   Denser measurement and its 35-second retention/serialization cost are now
+   qualified using the existing unfunded reader machinery. The matched installed
+   comparison and complete trace/closure checks remain in
+   `work/receiver-observer-dense-installed-comparison`; frozen source checks remain
+   in `work/receiver-observer-dense-qualification-2`. Fresh one-receipt capacity
+   needs no cleanup and is recorded in `work/next-rehearsal-capacity-measurement`.
    The candidate also corrects the separate discrete-packet quantization precondition;
    that defect does not explain this run's exact 250-msat packet price. Keep the two-second
    progress bound, 35-second cleanup bound and original financial/workload terms.
