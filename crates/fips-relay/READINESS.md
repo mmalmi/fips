@@ -140,14 +140,17 @@ The new ARM binary plus a conservative 10 MiB staging reservation fits above the
 installation must recheck actual space. Financial profiles and archives are
 unchanged. These operations grant no paid or full-history launch authority.
 
-Source-only full-history and capacity preparations now consume the normal
-independent receipt from this exact new case and require its genuine functional
-pass. Five focused adapter checks pass while preserving the financial, archive,
-workload and capacity algorithms. The resource recorder retains all five qualified
-helpers and matches all seven inputs in the current dense graph. These sources
-remain unbound; no full-history case or capacity operation has been launched.
-This case's unqualified result cannot activate them; future activation requires
-rebinding to a genuinely passing case and its independently closed original funds.
+Reviewed full-history, capacity, resource and radio preparations now bind the
+current 217-file graph, ordinary commit-trace ARM binary and accepted installed
+check. Four full-history, four capacity, two resource and five radio binding
+checks pass; existing workload, accounting, archive and recovery checks remain.
+The resource recorder retains its five helpers and seven audited harness inputs.
+The radio resource auditor now resolves its hash-verified qualification to the
+actual frozen source tree, independently of the manifest's receipt location.
+These sources remain unbound. They require the launched rehearsal's genuine
+functional pass and independently closed original funds, followed by fresh full
+capacity. No full-history or radio case has been launched; older unqualified
+windows cannot activate them.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -160,7 +163,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The dense window delivers 84 packets and finishes cleanup in 14.480 s; one relay authorization series remains unqualified, without proving a two-second stall. Its independent audit conserves all original funds and verifies normal owner exit, archives and restored baselines. The corrected installed instrumentation check retains all 4,718 samples and closes normally without funds. | Next run the genuine paid case with direct commit timing. A functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The dense window delivers 84 packets and finishes cleanup in 14.480 s; one relay authorization series remains unqualified, without proving a two-second stall. Its independent audit conserves all original funds and verifies normal owner exit, archives and restored baselines. The corrected installed instrumentation check retains all 4,718 samples and closes normally without funds. | The genuine paid case with direct commit timing is running. A functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
@@ -361,7 +364,7 @@ must accompany the full run below.
    3,072-sat conservation, stopped original
    producer/supervisor/root children and restored baselines. A failed functional
    verdict can release devices after financial closure, but cannot authorize
-   full history. Existing Q2 source/smoke and S8 storage acceptance do not supply
+   full history. Source and installed instrumentation qualification do not supply
    that pass. The one-receipt flash floors are 8/8/8 MiB, with strictly more than
    100 MiB RAM on each router; the live seal and driver recheck them before funding.
 3. **Run genuine full history and its aggregate observer once after that pass.**
@@ -383,7 +386,7 @@ must accompany the full run below.
 
    Run subsequent local commands through `work/durable-root-command` so their
    actual wait results survive a chat interruption. Its local completion/failure
-   checks supply no paid acceptance. `work/accept-full-capacity.py` binds the real
+   checks supply no paid acceptance. `work/accept-full-capacity-v7.py` binds the real
    completed child to the capacity owner and reuses the unchanged floor and
    original-archive checks before the full-history factory can release a run.
 
@@ -409,22 +412,22 @@ must accompany the full run below.
    with exact process identity and missed epochs/endpoints explicit. Its errors
    cannot block financial closure or alter the two-second/35-second acceptance.
    Report sampled CPU/RSS/HWM and host headroom, not hard memory, generic whole-call
-   or physical-write maxima. Reuse qualified workload/archive/resource helpers;
-   The prepared reviewed sources are `work/full-history-autonomous-v6`,
-   `work/full-history-resource-observer-autonomous-v3` and
-   `work/post-pass-autonomous-capacity-v5`. The resource metadata matches all
-   seven pinned helpers in the qualified 215-file graph. Actual configuration
+   or physical-write maxima. Reuse qualified workload/archive/resource helpers.
+   The prepared reviewed sources are `work/full-history-autonomous-v7`,
+   `work/full-history-resource-observer-autonomous-v4` and
+   `work/post-pass-autonomous-capacity-v6`. The resource metadata matches all
+   seven pinned helpers in the qualified 217-file graph. Actual configuration
    still requires the active rehearsal's real pass, independent recovery and fresh
    capacity. The capacity acceptance helper is bound to these sources in
-   `work/accept-full-capacity-v6.py`. These drafts require the exact normal
+   `work/accept-full-capacity-v7.py`. These drafts require the exact normal
    independent receipt and cannot activate from a failed or unqualified run.
    Earlier sources and refused bindings remain preserved separately.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
-   `work/current-radio-autonomous-v6` retains its 384-sat cap, two original
+   `work/current-radio-autonomous-v7` retains its 384-sat cap, two original
    32-sat channels, original accounting and fresh all-three capacity checks;
-   three focused binding checks qualify its current dense-source and full/resource
+   five focused binding checks qualify its current source and full/resource
    metadata. Bind it to the actual accepted full run before staging. This does not claim
    physical movement, fading, seamless roaming or automatic channel selection.
    Resource-process exit alone is insufficient: the saved capture and summary
