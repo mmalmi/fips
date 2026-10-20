@@ -164,6 +164,24 @@ shared cache is released and the complete 153-file bundle is preserved. An initi
 supervisor namespace check failed before any build; its diagnostic remains intact
 and the first actual build passes. This qualifies compilation and packaging;
 the earlier controlled phone observations retain their recorded scope.
+The matching unfunded installed check passes independently in
+`work/payment-age-installed-check-1`: 4,720 samples cover the unchanged 35-second
+window, observer startup takes 345,617 microseconds and the largest serialization
+pause is 21,539 microseconds. Readers close normally, copied custody and empty
+daemon journals remain unchanged, all temporary fixtures are removed and normal
+baselines are restored. No mint or funds are used. The separate capacity check in
+`work/payment-age-current-capacity-1` also passes with the actual current ARM
+artifact present on all three routers. Each copy occupies 26,705,920 bytes; the
+unchanged flash and temporary-space floors hold. Independent postflight verifies
+restored baselines, stopped owners and removal of every staging copy.
+The genuine-history rerun has now passed staging, sealing and input verification
+and launched under `work/full-history-availability-4-durable-owner`, using
+`work/full-history-autonomous-v12` and resource observer v6. Its original producer,
+supervisor, independent closer and resource recorder are live; the first resource
+samples have no observer errors. A preceding local source-copy failure dispatched
+no router command or funds and remains preserved separately. The current run has
+not reached its measured forwarding window; functional and radio acceptance
+remain pending.
 All five relay daemons were intentionally stopped during receipt preparation;
 unavailable daemon samples in that phase were expected. The recorder excludes
 short-lived offline wallet commands and supplies the useful window coverage
@@ -190,7 +208,11 @@ removing the redundant expanded copies. Independent postflight verifies every
 record, stopped owners and restored baselines. The operation measures 17,502,208
 bytes of recovered flash, but subsequent filesystem accounting drops reported
 free space below the unchanged staging floors. Record preservation is accepted;
-fresh capacity with the new ARM artifact remains pending.
+that observation alone did not qualify the new ARM artifact's capacity.
+The subsequent settled observation in
+`work/payment-age-archived-representation-prep-1` restores the existing floors
+without removing another profile. This is a flush/accounting observation; the
+separate current-artifact staging acceptance is recorded above.
 
 The preceding full-history, capacity, resource and radio sources bind their recorded
 graph and ordinary ARM binary. The separate resource recorder retains five
@@ -514,9 +536,11 @@ must accompany the full run below.
    `work/retirement-progress-current-capacity-1`. Its current build, installed
    observer and representative ownership benchmark retain separate accepted
    originals. `full-history-availability-sequence-2` and its original closer are
-   closed; its failed functional verdict remains intact. Qualify the new scheduler
-   runtime's installed observer and staged capacity before another genuine-history
-   attempt. The earlier v8/resource-v4/capacity-v6 sources belong to
+   closed; its failed functional verdict remains intact. The scheduler runtime's
+   installed observer and staged capacity now pass, and
+   `full-history-availability-sequence-4` is live with source v12/resource v6 under
+   its original independent closer. A local setup-copy failure before it ran no
+   router commands or funds. The earlier v8/resource-v4/capacity-v6 sources belong to
    the preserved failed FULL1 graph. Their failed verdict and complete original
    financial closure remain separate from this new attempt.
 4. **Complete controlled radio recovery after full-history closure.** With all
