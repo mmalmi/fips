@@ -433,13 +433,15 @@ must accompany the full run below.
 ## Completion sequence
 
 1. **Completed scoped acceptance:** ordinary-ARM cached exports, both controlled
-   USB phone cases, seven current paid carriers and the current native cadence
+   USB phone cases, seven paid carriers and the preceding native cadence
    matrix have independent original-fund closure and preserved archives. The
    native matrix retains all 32 windows at 250/500/1000/2000 ms in forward/reverse
    order, exact executable/compiler profiles, host quiescence, the real cache
    lock and two-core quota. The 500 ms default is unchanged; scoped costs remain in
    [the native candidate results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026).
-   Reuse these accepted inputs; partial-failure recovery would retain original
+   Reuse these accepted inputs within their recorded scopes. The current scheduler
+   needs the affected cost comparison described in [Performance acceptance](#performance-acceptance).
+   Partial-failure recovery would retain original
    stores and require original-state recovery, not replacement grants or repeats.
 2. **Retain the accepted rehearsal as historical observer qualification.** Preserve both older
    unqualified windows and their independently closed original funds. The new
@@ -548,16 +550,16 @@ must accompany the full run below.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
-   `work/current-radio-autonomous-v9` retains its 384-sat cap, two original
-   32-sat channels, original accounting and fresh all-three capacity checks.
-   Four focused adapter checks and independent source review qualify the current
-   runtime/harness/resource schema changes; unchanged earlier coverage is reused.
-   The v8 source remains preserved. Bind the successor to the actual accepted full
-   run before staging. The reviewed owner at `work/current-radio-sequence-owner-v2`
+   `work/current-radio-autonomous-v10` retains its 384-sat cap, two original
+   32-sat channels, original accounting and fresh all-three capacity checks,
+   including enough RAM for the actual ARM copy. Root review verifies all 17
+   source files and 99 full-case helper paths, including nested manifests. It
+   distinguishes the unchanged observer's qualification from the new runtime.
+   Earlier sources and checks remain preserved. Bind the successor to the actual
+   accepted full run before staging. The owner at `work/current-radio-sequence-owner-v3`
    will retain actual child waits and attempt the original closer once after
-   launch, including a failed launch reply. Its ten authority constants select
-   the current source and FULL2 namespace; all other code structure is unchanged.
-   Three local ordering checks pass;
+   launch, including a failed launch reply. It selects the current source and
+   original full-history sequence 4; closure ordering remains unchanged.
    no execution configuration or activation binding exists yet. This does not claim
    physical movement, fading, seamless roaming or automatic channel selection.
    Resource-process exit alone is insufficient: the saved capture and summary
@@ -1110,6 +1112,12 @@ Repeat the same native four-age matrix on its qualified source/dependency graph;
 reuse the unchanged workload, analyzer and financial-closure requirements. Build
 preparation can proceed during history setup when the real cache is available;
 measurement still requires the benchmark's actual quiescence checks.
+The harness-only build in `work/payment-age-native-cadence-harness-1` passes in
+172.754 seconds. Independent collection verifies its actual waits, current source
+and dependency inventories, compiler witnesses, released cache and preserved
+originals. It selects the separately qualified ordinary forwarding daemon; this
+build issues no funds and supplies no new cost measurements. The matrix still
+waits for the live full run's financial closure and fresh measurement conditions.
 Complete shared-work attribution remains open and is required before claiming
 total payment overhead. Radio airtime, battery life, flash
 endurance and maximum throughput are separate experiments; their absence cannot
