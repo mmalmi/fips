@@ -19,7 +19,7 @@ of the preceding failed smoke are independently accepted: four sessions exit
 normally, exact process groups are absent and all synthetic fixtures are removed.
 Accepted storage preparation preserves 78 files and 117 archive members while
 recovering 6.1 MiB of flash; all three routers meet the one-receipt capacity floors.
-The active case is
+The preceding case is
 `work/receiver-history-router/observer-availability-8b694b85a709`.
 All 84 packets arrive and cleanup finishes in 13.496 seconds. Delivery and the
 source payment/first-provider series pass; relay authorization, relay signatures
@@ -34,7 +34,7 @@ supervisor and original local children are gone; the missing local closer exit
 status remains explicitly unknown and the incomplete sequence bytes are unchanged.
 Neither the paid workload nor its financial close is replayed.
 
-The next observer, integrated as `49ab8874f` plus `824131a9b`, passes 45 Linux checks
+The denser observer, integrated as `49ab8874f` plus `824131a9b`, passes 45 Linux checks
 on the exact 215-file harness and 44 macOS checks with one existing Linux-only
 skip. Two unchanged shared library files complete that source bundle. The new
 25-ms sampling and one-second diagnostic checkpoint pass the unfunded installed
@@ -49,8 +49,20 @@ financial terms and conservative progress/custody checks are unchanged.
 Fresh synced measurements confirm restored baselines and 8/8/8 MiB flash plus
 more than 100 MiB temporary capacity on all three routers, without cleanup. This
 qualifies only the next one-receipt rehearsal; full-history capacity is separate.
-The new paid case still requires its reviewed predecessor/source binding and live
-preflight. The original unqualified window is unchanged.
+The subsequent one-receipt case,
+`work/receiver-history-router/observer-availability-098890e028b2`, is running on
+that exact source after the predecessor binding and live preflight pass. Its
+qualified detached supervisor owns the actual root wait through original financial
+closure. Paid setup and settlements are progressing; the measured cleanup window,
+independent 3,072-sat reconciliation and stopped-original audit remain pending.
+The original unqualified window is unchanged.
+
+Source-only full-history and capacity preparations now consume the normal
+independent receipt from this exact new case and require its genuine functional
+pass. Five focused adapter checks pass while preserving the financial, archive,
+workload and capacity algorithms. The resource recorder retains all five qualified
+helpers and matches all seven inputs in the current dense graph. These sources
+remain unbound; no full-history case or capacity operation has been launched.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -63,7 +75,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | All funded predecessors, including the current window, independently close their 3,072 original sats. The current window delivers 84 packets and finishes cleanup in 13.496 s; relay payment and second-provider timing remain unqualified, without proving a two-second stall. | Qualify finer observation before another paid case. A genuine functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | All funded predecessors independently close their 3,072 original sats. The preceding window delivers 84 packets and finishes cleanup in 13.496 s; relay payment and second-provider timing remain unqualified, without proving a two-second stall. The qualified denser observer is now running a fresh one-receipt case. | Its genuine functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
@@ -241,6 +253,12 @@ must accompany the full run below.
    `work/receiver-observer-dense-installed-comparison`; frozen source checks remain
    in `work/receiver-observer-dense-qualification-2`. Fresh one-receipt capacity
    needs no cleanup and is recorded in `work/next-rehearsal-capacity-measurement`.
+   The reviewed source at `work/dense-rehearsal-factory` has launched the fresh
+   case above through `work/availability-rehearsal-4-durable-owner`. Its normal
+   final auditor is source-qualified in `work/rehearsal-4-final-audit-draft` and
+   requires actual completion, original owner absence and the true functional
+   verdict before producing a receipt. No further physical phone or power-cut
+   action is required from the user.
    The candidate also corrects the separate discrete-packet quantization precondition;
    that defect does not explain this run's exact 250-msat packet price. Keep the two-second
    progress bound, 35-second cleanup bound and original financial/workload terms.
@@ -298,13 +316,14 @@ must accompany the full run below.
    cannot block financial closure or alter the two-second/35-second acceptance.
    Report sampled CPU/RSS/HWM and host headroom, not hard memory, generic whole-call
    or physical-write maxima. Reuse qualified workload/archive/resource helpers;
-   The prepared reviewed sources are `work/full-history-autonomous-v5`,
-   `work/full-history-resource-observer-autonomous-v2` and
-   `work/post-pass-autonomous-capacity-v4`. The resource metadata matches all
+   The prepared reviewed sources are `work/full-history-autonomous-v6`,
+   `work/full-history-resource-observer-autonomous-v3` and
+   `work/post-pass-autonomous-capacity-v5`. The resource metadata matches all
    seven pinned helpers in the qualified 215-file graph. Actual configuration
-   still requires the passing rehearsal, independent recovery and fresh capacity.
-   These drafts cannot activate from the current unqualified run; rebind and
-   review them against the actual next qualified source and passing originals.
+   still requires the active rehearsal's real pass, independent recovery and fresh
+   capacity. The capacity acceptance helper is bound to these sources in
+   `work/accept-full-capacity-v6.py`. These drafts require the exact normal
+   independent receipt and cannot activate from a failed or unqualified run.
    Earlier sources and refused bindings remain preserved separately.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
