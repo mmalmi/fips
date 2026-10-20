@@ -12,9 +12,18 @@ Android build/lifecycle/package checks pass. Both controlled phone cases and the
 current native eight-trial cadence matrix pass with independent original-fund
 closure. Earlier measurements remain attached to their recorded graphs.
 
-**A new paid router rehearsal is running; no result is established yet.** It uses
-the qualified 217-file observer, ordinary commit-trace ARM binary and independently
-accepted installed check. After the third router's fresh ARM-only space shortfall,
+**The new measured router window passes; original-fund closure is pending.**
+Independent recomputation verifies all 84 delivered packets, 3,397 retained
+samples, 31 custody observations, four normally closed readers and fresh terminal
+custody. Cleanup finishes in 14.400855 seconds. All five progress and all five
+signature series pass the unchanged two-second limit. Complete durable commit
+traces establish conservative maximum authorization gaps of 1.355819 seconds at
+the source and 1.978059 seconds at the relay. The overall run, original-fund
+recovery, stopped owners and final archives still require normal completion and
+independent acceptance; this provisional window cannot release full history.
+
+The run uses the qualified 217-file observer, ordinary commit-trace ARM binary and
+independently accepted installed check. After the third router's fresh ARM-only space shortfall,
 one exact unused executable is removed under the existing guards, recovering
 26,079,232 bytes (24.87 MiB). Independent checks verify normal command exit,
 stopped owners, canonical copies and restored baselines. A new all-router
@@ -118,9 +127,10 @@ Actual root exit, fresh Linux/router owner absence, unchanged empty journals,
 removed temporary fixtures and restored baselines are independently verified,
 with complete preserved copies. No funds are issued or financial operations run.
 This qualifies empty-trace/static-counter instrumentation with a copied 49-row
-closed database. The next paid case must still establish startup with its live
-959-original custody query, populated commit traces and the unchanged timing
-requirements. It supplies no paid forwarding or retirement-contention verdict.
+closed database. The subsequent paid window above establishes its live
+959-original custody query and populated commit traces under the unchanged timing
+requirements. The unfunded check itself supplies no paid forwarding or
+retirement-contention verdict, and the passing window still needs final closure.
 
 Post-closure measurements find insufficient flash on the first and third
 routers. S9 preserves all 78 original files and 117 archive members, then removes
@@ -163,7 +173,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The dense window delivers 84 packets and finishes cleanup in 14.480 s; one relay authorization series remains unqualified, without proving a two-second stall. Its independent audit conserves all original funds and verifies normal owner exit, archives and restored baselines. The corrected installed instrumentation check retains all 4,718 samples and closes normally without funds. | The genuine paid case with direct commit timing is running. A functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The corrected installed instrumentation check retains all 4,718 samples and closes without funds. The subsequent paid window independently delivers all 84 packets, finishes cleanup in 14.401 s and passes all progress/signature series, with a maximum relay authorization bound of 1.978059 s. | The overall paid run and original-fund closure remain pending. Normal independent acceptance is required before full history; one receipt cannot establish history pressure. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
