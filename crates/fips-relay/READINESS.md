@@ -163,10 +163,25 @@ space. Its reviewed staging helper now uses a separately verified private parent
 on the larger volume, retaining the complete reservation and requiring an owned,
 canonical directory before creating a new case. Three focused placement checks
 pass. Two radio binding checks retain the same runtime and acceptance algorithms.
-These sources remain unbound. The rehearsal's genuine functional pass and
-independent original-fund closure are accepted; fresh full capacity remains
-required. No full-history or radio case has been launched; older unqualified
-windows cannot activate them.
+The passing rehearsal and fresh full capacity now release one actual full-history
+case. Archival preservation retains every original record before removing only
+redundant inactive expanded profiles. Two intervening capacity attempts fail
+their space floors and remain failed; independent closure verifies their archived
+bytes and stopped owners. The final preservation command exits normally. The new
+full-capacity command then exits normally without changing router records;
+independent acceptance verifies its original process exits, all archive members
+and complete preserved copies. Synced free flash is 9.785/25.621/11.961 MiB,
+passing the unchanged 8/24/8 MiB floors, with more than 100 MiB temporary capacity
+on each router.
+
+The full-history case completes staging, its live release seal and input
+verification, then launches normally through the qualified durable owner. Its
+original producer, supervisor, financial closer and separate resource recorder
+are verified running. An initial controller-only observation records 33 of 5,480
+genuine receipts and 54 resource samples without sampling errors. These are
+progress observations, not acceptance. The 3,072-test-sat cap, original accounting,
+two-second progress and 35-second cleanup requirements remain unchanged. The
+radio case stays unbound until full history independently passes and closes.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -179,7 +194,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | The corrected installed check retains all 4,718 samples and closes without funds. The paid rehearsal independently delivers all 84 packets, finishes cleanup in 14.401 s and passes all progress/signature series, with a maximum relay authorization bound of 1.978059 s. All 31 settlements and 3,072 original sats are independently closed, with normal exits, restored baselines and complete archives. | One receipt cannot establish history pressure. Full-history capacity and the genuine larger workload remain required. |
+| Router receiver retirement | The corrected installed check retains all 4,718 samples and closes without funds. The paid rehearsal independently delivers all 84 packets, finishes cleanup in 14.401 s and passes all progress/signature series, with a maximum relay authorization bound of 1.978059 s. All 31 settlements and 3,072 original sats are independently closed, with normal exits, restored baselines and complete archives. Fresh full capacity is accepted and the genuine larger workload is running. | One receipt cannot establish history pressure. The full-history functional, resource and financial results remain pending. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
@@ -385,7 +400,7 @@ must accompany the full run below.
    full history. Source and installed instrumentation qualification do not supply
    that pass. The one-receipt flash floors are 8/8/8 MiB, with strictly more than
    100 MiB RAM on each router; the live seal and driver recheck them before funding.
-3. **Run genuine full history and its aggregate observer once after that pass.**
+3. **Finish the running genuine full-history case and its aggregate observer.**
    Rebind the passing rehearsal's exact 217-file source, artifact, independent
    collection and owner records; older full-history drafts remain ineligible.
    The verified controller collection wrapper and its embedded raw Linux archive
@@ -407,6 +422,11 @@ must accompany the full run below.
    checks supply no paid acceptance. `work/accept-full-capacity-v7.py` binds the real
    completed child to the capacity owner and reuses the unchanged floor and
    original-archive checks before the full-history factory can release a run.
+   This is now accepted in `work/post-pass-full-capacity-2`. The actual run is
+   `work/receiver-history-router/full-history-observer-f384336562ba`, supervised by
+   `work/full-history-availability-1-durable-owner`; its separate aggregate recorder
+   uses `work/full-history-resource-observer-autonomous-v4`. Preserve this attempt
+   and recover its original funds before evaluating its verdict or releasing radio.
 
    The earlier genuine preparation takes 17,713.54 s and 139 snapshots occupy
    about 1.427 GiB; its compressed prefix is already 742,319,899 bytes. The small
