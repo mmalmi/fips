@@ -88,9 +88,16 @@ quiet-period and held-lock checks pass; the real supervised command exits zero.
 Independent acceptance verifies all original archive bytes and complete preserved
 copies. Measured flash recovery totals 6,627,328 bytes (6.32 MiB). Final free flash
 is 9.84/19.03/9.32 MiB, with more than 100 MiB temporary capacity each. Normal
-baselines are restored and the second router's profiles are unchanged. New binary
-staging still needs its own RAM headroom check; this is one-receipt capacity and
-grants no paid or full-history launch authority.
+baselines are restored and the second router's profiles are unchanged. A fresh
+ARM-only staging shortfall subsequently authorizes removal of one exact unused
+test executable from the second router. Inode, content, canonical copies, process
+use, mounts and quiet-period checks retain the existing cleanup protections.
+The supervised command exits zero; independent checks verify stopped owners,
+restored baselines and 26,079,232 bytes (24.87 MiB) of recovered RAM capacity.
+The new ARM binary plus a conservative 10 MiB staging reservation fits above the
+100 MiB remaining-space floor. This reservation is not a measured footprint;
+installation must recheck actual space. Financial profiles and archives are
+unchanged. These operations grant no paid or full-history launch authority.
 
 Source-only full-history and capacity preparations now consume the normal
 independent receipt from this exact new case and require its genuine functional
