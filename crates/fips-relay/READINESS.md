@@ -89,9 +89,23 @@ per host. Queueing and the first persistent-reader reply retain their original
 deadlines; established readers remain independent. All 55 focused Linux checks
 and 54 macOS checks pass, with one existing Linux-only skip. A real read-only
 router check completes all eight requests through the new boundary. These results
-qualify the connection fix, not the complete installed observation or paid timing.
-Failed results are preserved while verified temporary-fixture cleanup runs.
+qualify the connection fix. Independent recovery then verifies removal of the
+failed unfunded run's exact temporary trees, stopped owners and restored baselines;
+its original SSH failure and all evidence remain unchanged.
 The two-second and 35-second requirements stay unchanged.
+
+The corrected 35-second installed observation now passes on the exact new bundle.
+Independent recount retains all 4,718 fresh samples, verifies all four normal
+reader exits and checks the last serialization measurement. Initial observation
+takes 362.799 ms; the maximum serialization takes 23.459 ms. Two ordinary router
+daemons retain their process identities and empty, error-free commit traces.
+Actual root exit, fresh Linux/router owner absence, unchanged empty journals,
+removed temporary fixtures and restored baselines are independently verified,
+with complete preserved copies. No funds are issued or financial operations run.
+This qualifies empty-trace/static-counter instrumentation with a copied 49-row
+closed database. The next paid case must still establish startup with its live
+959-original custody query, populated commit traces and the unchanged timing
+requirements. It supplies no paid forwarding or retirement-contention verdict.
 
 Post-closure measurements find insufficient flash on the first and third
 routers. S9 preserves all 78 original files and 117 archive members, then removes
@@ -131,7 +145,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The dense window delivers 84 packets and finishes cleanup in 14.480 s; one relay authorization series remains unqualified, without proving a two-second stall. Its independent audit conserves all original funds and verifies normal owner exit, archives and restored baselines. | Direct commit timing needs installed qualification before the next paid case. A genuine functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The dense window delivers 84 packets and finishes cleanup in 14.480 s; one relay authorization series remains unqualified, without proving a two-second stall. Its independent audit conserves all original funds and verifies normal owner exit, archives and restored baselines. The corrected installed instrumentation check retains all 4,718 samples and closes normally without funds. | Next run the genuine paid case with direct commit timing. A functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
