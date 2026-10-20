@@ -48,7 +48,7 @@ archive members and complete preserved copies. Synced free flash is
 recover 26,079,232 bytes (24.87 MiB) of RAM each on the second and third routers;
 canonical copies, original financial profiles and archives remain preserved.
 
-**The genuine full-history forwarding window fails; original recovery is running.** It completes staging, its live
+**The genuine full-history forwarding window fails; its original funds are closed.** It completes staging, its live
 release seal and input verification, then launches normally through the qualified
 durable owner. Its original producer, supervisor, financial closer and separate
 resource recorder are verified running. History preparation completes in
@@ -59,8 +59,15 @@ lower bounds of 2.917162, 2.239144 and 2.160155 seconds, respectively, exceeding
 the unchanged two-second limit. Cleanup finishes at 28.721079 seconds, within
 35 seconds but after traffic finishes at 28.214638 seconds, so coverage also
 fails. These are real timing failures, not merely uncertain sampling bounds.
-All 31 settlements are recorded; original recovery and independent closure of
-all 3,072 test sats remain pending. The failed functional verdict is preserved.
+Independent closure verifies all 31 settlements and recovers all 3,072 original
+test sats, leaving every router wallet empty and the mint stopped. The producer
+exits 1; the root, closer and recorder exit normally with their original process
+groups absent. All 5,480 receipts remain independently checked, and all 222 profile
+files and 197 controller originals are preserved. Root reconciliation rechecks
+the 2,271,876,871 expanded bytes, the 1,099,354,190-byte compressed mirror,
+restored baselines and unchanged failed functional verdict. The 13,323 resource
+samples contain no observer errors and include five useful all-profile cycles
+before cleanup; their partial process sampling supplies no hard resource bound.
 The separate five-second resource samples show sustained receiver CPU use and
 ample available memory; they do not resolve individual gaps or establish a cause.
 During preparation, supervised filesystem flushes restore reported flash headroom
@@ -113,7 +120,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | The one-receipt rehearsal passes and independently closes all 31 settlements and 3,072 original sats. The genuine 5,480-receipt window delivers all 84 packets but fails progress and cleanup-overlap requirements. | Finish original financial recovery and independent closure, then qualify a demonstrated fix before another paid run. Radio remains unreleased. |
+| Router receiver retirement | The one-receipt rehearsal passes. The genuine 5,480-receipt window delivers all 84 packets but fails progress and cleanup-overlap requirements; all 31 settlements and 3,072 original sats independently close. | Qualify the demonstrated retirement contention/history-scan fixes before another paid run. Radio remains unreleased. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
@@ -135,12 +142,12 @@ Observer, installed-reader and capacity authority is retained in
 `work/receiver-numeric-recovery-2-917f74d8a51f` and
 `work/rehearsal-space-completion-8`.
 
-Current integration reconciliation matches all 968 runtime/build-input files to
+The last completed integration reconciliation matches all 968 runtime/build-input files to
 the qualified ordinary trace build and the complete 761-file core inventory to
 the accepted native4 graph. Seven reviewed measurement files are the only delta
 from the earlier 965-file graph; the SDK/CDK inputs are unchanged. Earlier phone,
 carrier and cadence measurements retain their original artifacts and scopes.
-The SDK/CDK checkouts are clean and the user's lockfile is preserved. The current
+At that check the SDK/CDK checkouts are clean and the user's lockfile is preserved. The
 source-size gate passes 1,100 files with the 600-line relay/Android ceiling,
 1,000-line integration limit and three existing core exceptions.
 `work/current-source-reconciliation` retains the preceding comparison;
@@ -154,6 +161,8 @@ builds, logs and matching preserved copies are in
 `work/authorization-trace-build-1` and
 `work/authorization-trace-harness-qualification-2`. Closed-profile preservation
 and measured space recovery are retained in `work/rehearsal-space-completion-9`.
+The failed genuine full-history window and its complete original financial closure
+are reconciled in `work/current-device-sequences/full-history-1-failed-final`.
 
 Detailed superseded run and preparation narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md` and
@@ -322,7 +331,7 @@ must accompany the full run below.
    full history. Source and installed instrumentation qualification do not supply
    that pass. The one-receipt flash floors are 8/8/8 MiB, with strictly more than
    100 MiB RAM on each router; the live seal and driver recheck them before funding.
-3. **Finish the running genuine full-history case and its aggregate observer.**
+3. **Fix the demonstrated full-history failure before another genuine case.**
    Rebind the passing rehearsal's exact 217-file source, artifact, independent
    collection and owner records; older full-history drafts remain ineligible.
    The verified controller collection wrapper and its embedded raw Linux archive
@@ -348,7 +357,13 @@ must accompany the full run below.
    `work/receiver-history-router/full-history-observer-f384336562ba`, supervised by
    `work/full-history-availability-1-durable-owner`; its separate aggregate recorder
    uses `work/full-history-resource-observer-autonomous-v4`. Preserve this attempt
-   and recover its original funds before evaluating its verdict or releasing radio.
+   and its failed timing verdict. All original funds are now independently closed
+   in `work/current-device-sequences/full-history-1-failed-final`; this cannot
+   release radio. Shorten the controller retirement lock hold and qualify the
+   receipt-ownership scan optimization, retaining original custody and mutation
+   fencing. The smaller preparation-only export/read batching change must preserve
+   the exact pending send identity and ordinary genuine receipt generation. Keep
+   every workload, financial and timing gate unchanged before a new paid attempt.
 
    The earlier genuine preparation takes 17,713.54 s and 139 snapshots occupy
    about 1.427 GiB; its compressed prefix is already 742,319,899 bytes. The small
