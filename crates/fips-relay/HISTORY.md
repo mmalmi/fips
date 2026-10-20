@@ -28,6 +28,11 @@ prefixes and their before/after totals. It then commits buyer and seller rollups
 and finally removes the matching controller route, request and completed
 replacement/renewal records. An idle pass writes no journals.
 
+Runtime upkeep releases the controller journal lock while checking and committing
+the buyer and seller rollups, so unrelated controller reads remain available.
+Before finalizing, it reacquires the lock and requires the store to be ready with
+the exact saved intent still present.
+
 An interrupted intent resumes before normal startup reconciliation. During an
 unfinished intent, other controller mutations stop; an already completed
 accounting prefix is recognized by its exact durable totals and absence of the

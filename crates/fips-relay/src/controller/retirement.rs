@@ -1,8 +1,11 @@
 //! Recoverable local transaction across controller, buyer and seller journals.
+use super::channel_history::with_store;
 use super::*;
 use crate::ledger::RouteRetirementPlan;
-use std::collections::BTreeSet;
+use std::{borrow::BorrowMut, collections::BTreeSet};
 
+#[cfg(test)]
+mod liveness;
 mod never_installed;
 #[cfg(test)]
 mod never_installed_regression;
@@ -32,7 +35,7 @@ pub(super) struct History {
     pub(super) seller: Option<super::seller_history::SellerHistory>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Retirement {
     through_unix: u64,
     buyer: Vec<RouteRetirementPlan>,
@@ -299,15 +302,15 @@ impl Controller {
     }
 
     pub(super) async fn retire_history(&self) -> Result<usize, String> {
-        // No network awaits under the journal lock. Other workers recheck their
-        // durable intent, and lower stores reject already retired agreements.
         let store = self.store.clone();
         let buyer = self.services.buyer.clone();
         let seller = self.services.seller.clone();
         blocking(move || {
-            let mut store = store.lock().map_err(|_| "controller state poisoned")?;
             let timestamp = now()?;
-            store.retire_routes(&buyer, &seller, timestamp)
+            with_store(&*store, |s| {
+                s.prepare_retirement(&buyer, &seller, timestamp)
+            })?;
+            Store::resume_retirement_with(&*store, |plan| plan.apply_lower_stores(&buyer, &seller))
         })
         .await
     }
@@ -343,6 +346,7 @@ impl Store {
         self.persist()
     }
 
+    #[cfg(test)]
     pub(super) fn retire_routes(
         &mut self,
         buyer: &BuyerAuthorizer,
@@ -358,21 +362,71 @@ impl Store {
         buyer: &BuyerAuthorizer,
         seller: &DurableRelay,
     ) -> Result<usize, String> {
+        let Some(plan) = self.pending_retirement()? else {
+            return Ok(0);
+        };
+        plan.apply_lower_stores(buyer, seller)?;
+        self.finish_retirement(&plan)
+    }
+
+    // The saved intent fences mutations while unrelated controller reads remain
+    // available during lower-store verification and durable writes.
+    fn resume_retirement_with(
+        shared: &Mutex<impl BorrowMut<Store>>,
+        apply: impl FnOnce(&Retirement) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        let Some(plan) = with_store(shared, |store| store.pending_retirement())? else {
+            return Ok(0);
+        };
+        apply(&plan)?;
+        with_store(shared, |store| store.finish_retirement(&plan))
+    }
+
+    fn pending_retirement(&self) -> Result<Option<Retirement>, String> {
         if !self.ready {
             return Err("controller journal suspended".into());
         }
-        let Some(plan) = self
+        let plan = self
             .journal
             .history
             .as_ref()
-            .and_then(|h| h.pending.clone())
-        else {
-            return Ok(0);
-        };
+            .and_then(|h| h.pending.clone());
+        if let Some(plan) = &plan {
+            plan.validate(&self.journal)?;
+        }
+        Ok(plan)
+    }
+
+    fn finish_retirement(&mut self, plan: &Retirement) -> Result<usize, String> {
+        if !self.ready
+            || self
+                .journal
+                .history
+                .as_ref()
+                .and_then(|h| h.pending.as_ref())
+                != Some(plan)
+        {
+            return Err("route retirement intent changed".into());
+        }
         plan.validate(&self.journal)?;
+        let mut candidate = self.journal.clone();
+        plan.finish(&mut candidate)?;
+        Controller::validate_journal(&candidate, &candidate.policy, candidate.local)?;
+        self.journal = candidate;
+        self.persist()?;
+        Ok(plan.count())
+    }
+}
+
+impl Retirement {
+    fn apply_lower_stores(
+        &self,
+        buyer: &BuyerAuthorizer,
+        seller: &DurableRelay,
+    ) -> Result<(), String> {
         // A failed write leaves this intent intact. No controller mutation is
         // allowed until all stores match the saved post-retirement evidence.
-        for p in &plan.buyer {
+        for p in &self.buyer {
             let current = buyer
                 .retirement_plan(&p.channel, p.through_unix)
                 .map_err(|e| e.to_string())?;
@@ -386,8 +440,8 @@ impl Store {
                 .retire_closed_routes(&p.channel, p.through_unix)
                 .map_err(|e| e.to_string())?;
         }
-        for p in &plan.seller {
-            let uninstalled = plan.uninstalled_on(&p.channel);
+        for p in &self.seller {
+            let uninstalled = self.uninstalled_on(&p.channel);
             let current = seller
                 .retirement_plan_with_uninstalled(&p.channel, p.through_unix, &uninstalled)
                 .map_err(|e| e.to_string())?;
@@ -401,11 +455,6 @@ impl Store {
                 .retire_closed_routes_with_uninstalled(&p.channel, p.through_unix, &uninstalled)
                 .map_err(|e| e.to_string())?;
         }
-        let mut candidate = self.journal.clone();
-        plan.finish(&mut candidate)?;
-        Controller::validate_journal(&candidate, &candidate.policy, candidate.local)?;
-        self.journal = candidate;
-        self.persist()?;
-        Ok(plan.count())
+        Ok(())
     }
 }
