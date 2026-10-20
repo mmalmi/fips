@@ -566,7 +566,19 @@ must accompany the full run below.
    must reconcile useful observations of all five profiles on the three hosts.
    Missed epochs/endpoints, transient errors, partial windows and zero measured
    CPU activity retain their explicit scopes.
-5. **Reconcile and integrate the whole result.** Check every checklist row against
+5. **Measure the affected cadence costs on the current graph.** The harness-only
+   build passes, and `work/payment-age-native-cadence-matrix-draft-v2` has source
+   review with its actual runtime and harness evidence. The successor retains the
+   workload, analyzer, financial auditors and closure flow; its closing proof
+   lookup matches the new harness qualification. No matrix is launched yet.
+   Bind the original full run's actual independent financial release, then require
+   fresh measurement quiescence, the real cache lock and the same two-core quota.
+   Run the eight forward/reverse trials at 250/500/1000/2000 ms. Acceptance requires
+   all 32 windows, 285,696 delivered packets, 48 closed channels, 40,960 conserved
+   original test sats, 96 complete SQLite sets and verified archives/mirrors.
+   Preserve failures and original state; never replay financial work or replace
+   grants. Keep the 500 ms default and each earlier measurement's recorded scope.
+6. **Reconcile and integrate the whole result.** Check every checklist row against
    final source/dependency/features/artifacts, target evidence, threat model,
    operating/recovery documentation and the local TollGate proposal. Remove only
    completed owned test installations after verifying inactivity. Use managed
