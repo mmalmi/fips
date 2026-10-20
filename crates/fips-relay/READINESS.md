@@ -383,7 +383,10 @@ must accompany the full run below.
    32-sat channels, original accounting and fresh all-three capacity checks;
    five original binding checks and two volume-rebinding checks qualify its
    current source and full/resource metadata. Bind it to the actual accepted full
-   run before staging. This does not claim
+   run before staging. The reviewed owner at `work/current-radio-sequence-owner`
+   will retain actual child waits and attempt the original closer once after
+   launch, including a failed launch reply. Three local ordering checks pass;
+   no execution configuration or activation binding exists yet. This does not claim
    physical movement, fading, seamless roaming or automatic channel selection.
    Resource-process exit alone is insufficient: the saved capture and summary
    must reconcile useful observations of all five profiles on the three hosts.
