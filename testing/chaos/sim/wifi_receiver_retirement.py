@@ -59,7 +59,7 @@ class ReceiverRetirementRun(ReceiverWorkload, PurchaseRetirementRun):
                              synthetic_profile_equivalence=False, history_wallet_command_timeout_seconds=330)
         for name in ('wifi_receiver_retirement.py', 'wifi_receiver_workload.py',
                      'wifi_receiver_custody.py', 'wifi_receiver_window.py', 'wifi_receiver_observer.py',
-                     'wifi_receiver_numeric.py', 'receiver_history.py', 'wifi_retirement.py'):
+                     'wifi_receiver_numeric.py', 'wifi_authorization_trace.py', 'receiver_history.py', 'wifi_retirement.py'):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
     @property

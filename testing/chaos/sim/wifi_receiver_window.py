@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 
 from . import wifi_probes as probes
+from . import wifi_authorization_trace as authorization_trace
 from .paid_settlement import require
 from .wifi_priority_checks import submitted
 from .wifi_receiver_observer import POLL_SECONDS, ReceiverObserver
@@ -120,6 +121,7 @@ def measure(run, held, held_credits):
                custody_minimum_start_interval_us=1_000_000, custody_remote_timeout_seconds=3,
                progress_poll_delay_us=int(POLL_SECONDS * 1_000_000), maximum_queued_progress_reads=2048,
                progress_payments='durable authorization and completed signature balances',
+               payment_channels=[run.transit, run.guard], authorization_commit_observation={},
                cleanup_finished_us=None, traffic_finished_us=None, passed=False)
     run.evidence['receiver_history']['live'] = row
     run.save()
@@ -134,6 +136,9 @@ def measure(run, held, held_credits):
 
     with ThreadPoolExecutor(max_workers=1) as sender, ReceiverObserver(run, shape, started, row) as observer:
         observer.start_custody()
+        # Read both trace boundaries alongside the initial counter reads; an
+        # additional serial status round trip would consume the release budget.
+        authorization_baseline = sender.submit(authorization_trace.capture, run, started)
         baseline = observer.baseline()
         held_payments = [status['payment_progress'][channel] for status, channel in zip(held, (run.transit, run.guard))]
         row['baseline'], row['baseline_payment_status'] = baseline, held_payments
@@ -142,6 +147,7 @@ def measure(run, held, held_credits):
                         and caught_up(earlier) and credit >= payment['signed_sat'] * 1000
                         for payment, earlier, credit in zip(baseline['payments'], held_payments, baseline['credits'])),
                 'original stream or payment baseline changed before its one send')
+        row['authorization_commit_observation']['baseline'] = authorization_baseline.result()
         row['stream_started_us'] = int((time.monotonic() - started) * 1_000_000)
         observer.start()
         sending = sender.submit(probes.send, run, 'source', 'destination', shape, 3,
@@ -161,6 +167,7 @@ def measure(run, held, held_credits):
                             row['samples'].extend(observer.stop_and_drain())
                             require(reconciled(row['samples'][-1], statuses, row['traffic_finished_us']),
                                     'final progress differs from fresh scheduler acknowledgment')
+                            row['authorization_commit_observation']['terminal'] = authorization_trace.capture(run, started)
                             terminal_progress = int((time.monotonic() - started) * 1_000_000)
                             row['terminal_progress_us'] = terminal_progress
                             row['terminal_payment_status'] = statuses
@@ -204,7 +211,8 @@ def measure(run, held, held_credits):
                     run.save()
     submitted(row['sender'], shape)
     row['receiver'] = probes.receive(run, 'source', 'destination', shape, complete=True)
-    row['progress'] = progress(baseline, row['samples'], row['custody_samples'])
+    row['polled_progress'] = progress(baseline, row['samples'], row['custody_samples'])
+    row['progress'] = authorization_trace.qualify(row['polled_progress'], row)
     row['signed_progress'] = progress(baseline, row['samples'], row['custody_samples'], payment_field='signed_sat')
     # Even if the last packet and cleanup appear in one polling sample, only
     # claim coverage when cleanup preceded the earliest possible final send.

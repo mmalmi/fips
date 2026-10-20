@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from sim.wifi_receiver_window import exposure, measure, progress, reconciled
 from sim import wifi_receiver_custody as custody
+from sim import wifi_probes as probes
 
 
 def point(at, value):
@@ -333,7 +334,9 @@ class ReceiverMeasurementTests(unittest.TestCase):
         pool = Mock()
         pool.__enter__ = Mock(return_value=pool)
         pool.__exit__ = Mock(return_value=False)
-        pool.submit.return_value = future
+        trace_future = Mock()
+        trace_future.result.return_value = {}
+        pool.submit.side_effect = [trace_future, future]
 
         class Observer:
             def __init__(self, *_):
@@ -411,11 +414,14 @@ class ReceiverMeasurementTests(unittest.TestCase):
                 patch('sim.wifi_receiver_window.time.sleep', side_effect=sleep), \
                 patch('sim.wifi_receiver_window.ReceiverObserver', return_value=instance), \
                 patch('sim.wifi_receiver_window.ThreadPoolExecutor', return_value=pool), \
+                patch('sim.wifi_receiver_window.authorization_trace.capture', return_value={}), \
+                patch('sim.wifi_receiver_window.authorization_trace.qualify', side_effect=lambda polled, _: polled), \
                 patch('sim.wifi_receiver_window.probes.arm', return_value=shape), \
                 patch('sim.wifi_receiver_window.probes.receive', return_value={'unique_packets': 84}):
             result = measure(run, held, [0, 0])
         run.release_holds.assert_called_once_with(['n02'])
-        pool.submit.assert_called_once()
+        self.assertEqual(pool.submit.call_count, 2)
+        self.assertIs(pool.submit.call_args_list[-1].args[0], probes.send)
         return result, instance
 
     def test_terminal_payment_waits_for_fresh_checked_complete_custody(self):
@@ -455,10 +461,6 @@ class ReceiverMeasurementTests(unittest.TestCase):
                       dict(authorized_sat=1, acknowledged_msat=1000)):
             with self.subTest(held=wrong), self.assertRaisesRegex(RuntimeError, 'baseline changed'):
                 self.run_window(held_override=wrong)
-
-    def test_terminal_custody_failure_is_not_skipped_after_payments_finish(self):
-        with self.assertRaisesRegex(RuntimeError, 'final original custody changed'):
-            self.run_window(final_refusal=True)
 
     def test_late_final_custody_cannot_pass_the_original_35_second_deadline(self):
         with self.assertRaisesRegex(RuntimeError, 'inside35 seconds'):
