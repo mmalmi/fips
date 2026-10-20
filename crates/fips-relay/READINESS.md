@@ -48,15 +48,21 @@ archive members and complete preserved copies. Synced free flash is
 recover 26,079,232 bytes (24.87 MiB) of RAM each on the second and third routers;
 canonical copies, original financial profiles and archives remain preserved.
 
-**One genuine full-history case is running.** It completes staging, its live
+**The genuine full-history forwarding window fails; original recovery is running.** It completes staging, its live
 release seal and input verification, then launches normally through the qualified
 durable owner. Its original producer, supervisor, financial closer and separate
 resource recorder are verified running. History preparation completes in
 17,319.360382 seconds, retaining all 5,480 genuine wallet receipts and returning
-the original circulating sat after 43 collection passes. The paid workload is
-running; original refund deadlines govern its retirement steps. Functional and
-resource acceptance and independent closure of all 3,072 original test sats remain
-pending. Preparation alone does not establish acceptance.
+the original circulating sat after 43 collection passes. All 84 packets arrive,
+but delivered-packet, relay-authorization and second-provider credit gaps have
+lower bounds of 2.917162, 2.239144 and 2.160155 seconds, respectively, exceeding
+the unchanged two-second limit. Cleanup finishes at 28.721079 seconds, within
+35 seconds but after traffic finishes at 28.214638 seconds, so coverage also
+fails. These are real timing failures, not merely uncertain sampling bounds.
+All 31 settlements are recorded; original recovery and independent closure of
+all 3,072 test sats remain pending. The failed functional verdict is preserved.
+The separate five-second resource samples show sustained receiver CPU use and
+ample available memory; they do not resolve individual gaps or establish a cause.
 During preparation, supervised filesystem flushes restore reported flash headroom
 without removing profile records. Each `work/full-history-filesystem-sync-<number>-owner`
 bundle preserves its once-only claim, actual wait, source, observations and
@@ -107,7 +113,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | The corrected installed check retains all 4,718 samples and closes without funds. The paid rehearsal independently delivers all 84 packets, finishes cleanup in 14.401 s and passes all progress/signature series, with a maximum relay authorization bound of 1.978059 s. All 31 settlements and 3,072 original sats are independently closed, with normal exits, restored baselines and complete archives. Fresh full capacity is accepted and the genuine larger workload is running. | One receipt cannot establish history pressure. The full-history functional, resource and financial results remain pending. |
+| Router receiver retirement | The one-receipt rehearsal passes and independently closes all 31 settlements and 3,072 original sats. The genuine 5,480-receipt window delivers all 84 packets but fails progress and cleanup-overlap requirements. | Finish original financial recovery and independent closure, then qualify a demonstrated fix before another paid run. Radio remains unreleased. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
