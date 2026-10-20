@@ -360,9 +360,6 @@ impl PaymentWorkers {
             if work.progress.is_none() {
                 work.progress = controller.payment_progress.track(&id);
             }
-            if work.job.is_some() {
-                continue;
-            }
             let (Some(evidence), Some(authorized)) = (
                 controller.services.buyer.evidence_msat(&id),
                 controller.services.buyer.authorized_sat(&id),
@@ -370,13 +367,15 @@ impl PaymentWorkers {
                 error.get_or_insert_with(|| "buyer channel or evidence missing".into());
                 continue;
             };
+            // Observe debt during an exchange without starting a second worker.
             if !work.schedule.due(
                 tokio::time::Instant::now(),
                 evidence,
                 authorized,
                 purchase.channel.grace_msat,
                 policy,
-            ) {
+            ) || work.job.is_some()
+            {
                 continue;
             }
             let payer = controller.clone();

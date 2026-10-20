@@ -40,6 +40,7 @@ impl PaymentCadence {
 #[derive(Default)]
 pub(super) struct ChannelSchedule {
     acknowledged_msat: Option<u64>,
+    observed_liability_msat: u64,
     reported_loss_msat: u64,
     dirty_since: Option<Instant>,
     retry_at: Option<Instant>,
@@ -61,6 +62,8 @@ impl ChannelSchedule {
         grace_msat: u64,
         policy: &PaymentCadence,
     ) -> bool {
+        let liability = evidence_msat.max(authorized_sat.saturating_mul(1_000));
+        self.observed_liability_msat = liability;
         if let Some(when) = self.retry_at {
             return now >= when;
         }
@@ -69,7 +72,6 @@ impl ChannelSchedule {
         let Some(paid) = self.acknowledged_msat else {
             return true;
         };
-        let liability = evidence_msat.max(authorized_sat.saturating_mul(1_000));
         let debt = liability.saturating_sub(paid);
         if debt == 0 {
             self.dirty_since = None;
@@ -117,7 +119,11 @@ impl ChannelSchedule {
         self.acknowledged_msat = Some(paid_msat);
         // A validated loss report only narrows this volatile scheduling hint.
         self.reported_loss_msat = self.reported_loss_msat.max(lost_msat);
-        self.dirty_since = None;
+        // A reply may only cover earlier sends. Keep the age of outstanding
+        // usage observed while that exchange was in flight.
+        if self.observed_liability_msat <= paid_msat {
+            self.dirty_since = None;
+        }
         self.retry_at = None;
     }
 
