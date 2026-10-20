@@ -1,6 +1,8 @@
 """Run auxiliary lifecycle races through the production Linux cleanup guard."""
 
 from pathlib import Path
+import json
+import os
 import shutil
 import shlex
 import subprocess
@@ -12,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim.wifi_remote import Router
+from sim.wifi_profiles import RelayCommands
 from tests import test_wifi_discovery as base
 
 
@@ -253,6 +256,87 @@ class ProfileRegistrationTests(unittest.TestCase):
             node.created = True
             with self.assertRaises(RuntimeError):
                 node.add_profile("late")
+
+
+class ExportReadTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='export saved ')
+        self.root = Path(self.temporary.name)
+        self.profile = RelayCommands()
+        self.profile.state = str(self.root/'state')
+        self.profile.config = str(self.root/'config.json')
+        self.profile.binary = str(self.root/'ordinary-wallet')
+        self.profile.output = self.root
+        tools = self.root/'tools'; tools.mkdir()
+        shim = '#!' + sys.executable + '\n' + '''import json,sys
+from pathlib import Path
+if Path(sys.argv[0]).name == 'jsonfilter':
+ print(json.loads(sys.argv[sys.argv.index('-s')+1])['path'])
+else:
+ path=Path(sys.argv[1]);path.with_name(path.name+'.read').touch()
+ sys.stdout.buffer.write(path.read_bytes())
+'''
+        for name in ('jsonfilter', 'cat'):
+            path = tools/name; path.write_text(shim); path.chmod(0o700)
+        Path(self.profile.binary).write_text('#!' + sys.executable + '\n' + '''import json,sys
+from pathlib import Path
+config=json.loads(Path(sys.argv[2]).read_bytes())
+request=json.load(sys.stdin);Path(config['request']).write_text(json.dumps(request))
+path=Path(config['state'])/'exports'/str(request['id'])
+path=path.with_suffix('.json')
+if config['mode']=='failed':
+ print('uncertain original export stdout');print('original export error',file=sys.stderr);sys.exit(7)
+path.parent.mkdir(parents=True,exist_ok=True)
+path.write_text(json.dumps(dict(token='original-token',amount_sat=request['amount_sat'])))
+print(json.dumps(dict(path='/another/original.json' if config['mode']=='path' else str(path))))
+''')
+        Path(self.profile.binary).chmod(0o700)
+        self.calls, self.replies = [], []
+
+        def remote(command, data, timeout):
+            self.calls.append((command, data, timeout))
+            result = subprocess.run(['sh', '-c', command], input=data, capture_output=True,
+                                    timeout=5, env=dict(os.environ, PATH=str(tools)+os.pathsep+os.environ['PATH']))
+            self.replies.append(result)
+            if result.returncode:
+                raise RuntimeError('original remote command failed')
+            return result.stdout
+        self.profile.remote = remote
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def configure(self, mode):
+        Path(self.profile.config).write_text(json.dumps(dict(
+            mode=mode, state=self.profile.state, request=str(self.root/'request.json'))))
+
+    def test_one_remote_call_exports_and_reads_the_exact_original(self):
+        self.configure('normal')
+        sent, original = self.profile.export_saved(7, 1)
+        self.assertEqual(sent['path'], self.profile.state+'/exports/7.json')
+        self.assertEqual(original, dict(token='original-token', amount_sat=1))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][2], 330)
+        self.assertEqual(json.loads(self.calls[0][1]), dict(type='export', id=7, amount_sat=1))
+        self.assertTrue(Path(sent['path']+'.read').exists())
+
+    def test_failed_export_or_wrong_saved_path_never_reads_a_token(self):
+        for mode in ('failed', 'path'):
+            with self.subTest(mode=mode):
+                self.configure(mode)
+                with self.assertRaisesRegex(RuntimeError, 'remote command failed'):
+                    self.profile.export_saved(7, 1)
+                self.assertFalse(Path(self.profile.state+'/exports/7.json.read').exists())
+        self.assertEqual(self.replies[0].returncode, 7)
+        self.assertIn(b'uncertain original export stdout', self.replies[0].stdout)
+        self.assertIn(b'original export error', self.replies[0].stderr)
+        self.assertIn(b'/another/original.json', self.replies[1].stdout)
+
+    def test_malformed_reply_retains_private_original_bytes(self):
+        with patch.object(self.profile, 'remote', return_value=b'incomplete original reply'):
+            with self.assertRaisesRegex(RuntimeError, 'private bytes retained'):
+                self.profile.export_saved(7, 1)
+        self.assertEqual((self.root/'export-7-reply.error').read_bytes(), b'incomplete original reply')
 
 
 if __name__ == "__main__":

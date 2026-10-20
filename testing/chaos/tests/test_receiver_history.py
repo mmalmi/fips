@@ -4,10 +4,10 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from sim.receiver_history import circulate, WALLET_BYTES, HEADROOM
+from sim.receiver_history import circulate, LocalWallet, WALLET_BYTES, HEADROOM
 
 
-class Wallet:
+class Wallet(LocalWallet):
     def __init__(self, mint, name, balance):
         self.mint, self.name, self.balance = mint, name, balance
         self.state = '/' + name
@@ -16,10 +16,16 @@ class Wallet:
         self.fail_receive = None
         self.collection_pages = 0
         self.recovered = False
+        self.export_failure = None
+        self.export_attempts, self.file_reads = [], []
 
     def remote(self, command):
         number = int(command[1].rsplit('/', 1)[1].removesuffix('.json'))
-        return json.dumps(dict(token=self.exports[number], amount_sat=1)).encode()
+        self.file_reads.append(number)
+        amount = 2 if self.export_failure == 'amount' else 1
+        if self.export_failure == 'amount':
+            self.export_failure = None
+        return json.dumps(dict(token=self.exports[number], amount_sat=amount)).encode()
 
     def control(self, kind, *, action, **fields):
         assert action == 'wallet'
@@ -28,6 +34,10 @@ class Wallet:
         if kind == 'export':
             self.recovered = False
             number = fields['id']
+            self.export_attempts.append(number)
+            if self.export_failure == 'failed':
+                self.export_failure = None
+                raise RuntimeError('original export failed before creating a token')
             assert number > self.floor
             if number not in self.exports:
                 assert self.balance == fields['amount_sat'] or self.balance > fields['amount_sat']
@@ -36,6 +46,9 @@ class Wallet:
                 assert token not in self.mint
                 self.mint[token] = None
                 self.exports[number] = token
+            if self.export_failure == 'path':
+                self.export_failure = None
+                return dict(path='/another/original.json')
             return dict(path=self.state + f'/exports/{number}.json')
         if kind == 'import':
             token = fields['token']
@@ -65,10 +78,11 @@ class Wallet:
 
 class ReceiverHistoryTests(unittest.TestCase):
     def run_history(self, count, *, lost_reply=None, capacity_after=None, delayed_collection=0,
-                    setup_seconds=3600, before_recovery=None):
+                    setup_seconds=3600, before_recovery=None, export_failure=None):
         mint, evidence = {}, []
         wallets = [Wallet(mint, 'donor', 2048), Wallet(mint, 'receiver', 0)]
         wallets[1].fail_receive = lost_reply
+        wallets[0].export_failure = export_failure
         returned = False
 
         def observe():
@@ -107,6 +121,8 @@ class ReceiverHistoryTests(unittest.TestCase):
         self.assertEqual(evidence[-1]['final']['receipts'], 137)
         self.assertEqual(evidence[-1]['collection_passes'], 2)
         self.assertTrue(evidence[-1]['native_recovery']['recovery_pass_complete'])
+        self.assertEqual(evidence[-1]['preparation_timings']['export_read_calls'], 138)
+        self.assertEqual(evidence[-1]['preparation_timings']['import_calls'], 138)
 
     def test_lost_import_reply_recovers_same_original_and_still_fails_setup(self):
         wait = Mock()
@@ -117,6 +133,21 @@ class ReceiverHistoryTests(unittest.TestCase):
         self.assertEqual(len(wallets[1].received), 3)
         self.assertEqual(wallets[1].floor, 3)
         self.assertIn('reply was lost', evidence[-1]['error'])
+        self.assertEqual(wallets[1].export_attempts[:3], [1, 2, 2])
+
+    def test_export_failure_and_changed_custody_resume_only_the_saved_original(self):
+        for fault, message, reads in (('failed', 'export failed', 1),
+                                      ('path', 'custody path', 1), ('amount', 'amount changed', 2)):
+            with self.subTest(fault=fault):
+                result, error, evidence, wallets = self.run_history(10, export_failure=fault)
+                self.assertIsNone(result)
+                self.assertIn('failed after returning', error)
+                self.assertIn(message, evidence[-1]['error'])
+                self.assertEqual(wallets[0].export_attempts, [1, 1])
+                self.assertEqual(len(wallets[0].file_reads), reads)
+                self.assertEqual(len(wallets[1].received), 1)
+                self.assertEqual(evidence[0]['pending'], (0, 1, 1))
+                self.assertEqual(evidence[-1]['export_ids'], [1, 1])
 
     def test_capacity_stop_returns_value_without_accepting_a_smaller_workload(self):
         result, error, evidence, wallets = self.run_history(137, capacity_after=65)

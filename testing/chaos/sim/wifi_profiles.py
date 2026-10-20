@@ -34,6 +34,25 @@ class RelayCommands:
         return json.loads(self.remote([binary, action, config],
                                      json.dumps({"type": kind, **fields}).encode(), timeout=operation_timeout))
 
+    def export_saved(self, number, amount_sat):
+        """Run the ordinary export and read its exact saved token in one SSH call."""
+        expected = self.state + f"/exports/{number}.json"
+        command = ("set -eu\nstatus=0\nreply=$("
+                   + shlex.join([self.binary, "wallet", self.config]) + ") || status=$?\n"
+                   + "printf '%s\\n' \"$reply\"\n[ \"$status\" -eq 0 ] || exit \"$status\"\n"
+                   + "test \"$(jsonfilter -q -s \"$reply\" -e '@.path')\" = "
+                   + shlex.quote(expected) + "\n" + shlex.join(["cat", expected]))
+        raw = self.remote(command, json.dumps(dict(type="export", id=number, amount_sat=amount_sat)).encode(),
+                          timeout=330)
+        try:
+            sent, original = raw.split(b"\n", 1)
+            return json.loads(sent), json.loads(original)
+        except ValueError:
+            evidence = self.output / f"export-{number}-reply.error"
+            if not evidence.exists():
+                evidence.write_bytes(raw)
+            raise RuntimeError("invalid original export reply; private bytes retained") from None
+
     def native(self, command):
         return json.loads(self.remote([self.binary, "native", self.config],
                                      json.dumps(command).encode()))

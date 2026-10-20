@@ -38,6 +38,7 @@ def circulate(wallets, observe, record, rows, *, setup_seconds=SETUP_SECONDS,
     started = time.monotonic()
     ids, pending, completed = [0, 0], None, 0
     progress = []
+    timings = dict(export_read_calls=0, export_read_seconds=0.0, import_calls=0, import_seconds=0.0)
     collection_passes = 0
     collection_limit = 2 * ((rows + BATCH - 1) // BATCH) + 4
     baseline = [p.control('balance', action='wallet')['balance_sat'] for p in wallets]
@@ -52,7 +53,15 @@ def circulate(wallets, observe, record, rows, *, setup_seconds=SETUP_SECONDS,
                     requested_receipts=rows, initial=initial, progress=progress.copy(),
                     admission_headroom_bytes=HEADROOM, later_channel_admission_proven=False,
                     collection_passes=collection_passes, collection_limit=collection_limit,
-                    synthetic_profile_equivalence=False, **fields))
+                    preparation_timings=timings.copy(), synthetic_profile_equivalence=False, **fields))
+
+    def timed(name, operation):
+        began = time.monotonic()
+        timings[name + '_calls'] += 1
+        try:
+            return operation()
+        finally:
+            timings[name + '_seconds'] += time.monotonic() - began
 
     def space():
         current = observe()
@@ -66,12 +75,11 @@ def circulate(wallets, observe, record, rows, *, setup_seconds=SETUP_SECONDS,
         if pending is None:
             return
         source, target, number = pending
-        sent = wallets[source].control('export', action='wallet', id=number, amount_sat=1)
+        sent, original = timed('export_read', lambda: wallets[source].export_saved(number, 1))
         expected = wallets[source].state + f'/exports/{number}.json'
         require(sent['path'] == expected, 'export changed its original custody path')
-        original = json.loads(wallets[source].remote(['cat', expected]))
         require(original['amount_sat'] == 1, 'original export amount changed')
-        received = wallets[target].control('import', action='wallet', token=original['token'])
+        received = timed('import', lambda: wallets[target].control('import', action='wallet', token=original['token']))
         require(received['amount_sat'] == 1, 'received value differs from the original export')
         completed += target == 1
         pending = None
@@ -197,9 +205,15 @@ class LocalWallet:
             raise RuntimeError('offline wallet command timed out; original evidence retained') from None
         if result.returncode:
             with Path(self.state, 'history-errors.log').open('ab') as log:
-                log.write(result.stderr + b'\n')
+                log.write(result.stderr + b'\n' + result.stdout + b'\n')
             raise RuntimeError('offline wallet command failed; private error retained')
         return json.loads(result.stdout)
+
+    def export_saved(self, number, amount_sat):
+        sent = self.control('export', action='wallet', id=number, amount_sat=amount_sat)
+        expected = self.state + f'/exports/{number}.json'
+        require(sent['path'] == expected, 'export changed its original custody path')
+        return sent, json.loads(self.remote(['cat', expected]))
 
     def remote(self, command):
         require(command[0] == 'cat' and len(command) == 2, 'local adapter only reads original exports')

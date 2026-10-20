@@ -173,7 +173,7 @@ class ReceiverRetirementRun(ReceiverWorkload, PurchaseRetirementRun):
 
         try:
             self.evidence['receiver_history']['setup_result'] = circulate(
-                [SimpleNamespace(state=node.state, remote=node.remote,
+                [SimpleNamespace(state=node.state, export_saved=node.export_saved,
                                  control=partial(node.control, operation_timeout=330))
                  for node in (self.nodes['n01'], self.nodes['n02'])],
                 lambda: custody.counts(self.snapshot('n02', 'circulation')), record,
