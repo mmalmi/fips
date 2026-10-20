@@ -547,6 +547,12 @@ must accompany the full run below.
    router commands or funds. The earlier v8/resource-v4/capacity-v6 sources belong to
    the preserved failed FULL1 graph. Their failed verdict and complete original
    financial closure remain separate from this new attempt.
+   The independent final audit in
+   `work/current-device-sequences/full-history-4-final` is prepared and source-reviewed,
+   not executed. It retains strict original-fund, archive and owner checks, records
+   actual counts on failure, and keeps producer reports and exit status separate
+   from the qualified independent forwarding verdict. Resource-summary failure
+   remains explicit and cannot rewrite financial recovery or qualify radio.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
