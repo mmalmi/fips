@@ -53,9 +53,23 @@ The subsequent one-receipt case,
 `work/receiver-history-router/observer-availability-098890e028b2`, is running on
 that exact source after the predecessor binding and live preflight pass. Its
 qualified detached supervisor owns the actual root wait through original financial
-closure. Paid setup and settlements are progressing; the measured cleanup window,
-independent 3,072-sat reconciliation and stopped-original audit remain pending.
-The original unqualified window is unchanged.
+closure. All 84 packets arrive, cleanup finishes in 14.480 seconds and all 31
+settlements are recorded. The measured window remains unqualified: relay
+authorization has a conservative gap interval of 1.899681–2.060757 seconds. The
+other four authorization/delivery/credit series and all five signature series
+pass. No two-second runtime stall is proved. Independent 3,072-sat reconciliation
+and the stopped-original audit remain pending; their original owners are still
+running. Neither unqualified window is reclassified or replayed.
+
+The paid trace exposes slower observation than the static comparison: 710 relay
+payment reads take a median 13.701 ms and at most 51.844 ms; destination status
+reads take a median 160.914 ms. At least 4,737 external JSON parses occur during
+the window. Their exact CPU cost is unavailable. Delayed signature events cannot
+stand in for authorization events. The next source change is a bounded,
+measurement-only trace bracketing successful durable authorization commits, with
+explicit missing-event, clock and process coverage. It requires focused source,
+artifact and observer qualification before another paid case; the two-second and
+35-second requirements stay unchanged.
 
 Source-only full-history and capacity preparations now consume the normal
 independent receipt from this exact new case and require its genuine functional
@@ -63,6 +77,8 @@ pass. Five focused adapter checks pass while preserving the financial, archive,
 workload and capacity algorithms. The resource recorder retains all five qualified
 helpers and matches all seven inputs in the current dense graph. These sources
 remain unbound; no full-history case or capacity operation has been launched.
+This case's unqualified result cannot activate them; future activation requires
+rebinding to a genuinely passing case and its independently closed original funds.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -75,7 +91,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | All funded predecessors independently close their 3,072 original sats. The preceding window delivers 84 packets and finishes cleanup in 13.496 s; relay payment and second-provider timing remain unqualified, without proving a two-second stall. The qualified denser observer is now running a fresh one-receipt case. | Its genuine functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
+| Router receiver retirement | Closed predecessors reconcile their 3,072 original sats. The dense window delivers 84 packets and finishes cleanup in 14.480 s; one relay authorization series remains unqualified, without proving a two-second stall. Its original financial recovery and independent audit are running. | Direct commit timing needs qualification before the next paid case. A genuine functional pass and independent closure are required before full history; one receipt cannot establish history pressure. |
 | Android | Current build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | Current controlled Pixel acceptance is complete. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The current native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven current paid-carrier cases independently close 2,688 sats. | Current native reconciliation is complete. Retain each compiler/profile, earlier target-cost scope and the shared/physical attribution exclusions; finish router acceptance below. |
 
