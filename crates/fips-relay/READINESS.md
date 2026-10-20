@@ -51,10 +51,12 @@ canonical copies, original financial profiles and archives remain preserved.
 **One genuine full-history case is running.** It completes staging, its live
 release seal and input verification, then launches normally through the qualified
 durable owner. Its original producer, supervisor, financial closer and separate
-resource recorder are verified running. The producer reports all 5,480 genuine
-wallet receipts generated in 17,165.854363 seconds. History preparation, the paid
-forwarding/retirement window and independent original-fund closure remain pending;
-these observations do not establish acceptance.
+resource recorder are verified running. History preparation completes in
+17,319.360382 seconds, retaining all 5,480 genuine wallet receipts and returning
+the original circulating sat after 43 collection passes. The paid workload is
+running; original refund deadlines govern its retirement steps. Functional and
+resource acceptance and independent closure of all 3,072 original test sats remain
+pending. Preparation alone does not establish acceptance.
 During preparation, supervised filesystem flushes restore reported flash headroom
 without removing profile records. Each `work/full-history-filesystem-sync-<number>-owner`
 bundle preserves its once-only claim, actual wait, source, observations and
@@ -127,16 +129,18 @@ Observer, installed-reader and capacity authority is retained in
 `work/receiver-numeric-recovery-2-917f74d8a51f` and
 `work/rehearsal-space-completion-8`.
 
-The preceding integration reconciliation matches all 965 runtime/build-input
-files and the complete 761-file core inventory to the qualified ordinary Linux
-build before the optional commit trace. That trace changes four existing source
-paths and adds three. Its new ordinary Linux/ARM qualification binds all 968
-runtime source files and preserves the exact SDK/CDK inputs. Earlier phone,
+Current integration reconciliation matches all 968 runtime/build-input files to
+the qualified ordinary trace build and the complete 761-file core inventory to
+the accepted native4 graph. Seven reviewed measurement files are the only delta
+from the earlier 965-file graph; the SDK/CDK inputs are unchanged. Earlier phone,
 carrier and cadence measurements retain their original artifacts and scopes.
-The SDK and CDK checkouts match their recorded commits and are clean; the user's
-lockfile remains unchanged. The source-size gate passes all 1,100 files with the
-three existing core exceptions. `work/current-source-reconciliation` establishes
-source identity, not additional device or performance acceptance.
+The SDK/CDK checkouts are clean and the user's lockfile is preserved. The current
+source-size gate passes 1,100 files with the 600-line relay/Android ceiling,
+1,000-line integration limit and three existing core exceptions.
+`work/current-source-reconciliation` retains the preceding comparison;
+`work/final-source-reconciliation` records current source identity, and
+`work/source-size-commit-trace-1.log` retains the current size check. These supply
+no additional device or performance acceptance.
 
 The independent dense-window closure is retained in
 `work/current-device-sequences/availability-rehearsal-4-final`. New trace source,
