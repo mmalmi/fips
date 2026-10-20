@@ -306,7 +306,7 @@ must accompany the full run below.
    [the native candidate results](CADENCE-RESULTS.md#native-session-recovery-candidate--19-october-2026).
    Reuse these accepted inputs; partial-failure recovery would retain original
    stores and require original-state recovery, not replacement grants or repeats.
-2. **Reuse the accepted commit-trace router rehearsal.** Preserve both older
+2. **Retain the accepted rehearsal as historical observer qualification.** Preserve both older
    unqualified windows and their independently closed original funds. The new
    observer qualifies authorization from durable commit events, independently of
    signature completion. Its exact 217-file graph passes 55 Linux and 54 macOS
@@ -327,13 +327,22 @@ must accompany the full run below.
    repeat. Require its actual functional pass, all 31 settlements, independent
    3,072-sat conservation, stopped original
    producer/supervisor/root children and restored baselines. A failed functional
-   verdict can release devices after financial closure, but cannot authorize
-   full history. Source and installed instrumentation qualification do not supply
-   that pass. The one-receipt flash floors are 8/8/8 MiB, with strictly more than
+   verdict can release devices after financial closure, but supplies no functional
+   acceptance. Historical observer evidence does not qualify a changed runtime.
+   The one-receipt flash floors are 8/8/8 MiB, with strictly more than
    100 MiB RAM on each router; the live seal and driver recheck them before funding.
 3. **Fix the demonstrated full-history failure before another genuine case.**
-   Rebind the passing rehearsal's exact 217-file source, artifact, independent
-   collection and owner records; older full-history drafts remain ineligible.
+   Preserve the passing rehearsal's exact 217-file source, artifact, independent
+   collection and owner records as historical evidence. Qualify the changed
+   runtime independently: require its exact source and dependency inventories,
+   focused tests and lint, matched native ownership-scan benchmarks, ordinary ARM
+   build, changed harness checks and an unfunded installed-observer check on that
+   artifact. A reviewed successor full-history authority must distinguish those
+   current qualifications from the historical rehearsal; do not relabel the old
+   hardware pass or silently remove a source/artifact equality check. The fresh
+   genuine full case then supplies current runtime hardware acceptance without
+   repeating the smaller rehearsal. Until this authority and all its inputs are
+   qualified, older full-history drafts remain ineligible.
    The verified controller collection wrapper and its embedded raw Linux archive
    receipt are distinct records and must match. Financial closure cannot replace
    functional acceptance. Closed old histories cannot be made into a fresh fixture
