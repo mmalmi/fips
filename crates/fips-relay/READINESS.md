@@ -184,6 +184,12 @@ samples have no observer errors. A preceding local source-copy failure dispatche
 no router command or funds and remains preserved separately. The current run has
 not reached its measured forwarding window; functional and radio acceptance
 remain pending.
+Preparation headroom is now supervised by
+`work/full-history-4-preparation-watch-1`. It reuses the verified once-only flush
+and independent acceptance helpers, preserving each operation's actual exit,
+before/after space and complete copies. It stops at 5,300 receipts or any original
+phase/owner transition; each native operation repeats the preparation guard.
+This maintenance supplies no forwarding, durability or performance verdict.
 All five relay daemons were intentionally stopped during receipt preparation;
 unavailable daemon samples in that phase were expected. The recorder excludes
 short-lived offline wallet commands and supplies the useful window coverage
