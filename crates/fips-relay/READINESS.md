@@ -328,9 +328,10 @@ must accompany the full run below.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
-   `work/current-radio-autonomous-v5` retains its 384-sat cap, two original
+   `work/current-radio-autonomous-v6` retains its 384-sat cap, two original
    32-sat channels, original accounting and fresh all-three capacity checks;
-   rebind it to the actual accepted full run before staging. This does not claim
+   three focused binding checks qualify its current dense-source and full/resource
+   metadata. Bind it to the actual accepted full run before staging. This does not claim
    physical movement, fading, seamless roaming or automatic channel selection.
    Resource-process exit alone is insufficient: the saved capture and summary
    must reconcile useful observations of all five profiles on the three hosts.
