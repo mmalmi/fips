@@ -78,8 +78,16 @@ custody test is removed while its stronger sample-preservation test remains.
 All 13 focused buyer/measurement tests, strict library lint, the feature-disabled
 check and ordinary Linux/ARM builds pass. Exact source, dependency, feature,
 artifact and normal command-exit checks qualify those builds; no device is used
-and no funds are issued. Installed observation still needs qualification before
-another paid case. The two-second and 35-second requirements stay unchanged.
+and no funds are issued. Fresh ordinary daemons now start on two routers and
+report empty, error-free commit traces. Synced pre/post-installation measurements
+pass the existing storage floors. The unfunded observation then fails when one
+numeric reader's SSH connection is reset during startup; all four local readers
+are reaped and ordinary daemon guards clean up without errors. A separate bounded
+read-only diagnostic reproduces three resets among eight simultaneous management
+connections. The runner needs shared per-host connection capacity before another
+attempt; this is neither paid timing acceptance nor a proved FIPS stall. Failed
+results and remaining temporary fixtures are preserved for verified cleanup.
+The two-second and 35-second requirements stay unchanged.
 
 Post-closure measurements find insufficient flash on the first and third
 routers. S9 preserves all 78 original files and 117 archive members, then removes
