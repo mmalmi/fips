@@ -386,8 +386,10 @@ must accompany the full run below.
 5. **Reconcile and integrate the whole result.** Check every checklist row against
    final source/dependency/features/artifacts, target evidence, threat model,
    operating/recovery documentation and the local TollGate proposal. Remove only
-   completed owned test installations and clean merged worktrees after their
-   verifiers finish. Private control keys stay on their owning host. Revoke only
+   completed owned test installations after verifying inactivity. Use managed
+   archival for finished, integrated, inactive task-owned worktrees; preserve
+   active/shared work and operational state. Private control keys stay on their
+   owning host. Revoke only
    the job's temporary authorizations after its last device case, preserving
    other keys and all closed records. Public release, deployment and real-money
    operation retain their separate authority boundary.
@@ -404,8 +406,10 @@ power-loss limits remain. Existing mint-over-FIPS lifecycle/recovery evidence in
 LAN mint and does not qualify Android mint-over-FIPS integration.
 
 Source integration is complete for the verified Rust fixtures and Python harness;
-source-size checks pass. Clean merged fixture worktrees still bound by pending
-verifiers must wait for those owners before cleanup. The old synthetic profile's
+source-size checks pass. Fixture worktrees bound by pending verifiers stay in
+place. Only finished, integrated, inactive managed worktrees are eligible for
+managed archival; preserve unmanaged checkouts and unmerged history. The old
+synthetic profile's
 erased admission cannot be reconstructed: original funds are reconciled, but its
 unfunded controller record remains pending and the profile will not be reused.
 Evidence remains in `work/harness-local-integration` and
@@ -1501,7 +1505,8 @@ Run focused affected regressions and required repository gates. Source modules
 in relay/Android stay within 600 lines; integration files stay within 1000, checked
 by `scripts/check-rust-file-lines.sh`. Reuse shared FIPS/Cashu logic, keep regressions
 for distinct failures, and remove redundant code/tests when reliability is retained.
-After a verified change, integrate locally and remove only its clean, merged
-worktree. Keep private profiles, tokens, device details and raw evidence out of
+After a verified change, integrate locally. Use managed archival only for finished,
+integrated, inactive task-owned worktrees; never manually delete checkouts.
+Keep private profiles, tokens, device details and raw evidence out of
 published artifacts. No runtime, acceptance result or readiness status changes
 merely because this assessment is shorter.
