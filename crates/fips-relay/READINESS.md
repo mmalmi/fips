@@ -51,8 +51,10 @@ canonical copies, original financial profiles and archives remain preserved.
 **One genuine full-history case is running.** It completes staging, its live
 release seal and input verification, then launches normally through the qualified
 durable owner. Its original producer, supervisor, financial closer and separate
-resource recorder are verified running. Genuine generation of the required 5,480
-receipts remains in progress; its observations do not establish acceptance.
+resource recorder are verified running. The producer reports all 5,480 genuine
+wallet receipts generated in 17,165.854363 seconds. History preparation, the paid
+forwarding/retirement window and independent original-fund closure remain pending;
+these observations do not establish acceptance.
 During preparation, supervised filesystem flushes restore reported flash headroom
 without removing profile records. Each `work/full-history-filesystem-sync-<number>-owner`
 bundle preserves its once-only claim, actual wait, source, observations and
