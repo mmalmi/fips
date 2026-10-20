@@ -5,12 +5,14 @@
 
 ## Current state
 
-The last verified runtime adds FIPS recovery fixes `c0a553201` and `2dbd97961` to runtime
-`ab2b9246`, retaining SDK `715969e` and CDK `4f03d81b`. The ordinary Linux build,
-paced restart regression, seven paid-carrier scenarios, ARM64 OpenWrt build and
-Android build/lifecycle/package checks pass. Both controlled phone cases and the
-current native eight-trial cadence matrix pass with independent original-fund
-closure. Earlier measurements remain attached to their recorded graphs.
+The locally integrated candidate includes controller fixes `5008c41ba` and
+`45ab93cc5`, SDK `9d6722a` and CDK `92ab6a37`. Ordinary Linux, ARM64 OpenWrt and
+Android package checks pass. Its genuine full-history router test is running;
+functional acceptance, financial closure and the subsequent radio test remain
+pending. The seven paid-carrier scenarios, controlled phone cases and native
+eight-trial cadence matrix retain their preceding verified graphs. The scheduler
+change affects payment timing and counts, so its cadence costs need a fresh
+comparison before those measurements can qualify the current candidate.
 
 **The commit-trace router rehearsal passes with independent original-fund closure.**
 Independent recomputation verifies all 84 delivered packets, 3,397 retained
@@ -584,11 +586,11 @@ power-loss limits remain. Existing mint-over-FIPS lifecycle/recovery evidence in
 [TESTBENCH.md](TESTBENCH.md#mint-http-over-fips) is separate from a storage fixture's
 LAN mint and does not qualify Android mint-over-FIPS integration.
 
-Source integration is complete for the preceding verified Rust fixtures and
-Python harness; source-size checks pass. The current controller, SDK and CDK
-changes remain uncommitted until final target acceptance and provenance
-reconciliation. Fixture worktrees bound by pending verifiers stay in
-place. Only finished, integrated, inactive managed worktrees are eligible for
+Source integration is complete for the verified Rust fixtures and Python harness;
+source-size checks pass. The current controller, SDK and CDK changes are committed
+locally at the revisions in [Current state](#current-state). Final target
+acceptance and provenance reconciliation remain pending. Fixture worktrees bound
+by pending verifiers stay in place. Only finished, integrated, inactive managed worktrees are eligible for
 managed archival; preserve unmanaged checkouts and unmerged history. The old
 synthetic profile's
 erased admission cannot be reconstructed: original funds are reconciled, but its
@@ -1100,8 +1102,14 @@ Keep the three measurements distinct:
   relay journals, SDK snapshots, receiver databases and wallet shared memory.
   Logical bytes/syscalls do not measure physical media wear or mmap writes.
 
-The current session-recovery candidate passes the 19 October native comparison;
+The preceding session-recovery candidate passes the 19 October native comparison;
 the earlier r524 native and r526 Wi-Fi comparisons retain their recorded graphs.
+The current scheduler preserves the age of debt observed during a payment exchange,
+which can change payment counts, timing, CPU, journal writes and carrier bytes.
+Repeat the same native four-age matrix on its qualified source/dependency graph;
+reuse the unchanged workload, analyzer and financial-closure requirements. Build
+preparation can proceed during history setup when the real cache is available;
+measurement still requires the benchmark's actual quiescence checks.
 Complete shared-work attribution remains open and is required before claiming
 total payment overhead. Radio airtime, battery life, flash
 endurance and maximum throughput are separate experiments; their absence cannot
