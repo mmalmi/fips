@@ -24,164 +24,68 @@ and closer exits, stopped owners, restored baselines and complete archives. The
 preserved copies retain 222 profile files and 69 controller originals. This
 one-receipt pass does not establish full-history acceptance.
 
-The run uses the qualified 217-file observer, ordinary commit-trace ARM binary and
-independently accepted installed check. After the third router's fresh ARM-only space shortfall,
-one exact unused executable is removed under the existing guards, recovering
-26,079,232 bytes (24.87 MiB). Independent checks verify normal command exit,
-stopped owners, canonical copies and restored baselines. A new all-router
-measurement leaves more than 100 MiB temporary capacity after staging the ARM
-binary on each router, with at least 8 MiB flash each before that case. The
-reviewed one-shot sequence completes staging, the live release seal, input
-verification, its paid workload and independent closure. The unchanged
-two-second progress, 35-second cleanup, 84-packet workload and 3,072-test-sat cap
-apply. Fresh capacity is required before full history. All testing is agent-operated; no further phone
-handling or physical power cut is required from the user.
+The matching 217-file observer passes 55 Linux checks and 54 macOS checks with
+one existing Linux-only skip. Its ordinary commit-trace builds pass all 13 focused
+buyer/measurement tests, strict library lint, formatting and the feature-disabled
+check. Independent installed acceptance retains all 4,718 static-counter samples,
+verifies four normal reader exits and restores baselines without issuing funds.
+Initial observation takes 362.799 ms; maximum serialization takes 23.459 ms. The
+subsequent paid rehearsal above establishes populated commit traces and its
+959-original custody query under the unchanged timing requirements. Shared
+management-connection slots limit simultaneous startup to three per host while
+retaining the original queue/read deadlines; a real router check completes all
+eight requests. Established readers remain independent.
 
-**The preceding router windows remain unqualified; their original funds are independently closed.** The first
-frozen 215-file observer at `f9ffb844c` passes 41 Linux checks and 40 macOS checks
-with one existing Linux-only skip. The unfunded installed-reader check and recovery
-of the preceding failed smoke are independently accepted: four sessions exit
-normally, exact process groups are absent and all synthetic fixtures are removed.
-Accepted storage preparation preserves 78 files and 117 archive members while
-recovering 6.1 MiB of flash; all three routers meet the one-receipt capacity floors.
-The preceding case is
-`work/receiver-history-router/observer-availability-8b694b85a709`.
-All 84 packets arrive and cleanup finishes in 13.496 seconds. Delivery and the
-source payment/first-provider series pass; relay authorization, relay signatures
-and second-provider credit remain unqualified. Their conservative upper gaps are
-2.172/2.042/2.041 seconds, with minimum gaps below two seconds. No two-second
-runtime stall is proved. All 31 settlements and 3,072 original test sats are
-independently reconciled, the mint is stopped and baselines are restored. The
-stopped-original audit verifies 224 profile files, all 69 controller originals,
-the compressed archive and 88 metadata files, with complete preserved copies.
-Its local supervising process was interrupted after dispatch. Producer,
-supervisor and original local children are gone; the missing local closer exit
-status remains explicitly unknown and the incomplete sequence bytes are unchanged.
-Neither the paid workload nor its financial close is replayed.
+After rehearsal closure, verified archival preservation retains every original
+record before removing only redundant inactive expanded profiles. Two intervening
+capacity attempts fail their space floors and remain failed; independent closure
+verifies their archived bytes and stopped owners. The final preservation command
+exits normally. The new full-capacity command then exits normally without changing
+router records; independent acceptance verifies original process exits, all
+archive members and complete preserved copies. Synced free flash is
+9.785/25.621/11.961 MiB, passing the unchanged 8/24/8 MiB floors, with more than
+100 MiB temporary capacity on each router. Earlier exact inactive-binary removals
+recover 26,079,232 bytes (24.87 MiB) of RAM each on the second and third routers;
+canonical copies, original financial profiles and archives remain preserved.
 
-The denser observer, integrated as `49ab8874f` plus `824131a9b`, passes 45 Linux checks
-on the exact 215-file harness and 44 macOS checks with one existing Linux-only
-skip. Two unchanged shared library files complete that source bundle. The new
-25-ms sampling and one-second diagnostic checkpoint pass the unfunded installed
-comparison. Its maximum observed numeric read interval falls from 115.046 ms at
-100-ms polling to 50.163 ms at 25-ms polling. All 6,126 dense-phase events are
-retained in a 5,487,748-byte trace; maximum controller serialization takes 28.397 ms.
-All eight reader sessions close normally, their groups are absent and hash-verified
-synthetic fixtures are removed. These static-counter observations qualify the
-instrumentation, not paid forwarding under cleanup pressure. Runtime, dependencies,
-financial terms and conservative progress/custody checks are unchanged.
+**One genuine full-history case is running.** It completes staging, its live
+release seal and input verification, then launches normally through the qualified
+durable owner. Its original producer, supervisor, financial closer and separate
+resource recorder are verified running. An initial controller-only observation
+records 33 of 5,480 genuine receipts and 54 resource samples without sampling
+errors. These are progress observations, not acceptance. The 3,072-test-sat cap,
+original accounting, two-second progress and 35-second cleanup requirements stay
+unchanged. The test's evidence reservation uses a separately verified private
+parent on the larger controller volume; three focused placement checks pass.
+Existing workload, accounting, archive and recovery checks remain unchanged.
 
-Fresh synced measurements confirm restored baselines and 8/8/8 MiB flash plus
-more than 100 MiB temporary capacity on all three routers, without cleanup. This
-qualifies only the next one-receipt rehearsal; full-history capacity is separate.
-The subsequent one-receipt case,
-`work/receiver-history-router/observer-availability-098890e028b2`, completes on
-that exact source after the predecessor binding and live preflight pass. Its
-qualified detached supervisor owns the actual root wait through original financial
-closure. All 84 packets arrive, cleanup finishes in 14.480 seconds and all 31
-settlements are recorded. The measured window remains unqualified: relay
-authorization has a conservative gap interval of 1.899681–2.060757 seconds. The
-other four authorization/delivery/credit series and all five signature series
-pass. No two-second runtime stall is proved. Independent auditing now reconciles
-all 3,072 original test sats and 31 settlements, checks all 224 profile files and
-69 controller originals, and verifies complete preserved copies. The mint is
-stopped, normal baselines are restored and all original owners are gone. Both
-the actual root wait and original closer exit are zero. Neither unqualified
-window is reclassified or replayed.
+The reviewed full-history, capacity, resource and radio sources bind this exact
+graph and ordinary ARM binary. The separate resource recorder retains five
+helpers and seven audited harness inputs. Four full-history, four capacity, two
+resource and five original radio binding checks pass; two later radio binding
+checks qualify the volume change. Radio remains unbound until full history
+independently passes, all original funds close and useful observations of all
+five profiles reconcile. All testing is agent-operated. The controlled phone
+cases are complete; no further phone handling or physical power cut is required
+from the user.
 
-The paid trace exposes slower observation than the static comparison: 710 relay
-payment reads take a median 13.701 ms and at most 51.844 ms; destination status
-reads take a median 160.914 ms. At least 4,737 external JSON parses occur during
-the window. Their exact CPU cost is unavailable. Delayed signature events cannot
-stand in for authorization events. The next source change is a bounded,
-measurement-only trace bracketing successful durable authorization commits, with
-explicit missing-event, clock and process coverage. Producer `f73574b14` and
-consumer `621dd95cb` are integrated locally. The exact 217-file observer bundle
-passes all 48 focused Linux checks and 47 macOS checks with one Linux-only skip.
-It retains 212 unchanged files and two unchanged shared library inputs. A redundant
-custody test is removed while its stronger sample-preservation test remains.
-All 13 focused buyer/measurement tests, strict library lint, the feature-disabled
-check and ordinary Linux/ARM builds pass. Exact source, dependency, feature,
-artifact and normal command-exit checks qualify those builds; no device is used
-and no funds are issued. Fresh ordinary daemons now start on two routers and
-report empty, error-free commit traces. Synced pre/post-installation measurements
-pass the existing storage floors. The unfunded observation then fails when one
-numeric reader's SSH connection is reset during startup; all four local readers
-are reaped and ordinary daemon guards clean up without errors. A separate bounded
-read-only diagnostic reproduces three resets among eight simultaneous management
-connections. The integrated runner now shares three management-connection slots
-per host. Queueing and the first persistent-reader reply retain their original
-deadlines; established readers remain independent. All 55 focused Linux checks
-and 54 macOS checks pass, with one existing Linux-only skip. A real read-only
-router check completes all eight requests through the new boundary. These results
-qualify the connection fix. Independent recovery then verifies removal of the
-failed unfunded run's exact temporary trees, stopped owners and restored baselines;
-its original SSH failure and all evidence remain unchanged.
-The two-second and 35-second requirements stay unchanged.
+**Earlier router windows remain unqualified; their original funds are closed.**
+Each of the three cases below independently reconciles all 31 settlements and
+3,072 original test sats, preserves its archives and restores baselines.
+Conservative gaps crossing two seconds do not prove a two-second runtime stall:
 
-The corrected 35-second installed observation now passes on the exact new bundle.
-Independent recount retains all 4,718 fresh samples, verifies all four normal
-reader exits and checks the last serialization measurement. Initial observation
-takes 362.799 ms; the maximum serialization takes 23.459 ms. Two ordinary router
-daemons retain their process identities and empty, error-free commit traces.
-Actual root exit, fresh Linux/router owner absence, unchanged empty journals,
-removed temporary fixtures and restored baselines are independently verified,
-with complete preserved copies. No funds are issued or financial operations run.
-This qualifies empty-trace/static-counter instrumentation with a copied 49-row
-closed database. The subsequent paid window above establishes its live
-959-original custody query and populated commit traces under the unchanged timing
-requirements. The unfunded check itself supplies no paid forwarding or
-retirement-contention verdict; the subsequent paid case above has final closure.
+| Private case | Preserved functional limit |
+| --- | --- |
+| `observer-availability-b8a0363f3ce3` | All 84 packets arrive; cleanup takes 18.728 s. Four payment series remain unqualified, with conservative upper gaps up to 2.931 s. |
+| `observer-availability-8b694b85a709` | All 84 packets arrive; cleanup takes 13.496 s. Relay authorization/signatures and second-provider credit remain unqualified, with upper gaps of 2.172/2.042/2.041 s. The interrupted local root/closer exit status remains unknown; independently closed financial records do not invent a missing wait result. |
+| `observer-availability-098890e028b2` | All 84 packets arrive; cleanup takes 14.480 s. Relay authorization remains unqualified at 1.899681–2.060757 s. Other progress and signature series pass; the actual root and closer exits are zero. |
 
-Post-closure measurements find insufficient flash on the first and third
-routers. S9 preserves all 78 original files and 117 archive members, then removes
-only their redundant expanded closed profiles. Fresh owner, file-use, mount,
-quiet-period and held-lock checks pass; the real supervised command exits zero.
-Independent acceptance verifies all original archive bytes and complete preserved
-copies. Measured flash recovery totals 6,627,328 bytes (6.32 MiB). Final free flash
-is 9.84/19.03/9.32 MiB, with more than 100 MiB temporary capacity each. Normal
-baselines are restored and the second router's profiles are unchanged. A fresh
-ARM-only staging shortfall subsequently authorizes removal of one exact unused
-test executable from the second router. Inode, content, canonical copies, process
-use, mounts and quiet-period checks retain the existing cleanup protections.
-The supervised command exits zero; independent checks verify stopped owners,
-restored baselines and 26,079,232 bytes (24.87 MiB) of recovered RAM capacity.
-The new ARM binary plus a conservative 10 MiB staging reservation fits above the
-100 MiB remaining-space floor. This reservation is not a measured footprint;
-installation must recheck actual space. Financial profiles and archives are
-unchanged. These operations grant no paid or full-history launch authority.
-
-Reviewed full-history, capacity, resource and radio preparations now bind the
-current 217-file graph, ordinary commit-trace ARM binary and accepted installed
-check. Four full-history, four capacity, two resource and five radio binding
-checks pass; existing workload, accounting, archive and recovery checks remain.
-The resource recorder retains its five helpers and seven audited harness inputs.
-The radio resource auditor now resolves its hash-verified qualification to the
-actual frozen source tree, independently of the manifest's receipt location.
-The full test's evidence reservation exceeds the controller home volume's free
-space. Its reviewed staging helper now uses a separately verified private parent
-on the larger volume, retaining the complete reservation and requiring an owned,
-canonical directory before creating a new case. Three focused placement checks
-pass. Two radio binding checks retain the same runtime and acceptance algorithms.
-The passing rehearsal and fresh full capacity now release one actual full-history
-case. Archival preservation retains every original record before removing only
-redundant inactive expanded profiles. Two intervening capacity attempts fail
-their space floors and remain failed; independent closure verifies their archived
-bytes and stopped owners. The final preservation command exits normally. The new
-full-capacity command then exits normally without changing router records;
-independent acceptance verifies its original process exits, all archive members
-and complete preserved copies. Synced free flash is 9.785/25.621/11.961 MiB,
-passing the unchanged 8/24/8 MiB floors, with more than 100 MiB temporary capacity
-on each router.
-
-The full-history case completes staging, its live release seal and input
-verification, then launches normally through the qualified durable owner. Its
-original producer, supervisor, financial closer and separate resource recorder
-are verified running. An initial controller-only observation records 33 of 5,480
-genuine receipts and 54 resource samples without sampling errors. These are
-progress observations, not acceptance. The 3,072-test-sat cap, original accounting,
-two-second progress and 35-second cleanup requirements remain unchanged. The
-radio case stays unbound until full history independently passes and closes.
+Stopped-original audits retain complete profile/controller archives and preserved
+copies. Earlier unfunded observation failures are independently cleaned up with
+their original failures intact. Neither those observations nor closed capacity
+operations supply paid acceptance. The detailed source, sampling, storage and
+failure genealogy remains in Git history and the named private bundles; no
+unqualified window is reclassified or replayed.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -236,7 +140,8 @@ and measured space recovery are retained in `work/rehearsal-space-completion-9`.
 
 Detailed superseded run and preparation narratives remain in Git at
 `9ad685d67:crates/fips-relay/READINESS.md` and
-`668f86b8d:crates/fips-relay/READINESS.md`. Their failed verdicts and original
+`668f86b8d:crates/fips-relay/READINESS.md`; the latest observer/storage genealogy
+is retained at `3a8e89027:crates/fips-relay/READINESS.md`. Their failed verdicts and original
 financial records remain in the named evidence bundles.
 
 ### ARM export acceptance
@@ -454,9 +359,9 @@ must accompany the full run below.
    The prepared reviewed sources are `work/full-history-autonomous-v8`,
    `work/full-history-resource-observer-autonomous-v4` and
    `work/post-pass-autonomous-capacity-v6`. The resource metadata matches all
-   seven pinned helpers in the qualified 217-file graph. Actual configuration
-   still requires the accepted rehearsal's exact independent receipt and fresh
-   capacity. The capacity acceptance helper is bound to these sources in
+   seven pinned helpers in the qualified 217-file graph. The running configuration
+   binds the accepted rehearsal's exact independent receipt and fresh capacity.
+   The capacity acceptance helper is bound to these sources in
    `work/accept-full-capacity-v7.py`. These drafts require the exact normal
    independent receipt and cannot activate from a failed or unqualified run.
    Earlier sources and refused bindings remain preserved separately.
