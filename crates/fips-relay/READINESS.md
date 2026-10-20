@@ -84,9 +84,13 @@ pass the existing storage floors. The unfunded observation then fails when one
 numeric reader's SSH connection is reset during startup; all four local readers
 are reaped and ordinary daemon guards clean up without errors. A separate bounded
 read-only diagnostic reproduces three resets among eight simultaneous management
-connections. The runner needs shared per-host connection capacity before another
-attempt; this is neither paid timing acceptance nor a proved FIPS stall. Failed
-results and remaining temporary fixtures are preserved for verified cleanup.
+connections. The integrated runner now shares three management-connection slots
+per host. Queueing and the first persistent-reader reply retain their original
+deadlines; established readers remain independent. All 55 focused Linux checks
+and 54 macOS checks pass, with one existing Linux-only skip. A real read-only
+router check completes all eight requests through the new boundary. These results
+qualify the connection fix, not the complete installed observation or paid timing.
+Failed results are preserved while verified temporary-fixture cleanup runs.
 The two-second and 35-second requirements stay unchanged.
 
 Post-closure measurements find insufficient flash on the first and third
