@@ -1,6 +1,12 @@
 use super::*;
 use std::{sync::mpsc, time::Duration};
 
+#[cfg(all(
+    feature = "measurements",
+    any(target_os = "linux", target_os = "android", target_os = "macos")
+))]
+mod authorization;
+
 #[test]
 fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
     let root = tempfile::tempdir().unwrap();

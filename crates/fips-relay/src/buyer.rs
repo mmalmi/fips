@@ -470,6 +470,8 @@ impl BuyerAuthorizer {
         if !*ready {
             return Err(DurableError::Suspended.into());
         }
+        #[cfg(feature = "measurements")]
+        let mut authorization = None;
         let (balance, snapshot) = {
             let mut s = self.state.lock().map_err(|_| DurableError::Suspended)?;
             let c = s
@@ -485,6 +487,10 @@ impl BuyerAuthorizer {
                 return Err(BuyerError::UnearnedClaim);
             }
             let balance = claimed_msat.div_ceil(1_000).max(c.authorized_sat);
+            #[cfg(feature = "measurements")]
+            if balance > c.authorized_sat {
+                authorization = Some(c.authorized_sat);
+            }
             let total = s
                 .channels
                 .values()
@@ -506,7 +512,14 @@ impl BuyerAuthorizer {
                 .authorized_sat = balance;
             (balance, s.clone())
         };
+        #[cfg(feature = "measurements")]
+        let authorization =
+            authorization.map(|old| (old, crate::measurements::authorization_begin()));
         self.persist(&snapshot, &mut ready)?;
+        #[cfg(feature = "measurements")]
+        if let Some((old, trace)) = authorization {
+            trace.committed(id, old, balance);
+        }
         let payment = signer
             .sign_cashu_spilman_payment(id, balance, include_funding)
             .map_err(BuyerError::Signer)?;

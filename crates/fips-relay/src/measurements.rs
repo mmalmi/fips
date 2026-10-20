@@ -6,6 +6,8 @@
 #[cfg(feature = "measurements")]
 mod enabled;
 #[cfg(feature = "measurements")]
+pub(crate) use enabled::authorization::begin as authorization_begin;
+#[cfg(feature = "measurements")]
 pub use enabled::{Snapshot, snapshot};
 
 #[derive(Clone, Copy)]

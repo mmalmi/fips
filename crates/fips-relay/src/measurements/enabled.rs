@@ -9,6 +9,8 @@ use std::{
     time::Instant,
 };
 
+pub(super) mod authorization;
+
 const OPERATIONS: &[&str] = &[
     "other",
     "payment_sign",
@@ -108,6 +110,8 @@ pub struct Snapshot {
     pub operations: BTreeMap<&'static str, OperationSnapshot>,
     /// Failed admission attempts, not charged bytes or unique packets.
     pub admission_denials: BTreeMap<&'static str, u64>,
+    /// Additive, independently versioned evidence; version 3 counters are unchanged.
+    pub authorization_commits: authorization::Snapshot,
 }
 
 /// Cumulative counters since this process started. Concurrent snapshots may
@@ -127,6 +131,7 @@ pub fn snapshot() -> Option<Snapshot> {
             .zip(&DENIALS)
             .map(|(name, count)| (*name, count.load(Relaxed)))
             .collect(),
+        authorization_commits: authorization::snapshot(),
     })
 }
 
@@ -216,9 +221,19 @@ fn cpu_clock(thread: bool) -> Option<u64> {
     } else {
         libc::CLOCK_PROCESS_CPUTIME_ID
     };
+    clock_ns(clock)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn monotonic_clock() -> Option<u64> {
+    clock_ns(libc::CLOCK_MONOTONIC)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn clock_ns(clock: libc::clockid_t) -> Option<u64> {
     let mut value = std::mem::MaybeUninit::<libc::timespec>::uninit();
     // SAFETY: clock_gettime writes one timespec to this valid pointer. It is
-    // read only after success. Both IDs are CPU clocks, not elapsed clocks.
+    // read only after success. The caller selects a CPU or monotonic clock.
     if unsafe { libc::clock_gettime(clock, value.as_mut_ptr()) } != 0 {
         return None;
     }
@@ -226,11 +241,20 @@ fn cpu_clock(thread: bool) -> Option<u64> {
     u64::try_from(value.tv_sec)
         .ok()?
         .checked_mul(1_000_000_000)?
-        .checked_add(u64::try_from(value.tv_nsec).ok()?)
+        .checked_add(
+            u64::try_from(value.tv_nsec)
+                .ok()
+                .filter(|n| *n < 1_000_000_000)?,
+        )
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 fn cpu_clock(_thread: bool) -> Option<u64> {
+    None
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+fn monotonic_clock() -> Option<u64> {
     None
 }
 
