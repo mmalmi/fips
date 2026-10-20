@@ -7,21 +7,31 @@ pub(in crate::node) type AddrKey = (TransportId, TransportAddr);
 #[derive(Debug, Default)]
 pub(in crate::node) struct LinkAddressIndex {
     entries: HashMap<AddrKey, LinkId>,
+    revision: u64,
 }
 
 impl LinkAddressIndex {
     pub(in crate::node) fn insert(&mut self, key: AddrKey, link_id: LinkId) -> Option<LinkId> {
-        self.entries.insert(key, link_id)
+        let previous = self.entries.insert(key, link_id);
+        if previous != Some(link_id) {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        previous
     }
 
     #[cfg(test)]
     pub(in crate::node) fn remove(&mut self, key: &AddrKey) -> Option<LinkId> {
-        self.entries.remove(key)
+        let previous = self.entries.remove(key);
+        if previous.is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        previous
     }
 
     pub(in crate::node) fn remove_if_points_to(&mut self, key: &AddrKey, link_id: &LinkId) -> bool {
         if self.entries.get(key) == Some(link_id) {
             self.entries.remove(key);
+            self.revision = self.revision.wrapping_add(1);
             true
         } else {
             false
@@ -29,7 +39,11 @@ impl LinkAddressIndex {
     }
 
     pub(in crate::node) fn remove_all_pointing_to(&mut self, link_id: &LinkId) {
+        let previous_len = self.entries.len();
         self.entries.retain(|_, mapped| mapped != link_id);
+        if self.entries.len() != previous_len {
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
 
     pub(in crate::node) fn lookup(
@@ -63,6 +77,10 @@ pub(in crate::node) struct LinkRegistry {
 }
 
 impl LinkRegistry {
+    pub(in crate::node) fn address_revision(&self) -> u64 {
+        self.by_addr.revision
+    }
+
     pub(in crate::node) fn insert(&mut self, link_id: LinkId, link: Link) -> Option<Link> {
         debug_assert_eq!(link_id, link.link_id());
         let previous = self.links.insert(link_id, link);

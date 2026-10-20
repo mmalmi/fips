@@ -276,6 +276,8 @@ pub struct Node {
     dataplane_direct_fsp_sources: DataplaneDirectFspSources,
     /// True when peer path state changed since the classifier was built.
     dataplane_direct_fsp_sources_dirty: bool,
+    /// Reverse-address ownership used by the cached direct-FSP classifier.
+    dataplane_direct_fsp_sources_link_revision: u64,
     /// Maximum same-destination UDP payloads sent in one dataplane batch.
     dataplane_transport_send_batch_packets: usize,
 

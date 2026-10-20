@@ -483,12 +483,16 @@ impl Node {
     pub(in crate::node) fn dataplane_direct_fsp_sources_for_rx_turn(
         &mut self,
     ) -> crate::dataplane::DataplaneDirectFspSources {
-        if self.dataplane_direct_fsp_sources_dirty {
+        let link_revision = self.links.address_revision();
+        if self.dataplane_direct_fsp_sources_dirty
+            || self.dataplane_direct_fsp_sources_link_revision != link_revision
+        {
             let sources = self.dataplane_direct_fsp_sources();
             self.dataplane
                 .set_established_fast_ingress_direct_fsp_sources(sources.clone());
             self.dataplane_direct_fsp_sources = sources;
             self.dataplane_direct_fsp_sources_dirty = false;
+            self.dataplane_direct_fsp_sources_link_revision = link_revision;
         }
         self.dataplane_direct_fsp_sources.clone()
     }
@@ -503,6 +507,15 @@ impl Node {
             else {
                 continue;
             };
+            // BLE reuses an OS device address across account changes. Retained
+            // sessions must not obscure the authenticated owner of its current
+            // physical stream, or inherit a pending replacement's address.
+            if self.transports.get(&transport_id).is_some_and(|transport| {
+                transport.transport_type() == &crate::transport::TransportType::BLE
+            }) && self.links.lookup_addr(transport_id, &remote_addr) != Some(peer.link_id())
+            {
+                continue;
+            }
             let path_mtu = self
                 .transports
                 .get(&transport_id)
