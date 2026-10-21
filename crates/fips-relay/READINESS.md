@@ -245,11 +245,14 @@ for manual testing or an unlimited sequence of longer runs.
    `work/current-device-sequences/full-history-4-final` and
    `work/current-device-sequences/full-history-7-final-recovery-4`.
 3. **Complete controlled radio recovery after that full pass and closure.** Bind
-   the current-runtime preparation in `work/current-radio-autonomous-v12`, using
-   `work/current-radio-sequence-owner-v4`, to the actual accepted full run. Its
-   source and recovered-collection checks are prepared; execution binding still
-   needs the actual final result and stopped original owners. The failed original
-   collector must remain recorded as failed. Retain its 384-sat cap, two original 32-sat channels,
+   the current-runtime preparation in `work/current-radio-autonomous-v13`, using
+   `work/current-radio-sequence-owner-v5`, to the actual accepted full run. Six
+   software checks validate the current wallet/phase graph, reject the old
+   resource manifest and failed FULL7 verdict, and refuse a live predecessor.
+   The owner preserves its existing always-close path and refuses missing review
+   or full-result bindings. This candidate uses the normal completion path;
+   historical collection failures remain preserved. Execution still requires the
+   actual functional pass, original-fund closure and stopped owners. Retain its 384-sat cap, two original 32-sat channels,
    original accounting and fresh all-router capacity including the ARM copy.
    Verify the complete helper graph, nested manifests, current sources and useful
    all-five-profile resource summary before staging. The existing owner records
