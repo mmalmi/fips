@@ -387,6 +387,17 @@ and scalar SQL balance sums; recurring payment updates do not reopen the wallet.
 This is source evidence, not a new whole-call timing or memory result. The receipt
 is in `work/current-resource-source-reconciliation.json`.
 
+`work/current-resource-final-reconciliation-1` rebinds all 77 catalog/export
+entries to the current qualified sources: 71 runtime entries are unchanged,
+five changed entries cover four reviewed runtime files, and one entry is the
+explicit test-fixture exception. Seven additional reachable helper/wiring/test
+sources are checked. The reference reader retains the 128-row, 4-MiB full
+stored-receipt budget; matching ownership still receives ordered full validation
+under the wallet operation lock before collection. Unrelated reference projection
+is deliberately not a general metadata/curve/canonical-ID integrity scan.
+Four existing focused regression results are reused with verified source/log
+bindings. This adds no test execution, device acceptance or performance claim.
+
 Paid forwarding and retirement still need aggregate current-target resource and
 progress acceptance. Proof capture and ownership/receipt scans can traverse many
 bounded pages in one call; removing a controller lock does not make them constant
