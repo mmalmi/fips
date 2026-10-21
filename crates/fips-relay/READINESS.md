@@ -19,7 +19,7 @@ unless a demonstrated failure or unmet requirement needs a change.
 | `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | This package has not been installed or physically accepted. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
 | `work/payment-cohort-phone-harness-check-1` | 32 focused Linux checks pass with zero skips; original owners/groups are gone. | Local fixtures and mocks operate no devices or funds. |
-| `work/payment-cohort-phone-controlled-1` | The current ARM/Android artifacts and unchanged capped mint are sealed to the existing USB foreground/background/forced-idle case. All 176 focused Linux harness checks pass with zero failures or skips; actual waits, absent owners and 223 unchanged source files are verified. | Preparation only: no install, device mutation or funding. The active router predecessor is rejected before phone dispatch. |
+| `work/payment-cohort-phone-controlled-2` | The current ARM/Android artifacts and unchanged capped mint are sealed to the existing USB foreground/background/forced-idle case. The corrected handoff uses the full run's actual status and independent verdict. All 176 Linux harness checks are reused for 223 byte-identical source files; actual waits and absent owners remain verified. | Preparation only: no install, device mutation or funding. Metadata checks cover three valid and five invalid verdict combinations; the actual failed predecessor is read and the active full run remains rejected before dispatch. |
 | `work/payment-cohort-canonical-fixture-build-1` | Both canonical Rust integration targets compile with fresh compiler witnesses, unchanged source/dependencies and verified test listings. The large-export case is present; the removed synthetic-pressure case is absent. | The 35 listed cases have not run. These test executables do not replace ordinary hardware binaries. |
 | `work/payment-cohort-installed-check-2`, `work/payment-cohort-current-capacity-1` | Unfunded current-artifact reader and independent staged-capacity checks pass all unchanged floors; temporary copies are removed. | Preflight evidence does not replace paid hardware acceptance or a fresh post-run capacity check. |
 
@@ -331,9 +331,10 @@ its temporary app. Historical cost, renewal and corrupted/lost-traffic cases ret
 their original graphs; they do not qualify a newer binary.
 
 The matching current-source Android compile/package is verified but not installed.
-`work/payment-cohort-phone-controlled-1` seals the existing controlled regression
+`work/payment-cohort-phone-controlled-2` seals the existing controlled regression
 to that package and the current ARM executable; 176 focused Linux harness checks
-pass without skips. Its launch still requires the original router run's independent
+pass without skips. The handoff preserves the independent full-run verdict rather
+than inferring it from the producer's report. Its launch still requires the original router run's independent
 financial closure and stopped owners. Run it through existing USB access after the
 current router run closes. The phone stays plugged in. No operator-assisted
 pairing, movement, unplugging or further power cuts are scheduled. Controlled
