@@ -234,18 +234,28 @@ fn payment_caught_up(progress: &Value) -> bool {
 }
 
 async fn caught_up(config: &ServiceConfig, channel: &str) -> Value {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let mut last = Value::Null;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let state = status(config).await;
             let p = &state["payment_progress"][channel];
             if payment_caught_up(p) {
                 return state;
             }
+            last = state;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .expect("ordinary automatic payment must be acknowledged")
+    .await;
+    result.unwrap_or_else(|_| {
+        let root = config.state_directory.parent().unwrap().parent().unwrap();
+        let path = root.join(format!("failed-payment-progress-{channel}.json"));
+        std::fs::write(&path, serde_json::to_vec(&last).unwrap()).unwrap();
+        panic!(
+            "ordinary automatic payment must be acknowledged; inspect {}",
+            path.display()
+        );
+    })
 }
 
 async fn hold_wallet_writer(wallet: &Path) -> Child {
