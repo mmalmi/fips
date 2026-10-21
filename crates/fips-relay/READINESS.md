@@ -57,11 +57,13 @@ observation and the current staged-capacity check pass. Before any further clean
 recheck exact custody, actual owners/open references and normal baselines; never
 replay an old removal list or use an idle timestamp as authority.
 
-Radio preparation in `work/current-radio-autonomous-v11` verifies the actual current
-runtime/resource binding and all 100 full-run helper paths. It refuses the incomplete
-parent. Its recovered-collector release and sequence-owner binding remain unbound
-until the actual full pass, financial closure and useful resource capture exist.
-No radio case has been staged or funded.
+Radio preparation in `work/current-radio-autonomous-v12` and its reviewed
+`work/current-radio-sequence-owner-v4` verify the current runtime/resource-harness
+bindings and retain the original collector failures. Read-only checks reject the
+active collector, incomplete full result and known failed predecessor before
+allocation. Execution still requires the actual full pass, original financial
+closure, normally closed recovered collectors/final owner and useful resource
+capture. No radio case has been staged or funded.
 
 ## Scope and outstanding acceptance
 
@@ -188,10 +190,11 @@ for manual testing or an unlimited sequence of longer runs.
    radio or qualify forwarding. The latest failed predecessor remains closed in
    `work/current-device-sequences/full-history-4-final`.
 3. **Complete controlled radio recovery after that full pass and closure.** Bind
-   the current-runtime preparation in `work/current-radio-autonomous-v11` to the
-   actual accepted full run. Its software/resource binding is verified, but its
-   recovered-collector release and sequence-owner binding still need the actual
-   final result. The failed original collector must remain recorded as failed. Retain its 384-sat cap, two original 32-sat channels,
+   the current-runtime preparation in `work/current-radio-autonomous-v12`, using
+   `work/current-radio-sequence-owner-v4`, to the actual accepted full run. Its
+   source and recovered-collection checks are prepared; execution binding still
+   needs the actual final result and stopped original owners. The failed original
+   collector must remain recorded as failed. Retain its 384-sat cap, two original 32-sat channels,
    original accounting and fresh all-router capacity including the ARM copy.
    Verify the complete helper graph, nested manifests, current sources and useful
    all-five-profile resource summary before staging. The existing owner records
