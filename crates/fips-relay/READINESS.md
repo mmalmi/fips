@@ -22,7 +22,7 @@ unexecuted by these checks. Original failures and complete preserved copies are
 in `work/prepaid-usage-regression-1` and `work/control-rate-regression-1`.
 These checks do not establish resolution of the router's timing failure.
 
-**The latest genuine-history router case fails timing; its funds are fully closed.**
+**The latest completed genuine-history router case fails timing; its funds are fully closed.**
 The preceding runtime prepares all 5,480 genuine receipts in 15,014.917609 s,
 returns the original circulating sat and leaves no incomplete operations. All
 84 packets arrive. Cleanup takes 25.581999 s, within 35 s and before traffic ends
@@ -96,8 +96,21 @@ floor and remains recorded. Seven exact inactive, regenerable helper copies are
 then removed with original-owner, inode/hash, open-reference and baseline checks;
 `work/sqlite-helper-headroom-2` records 16,027,648 recovered RAM bytes. A separate
 synced 30-second observation passes all unchanged flash/RAM floors. These are
-storage-preparation results; current-artifact staging and fresh capacity checks
-remain required before the next funded router run.
+storage-preparation results. The current-artifact installed-reader check and
+independent staged-capacity check subsequently pass all unchanged floors in
+`work/payment-cohort-installed-check-2` and
+`work/payment-cohort-current-capacity-1`; their temporary copies are removed.
+
+A new genuine-history router run on the corrected candidate is now running
+unattended, with the same 5,480-receipt workload, 3,072-sat issuance cap,
+two-second payment-progress limit and 35-second cleanup limit. A local connection
+file became unavailable during monitoring; collection and independent closure
+are reconnected to the same live remote producer and resource observer. The
+original collector failure is retained, no workload is replayed, and no funds are
+replaced. This attempt has no functional or financial verdict yet. Radio testing
+must wait for its actual pass, independent financial closure and useful
+five-profile resource evidence. Phone tests use the existing USB connection;
+no operator-assisted unplugging, movement or power cut is required.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -110,7 +123,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | The historical one-receipt rehearsal passes. The latest genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | Qualify the current payment scheduler on the routers. Radio remains unreleased. |
+| Router receiver retirement | The historical one-receipt rehearsal passes. The latest completed genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | The corrected scheduler's genuine-history run is in progress. Radio remains unreleased. |
 | Android | Recorded build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | These controlled Pixel cases are complete for their recorded graph; the current-source Android compile/package also passes; affected physical-target reconciliation remains required. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The corrected `51ef364dd` baseline passes its native cost matrix with independent original-fund closure; the follow-up timer correction also passes, reducing high-rate payment work. Its router timing remains unqualified. Retain compiler/profile and shared/physical attribution limits. |
 
