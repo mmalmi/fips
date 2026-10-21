@@ -155,6 +155,12 @@ Those files have not supplied current physical acceptance. Separately,
 `work/payment-cohort-phone-harness-check-1` passes 32 focused canonical phone and
 offline-wallet tooling checks on Linux, with zero skips and verified stopped
 owners. These tests use local fixtures and mocks; they operate no device or funds.
+`work/payment-cohort-canonical-fixture-build-1` subsequently compiles both
+canonical integration targets with the six fixture differences applied. Fresh
+compiler witnesses, unchanged source/dependency checks and executable test
+listings confirm the large-export regression is present and the removed synthetic
+pressure case is absent. These test executables have not run their cases; they
+do not replace the ordinary binaries used by the hardware run.
 
 Earlier source reconciliation retains the 968-file trace build and 761-file core
 comparison in `work/final-source-reconciliation`, with dependency checkout state
