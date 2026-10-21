@@ -5,8 +5,8 @@
 
 ## Current state
 
-The qualified baseline `51ef364dd` adds bounded outgoing control-rate waiting to
-`12ce1af4d`, with SDK
+The qualified candidate corrects payment-cohort age on `51ef364dd`, retaining
+bounded outgoing control-rate waiting and priced-usage tracking, with SDK
 `9d6722a` and CDK `92ab6a37`. The priced-usage fix retains new usage's age while
 whole-sat credit temporarily covers it. Fully covered usage starts no exchange;
 when a higher payment becomes due, an expired deadline makes it eligible. Its
@@ -64,9 +64,14 @@ verify 96 SQLite sets and eight archives containing 872 members. At 500 ms,
 high-rate payment work averages 17.0565 CPU seconds per delivered GiB, with 92
 updates per trial (79–105 across two repeats); all idle payment counters are zero.
 [Cadence results](CADENCE-RESULTS.md) retain the policies, attribution limits and
-other measurements. A reproduced follow-up regression shows that newly sent
-traffic can inherit the age of already paid usage; its small timer correction is
-under qualification and requires a matched cost comparison before retention.
+other measurements. The follow-up timer correction passes its regression and all 180 controller
+tests, lint, formatting, feature-disabled check and ordinary Linux/ARM builds.
+Its matched successor in `work/payment-cohort-native-cadence-matrix-1` also passes
+all eight trials and independent original-fund closure: at 500 ms, high-rate
+scoped CPU averages 9.6642 seconds per delivered GiB and both repeats use 51
+updates. All packets arrive and every idle payment counter remains zero. This
+measured reduction supports retaining the correction; router timing remains
+unqualified.
 The default remains 500 ms. Android packaging, controlled phone cases and
 supported-carrier scenarios retain their recorded graphs; final affected-target
 reconciliation remains required.
@@ -94,7 +99,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
 | Router receiver retirement | The historical one-receipt rehearsal passes. The latest genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | Qualify the current payment scheduler on the routers. Radio remains unreleased. |
 | Android | Recorded build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | These controlled Pixel cases are complete for their recorded graph; final shared-source packaging and affected-target reconciliation remain required. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
-| Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The corrected `51ef364dd` baseline passes its native cost matrix with independent original-fund closure; a follow-up timer correction remains under test. Retain compiler/profile and shared/physical attribution limits. |
+| Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The corrected `51ef364dd` baseline passes its native cost matrix with independent original-fund closure; the follow-up timer correction also passes, reducing high-rate payment work. Its router timing remains unqualified. Retain compiler/profile and shared/physical attribution limits. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,

@@ -40,10 +40,11 @@ impl PaymentCadence {
 #[derive(Default)]
 pub(super) struct ChannelSchedule {
     acknowledged_msat: Option<u64>,
-    observed_liability_msat: u64,
+    observed_authorized_msat: u64,
     observed_evidence_msat: u64,
     reported_loss_msat: u64,
     dirty_since: Option<Instant>,
+    newer_usage_since: Option<Instant>,
     retry_at: Option<Instant>,
     unclaimed: Option<UnclaimedUsage>,
 }
@@ -55,6 +56,28 @@ struct UnclaimedUsage {
 }
 
 impl ChannelSchedule {
+    fn observe(&mut self, now: Instant, evidence_msat: u64, authorized_sat: u64) -> u64 {
+        if evidence_msat > self.observed_evidence_msat {
+            self.dirty_since.get_or_insert(now);
+        }
+        self.observed_evidence_msat = evidence_msat;
+        self.observed_authorized_msat = authorized_sat.saturating_mul(1_000);
+        evidence_msat.max(self.observed_authorized_msat)
+    }
+
+    pub(super) fn observe_in_flight(
+        &mut self,
+        now: Instant,
+        evidence_msat: u64,
+        authorized_sat: u64,
+        started_evidence_msat: u64,
+    ) {
+        self.observe(now, evidence_msat, authorized_sat);
+        if evidence_msat > started_evidence_msat {
+            self.newer_usage_since.get_or_insert(now);
+        }
+    }
+
     pub(super) fn due(
         &mut self,
         now: Instant,
@@ -63,12 +86,7 @@ impl ChannelSchedule {
         grace_msat: u64,
         policy: &PaymentCadence,
     ) -> bool {
-        let liability = evidence_msat.max(authorized_sat.saturating_mul(1_000));
-        self.observed_liability_msat = liability;
-        if evidence_msat > self.observed_evidence_msat {
-            self.dirty_since.get_or_insert(now);
-        }
-        self.observed_evidence_msat = evidence_msat;
+        let liability = self.observe(now, evidence_msat, authorized_sat);
         if let Some(when) = self.retry_at {
             return now >= when;
         }
@@ -124,16 +142,22 @@ impl ChannelSchedule {
         self.acknowledged_msat = Some(paid_msat);
         // A validated loss report only narrows this volatile scheduling hint.
         self.reported_loss_msat = self.reported_loss_msat.max(lost_msat);
-        // Preserve newer usage, including any covered by the rounded balance.
-        if self.observed_liability_msat <= paid_msat && self.observed_evidence_msat <= evidence_msat
-        {
-            self.dirty_since = None;
+        // Acknowledged usage cannot age newer sends. Keep their first observed
+        // time, including usage covered temporarily by the rounded balance.
+        let newer = self.newer_usage_since.take();
+        if self.observed_authorized_msat <= paid_msat && evidence_msat <= paid_msat {
+            self.dirty_since = if self.observed_evidence_msat <= evidence_msat {
+                None
+            } else {
+                newer.or(self.dirty_since)
+            };
         }
         self.retry_at = None;
     }
 
     pub(super) fn failed(&mut self, now: Instant) {
         self.unclaimed = None;
+        self.newer_usage_since = None;
         self.retry_at = Some(now + RETRY_DELAY);
     }
 }

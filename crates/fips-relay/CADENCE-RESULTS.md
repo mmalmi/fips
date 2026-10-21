@@ -2,11 +2,51 @@
 
 Each dated section applies to its recorded source, dependencies, workload and
 artifact. “Current” in a historical section means current at that observation.
-The latest accepted native comparison uses `51ef364dd`, SDK `9d6722a` and CDK
-`92ab6a37`. Earlier target, storage and capture comparisons retain their recorded
+The latest accepted native comparison uses the payment-cohort timer correction
+on `51ef364dd`, SDK `9d6722a` and CDK `92ab6a37`. Earlier target, storage and capture comparisons retain their recorded
 graphs. Keep CPU/storage/wire values attached to their measured builds;
 [readiness](READINESS.md#completion-sequence) describes affected-path validation
 and evidence reuse for the final candidate. The 500-ms default is unchanged.
+
+## Native payment-cohort correction — 21 October 2026
+
+A successful payment now leaves newer sends with their own first-observed age.
+It cannot make already paid traffic age those sends prematurely. Unpaid older
+usage, value triggers, rounded-credit behavior and failure retry bounds remain
+unchanged. The existing in-flight/idle worker regression reproduces the old
+behavior and passes with the correction; all 180 controller tests pass.
+
+The matched successor in `work/payment-cohort-native-cadence-matrix-1` passes all
+eight trials and 32 windows. All 285,696 packets arrive; independent original-state
+audits close 48 channels, conserve 40,960 test sats and verify 96 SQLite sets and
+872 archived members. The ordinary native/ARM qualification, source inventories,
+logs, collected originals and actual stopped owners are independently verified.
+An initial local launch refuses before staging or any remote operation; its
+missing input and failure remain preserved separately from the funded run.
+
+The workload, prices, allowances, two-core quota and attribution match the rate-wait
+baseline below. Each high-rate repeat delivers 32,000,000 application bytes.
+
+| Maximum age | Updates, mean (range) | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Service payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 77.5 (77–78) | 14.38 | 0.018019 | 465 | 126,848 |
+| 500 ms | 51 (51–51) | 9.66 | 0.011690 | 306 | 83,660 |
+| 1000 ms | 44 (44–44) | 8.25 | 0.009995 | 264 | 72,025 |
+| 2000 ms | 42 (41–43) | 7.71 | 0.009385 | 252 | 68,758 |
+
+At the unchanged 500-ms default, high-rate scoped payment CPU falls from 17.06 to
+9.66 seconds per delivered GiB (43%); updates fall from a mean of 92 to 51 (45%).
+Logical payment journal bytes fall from 0.021357 to 0.011690 per delivered byte.
+Steady windows average 19/19/17/12 updates and 34.43/36.23/30.90/22.19 scoped CPU
+seconds per GiB. Every idle payment counter remains zero. All steady/high-rate
+latency histogram upper bounds remain 0.5/1 ms, with high-rate goodput about
+31.91 Mb/s. Two repeats support retaining this correction for the measured
+workload; they establish no general optimum or hard performance bound.
+
+CPU covers exclusive payment spans, future polls and inherited blocking work;
+service bytes count local FIPS payload submissions. Shared core/TCP CPU, wallet
+SQLite and physical writes, physical wire framing, radio airtime, battery and
+impaired links remain excluded. Router timing acceptance is still pending.
 
 ## Native rate-wait candidate — 21 October 2026
 

@@ -164,6 +164,38 @@ async fn tick_preserves_usage_age_without_duplicate_or_idle_work() {
     assert_eq!(work.started_evidence_msat, 2_250);
     next.abort();
     assert!(next.await.unwrap_err().is_cancelled());
+    let (reply, pending) = oneshot::channel::<ChannelUsage>();
+    work.job = Some(tokio::spawn(
+        async move { Ok(Some(pending.await.unwrap())) },
+    ));
+    tokio::time::advance(Duration::from_millis(100)).await;
+    submit();
+    workers.tick(&controller, &policy).await.unwrap();
+    tokio::time::advance(Duration::from_millis(100)).await;
+    reply
+        .send(ChannelUsage {
+            submitted_msat: 2_250,
+            reserved_msat: 2_250,
+            paid_msat: 3_000,
+            lost_msat: 0,
+        })
+        .unwrap();
+    finished(workers.channels[&id].job.as_ref().unwrap()).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    tokio::time::advance(Duration::from_millis(100)).await;
+    for _ in 0..3 {
+        submit();
+    }
+    workers.tick(&controller, &policy).await.unwrap();
+    assert!(
+        workers.channels[&id].job.is_none(),
+        "new usage must not inherit already acknowledged debt age"
+    );
+    tokio::time::advance(Duration::from_millis(300)).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    let next = workers.channels.get_mut(&id).unwrap().job.take().unwrap();
+    next.abort();
+    assert!(next.await.unwrap_err().is_cancelled());
     workers.drain().await.unwrap();
     drop(channel_guard);
     tokio::time::resume();

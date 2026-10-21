@@ -367,15 +367,23 @@ impl PaymentWorkers {
                 error.get_or_insert_with(|| "buyer channel or evidence missing".into());
                 continue;
             };
-            // Observe debt during an exchange without starting a second worker.
+            let now = tokio::time::Instant::now();
+            if work.job.is_some() {
+                work.schedule.observe_in_flight(
+                    now,
+                    evidence,
+                    authorized,
+                    work.started_evidence_msat,
+                );
+                continue;
+            }
             if !work.schedule.due(
-                tokio::time::Instant::now(),
+                now,
                 evidence,
                 authorized,
                 purchase.channel.grace_msat,
                 policy,
-            ) || work.job.is_some()
-            {
+            ) {
                 continue;
             }
             let payer = controller.clone();
