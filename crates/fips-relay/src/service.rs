@@ -184,7 +184,9 @@ impl RelayService {
         Self::stored_state(config).map(|_| ())
     }
 
-    pub(crate) async fn check_wallet_capacity(config: &ServiceConfig) -> Result<(), String> {
+    pub(crate) async fn open_checked_wallet(
+        config: &ServiceConfig,
+    ) -> Result<CashuWalletService, String> {
         let wallet = CashuWalletService::open_file_backed(config.state_directory.join("wallet"))
             .await
             .map_err(|e| e.to_string())?;
@@ -196,7 +198,7 @@ impl RelayService {
         if maximum != config.terms.wallet_capacity_bytes {
             return Err("wallet storage capacity differs from saved terms".into());
         }
-        Ok(())
+        Ok(wallet)
     }
 
     fn stored_state(config: &ServiceConfig) -> Result<(Identity, Manifest), String> {
@@ -239,7 +241,7 @@ impl RelayService {
                 .map_err(|e| e.to_string())?;
             drop(wallet);
         } else {
-            Self::check_wallet_capacity(&config).await?;
+            Self::open_checked_wallet(&config).await?;
         }
         let sender_pubkey =
             load_or_create_cashu_spilman_sender_key(&root.join("wallet"))?.public_key_hex;

@@ -79,12 +79,14 @@ fn clean(root: &Path, files: &[(PathBuf, Option<u64>)], through: u64) -> Result<
     Ok(removed)
 }
 
-pub(super) async fn prepare_export(root: &Path, mint: &str, id: u64) -> Result<String, String> {
+pub(super) async fn prepare_export(
+    root: &Path,
+    mint: &str,
+    id: u64,
+    wallet: &CashuWalletService,
+) -> Result<String, String> {
     let request = request_id(id)?;
-    let wallet = CashuWalletService::open_file_backed(&root.join("wallet"))
-        .await
-        .map_err(|e| e.to_string())?;
-    let through = floor(&wallet, mint).await?;
+    let through = floor(wallet, mint).await?;
     if id <= through {
         return Err("export request has been acknowledged and cannot be reused".into());
     }
@@ -96,18 +98,20 @@ pub(super) async fn prepare_export(root: &Path, mint: &str, id: u64) -> Result<S
     Ok(request)
 }
 
-pub(super) async fn acknowledge(root: &Path, mint: &str, through: u64) -> Result<Value, String> {
+pub(super) async fn acknowledge(
+    root: &Path,
+    mint: &str,
+    through: u64,
+    wallet: &CashuWalletService,
+) -> Result<Value, String> {
     request_id(through)?;
-    let wallet = CashuWalletService::open_file_backed(&root.join("wallet"))
-        .await
-        .map_err(|e| e.to_string())?;
-    let previous = floor(&wallet, mint).await?;
+    let previous = floor(wallet, mint).await?;
     let files = files(root)?;
     for (path, id) in &files {
         if let Some(id) = id.filter(|id| *id > previous && *id <= through) {
             let cached: CashuSentPayment = read_json(path)?;
             check_cached(
-                &wallet,
+                wallet,
                 send_request(
                     normalize_mint_url(mint).map_err(|e| e.to_string())?,
                     request_id(id)?,

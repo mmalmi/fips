@@ -4,14 +4,12 @@ mod history;
 mod tests;
 
 use crate::{
-    controller::FundingRequestBudget,
     durable::{acquire_owner, write_private_journal},
     service::{RelayService, ServiceConfig, read_json},
 };
 use cashu::nuts::{CurrencyUnit, Token};
 use cashu_service::{
-    CashuSentPayment, CashuWalletSendRequest, CashuWalletService, load_mint_balance,
-    normalize_mint_url,
+    CashuSentPayment, CashuWalletSendRequest, CashuWalletService, normalize_mint_url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -121,17 +119,11 @@ async fn check_cached(
     Ok(())
 }
 
-async fn open_wallet(
-    directory: &Path,
-    budget: Option<FundingRequestBudget>,
-) -> Result<CashuWalletService, String> {
-    let wallet = CashuWalletService::open_file_backed(directory)
+#[cfg(feature = "testbench")]
+pub(crate) async fn open_wallet(directory: &Path) -> Result<CashuWalletService, String> {
+    CashuWalletService::open_file_backed(directory)
         .await
-        .map_err(|e| e.to_string())?;
-    if let Some(budget) = budget {
-        budget.apply(&wallet)?;
-    }
-    Ok(wallet)
+        .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn export_payment(
@@ -140,7 +132,7 @@ pub(crate) async fn export_payment(
     id: &str,
     amount: u64,
     request_id: String,
-    budget: Option<FundingRequestBudget>,
+    wallet: &CashuWalletService,
 ) -> Result<Value, String> {
     let path = export_path(root, id)?;
     let mint = normalize_mint_url(mint).map_err(|e| e.to_string())?;
@@ -170,12 +162,11 @@ pub(crate) async fn export_payment(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
-    let wallet = open_wallet(&root.join("wallet"), budget).await?;
     // The SDK retains the original terms, coins and result before publication.
     // Keep this identity stable: a retry must never become another wallet send.
     let request = send_request(mint, request_id, amount);
     if let Some(cached) = cached {
-        check_cached(&wallet, request, &cached).await?;
+        check_cached(wallet, request, &cached).await?;
         return Ok(export_summary(&path, &cached));
     }
     let payment = wallet
@@ -202,13 +193,13 @@ pub async fn offline_wallet(
     RelayService::validate_stored_state(config)?;
     let _owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
     RelayService::validate_stored_state(config)?;
-    RelayService::check_wallet_capacity(config).await?;
+    let wallet = RelayService::open_checked_wallet(config).await?;
     let mint = &config.terms.controller.mint_url;
-    let wallet = config.state_directory.join("wallet");
-    let network = if matches!(
+    let uses_mint = matches!(
         &command,
         WalletRequest::Import { .. } | WalletRequest::Export { .. } | WalletRequest::Recover
-    ) {
+    );
+    let network = if uses_mint {
         crate::service::OfflineMint::start(config)
             .await
             .map_err(|e| format!("start wallet mint network: {e}"))?
@@ -216,15 +207,18 @@ pub async fn offline_wallet(
         None
     };
     let result = async {
+        if uses_mint && let Some(budget) = config.funding_request_budget {
+            budget.apply(&wallet)?;
+        }
         match command {
             WalletRequest::Balance => serde_json::to_value(
-                load_mint_balance(&wallet, mint)
+                wallet
+                    .load_mint_balance(mint)
                     .await
                     .map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string()),
             WalletRequest::Recover => {
-                let wallet = open_wallet(&wallet, config.funding_request_budget).await?;
                 let report = wallet.recover_startup_state().await;
                 Ok(json!({
                     "wallets": report.wallets,
@@ -241,7 +235,6 @@ pub async fn offline_wallet(
             }
             WalletRequest::Import { token } => {
                 checked_token(&token, mint)?;
-                let wallet = open_wallet(&wallet, config.funding_request_budget).await?;
                 serde_json::to_value(
                     wallet
                         .receive_payment_token(&token)
@@ -251,22 +244,23 @@ pub async fn offline_wallet(
                 .map_err(|e| e.to_string())
             }
             WalletRequest::Export { id, amount_sat } => {
-                let request_id = history::prepare_export(&config.state_directory, mint, id)
-                    .await
-                    .map_err(|e| format!("prepare wallet export: {e}"))?;
+                let request_id =
+                    history::prepare_export(&config.state_directory, mint, id, &wallet)
+                        .await
+                        .map_err(|e| format!("prepare wallet export: {e}"))?;
                 export_payment(
                     &config.state_directory,
                     mint,
                     &id.to_string(),
                     amount_sat,
                     request_id,
-                    config.funding_request_budget,
+                    &wallet,
                 )
                 .await
                 .map_err(|e| format!("send wallet export: {e}"))
             }
             WalletRequest::AcknowledgeExports { through } => {
-                history::acknowledge(&config.state_directory, mint, through).await
+                history::acknowledge(&config.state_directory, mint, through, &wallet).await
             }
         }
     }

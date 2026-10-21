@@ -1,16 +1,22 @@
 # Paid-relay v1 readiness
 
 **Status: active; production readiness is not established.** Reviewed on
-21 October 2026.
+22 October 2026.
 
 ## Current state
 
-The qualified candidate is `0eed2f3c2`, with SDK `9d6722a` and CDK `92ab6a37`.
+The scheduling correction is `0eed2f3c2`, with SDK `9d6722a` and CDK `92ab6a37`.
 It retains bounded outgoing control-rate waiting and priced-usage age while whole-sat
 credit covers sends. Successful payment leaves newer sends with their own age;
 unpaid older usage and failure retry bounds remain intact. The regression fails
 before the correction and passes afterward. Runtime and dependencies remain fixed
 unless a demonstrated failure or unmet requirement needs a change.
+
+The local successor also reuses one capacity-checked wallet per offline command.
+Its ordinary native/static ARM builds and custody checks pass with the same
+dependencies. [Preparation measurements](MEASUREMENTS.md#offline-wallet-preparation)
+cover small native samples; router timing and full-history preparation remain
+unqualified for these new artifacts.
 
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
@@ -18,7 +24,8 @@ unless a demonstrated failure or unmet requirement needs a change.
 | `work/payment-phase-trace-1` | A paused-clock regression verifies channel attribution and completed-phase durations; it fails against the old code. All 181 controller tests pass with the required private directory permissions. Formatting and strict library/test lint pass after correcting a stale handshake-loss fixture's exhaustive match. Sources, dependencies, logs, executable identity and stopped owners are verified. | Optional local diagnostics only; no stalled phase has yet been identified. The old red wrapper's stale assertion, initial fixture-permission failures and initial integration compile failure remain recorded. No new hardware acceptance is claimed. |
 | `work/payment-phase-artifacts-1` | Ordinary Linux and static ARM builds of the diagnostics integrated in `7639b8739` pass with the same dependencies and shared build cache. Compiler records, executable hashes, source inventories, normal waits and stopped owners are independently verified. | These artifacts enable the next investigation; they do not establish that the two-second hardware requirement passes. |
 | `work/payment-phase-current-capacity-1` | One actual 26,704,824-byte ARM copy is staged on each router. All unchanged full-history flash and RAM floors pass with those copies present. The copies are then removed; normal baselines, actual waits and absent owners are independently verified. | Allocation check only: no daemon starts, payments or acceptance traffic. The remaining relay delay still requires investigation. |
-| `work/wallet-open-reuse-1`, `work/payment-failure-diagnostics-1` | An unaccepted offline-wallet reuse change passes 364 library tests, two existing custody/CLI cases, formatting and strict lint. The 64-receipt baseline paid case passes; the changed executable's first case fails waiting for an automatic payment acknowledgement amid session recovery. A fresh 64-receipt diagnostic passes with 3,501 completed payment phases captured. A separate 131-export case reaches its five-minute harness deadline before the default mint request pacing permits completion; its longer run remains in progress. The unchanged payment deadline now retains its last observed state on failure; fixture formatting, typechecking and strict lint pass. | Neither failed case is accepted. Independent recovery checks all 1,389 interrupted wallet proof rows, conserves their original 3,328 test sats, closes channel capital and preserves gross export costs without new issuance or replacement sends. A separate audit checks all 1,317 proof rows from the passing diagnostic and conserves its 3,072 originals with no incomplete sagas. Originals, phases and failures have verified private copies. The intermittent timeout remains unexplained; these smaller native runs are not full-history hardware or performance acceptance. |
+| `work/wallet-open-reuse-1`, `work/payment-failure-diagnostics-1` | Wallet reuse passes 364 library tests and two existing custody/CLI cases. The baseline 64-receipt paid case passes; the first optimized case fails awaiting an automatic payment acknowledgement. A fresh diagnostic passes with 3,501 completed payment phases captured. The existing payment deadline now retains its last observed state on failure; fixture formatting, typechecking and strict lint pass. | The intermittent timeout remains unexplained. Independent audits conserve the interrupted runs' original 3,328 test sats and the passing diagnostic's separate 3,072 originals. Failed verdicts remain preserved. These smaller native runs are not full-history hardware acceptance. |
+| `work/wallet-open-reuse-final-1`, `work/wallet-prefix-completion-recovery-1` | Final ordinary Linux/static ARM builds, strict ordinary/test lint, feature-disabled check, formatting and the 1,101-file size gate pass. The existing 131-export case passes with unchanged mint pacing. The final ordinary binary preserves the permanent floor, rejects replay and retains 131 requests/256 sats of gross spending. An independent audit checks all 328 proof rows and conserves all 256 originals with no incomplete wallet operations. | The initial compiler-cache failure and first issuer-audit failure remain recorded. A dedicated Zig cache repairs missing objects; ordinary SDK recovery reconciles the test issuer's already-spent grant without new issuance. All 1,753 source files, 18 dependency trees, executable identities and stopped build owners are independently checked. This accepts offline-wallet reuse, not a router timing fix. |
 | `work/payment-cohort-native-cadence-matrix-1` | Eight trials and 32 windows pass; all 285,696 packets arrive, 48 channels close and 40,960 original test sats reconcile across 96 SQLite sets and 872 archived members. | See [performance scopes](#performance-acceptance); no general optimum or total-overhead claim. |
 | `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | The controlled Pixel case below supplies physical evidence for this package; production-wallet/VPN behavior remains outside scope. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
@@ -29,7 +36,7 @@ unless a demonstrated failure or unmet requirement needs a change.
 
 ### Current router run
 
-The current candidate's genuine-history attempt fails the unchanged two-second
+The last genuine-history router attempt fails the unchanged two-second
 progress requirement. All 84 packets arrive; cleanup takes 24.639534 seconds,
 within 35 seconds and before traffic ends at 28.278187 seconds. Relay authorization
 has a confirmed minimum gap of 2.208247159 seconds and maximum 2.245729648 seconds;
@@ -187,9 +194,11 @@ for manual testing or an unlimited sequence of longer runs.
    checks, unfunded installed-reader acceptance and staged capacity are bound to
    the completed original attempt. Collection and independent audit recovered from local connection
    failures without restarting the workload or replacing its funds. The relay still
-   exceeds two seconds; diagnose that delay before another paid attempt. The historical rehearsal qualifies
-   the observer only. Require a meaningful qualified runtime change before a new
-   paid attempt; do not relabel historical hardware evidence or silently remove an
+   exceeds two seconds. The next diagnostic must capture completed payment phases
+   on the routers under the same genuine pressure. The historical rehearsal qualifies
+   the observer only. Require a meaningful qualified runtime or diagnostic change
+   before a new paid attempt; a logging change supplies no presumption of a timing
+   fix. Do not relabel historical hardware evidence or silently remove an
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
    within its actual scope.
 

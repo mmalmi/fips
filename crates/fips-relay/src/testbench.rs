@@ -5,7 +5,9 @@
 use crate::{
     durable::write_private_journal,
     service::{read_json, read_record, write_record},
-    wallet_tools::{checked_token, export_path, export_payment, private_new, valid_id},
+    wallet_tools::{
+        checked_token, export_path, export_payment, open_wallet, private_new, valid_id,
+    },
 };
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
@@ -258,7 +260,7 @@ impl BenchMint {
                         &id,
                         amount_sat,
                         format!("fips-export:{id}"),
-                        None,
+                        &open_wallet(&self.config.state_directory.join("wallet")).await?,
                     )
                     .await;
                 }
@@ -300,7 +302,7 @@ impl BenchMint {
                     &id,
                     amount_sat,
                     format!("fips-export:{id}"),
-                    None,
+                    &open_wallet(&wallet).await?,
                 )
                 .await
             }

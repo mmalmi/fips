@@ -366,3 +366,29 @@ This probe creates no financial material and never opens an existing database.
 It isolates storage waits; it does not measure wallet retirement, signing,
 scheduling, network latency or delivery. [Readiness](READINESS.md#current-router-run)
 records the controlled observation and its limits.
+
+## Offline wallet preparation
+
+Offline commands now keep the wallet opened for their capacity check, rather
+than opening it again for balance, export-history checks or token operations.
+The exclusive account lock, storage limit, permanent request floor and gross
+spending counters remain unchanged.
+
+The existing genuine-receipt preparation records these native wall-clock samples:
+
+| Variant | Genuine receipts | Export/read calls | Import calls | Preparation seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Previous implementation | 64 | 65 | 65 | 6.156 |
+| Wallet reuse, first run | 64 | 65 | 65 | 5.289 |
+| Wallet reuse, diagnostic run | 64 | 65 | 65 | 5.260 |
+
+Each preparation returns its circulating original value. The first optimized
+paid scenario later times out; its completed preparation is a timing sample,
+and its failed verdict remains recorded. The diagnostic paid scenario passes.
+Evidence is in `work/wallet-open-reuse-1`; the final source/build audit is in
+`work/wallet-open-reuse-final-1`.
+
+These three small native samples do not establish full-history preparation time
+on ARM, payment CPU per byte or a router timing improvement. The separate
+131-export test runs with unchanged mint request pacing and concurrent functional
+work; its elapsed time is not a comparative performance result.
