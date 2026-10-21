@@ -17,6 +17,7 @@ unless a demonstrated failure or unmet requirement needs a change.
 | `work/payment-cohort-regression-1` | 180 controller tests, formatting, strict library lint, feature-disabled check, ordinary Linux/ARM builds and the 1,101-file size gate pass. Source/dependency/artifact checks and stopped owners are independently verified. Four buyer and 19 transport-unit results are explicitly reused; 16 existing transport-integration tests also pass. | Software qualification does not establish router timing. The user's lockfile remains unchanged. |
 | `work/payment-phase-trace-1` | A paused-clock regression verifies channel attribution and completed-phase durations; it fails against the old code. All 181 controller tests pass with the required private directory permissions. Formatting and strict library/test lint pass after correcting a stale handshake-loss fixture's exhaustive match. Sources, dependencies, logs, executable identity and stopped owners are verified. | Optional local diagnostics only; no stalled phase has yet been identified. The old red wrapper's stale assertion, initial fixture-permission failures and initial integration compile failure remain recorded. No new hardware acceptance is claimed. |
 | `work/payment-phase-artifacts-1` | Ordinary Linux and static ARM builds of the diagnostics integrated in `7639b8739` pass with the same dependencies and shared build cache. Compiler records, executable hashes, source inventories, normal waits and stopped owners are independently verified. | These artifacts enable the next investigation; they do not establish that the two-second hardware requirement passes. |
+| `work/payment-phase-current-capacity-1` | One actual 26,704,824-byte ARM copy is staged on each router. All unchanged full-history flash and RAM floors pass with those copies present. The copies are then removed; normal baselines, actual waits and absent owners are independently verified. | Allocation check only: no daemon starts, payments or acceptance traffic. The remaining relay delay still requires investigation. |
 | `work/payment-cohort-native-cadence-matrix-1` | Eight trials and 32 windows pass; all 285,696 packets arrive, 48 channels close and 40,960 original test sats reconcile across 96 SQLite sets and 872 archived members. | See [performance scopes](#performance-acceptance); no general optimum or total-overhead claim. |
 | `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | The controlled Pixel case below supplies physical evidence for this package; production-wallet/VPN behavior remains outside scope. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
@@ -66,9 +67,12 @@ and Linux archives plus a RAM archive on each router. Exact owner, open-referenc
 mount and quiet-interval checks precede removal of only the redundant expanded
 forms. The operation exits normally and measures 20,889,600 recovered flash bytes.
 Independent archive readback confirms every original byte and restored baselines.
-Although the operation's final space check passes, a later readback falls below
-the unchanged full-history flash floors. A fresh staged-candidate capacity check
-is still required; no new paid or radio test is authorized by this cleanup.
+Although the operation's final space check passes, a later unsynchronized readback
+falls below the unchanged full-history flash floors. Flushing pending filesystem
+work restores the reported space. The subsequent synchronized check in
+`work/payment-phase-current-capacity-1` passes with the actual diagnostic binary
+staged on all three routers, without further profile removals. This capacity
+observation does not resolve the timing failure or authorize the radio case.
 
 The preceding runtime's genuine-history window also fails the
 unchanged timing requirement: authorization gaps have a confirmed minimum
