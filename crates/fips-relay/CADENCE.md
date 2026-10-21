@@ -97,8 +97,11 @@ bound under many simultaneous unavailable peers.
 The shared control transport keeps the existing 32 total / four-per-peer TCP
 connection limits. Up to 16 live outgoing requests, including queued requests,
 may wait within the existing 30-second deadline. A full peer's slots do not block
-another peer's connection attempt. Only a pre-connection capacity refusal is
-retried, at most every 50 ms; no transmitted RPC is replayed by this queue.
+another peer's connection attempt. Unsent outgoing requests wait for exhausted
+rate tokens, rechecking every 100 ms within that same queue and deadline.
+Incoming exhausted budgets still reject. Membership, identity capacity and
+admission-slot refusals are not retried. A pre-connection TCP capacity refusal is
+rechecked at most every 50 ms; no transmitted RPC is replayed by this queue.
 Canceled queued requests are discarded before transmission. This also handles
 the short period when successfully closed streams still occupy TCP slots.
 

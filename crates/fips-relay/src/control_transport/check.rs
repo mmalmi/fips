@@ -1,5 +1,8 @@
 //! One owned admission check per bounded pending request or TCP exchange.
-use super::{ControlAdmission, PeerIdentity, admission::AdmissionPermit};
+use super::{
+    ControlAdmission, PeerIdentity,
+    admission::{ADMISSION_INTERVAL, AdmissionError, AdmissionPermit},
+};
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
@@ -22,9 +25,18 @@ impl AdmissionCheck {
     ) -> Self {
         Self {
             permit: None,
-            pending: Some(Box::pin(
-                async move { admission.admit(peer, outbound).await },
-            )),
+            pending: Some(Box::pin(async move {
+                loop {
+                    match admission.admit(peer, outbound).await {
+                        // Only unsent local work waits for rate capacity. The
+                        // existing bounded queue and request deadline still apply.
+                        Err(AdmissionError::RateLimited(_)) if outbound => {
+                            tokio::time::sleep(ADMISSION_INTERVAL).await;
+                        }
+                        result => return result.map_err(|error| error.to_string()),
+                    }
+                }
+            })),
         }
     }
 

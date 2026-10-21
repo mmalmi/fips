@@ -5,19 +5,21 @@
 
 ## Current state
 
-The locally integrated runtime is `12ce1af4d`, with SDK `9d6722a` and CDK
-`92ab6a37`. It retains new priced usage's age while whole-sat credit temporarily
-covers that usage. Fully covered usage starts no exchange; when a higher payment
-becomes due, an expired deadline makes it immediately eligible. The existing
-in-flight/idle worker regression fails on the old code and passes with this fix.
-All 180 controller tests, formatting, strict library lint, the feature-disabled
-check and ordinary Linux/ARM64 OpenWrt builds pass. Independent postflight verifies
-sources, dependencies, logs, both artifacts and stopped owners. The lockfile is
-unchanged; four unchanged buyer-test results remain valid. Six inherited integration
-fixture differences are explicitly unexecuted by these library/binary checks.
-Evidence is in `work/prepaid-usage-regression-1` with complete preserved copies.
-This proves the reproduced scheduling defect and its fix; it does not establish
-the cause or resolution of the router's timing failure.
+The candidate adds bounded outgoing control-rate waiting to `12ce1af4d`, with SDK
+`9d6722a` and CDK `92ab6a37`. The priced-usage fix retains new usage's age while
+whole-sat credit temporarily covers it. Fully covered usage starts no exchange;
+when a higher payment becomes due, an expired deadline makes it eligible. Its
+in-flight/idle regression fails on the old code and passes with the fix.
+
+All 180 controller tests, 19 control-transport unit tests and 16 existing transport
+integration tests pass, alongside formatting, strict library lint, the
+feature-disabled check, source-size gate and ordinary Linux/ARM64 builds.
+Independent postflight verifies sources, dependencies, logs, both artifacts and
+stopped owners. The lockfile is unchanged; four unchanged buyer-test results
+remain valid. Six inherited integration-fixture differences remain explicitly
+unexecuted by these checks. Original failures and complete preserved copies are
+in `work/prepaid-usage-regression-1` and `work/control-rate-regression-1`.
+These checks do not establish resolution of the router's timing failure.
 
 **The latest genuine-history router case fails timing; its funds are fully closed.**
 The preceding runtime prepares all 5,480 genuine receipts in 15,014.917609 s,
@@ -49,9 +51,18 @@ not make them functional passes.
 
 The new ordinary runtime and existing benchmark harness are bound in
 `work/prepaid-native-cadence-harness-1`. The supervised successor at
-`work/prepaid-native-cadence-matrix-1` is measuring the unchanged eight-trial
-250/500/1000/2000 ms workload and will audit its original funds afterward. No
-current cost result is accepted yet. Its default remains 500 ms. Android packaging,
+`work/prepaid-native-cadence-matrix-1` completes all eight trials, but strict analysis
+rejects a controller rate-limit error at the final high-rate boundaries of its
+1-second trial. Independent audits close all 48 channels, conserve all 40,960
+original test sats and verify 96 SQLite sets and 872 archived members. The failed
+measurement and complete preserved copies remain intact; no current cost result
+is accepted. The outgoing admission regression reproduces that immediate refusal
+on the old code. Its fix passes the checks above in
+`work/control-rate-regression-1`: unsent outgoing work waits for rate tokens,
+while incoming limits and the existing queue/deadline bounds remain unchanged.
+The current harness and 16 transport integration tests are independently verified
+in `work/control-rate-native-cadence-harness-1`. A successor cost run must bind
+those actual artifacts and preserve this failed predecessor. The default remains 500 ms. Android packaging,
 controlled phone cases, supported-carrier scenarios and earlier costs retain
 their recorded graphs; final affected-target reconciliation remains required.
 
@@ -78,7 +89,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
 | Router receiver retirement | The historical one-receipt rehearsal passes. The latest genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | Qualify the reproduced rounded-credit fix on the routers. Radio remains unreleased. |
 | Android | Recorded build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | These controlled Pixel cases are complete for their recorded graph; final shared-source packaging and affected-target reconciliation remain required. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
-| Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The current scheduler's harness build passes; its affected native cost matrix is running and remains unaccepted. Retain compiler/profile and shared/physical attribution limits. |
+| Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The current scheduler's harness build passes; its native cost matrix fails a controller rate-limit boundary and remains unaccepted, with all original funds independently closed. Retain compiler/profile and shared/physical attribution limits. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,
@@ -255,8 +266,10 @@ must accompany the full run below.
 
 1. **Finish the affected native cadence comparison.** The current runtime's
    controller checks and ordinary Linux/ARM builds pass. The original supervised
-   matrix is running in `work/prepaid-native-cadence-matrix-1`; observe that owner
-   and its automatic original-state closer rather than launching another run.
+   matrix in `work/prepaid-native-cadence-matrix-1` is independently closed with
+   its failed controller-rate-limit verdict preserved. The reproduced outgoing
+   admission fix and current harness are qualified; bind their actual artifacts
+   before a successor and do not replay this run.
    Acceptance requires eight forward/reverse trials at 250/500/1000/2000 ms,
    all 32 windows, 285,696 delivered packets, 48 closed channels, 40,960 conserved
    original test sats, 96 complete SQLite sets and verified archives/mirrors.

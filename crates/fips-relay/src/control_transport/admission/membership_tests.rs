@@ -53,6 +53,67 @@ async fn connected(entry: &FipsEndpoint, peer: PeerIdentity, expected: bool) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn outgoing_rate_wait_preserves_incoming_limits_and_other_peers() {
+    use crate::control_transport::AdmissionCheck;
+
+    let entry = Arc::new(
+        FipsEndpoint::builder()
+            .config(config())
+            .without_system_tun()
+            .bind()
+            .await
+            .unwrap(),
+    );
+    let remote = attach(&entry).await;
+    let peer = PeerIdentity::from_npub(remote.npub()).unwrap();
+    let healthy = PeerIdentity::from_pubkey_full(fips_core::Identity::generate().pubkey_full());
+    connected(&entry, peer, true).await;
+    for configured in [true, false] {
+        let mut neighbors = vec![healthy];
+        if configured {
+            neighbors.push(peer);
+        }
+        let admission = ControlAdmission::new(
+            entry.clone(),
+            neighbors,
+            None,
+            NeighborAdmission::AuthenticatedAdjacent,
+        )
+        .unwrap();
+        for outbound in [true, false] {
+            for _ in 0..ADMISSION_BURST {
+                drop(admission.admit(peer, outbound).await.unwrap());
+            }
+        }
+        assert!(admission.admit(peer, false).await.is_err());
+        let mut waiting = AdmissionCheck::start(admission.clone(), peer, true);
+        assert!(
+            !waiting
+                .ready()
+                .await
+                .expect("outgoing rate limits must queue before transmission")
+        );
+        let mut other = AdmissionCheck::start(admission, healthy, true);
+        assert!(other.ready().await.unwrap());
+        admitted(&mut waiting).await;
+        waiting.recheck();
+        admitted(&mut waiting).await;
+    }
+    remote.shutdown().await.unwrap();
+    entry.shutdown().await.unwrap();
+
+    async fn admitted(check: &mut AdmissionCheck) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !check.ready().await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("queued admission and membership revalidation must complete");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_permits_recheck_adjacency_and_reconnect_keeps_identity_budgets() {
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -155,7 +216,7 @@ async fn verified_obligations_have_bounded_capacity_even_when_newcomer_resources
         for n in 1..=64u8 {
             let id = super::tests::peer(n);
             assert_ne!(id, *peer.node_addr());
-            assert!(state.admit_peer(id, false, now, false));
+            assert!(state.admit_peer(id, false, now, false).is_ok());
         }
     }
     assert!(admission.admit(peer, false).await.is_err());
@@ -207,6 +268,7 @@ async fn verified_obligations_have_bounded_capacity_even_when_newcomer_resources
             .await
             .err()
             .unwrap()
+            .to_string()
             .contains("request budget")
     );
     admission
@@ -227,6 +289,7 @@ async fn verified_obligations_have_bounded_capacity_even_when_newcomer_resources
             .await
             .err()
             .unwrap()
+            .to_string()
             .contains("request budget")
     );
     remote.shutdown().await.unwrap();
