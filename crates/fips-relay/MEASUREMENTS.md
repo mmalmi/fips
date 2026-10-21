@@ -331,6 +331,19 @@ measurements do not establish customer onboarding, Pixel operation, encrypted
 wire replay handling, interrupted renewal/funding recovery or full-router reboot
 recovery with active financial operations.
 
+## Payment phase timing
+
+Build with `measurements` and enable `RUST_LOG=warn,fips_payment=debug` to record
+each completed scheduler phase. Events contain the local `channel_id`, `stage`
+and monotonic `elapsed_us`; they distinguish scheduling, channel-lock,
+preparation, network exchange, signing and result-harvesting waits. Phase labels
+are local diagnostics and add no protocol messages or delivery receipts. An
+unfinished phase remains visible in the existing payment-progress status.
+
+Logging is disabled by default. Enable it only for a bounded diagnostic window
+and retain logs privately. A long phase identifies where time was spent; it does
+not by itself distinguish CPU work, filesystem waits and runtime scheduling.
+
 ## Isolated storage wait diagnostic
 
 [`sqlite_io.c`](../../testing/chaos/tools/sqlite_io.c) compares a 2 KiB atomic

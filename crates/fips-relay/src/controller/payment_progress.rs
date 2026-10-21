@@ -26,6 +26,7 @@ pub struct PaymentProgress {
 
 #[derive(Default)]
 pub(super) struct ScheduleProgress {
+    channel_id: String,
     pub(super) acknowledged_msat: Option<u64>,
     pub(super) last_failure_stage: Option<PaymentStage>,
     pending: Option<(PaymentStage, tokio::time::Instant)>,
@@ -42,7 +43,16 @@ impl ScheduleProgress {
 
     pub(super) fn stage(&mut self, stage: PaymentStage) {
         if self.in_flight() {
+            self.trace_phase();
             self.pending = Some((stage, tokio::time::Instant::now()));
+        }
+    }
+
+    fn trace_phase(&self) {
+        if let Some((stage, since)) = self.pending {
+            tracing::debug!(target: "fips_payment", channel_id = %self.channel_id, stage = ?stage,
+                elapsed_us = u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX),
+                "Payment phase completed");
         }
     }
 
@@ -58,6 +68,7 @@ impl ScheduleProgress {
         acknowledged_msat: Option<u64>,
         failure: Option<PaymentStage>,
     ) {
+        self.trace_phase();
         self.acknowledged_msat = acknowledged_msat;
         self.pending = None;
         if failure.is_some() {
@@ -80,7 +91,10 @@ impl ProgressRegistry {
         if channels.len() >= MAX_CHANNELS || channels.contains_key(id) {
             return None;
         }
-        let progress = Arc::new(Mutex::new(ScheduleProgress::default()));
+        let progress = Arc::new(Mutex::new(ScheduleProgress {
+            channel_id: id.to_owned(),
+            ..Default::default()
+        }));
         channels.insert(id.to_owned(), Arc::downgrade(&progress));
         Some(progress)
     }

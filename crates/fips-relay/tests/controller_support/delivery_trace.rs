@@ -51,6 +51,7 @@ impl HandshakeLoss {
                 SessionHandshake::Setup => 0,
                 SessionHandshake::Ack => 1,
                 SessionHandshake::Finish => 2,
+                SessionHandshake::Confirm => return None,
             },
         )
     }

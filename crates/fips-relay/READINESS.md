@@ -15,6 +15,7 @@ unless a demonstrated failure or unmet requirement needs a change.
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
 | `work/payment-cohort-regression-1` | 180 controller tests, formatting, strict library lint, feature-disabled check, ordinary Linux/ARM builds and the 1,101-file size gate pass. Source/dependency/artifact checks and stopped owners are independently verified. Four buyer and 19 transport-unit results are explicitly reused; 16 existing transport-integration tests also pass. | Software qualification does not establish router timing. The user's lockfile remains unchanged. |
+| `work/payment-phase-trace-1` | A paused-clock regression verifies channel attribution and completed-phase durations; it fails against the old code. All 181 controller tests pass with the required private directory permissions. Formatting and strict library/test lint pass after correcting a stale handshake-loss fixture's exhaustive match. Sources, dependencies, logs, executable identity and stopped owners are verified. | Optional local diagnostics only; no stalled phase has yet been identified. The old red wrapper's stale assertion, initial fixture-permission failures and initial integration compile failure remain recorded. No new hardware acceptance is claimed. |
 | `work/payment-cohort-native-cadence-matrix-1` | Eight trials and 32 windows pass; all 285,696 packets arrive, 48 channels close and 40,960 original test sats reconcile across 96 SQLite sets and 872 archived members. | See [performance scopes](#performance-acceptance); no general optimum or total-overhead claim. |
 | `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | The controlled Pixel case below supplies physical evidence for this package; production-wallet/VPN behavior remains outside scope. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
@@ -56,8 +57,17 @@ threshold and 70.34 ms at 128 frames. The corresponding commit maxima are 314.69
 and 134.74 ms. This limited probe does not reproduce the full-run delay or justify
 changing SQLite policy. Existing baselines are unchanged; only the owned scratch
 databases and tool are removed after checking open references. Measured cleanup
-recovers 4,669,440 flash bytes and 1,130,496 RAM-backed temporary bytes. The two
-other routers' space failures remain unresolved.
+recovers 4,669,440 flash bytes and 1,130,496 RAM-backed temporary bytes.
+
+`work/full-history-7-archived-representation-1` preserves all 98 closed profile
+files and 147 archive members, including original metadata, in verified private
+and Linux archives plus a RAM archive on each router. Exact owner, open-reference,
+mount and quiet-interval checks precede removal of only the redundant expanded
+forms. The operation exits normally and measures 20,889,600 recovered flash bytes.
+Independent archive readback confirms every original byte and restored baselines.
+Although the operation's final space check passes, a later readback falls below
+the unchanged full-history flash floors. A fresh staged-candidate capacity check
+is still required; no new paid or radio test is authorized by this cleanup.
 
 The preceding runtime's genuine-history window also fails the
 unchanged timing requirement: authorization gaps have a confirmed minimum
