@@ -330,3 +330,26 @@ mint was kept alive; its simulated Lightning backend was not restarted. These
 measurements do not establish customer onboarding, Pixel operation, encrypted
 wire replay handling, interrupted renewal/funding recovery or full-router reboot
 recovery with active financial operations.
+
+## Isolated storage wait diagnostic
+
+[`sqlite_io.c`](../../testing/chaos/tools/sqlite_io.c) compares a 2 KiB atomic
+journal with concurrent scratch SQLite WAL transactions. Build with a C11
+compiler, pthreads and SQLite development headers/library:
+
+```sh
+cc -std=c11 -O2 -pthread testing/chaos/tools/sqlite_io.c -lsqlite3 -o /tmp/sqlite-io
+```
+
+Usage is `sqlite-io ABSENT_ABSOLUTE_DIRECTORY baseline SECONDS` or
+`sqlite-io ABSENT_ABSOLUTE_DIRECTORY WAL_FRAMES SECONDS`. Each invocation requires
+a new directory and keeps its generated files for inspection. The directory
+selects the filesystem being measured; OpenWrt `/tmp` uses RAM. The update phase
+accepts 1–30 seconds; database setup and final checkpoint/close also run. SQLite
+cases use 5,480 fixed scratch rows, about 22 MiB with 4 KiB pages, and return
+commit and journal p95/max durations in nanoseconds.
+
+This probe creates no financial material and never opens an existing database.
+It isolates storage waits; it does not measure wallet retirement, signing,
+scheduling, network latency or delivery. [Readiness](READINESS.md#current-router-run)
+records the controlled observation and its limits.

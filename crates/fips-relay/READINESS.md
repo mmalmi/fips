@@ -49,6 +49,16 @@ trip or payment behavior. All 26 focused trace/window checks pass. The existing
 trace proves the gap but does not identify which preceding payment phase caused
 it; slow database commits in the cleanup log alone do not establish that cause.
 
+`work/payment-io-diagnostic-1` isolates scratch SQLite WAL work from 2 KiB atomic
+journal writes on the middle router, without payments or financial profiles.
+Journal maxima are 4.56 ms at idle, 24.61 ms with the default 1,000-frame checkpoint
+threshold and 70.34 ms at 128 frames. The corresponding commit maxima are 314.69
+and 134.74 ms. This limited probe does not reproduce the full-run delay or justify
+changing SQLite policy. Existing baselines are unchanged; only the owned scratch
+databases and tool are removed after checking open references. Measured cleanup
+recovers 4,669,440 flash bytes and 1,130,496 RAM-backed temporary bytes. The two
+other routers' space failures remain unresolved.
+
 The preceding runtime's genuine-history window also fails the
 unchanged timing requirement: authorization gaps have a confirmed minimum
 2.219443538 seconds and maximum 2.227160741 seconds. Signing and second-provider
