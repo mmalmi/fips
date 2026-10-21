@@ -27,7 +27,7 @@ missing input and failure remain preserved separately from the funded run.
 The workload, prices, allowances, two-core quota and attribution match the rate-wait
 baseline below. Each high-rate repeat delivers 32,000,000 application bytes.
 
-| Maximum age | Updates, mean (range) | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Service payload bytes |
+| Maximum age | Updates, mean (range) | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Submitted service UDP payload bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 250 ms | 77.5 (77–78) | 14.38 | 0.018019 | 465 | 126,848 |
 | 500 ms | 51 (51–51) | 9.66 | 0.011690 | 306 | 83,660 |
@@ -43,10 +43,21 @@ latency histogram upper bounds remain 0.5/1 ms, with high-rate goodput about
 31.91 Mb/s. Two repeats support retaining this correction for the measured
 workload; they establish no general optimum or hard performance bound.
 
-CPU covers exclusive payment spans, future polls and inherited blocking work;
-service bytes count local FIPS payload submissions. Shared core/TCP CPU, wallet
-SQLite and physical writes, physical wire framing, radio airtime, battery and
-impaired links remain excluded. Router timing acceptance is still pending.
+At 500 ms, the two high-rate repeats average 717 service UDP datagrams and
+83,660.5 submitted payload bytes per 32,000,000 delivered application bytes:
+0.2614%. These counters include TCP/FIPS segments and FIPS encryption/fragment
+headers at the local transport boundary. Each idle window still records 1,392
+service-carrier bytes while payment-activity counters remain zero. The saved-data
+derivation in `work/payment-cohort-carrier-cost-derivation-1` verifies all 32 windows
+against the accepted summary; it runs no new workload or financial operations.
+
+CPU covers exclusive payment spans, future polls and inherited blocking work.
+Service submissions can include quotes and carrier traffic; they are not a
+payment-only class or proof of physical transmission. Shared core/TCP CPU,
+opaque transit and shared handshake/MMP/rekey traffic, wallet SQLite and physical
+writes, outer network/link headers, radio airtime, battery and impaired links
+remain excluded. See the [measurement boundaries](MEASUREMENTS.md). Router timing
+acceptance is still pending.
 
 ## Native rate-wait candidate — 21 October 2026
 
