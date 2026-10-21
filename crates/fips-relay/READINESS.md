@@ -5,7 +5,7 @@
 
 ## Current state
 
-The qualified candidate corrects payment-cohort age on `51ef364dd`, retaining
+The qualified candidate `0eed2f3c2` corrects payment-cohort age on `51ef364dd`, retaining
 bounded outgoing control-rate waiting and priced-usage tracking, with SDK
 `9d6722a` and CDK `92ab6a37`. The priced-usage fix retains new usage's age while
 whole-sat credit temporarily covers it. Fully covered usage starts no exchange;
@@ -72,9 +72,12 @@ scoped CPU averages 9.6642 seconds per delivered GiB and both repeats use 51
 updates. All packets arrive and every idle payment counter remains zero. This
 measured reduction supports retaining the correction; router timing remains
 unqualified.
-The default remains 500 ms. Android packaging, controlled phone cases and
-supported-carrier scenarios retain their recorded graphs; final affected-target
-reconciliation remains required.
+The default remains 500 ms. The matching Android compile and package pass in
+`work/payment-cohort-android-build-1`, with independent source, dependency,
+compiler-input, normal-feature, package and signature verification. The unchanged
+21 app files retain the accepted ten lifecycle tests. This package is not installed
+on a phone; controlled phone cases and carrier scenarios retain their recorded
+graphs, and final affected-target reconciliation remains required.
 
 Historical preparation, artifact, capacity, ownership and failure details remain
 in the named private evidence bundles and at
@@ -85,6 +88,16 @@ forwarding, at the first observation of at least 5,300 receipts; it removes no
 records and supplies no durability or timing verdict. Before any new device case,
 select closed preservation targets from fresh custody and recheck synced capacity,
 normal baselines and actual owner absence.
+
+The closed FULL4 profile representation is now independently verified in
+`work/prepaid-capacity-prep-1`: all 98 files and 147 members remain preserved in
+private/Linux archives. Its later unsynced capacity observation fails the flash
+floor and remains recorded. Seven exact inactive, regenerable helper copies are
+then removed with original-owner, inode/hash, open-reference and baseline checks;
+`work/sqlite-helper-headroom-2` records 16,027,648 recovered RAM bytes. A separate
+synced 30-second observation passes all unchanged flash/RAM floors. These are
+storage-preparation results; current-artifact staging and fresh capacity checks
+remain required before the next funded router run.
 
 Production readiness still depends on the
 [acceptance checklist](#acceptance-checklist) and [completion sequence](#completion-sequence).
@@ -98,7 +111,7 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
 | Router receiver retirement | The historical one-receipt rehearsal passes. The latest genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | Qualify the current payment scheduler on the routers. Radio remains unreleased. |
-| Android | Recorded build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | These controlled Pixel cases are complete for their recorded graph; final shared-source packaging and affected-target reconciliation remain required. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
+| Android | Recorded build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | These controlled Pixel cases are complete for their recorded graph; the current-source Android compile/package also passes; affected physical-target reconciliation remains required. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
 | Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The corrected `51ef364dd` baseline passes its native cost matrix with independent original-fund closure; the follow-up timer correction also passes, reducing high-rate payment work. Its router timing remains unqualified. Retain compiler/profile and shared/physical attribution limits. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
