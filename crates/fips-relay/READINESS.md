@@ -20,19 +20,30 @@ unless a demonstrated failure or unmet requirement needs a change.
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
 | `work/payment-cohort-phone-harness-check-1` | 32 focused Linux checks pass with zero skips; original owners/groups are gone. | Local fixtures and mocks operate no devices or funds. |
 | `work/payment-cohort-phone-controlled-2` | The current ARM/Android artifacts and unchanged capped mint are sealed to the existing USB foreground/background/forced-idle case. The corrected handoff uses the full run's actual status and independent verdict. All 176 Linux harness checks are reused for 223 byte-identical source files; actual waits and absent owners remain verified. | Preparation only: no install, device mutation or funding. Metadata checks cover three valid and five invalid verdict combinations; the actual failed predecessor is read and the active full run remains rejected before dispatch. |
-| `work/payment-cohort-canonical-fixture-build-1` | Both canonical Rust integration targets compile with fresh compiler witnesses, unchanged source/dependencies and verified test listings. The large-export case is present; the removed synthetic-pressure case is absent. | The 35 listed cases have not run. These test executables do not replace ordinary hardware binaries. |
+| `work/payment-cohort-canonical-fixture-build-1` | Both canonical Rust integration targets compile with fresh compiler witnesses, unchanged source/dependencies and verified test listings. The large-export case is present; the removed synthetic-pressure case is absent. | The large-export case is running separately; the other 34 listed cases have not run. Its first launch failed before mint creation because the fixture socket path exceeded the existing limit. The corrected launch uses a short, private persistent directory and the same executable. These test executables do not replace ordinary hardware binaries. |
 | `work/payment-cohort-installed-check-2`, `work/payment-cohort-current-capacity-1` | Unfunded current-artifact reader and independent staged-capacity checks pass all unchanged floors; temporary copies are removed. | Preflight evidence does not replace paid hardware acceptance or a fresh post-run capacity check. |
 
 ### Current router run
 
-The current genuine-history attempt is running unattended with 5,480 real receipts
-and the original 3,072-test-sat cap. A local connection file became unavailable;
-collection and independent closure are reconnected to the same remote producer
-and resource observer. Preserve the failed original collector records. The workload
-was not replayed, funds were not replaced, and the final verifier is queued after
-both recovered collectors finish. No functional or financial verdict exists yet.
+The current candidate's genuine-history attempt fails the unchanged two-second
+progress requirement. All 84 packets arrive; cleanup takes 24.639534 seconds,
+within 35 seconds and before traffic ends at 28.278187 seconds. Relay authorization
+has a confirmed minimum gap of 2.208247159 seconds and maximum 2.245729648 seconds;
+downstream provider credit also fails. Delivery, source authorization and first
+provider credit pass. This remains a functional failure.
 
-The latest completed genuine-history window, on the preceding runtime, fails the
+`work/current-device-sequences/full-history-7-final-recovery-4` independently
+verifies 5,480 genuine receipts, all 31 settlements, recovery of all 3,072 original
+test sats, empty guarded wallets, stopped mint and restored baselines. Its 11,868
+resource samples have no capture errors and five useful all-five-profile cycles.
+The final audit and resource collection have normal waits and absent owners.
+Missing local connection files interrupted the earlier collectors; resumption
+reverified the completed original collection and ran the original audit body.
+All earlier failed local owners and empty audit directories remain preserved.
+The workload was not replayed and funds were not replaced. Resource evidence and
+financial closure do not qualify this failed window or authorize the radio case.
+
+The preceding runtime's genuine-history window also fails the
 unchanged timing requirement: authorization gaps have a confirmed minimum
 2.219443538 seconds and maximum 2.227160741 seconds. Signing and second-provider
 credit also fail; delivery timing remains unqualified. All 84 packets arrive and
