@@ -300,24 +300,26 @@ must accompany the full run below.
 
 ## Completion sequence
 
-1. **Finish the affected native cadence comparison.** The current runtime's
-   controller checks and ordinary Linux/ARM builds pass. The original supervised
-   matrix in `work/prepaid-native-cadence-matrix-1` is independently closed with
-   its failed controller-rate-limit verdict preserved. The reproduced outgoing
-   admission fix and current harness are qualified; bind their actual artifacts
-   before a successor and do not replay this run.
-   Acceptance requires eight forward/reverse trials at 250/500/1000/2000 ms,
-   all 32 windows, 285,696 delivered packets, 48 closed channels, 40,960 conserved
-   original test sats, 96 complete SQLite sets and verified archives/mirrors.
-   Keep fresh measurement quiescence, the real cache lock and the two-core quota.
+1. **Native cadence comparison: complete for the current candidate.**
+   `work/payment-cohort-native-cadence-matrix-1` passes all eight forward/reverse
+   trials at 250/500/1000/2000 ms and all 32 windows: 285,696 packets arrive,
+   48 channels close, 40,960 original test sats reconcile, and 96 complete SQLite
+   sets and all archives are independently verified. The corrected baseline's
+   separate accepted matrix remains valid, and the original rate-limit failure
+   in `work/prepaid-native-cadence-matrix-1` remains preserved and financially
+   closed. Reuse this evidence for unchanged inputs; another complete matrix is
+   required only for an affected change or concrete unresolved failure.
+   Measurements retain their actual quiescence, cache lock and two-core quota.
    Preserve earlier graphs and attribution limits in
    [the results](CADENCE-RESULTS.md); keep the 500 ms default unless measurements
    justify changing it. Never replace a failed case's grants or replay financial
    work. Device tests and competing builds run separately from this measurement.
-2. **Qualify and run the genuine-history router successor.** The rounded-credit
-   regression is reproduced and fixed. Bind the actual current source, dependency,
-   feature, artifact and stopped-build evidence, affected harness checks, unfunded
-   installed-observer check and fresh capacity. The historical rehearsal qualifies
+2. **Genuine-history router successor: running unattended.** The rounded-credit
+   and payment-cohort regressions are reproduced and fixed. Current source,
+   dependency, feature, artifact and stopped-build evidence, affected harness
+   checks, unfunded installed-reader acceptance and staged capacity are bound to
+   the running original attempt. Collection has recovered from a local connection
+   failure without restarting the workload or replacing its funds. The historical rehearsal qualifies
    the observer only. Require a meaningful qualified runtime change before a new
    paid attempt; do not relabel historical hardware evidence or silently remove an
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
@@ -373,9 +375,9 @@ must accompany the full run below.
    including a failed launch reply. Test stationary open-radio departure/rejoin,
    root replacement and route recovery. Preserve the distinction from physical
    movement, fading, seamless roaming and automatic channel selection.
-4. **Reconcile affected targets and recovery.** Build/package the final Android
-   shared graph and reuse unchanged Java lifecycle and recorded physical evidence
-   within scope. Complete any uncovered controlled regression through existing
+4. **Reconcile affected targets and recovery.** The final Android shared graph
+   compiles and packages successfully. Reuse unchanged Java lifecycle and recorded
+   physical evidence within scope. Complete any uncovered controlled regression through existing
    USB access. No operator-assisted pairing, phone movement, unplugging or further
    power cuts are scheduled. Controlled link loss/rejoin, forced idle and process
    interruption keep those labels; none proves natural off-charge idle or physical
