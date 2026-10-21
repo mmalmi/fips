@@ -35,6 +35,8 @@ def capture(run, started):
         return dict(channel_id=channel, npub=status['npub'],
                     host_process={key: status['host_process'][key] for key in ('host', 'pid', 'start_ticks')},
                     process_id=measurements['process_id'],
+                    process_cpu_ns=measurements['process_cpu_ns'],
+                    operations=measurements['operations'],
                     trace=measurements.get('authorization_commits'),
                     payment_progress=status['payment_progress'][channel],
                     started_us=(timing['started_monotonic_ns'] - origin) // 1000,

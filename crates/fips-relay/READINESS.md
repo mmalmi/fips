@@ -20,7 +20,7 @@ unless a demonstrated failure or unmet requirement needs a change.
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
 | `work/payment-cohort-phone-harness-check-1` | 32 focused Linux checks pass with zero skips; original owners/groups are gone. | Local fixtures and mocks operate no devices or funds. |
 | `work/payment-cohort-phone-controlled-2` | The current ARM/Android artifacts and unchanged capped mint are sealed to the existing USB foreground/background/forced-idle case. The corrected handoff uses the full run's actual status and independent verdict. All 176 Linux harness checks are reused for 223 byte-identical source files; actual waits and absent owners remain verified. | Preparation only: no install, device mutation or funding. Metadata checks cover three valid and five invalid verdict combinations; the actual failed predecessor is read and the active full run remains rejected before dispatch. |
-| `work/payment-cohort-canonical-fixture-build-1` | Both canonical Rust integration targets compile with fresh compiler witnesses, unchanged source/dependencies and verified test listings. The large-export case is present; the removed synthetic-pressure case is absent. | The large-export case is running separately; the other 34 listed cases have not run. Its first launch failed before mint creation because the fixture socket path exceeded the existing limit. The corrected launch uses a short, private persistent directory and the same executable. These test executables do not replace ordinary hardware binaries. |
+| `work/payment-cohort-canonical-fixture-build-1`, `work/payment-cohort-large-export-check-2` | Both canonical integration targets compile. The explicit large-export case passes in 299.24 seconds: admission refuses at 20,875,237 charged bytes within the 20 MiB cap, retains 79 exports, continues spending and collects all 1,024 original test sats. All 32 original files have a verified archive; the test owner and child are absent. | The other 34 listed cases have not run. The first launch failed before mint creation because the fixture socket path exceeded the existing limit; the passing launch uses a short, private persistent directory and the same executable. The 17.09-second offline reopen/ack observation is not a hardware timing guarantee. |
 | `work/payment-cohort-installed-check-2`, `work/payment-cohort-current-capacity-1` | Unfunded current-artifact reader and independent staged-capacity checks pass all unchanged floors; temporary copies are removed. | Preflight evidence does not replace paid hardware acceptance or a fresh post-run capacity check. |
 
 ### Current router run
@@ -42,6 +42,12 @@ reverified the completed original collection and ran the original audit body.
 All earlier failed local owners and empty audit directories remain preserved.
 The workload was not replayed and funds were not replaced. Resource evidence and
 financial closure do not qualify this failed window or authorize the radio case.
+
+Future trace boundaries also retain the validated CPU and payment-operation
+counters already returned by the same status calls. This adds no observer round
+trip or payment behavior. All 26 focused trace/window checks pass. The existing
+trace proves the gap but does not identify which preceding payment phase caused
+it; slow database commits in the cleanup log alone do not establish that cause.
 
 The preceding runtime's genuine-history window also fails the
 unchanged timing requirement: authorization gaps have a confirmed minimum
