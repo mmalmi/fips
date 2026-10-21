@@ -145,18 +145,24 @@ Observer, installed-reader and capacity authority is retained in
 `work/receiver-numeric-recovery-2-917f74d8a51f` and
 `work/rehearsal-space-completion-8`.
 
-The last completed integration reconciliation matches all 968 runtime/build-input files to
-the qualified ordinary trace build and the complete 761-file core inventory to
-the accepted native4 graph. Seven reviewed measurement files are the only delta
-from the earlier 965-file graph; the SDK/CDK inputs are unchanged. Earlier phone,
-carrier and cadence measurements retain their original artifacts and scopes.
-At that check the SDK/CDK checkouts are clean and the user's lockfile is preserved. The
-source-size gate passes 1,100 files with the 600-line relay/Android ceiling,
-1,000-line integration limit and three existing core exceptions.
-`work/current-source-reconciliation` retains the preceding comparison;
-`work/final-source-reconciliation` records current source identity, and
-`work/source-size-commit-trace-1.log` retains the current size check. These supply
-no additional device or performance acceptance.
+Current source reconciliation in `work/payment-cohort-source-reconciliation-1`
+compares the 1,753-file qualified inventory with 1,754 tracked canonical paths.
+There are 1,731 identical entries, including 641 production code/manifest files;
+all differences are classified. Besides documentation, the preserved user lock,
+relocated build configuration and three identical scripts with differing execute
+bits, there are six integration-fixture and six canonical phone-tooling differences.
+Those files have not supplied current physical acceptance. Separately,
+`work/payment-cohort-phone-harness-check-1` passes 32 focused canonical phone and
+offline-wallet tooling checks on Linux, with zero skips and verified stopped
+owners. These tests use local fixtures and mocks; they operate no device or funds.
+
+Earlier source reconciliation retains the 968-file trace build and 761-file core
+comparison in `work/final-source-reconciliation`, with dependency checkout state
+recorded at that check. Earlier phone, carrier and cadence measurements retain
+their original artifacts and scopes. The current size gate passes 1,101 files
+with the 600-line relay/Android ceiling, 1,000-line integration limit and three
+existing core exceptions. Source identity and tooling tests supply no additional
+device or performance acceptance.
 
 The independent dense-window closure is retained in
 `work/current-device-sequences/availability-rehearsal-4-final`. New trace source,
