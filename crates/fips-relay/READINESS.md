@@ -5,7 +5,8 @@
 
 ## Current state
 
-The candidate adds bounded outgoing control-rate waiting to `12ce1af4d`, with SDK
+The qualified baseline `51ef364dd` adds bounded outgoing control-rate waiting to
+`12ce1af4d`, with SDK
 `9d6722a` and CDK `92ab6a37`. The priced-usage fix retains new usage's age while
 whole-sat credit temporarily covers it. Fully covered usage starts no exchange;
 when a higher payment becomes due, an expired deadline makes it eligible. Its
@@ -49,22 +50,26 @@ cannot qualify the genuine 5,480-receipt workload or a changed runtime. Preserve
 all preceding failed windows and their actual outcomes; financial recovery does
 not make them functional passes.
 
-The new ordinary runtime and existing benchmark harness are bound in
-`work/prepaid-native-cadence-harness-1`. The supervised successor at
-`work/prepaid-native-cadence-matrix-1` completes all eight trials, but strict analysis
-rejects a controller rate-limit error at the final high-rate boundaries of its
-1-second trial. Independent audits close all 48 channels, conserve all 40,960
-original test sats and verify 96 SQLite sets and 872 archived members. The failed
-measurement and complete preserved copies remain intact; no current cost result
-is accepted. The outgoing admission regression reproduces that immediate refusal
-on the old code. Its fix passes the checks above in
-`work/control-rate-regression-1`: unsent outgoing work waits for rate tokens,
-while incoming limits and the existing queue/deadline bounds remain unchanged.
-The current harness and 16 transport integration tests are independently verified
-in `work/control-rate-native-cadence-harness-1`. A successor cost run must bind
-those actual artifacts and preserve this failed predecessor. The default remains 500 ms. Android packaging,
-controlled phone cases, supported-carrier scenarios and earlier costs retain
-their recorded graphs; final affected-target reconciliation remains required.
+The earlier cost run in `work/prepaid-native-cadence-matrix-1` fails strict
+analysis because a high-rate payment request is immediately rate-limited. Its
+48 channels and 40,960 original test sats are independently closed. The bounded
+outgoing-wait fix reproduces the failure before the change and passes the checks
+above. Unsent requests wait within the existing queue and deadline bounds;
+incoming limits remain unchanged.
+
+The corrected baseline passes all eight matched native cost trials and 32 windows
+in `work/control-rate-native-cadence-matrix-1`: all 285,696 packets arrive, all 48
+channels close and all 40,960 original test sats reconcile. Independent audits
+verify 96 SQLite sets and eight archives containing 872 members. At 500 ms,
+high-rate payment work averages 17.0565 CPU seconds per delivered GiB, with 92
+updates per trial (79–105 across two repeats); all idle payment counters are zero.
+[Cadence results](CADENCE-RESULTS.md) retain the policies, attribution limits and
+other measurements. A reproduced follow-up regression shows that newly sent
+traffic can inherit the age of already paid usage; its small timer correction is
+under qualification and requires a matched cost comparison before retention.
+The default remains 500 ms. Android packaging, controlled phone cases and
+supported-carrier scenarios retain their recorded graphs; final affected-target
+reconciliation remains required.
 
 Historical preparation, artifact, capacity, ownership and failure details remain
 in the named private evidence bundles and at
@@ -87,9 +92,9 @@ acceptance; financial closure does not turn a failed functional result into a pa
 | Dependency correction | CDK's pre-confirmation write-failure regression fails before the fix and passes afterward; all 561 wallet tests, formatting and strict lint pass. Uncertain committed confirmation retains original recovery coins. | Complete the current router acceptance; forwarding, cadence and Spilman contracts are unchanged. |
 | Native history pressure | At 20 MiB, 5,480 genuine receipts, 28 onward channels and both retirement cohorts complete. All 3,072 original sats are independently reconciled; maximum observed progress gap is 1.398 s and cleanup takes about 1.043 s after writer release. | This preceding CDK `bb9b87d8` result does not qualify the current physical router workload, physical storage or multiple interior cleanup-overlap samples. |
 | Large cached exports | Linux and ordinary ARM pass refusal, recovery, acknowledgment and continued spending at 20 MiB, retaining 79 exports and independently closing 1,024 original sats each. Whole offline reopen/acknowledgment takes 13.627 s on Linux and 199.18 s on the router. | Complete for these exclusively owned offline-wallet cases. Router acknowledgment is administrative downtime, not concurrent forwarding, a hard memory ceiling or power-loss evidence. |
-| Router receiver retirement | The historical one-receipt rehearsal passes. The latest genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | Qualify the reproduced rounded-credit fix on the routers. Radio remains unreleased. |
+| Router receiver retirement | The historical one-receipt rehearsal passes. The latest genuine 5,480-receipt window delivers all 84 packets and passes cleanup/traffic overlap, but fails the two-second relay-payment requirement; all 31 settlements and 3,072 original sats independently close. | Qualify the current payment scheduler on the routers. Radio remains unreleased. |
 | Android | Recorded build, strict lint, lifecycle, package/signature and controlled unpaid-denial/transit checks pass. The 4 MiB forced-idle case and separate 3 MiB disconnect/rejoin case retain their original processes/channels; each independently closes 512 sats and removes its temporary app. | These controlled Pixel cases are complete for their recorded graph; final shared-source packaging and affected-target reconciliation remain required. Natural off-charge idle, physical encounters, battery cost and production-wallet/VPN claims remain unqualified. |
-| Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The current scheduler's harness build passes; its native cost matrix fails a controller rate-limit boundary and remains unaccepted, with all original funds independently closed. Retain compiler/profile and shared/physical attribution limits. |
+| Shared contracts and costs | The preceding native matrix passes eight trials and 32 windows: 285,696 packets arrive, 48 channels close and 40,960 sats reconcile across 96 SQLite sets. All eight archives and 872 members are verified. Seven paid-carrier cases independently close 2,688 sats. | Those recorded graphs remain accepted. The corrected `51ef364dd` baseline passes its native cost matrix with independent original-fund closure; a follow-up timer correction remains under test. Retain compiler/profile and shared/physical attribution limits. |
 
 Evidence homes are `work/cdk-confirmation-cancel/gate-1`,
 `work/confirmation-native/gate-1`, `work/confirmation-device-builds`,

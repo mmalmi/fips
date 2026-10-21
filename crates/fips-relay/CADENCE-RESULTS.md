@@ -2,14 +2,50 @@
 
 Each dated section applies to its recorded source, dependencies, workload and
 artifact. “Current” in a historical section means current at that observation.
-The latest native comparison uses the session-recovery candidate with fixes
-`c0a553201` and `2dbd97961`, SDK `715969e` and CDK `4f03d81b`. Earlier target,
-storage and capture comparisons retain their recorded graphs. Payment cadence,
-accounting and payment-wire contracts remain unchanged; session recovery,
-authenticated fallback selection, wallet admission and storage have changed.
-Keep the observed CPU/storage/wire values attached to their measured builds;
+The latest accepted native comparison uses `51ef364dd`, SDK `9d6722a` and CDK
+`92ab6a37`. Earlier target, storage and capture comparisons retain their recorded
+graphs. Keep CPU/storage/wire values attached to their measured builds;
 [readiness](READINESS.md#completion-sequence) describes affected-path validation
 and evidence reuse for the final candidate. The 500-ms default is unchanged.
+
+## Native rate-wait candidate — 21 October 2026
+
+The optimized ordinary daemon passes all eight forward/reverse trials at
+250/500/1000/2000 ms. Strict analysis accepts all 32 idle, bursty, steady and
+high-rate windows; all 285,696 original packets arrive. Five Linux processes,
+three paid relays and two funded directions share the unchanged prices, credit
+allowances and workload, with a two-core quota and the real cache lock.
+
+Independent audits close all 48 channels and conserve all 40,960 original test
+sats across 96 complete SQLite sets. Eight original archives and all 872 members
+are retained. Actual producer/closer/root exits, source identity and complete
+collected evidence pass independent parent review in
+`work/control-rate-native-cadence-matrix-1`. The preceding failed rate-limit run
+remains preserved with its own complete original-fund closure.
+
+Each high-rate observation delivers 32,000,000 application bytes. Values below
+average its two repeats and sum the five processes. Service bytes are local
+payment-service FIPS payload submissions, including carrier traffic, rather than
+physical wire bytes.
+
+| Maximum age | Updates, mean (range) | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Service payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 103.5 (89–118) | 18.98 | 0.023630 | 621 | 169,405 |
+| 500 ms | 92 (79–105) | 17.06 | 0.021357 | 552 | 150,584 |
+| 1 s | 77.5 (60–95) | 14.52 | 0.017752 | 465 | 126,857 |
+| 2 s | 71 (52–90) | 13.46 | 0.016354 | 426 | 116,217 |
+
+Steady windows deliver 3,200,000 bytes. The four policies average 19/19/18/15.5
+updates and 35.69/35.79/32.50/28.74 scoped CPU seconds per GiB. Every idle window
+has zero payment updates, polls, signatures, CPU, records and journal writes/syncs.
+Latency histogram upper bounds are 0.5 ms at steady load and 1 ms at high rate;
+high-rate goodput is about 31.91 Mb/s in this loopback workload. Repeat ranges
+overlap substantially, so these observations establish no general optimum.
+
+Scoped CPU includes exclusive controller spans, future polls and inherited
+blocking work. Shared core/TCP work, wallet SQLite and physical-media writes,
+physical wire framing, radio airtime, battery costs and impaired links remain
+excluded. Earlier storage traces and packet captures retain their own graphs.
 
 ## Native session-recovery candidate — 19 October 2026
 
