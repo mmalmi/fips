@@ -7,8 +7,9 @@
 
 The locally integrated candidate includes controller fixes `5008c41ba` and
 `45ab93cc5`, SDK `9d6722a` and CDK `92ab6a37`. Ordinary Linux, ARM64 OpenWrt and
-Android package checks pass. Its genuine full-history router test is running;
-functional acceptance, financial closure and the subsequent radio test remain
+Android package checks pass. Its genuine full-history router test fails the
+two-second relay-payment requirement; independent closure recovers all 3,072
+original test sats. A reproduced fix and subsequent radio acceptance remain
 pending. The seven paid-carrier scenarios, controlled phone cases and native
 eight-trial cadence matrix retain their preceding verified graphs. The scheduler
 change affects payment timing and counts, so its cadence costs need a fresh
@@ -176,14 +177,25 @@ baselines are restored. No mint or funds are used. The separate capacity check i
 artifact present on all three routers. Each copy occupies 26,705,920 bytes; the
 unchanged flash and temporary-space floors hold. Independent postflight verifies
 restored baselines, stopped owners and removal of every staging copy.
-The genuine-history rerun has now passed staging, sealing and input verification
-and launched under `work/full-history-availability-4-durable-owner`, using
-`work/full-history-autonomous-v12` and resource observer v6. Its original producer,
-supervisor, independent closer and resource recorder are live; the first resource
-samples have no observer errors. A preceding local source-copy failure dispatched
-no router command or funds and remains preserved separately. The current run has
-not reached its measured forwarding window; functional and radio acceptance
-remain pending.
+The genuine-history rerun completes under
+`work/full-history-availability-4-durable-owner`, using source v12 and resource
+observer v6. Preparation retains all 5,480 genuine receipts in 15,014.917609 s,
+returns the original circulating value and leaves no incomplete operations.
+All 84 packets arrive. Cleanup takes 25.581999 s, within 35 seconds and before
+traffic finishes at 28.333736 s, but relay authorization has a confirmed minimum
+2.219443538 s gap and a maximum 2.227160741 s gap. Relay signing and second-provider
+credit also fail the two-second requirement; delivery timing remains unqualified.
+The earlier in-flight debt-age fix remains reproduced, but does not establish the
+cause or resolve this hardware failure. Independent final reconciliation in
+`work/current-device-sequences/full-history-4-final` verifies all 31 settlements,
+conserves all 3,072 original test sats, checks empty wallets and the stopped mint,
+and confirms restored baselines. All original local waits complete normally and
+their groups are absent; the failed producer exits 1. Complete preserved copies
+retain 222 profile files and 198 controller originals, including the
+1,098,281,168-byte compressed archive. The 11,940 resource samples have no observer
+errors and six useful all-profile cycles before cleanup; they establish no hard
+resource bound. A preceding local source-copy refusal used no router commands or
+funds and remains separate. Functional and radio acceptance remain pending.
 Preparation headroom was maintained by
 `work/full-history-4-preparation-watch-1`. All eight once-only flushes and the
 supervisor exit normally. Independent postflight verifies every operation,
@@ -549,17 +561,21 @@ must accompany the full run below.
    originals. `full-history-availability-sequence-2` and its original closer are
    closed; its failed functional verdict remains intact. The scheduler runtime's
    installed observer and staged capacity now pass, and
-   `full-history-availability-sequence-4` is live with source v12/resource v6 under
-   its original independent closer. A local setup-copy failure before it ran no
+   `full-history-availability-sequence-4` closes with source v12/resource v6 under
+   its original independent closer. Its genuine-history timing failure and all
+   3,072 recovered original sats are independently verified. Reproduce and fix the
+   remaining relay delay before another paid case, including the scheduling of
+   new priced usage temporarily covered by rounded credit. Keep the original
+   workload, financial terms and timing requirements. A local setup-copy failure before it ran no
    router commands or funds. The earlier v8/resource-v4/capacity-v6 sources belong to
    the preserved failed FULL1 graph. Their failed verdict and complete original
    financial closure remain separate from this new attempt.
    The independent final audit in
-   `work/current-device-sequences/full-history-4-final` is prepared and source-reviewed,
-   not executed. It retains strict original-fund, archive and owner checks, records
-   actual counts on failure, and keeps producer reports and exit status separate
-   from the qualified independent forwarding verdict. Resource-summary failure
-   remains explicit and cannot rewrite financial recovery or qualify radio.
+   `work/current-device-sequences/full-history-4-final` now completes with actual
+   normal waits. It retains strict original-fund, archive and owner checks and
+   preserves the failed functional verdict independently of financial recovery.
+   Its resource capture qualifies useful observations of all five profiles;
+   resource evidence cannot replace forwarding acceptance or qualify radio.
 4. **Complete controlled radio recovery after full-history closure.** With all
    previous owners gone, run stationary open-radio departure/rejoin, root
    replacement and route recovery on the final graph. The prepared
