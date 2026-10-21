@@ -392,3 +392,10 @@ These three small native samples do not establish full-history preparation time
 on ARM, payment CPU per byte or a router timing improvement. The separate
 131-export test runs with unchanged mint request pacing and concurrent functional
 work; its elapsed time is not a comparative performance result.
+
+The current ordinary ARM build also passes the unfunded installed-reader check:
+4,707 samples, 400,049 microseconds of startup and a maximum 18,349 microseconds
+of serialization, below its unchanged 25,000-microsecond limit. The independent
+check verifies stopped owners, removed fixtures and restored baselines
+(`work/wallet-phase-installed-check-2`). This measures observer overhead with
+an empty authorization trace; it does not measure paid forwarding performance.
