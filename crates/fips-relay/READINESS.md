@@ -16,10 +16,10 @@ unless a demonstrated failure or unmet requirement needs a change.
 | --- | --- | --- |
 | `work/payment-cohort-regression-1` | 180 controller tests, formatting, strict library lint, feature-disabled check, ordinary Linux/ARM builds and the 1,101-file size gate pass. Source/dependency/artifact checks and stopped owners are independently verified. Four buyer and 19 transport-unit results are explicitly reused; 16 existing transport-integration tests also pass. | Software qualification does not establish router timing. The user's lockfile remains unchanged. |
 | `work/payment-cohort-native-cadence-matrix-1` | Eight trials and 32 windows pass; all 285,696 packets arrive, 48 channels close and 40,960 original test sats reconcile across 96 SQLite sets and 872 archived members. | See [performance scopes](#performance-acceptance); no general optimum or total-overhead claim. |
-| `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | This package has not been installed or physically accepted. |
+| `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | The controlled Pixel case below supplies physical evidence for this package; production-wallet/VPN behavior remains outside scope. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
 | `work/payment-cohort-phone-harness-check-1` | 32 focused Linux checks pass with zero skips; original owners/groups are gone. | Local fixtures and mocks operate no devices or funds. |
-| `work/payment-cohort-phone-controlled-2` | The current ARM/Android artifacts and unchanged capped mint are sealed to the existing USB foreground/background/forced-idle case. The corrected handoff uses the full run's actual status and independent verdict. All 176 Linux harness checks are reused for 223 byte-identical source files; actual waits and absent owners remain verified. | Preparation only: no install, device mutation or funding. Metadata checks cover three valid and five invalid verdict combinations; the actual failed predecessor is read and the active full run remains rejected before dispatch. |
+| `work/payment-cohort-phone-controlled-4`, `work/payment-cohort-phone-controlled-4-close-resumption-1` | Current ARM/Android artifacts pass unpaid denial and 4 MiB of foreground/background/forced-idle routing, including 48.30 seconds of forced idle. The original four channels and all 512 test sats independently reconcile; accounts/Wi-Fi/baselines are restored and the owned app is removed. The unchanged 223 harness files reuse 176 Linux checks. | The first install used a stale expected package name; the corrected case adopts the same owned, pristine APK before any funding. The original closer fails its separate 8 MiB space check; read-only archival and the original financial authority then complete under a new owner. Both failures remain preserved. Low space still prevents a new paid router case. |
 | `work/payment-cohort-canonical-fixture-build-1`, `work/payment-cohort-large-export-check-2` | Both canonical integration targets compile. The explicit large-export case passes in 299.24 seconds: admission refuses at 20,875,237 charged bytes within the 20 MiB cap, retains 79 exports, continues spending and collects all 1,024 original test sats. All 32 original files have a verified archive; the test owner and child are absent. | The other 34 listed cases have not run. The first launch failed before mint creation because the fixture socket path exceeded the existing limit; the passing launch uses a short, private persistent directory and the same executable. The 17.09-second offline reopen/ack observation is not a hardware timing guarantee. |
 | `work/payment-cohort-installed-check-2`, `work/payment-cohort-current-capacity-1` | Unfunded current-artifact reader and independent staged-capacity checks pass all unchanged floors; temporary copies are removed. | Preflight evidence does not replace paid hardware acceptance or a fresh post-run capacity check. |
 
@@ -155,12 +155,13 @@ for manual testing or an unlimited sequence of longer runs.
    [the results](CADENCE-RESULTS.md); keep the 500 ms default unless measurements
    justify changing it. Never replace a failed case's grants or replay financial
    work. Device tests and competing builds run separately from this measurement.
-2. **Genuine-history router successor: running unattended.** The rounded-credit
+2. **Genuine-history router successor: failed timing; financially closed.** The rounded-credit
    and payment-cohort regressions are reproduced and fixed. Current source,
    dependency, feature, artifact and stopped-build evidence, affected harness
    checks, unfunded installed-reader acceptance and staged capacity are bound to
-   the running original attempt. Collection has recovered from a local connection
-   failure without restarting the workload or replacing its funds. The historical rehearsal qualifies
+   the completed original attempt. Collection and independent audit recovered from local connection
+   failures without restarting the workload or replacing its funds. The relay still
+   exceeds two seconds; diagnose that delay before another paid attempt. The historical rehearsal qualifies
    the observer only. Require a meaningful qualified runtime change before a new
    paid attempt; do not relabel historical hardware evidence or silently remove an
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
@@ -204,8 +205,9 @@ for manual testing or an unlimited sequence of longer runs.
    settlements, conservation of the 3,072 original sats, stopped original
    producer/supervisor/root children, restored baselines and complete archives.
    A failed window may release devices after financial closure; it cannot release
-   radio or qualify forwarding. The latest failed predecessor remains closed in
-   `work/current-device-sequences/full-history-4-final`.
+   radio or qualify forwarding. Both failed runs remain closed in
+   `work/current-device-sequences/full-history-4-final` and
+   `work/current-device-sequences/full-history-7-final-recovery-4`.
 3. **Complete controlled radio recovery after that full pass and closure.** Bind
    the current-runtime preparation in `work/current-radio-autonomous-v12`, using
    `work/current-radio-sequence-owner-v4`, to the actual accepted full run. Its
@@ -220,9 +222,14 @@ for manual testing or an unlimited sequence of longer runs.
    root replacement and route recovery. Preserve the distinction from physical
    movement, fading, seamless roaming and automatic channel selection.
 4. **Reconcile affected targets and recovery.** The final Android shared graph
-   compiles and packages successfully. Reuse unchanged Java lifecycle and recorded
-   physical evidence within scope. Complete any uncovered controlled regression through existing
-   USB access. No operator-assisted pairing, phone movement, unplugging or further
+   compiles and packages successfully, and its current controlled USB regression
+   passes with independent financial closure and owned-app removal. Retain its
+   recorded space failure: archive observations are 5,288/14,432/5,580 KiB on the
+   three routers, below the archiver's 8 MiB floor on two. No databases or financial
+   histories were deleted to clear it. New paid router work still needs fresh
+   passing capacity; copy-only financial recovery does not need new-run headroom.
+   Reuse unchanged Java lifecycle and recorded physical evidence within scope.
+   No operator-assisted pairing, phone movement, unplugging or further
    power cuts are scheduled. Controlled link loss/rejoin, forced idle and process
    interruption keep those labels; none proves natural off-charge idle or physical
    flash power-loss safety. Existing mint-over-FIPS lifecycle/recovery evidence in
@@ -347,13 +354,21 @@ link interruption. Each case independently closes its four original channels and
 its temporary app. Historical cost, renewal and corrupted/lost-traffic cases retain
 their original graphs; they do not qualify a newer binary.
 
-The matching current-source Android compile/package is verified but not installed.
-`work/payment-cohort-phone-controlled-2` seals the existing controlled regression
-to that package and the current ARM executable; 176 focused Linux harness checks
-pass without skips. The handoff preserves the independent full-run verdict rather
-than inferring it from the producer's report. Its launch still requires the original router run's independent
-financial closure and stopped owners. Run it through existing USB access after the
-current router run closes. The phone stays plugged in. No operator-assisted
+`work/payment-cohort-phone-controlled-4` passes that controlled regression on the
+current ARM executable and matching Android package: 4 MiB delivered, including
+48.30 seconds of forced idle, with the phone plugged in. The handoff preserves
+the failed router verdict and its independently closed original funds. The same
+223 frozen harness files reuse all 176 passing Linux checks. The corrected setup
+uses the qualified APK's actual package and adopts its owned pristine install
+after a pre-funding setup failure; it does not reinstall or reset an account.
+
+The original closer passes functional postflight but fails a separate free-space
+assertion. Its failure and partial archives are preserved. Read-only resumption
+records the failed space floors, uses the unchanged financial authority to verify
+all four channels and 512 original sats, mirrors the evidence and removes only
+the owned temporary app. All resumption children exit normally; original accounts,
+Wi-Fi, baselines and device financial records remain intact. This does not clear
+the capacity failure or the router timing failure. No operator-assisted
 pairing, movement, unplugging or further power cuts are scheduled. Controlled
 faults do not prove natural off-charge idle, physical encounters, battery cost,
 phone receiver-history pressure or production-wallet/VPN behavior.
