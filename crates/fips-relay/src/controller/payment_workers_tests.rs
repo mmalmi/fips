@@ -10,7 +10,7 @@ impl Drop for OnDrop {
 }
 
 #[tokio::test]
-async fn tick_preserves_in_flight_debt_age_without_duplicate_or_idle_work() {
+async fn tick_preserves_usage_age_without_duplicate_or_idle_work() {
     use crate::controller::{refresh::tests::disconnected_controller, transition_tests};
     use crate::ledger::{BillingBasis, BytePrice};
     use fips_core::node::{ForwardingOutcome, OriginatedSessionObserver, OriginatedSessionRequest};
@@ -143,6 +143,27 @@ async fn tick_preserves_in_flight_debt_age_without_duplicate_or_idle_work() {
         workers.channels[&id].job.is_none(),
         "covered idle usage must not poll"
     );
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_millis(333)).await;
+        submit();
+        workers.tick(&controller, &policy).await.unwrap();
+        assert!(
+            workers.channels[&id].job.is_none(),
+            "new usage covered by rounded credit must not poll"
+        );
+    }
+    assert_eq!(buyer.evidence_msat(&id), Some(2_000));
+    tokio::time::advance(Duration::from_millis(334)).await;
+    submit();
+    workers.tick(&controller, &policy).await.unwrap();
+    let work = workers.channels.get_mut(&id).unwrap();
+    let next = work
+        .job
+        .take()
+        .expect("running out of rounded credit must not restart the usage deadline");
+    assert_eq!(work.started_evidence_msat, 2_250);
+    next.abort();
+    assert!(next.await.unwrap_err().is_cancelled());
     workers.drain().await.unwrap();
     drop(channel_guard);
     tokio::time::resume();

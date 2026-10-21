@@ -31,11 +31,13 @@ usage and, when needed, sends a signed cumulative payment when either:
 - Evidence or an unacknowledged signed liability exceeds acknowledged payment
   by `unpaid_percent` of the channel's grace after subtracting its reported crash
   loss; or
-- New outstanding liability reaches `max_delay_ms` in age.
+- New priced usage reaches `max_delay_ms` in age and a higher payment is due.
 
 The first trigger uses monetary value, not a universal byte count. All flows
 sharing the same neighbor channel share the trigger. Whole-sat payment rounding
-can cover later fractional usage, which should not cause another payment.
+can cover later fractional usage. Fully covered usage causes no exchange, but
+retains its age: once that credit runs out, an expired deadline makes the next
+payment immediately eligible instead of starting another delay.
 
 The scheduler retains the largest loss from validated usage replies for that
 channel while running. With 8,000-msat grace, 4,000-msat reported loss and the
@@ -52,7 +54,8 @@ another packet; the gap is never declared paid or removed from durable evidence.
 Fresh local sends or unacknowledged signed liability restore the normal value/age
 trigger, and payment progress resets the recheck delay. The worker records evidence
 before starting the exchange so a reply cannot hide sends made while it was in
-flight. No new message, configuration field or spending authority is introduced.
+flight, including usage temporarily covered by rounded credit. No new message,
+configuration field or spending authority is introduced.
 
 After a failed exchange the scheduler retries after 500 ms without requiring
 another data packet. Its cache contains no financial authority and is discarded

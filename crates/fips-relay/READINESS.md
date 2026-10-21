@@ -5,15 +5,17 @@
 
 ## Current state
 
-The locally integrated candidate includes controller fixes `5008c41ba` and
-`45ab93cc5`, SDK `9d6722a` and CDK `92ab6a37`. Ordinary Linux, ARM64 OpenWrt and
-Android package checks pass. Its genuine full-history router test fails the
-two-second relay-payment requirement; independent closure recovers all 3,072
-original test sats. A reproduced fix and subsequent radio acceptance remain
-pending. The seven paid-carrier scenarios, controlled phone cases and native
-eight-trial cadence matrix retain their preceding verified graphs. The scheduler
-change affects payment timing and counts, so its cadence costs need a fresh
-comparison before those measurements can qualify the current candidate.
+The candidate adds a reproduced rounded-credit scheduling fix to controller fixes
+`5008c41ba` and `45ab93cc5`, SDK `9d6722a` and CDK `92ab6a37`. All 180 controller
+tests, formatting, strict library lint, the feature-disabled check and ordinary
+Linux/ARM64 OpenWrt builds pass. The preceding candidate's genuine full-history
+router test fails the two-second relay-payment requirement; independent closure
+recovers all 3,072 original test sats. The new fix still needs hardware acceptance
+and subsequent radio acceptance. Android packaging, the seven paid-carrier
+scenarios, controlled phone cases and native eight-trial cadence matrix retain
+their preceding verified graphs. The scheduler change affects payment timing and
+counts, so its cadence costs need a fresh comparison before those measurements
+can qualify the current candidate.
 
 **The commit-trace router rehearsal passes with independent original-fund closure.**
 Independent recomputation verifies all 84 delivered packets, 3,397 retained
@@ -196,6 +198,17 @@ retain 222 profile files and 198 controller originals, including the
 errors and six useful all-profile cycles before cleanup; they establish no hard
 resource bound. A preceding local source-copy refusal used no router commands or
 funds and remains separate. Functional and radio acceptance remain pending.
+The next actual-worker regression in `work/prepaid-usage-regression-1` reproduces
+another scheduler defect: whole-sat credit erases the age of newly priced usage,
+starting another delay when that credit runs out. The fix retains that age while
+suppressing exchanges for fully covered usage. The same regression fails on the
+old code and passes with the fix, using the existing in-flight/idle worker fixture.
+All 180 controller tests, formatting, strict library lint, the feature-disabled
+check and ordinary Linux/ARM64 builds pass. Independent postflight verifies the
+source, dependencies, logs, both artifacts and stopped owners; the user's lockfile
+is unchanged. Four unchanged buyer-test results remain valid. The six inherited
+integration-fixture differences remain unexecuted by these checks. This establishes
+the scheduling fix, not attribution or resolution of the router's timing failure.
 Preparation headroom was maintained by
 `work/full-history-4-preparation-watch-1`. All eight once-only flushes and the
 supervisor exit normally. Independent postflight verifies every operation,
