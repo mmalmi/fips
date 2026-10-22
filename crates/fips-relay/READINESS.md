@@ -15,8 +15,8 @@ unless a demonstrated failure or unmet requirement needs a change.
 The local successor also reuses one capacity-checked wallet per offline command.
 Its ordinary native/static ARM builds and custody checks pass with the same
 dependencies. [Preparation measurements](MEASUREMENTS.md#offline-wallet-preparation)
-cover small native samples; router timing and full-history preparation remain
-unqualified for these new artifacts.
+cover small native samples. The FULL11 corrected-observer acceptance below now
+qualifies the current full-history router workload; radio recovery remains pending.
 
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
@@ -42,8 +42,9 @@ unqualified for these new artifacts.
 FULL10 is financially closed but fails the two-second relay authorization bound
 in its terminal observation tail. FULL11, using `work/full-history-autonomous-v19`,
 completes 5,480 genuine receipts, all 31 settlements and collection of all 3,072
-original test sats. Its original failed verdict is preserved; the independent
-financial closer and resource observer have not yet released the devices.
+original test sats. Independent closure verifies all original funds, restored
+baselines, archived originals and stopped owners. Its original failed producer
+verdict is preserved alongside the explicit corrected-observer acceptance below.
 
 FULL11 delivers all 84 packets without loss, duplication or invalid packets.
 Its delivery bound is 0.889467 seconds while delivery remains incomplete. The
@@ -57,16 +58,32 @@ A separate reassessment reproduces the original failure from the retained reads,
 independently checks the corrected delivery bound and passes the existing window
 checks. Authorization, signature and provider-credit bounds are unchanged and
 pass two seconds. Cleanup takes 24.611484 seconds, before traffic ends at
-28.329593 seconds; fresh terminal custody finishes within 35 seconds. This is
-window evidence, not acceptance of the complete run. Before radio testing, bind
-any corrected assessment to the final immutable run, independent original-fund
-closure, restored baselines, stopped owners and useful resource observations.
-Neither the original result nor the frozen active run is modified.
+28.329593 seconds; fresh terminal custody finishes within 35 seconds. The final
+acceptance binds the identical retained window to the immutable complete run,
+independent original-fund closure, restored baselines and stopped owners. The
+resource observer records 11,265 samples without capture errors and five useful
+all-five-profile cycles. All original numerical readers close normally. Neither
+the original failed verdict nor its frozen inputs are modified.
+
+`work/current-radio-autonomous-v15` accepts only this exact corrected assessment
+and the original financial closure. Nine focused release checks pass, including
+rejection of changed measurements, additional failures, relabelled producer
+verdicts and incomplete reader closure. The runtime, prices and workload limits
+are unchanged; controlled radio acceptance remains pending.
 
 The fresh `work/terminal-current-capacity-1` check stages the actual ARM executable
 on every router and passes all existing flash/RAM floors. Independent readback
 verifies normal baselines, stopped owners and removal of only those inert copies.
 The current phone case is independently closed and its test app removed.
+The post-FULL11 capacity check in `work/terminal-current-capacity-2` finds the
+middle router below its flash floor and removes all inert copies. A verified
+offload in `work/full11-closed-router-custody-1` retains every financial byte and
+metadata in three off-device archives, recovering 12,627,968 flash bytes and
+6,971,392 RAM bytes from that router. The initial cleanup stops before mutation
+because the ordinary test cleanup already removed its ELF; a bounded resumption
+preserves and removes the closed log and expanded profile instead. Both failed
+attempts remain recorded. `work/terminal-current-capacity-3` rechecks the same
+floors with the actual ARM copies before any radio launch.
 
 ### Earlier router evidence
 
@@ -224,7 +241,7 @@ for manual testing or an unlimited sequence of longer runs.
    [the results](CADENCE-RESULTS.md); keep the 500 ms default unless measurements
    justify changing it. Never replace a failed case's grants or replay financial
    work. Device tests and competing builds run separately from this measurement.
-2. **Genuine-history router successor: failed timing; financially closed.** FULL10
+2. **Genuine-history router acceptance: FULL11 accepted with a corrected observer.** FULL10
    completes 5,480 genuine retained receipts and 31 settlements; independent
    closure conserves all 3,072 original test sats, verifies stopped owners and
    restores the three baselines. Its relay authorization bound is 2.153–2.187
@@ -247,11 +264,11 @@ for manual testing or an unlimited sequence of longer runs.
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
    within its actual scope.
 
-   FULL11's separate delivery-boundary correction and retained-window
-   reassessment are described above. Reuse those measurements only after the
-   final audit binds their exact bytes and verifies every other acceptance
-   condition. Preserve both the failed producer verdict and the explicit
-   corrected assessment; do not substitute financial closure for acceptance.
+   FULL11's separate delivery-boundary correction and final retained-window
+   acceptance are described above. The final audit binds their exact bytes,
+   original-fund closure and resource capture. Reuse this completed evidence
+   for unchanged inputs. Preserve both the failed producer verdict and the
+   explicit corrected assessment; financial closure alone is not acceptance.
 
    Preserve verified archives before removing only proven-inactive expanded
    duplicates. Select targets from current custody; never replay an old cleanup
@@ -287,20 +304,23 @@ for manual testing or an unlimited sequence of longer runs.
    Preserve partial/uncertain transfers and reconcile an existing completed
    archive instead of rewriting it.
 
-   Accept only the actual functional pass, all 31 independently verified
+   Accept only the measured functional pass, all 31 independently verified
    settlements, conservation of the 3,072 original sats, stopped original
    producer/supervisor/root children, restored baselines and complete archives.
-   A failed window may release devices after financial closure; it cannot release
-   radio or qualify forwarding. Failed runs remain closed in
+   The explicit FULL11 corrected-observer assessment reuses its immutable raw
+   measurements; its failed producer record remains intact. Financial closure
+   alone cannot release radio or qualify a failed window. Failed runs remain closed in
    `work/current-device-sequences/full-history-4-final` and
    `work/current-device-sequences/full-history-7-final-recovery-4`, with FULL10 in
    `work/current-device-sequences/full-history-10-final`.
 3. **Complete controlled radio recovery after that full pass and closure.** Wait
    for any queued phone test to independently release the devices, then bind
-   the current-runtime preparation in `work/current-radio-autonomous-v14`, using
-   `work/current-radio-sequence-owner-v6`, to the actual accepted full run. Six
-   software checks validate the current wallet/phase graph, reject the old
-   resource manifest and failed FULL7 verdict, and refuse a live predecessor.
+   the current-runtime preparation in `work/current-radio-autonomous-v15`, using
+   `work/current-radio-sequence-owner-v7`, to the exact FULL11 corrected assessment
+   and original closure. The current wallet/phase graph, resource provenance,
+   archives and absent owners retain their existing checks. Nine additional
+   release checks qualify the explicit retained-data acceptance and reject
+   changed measurements, funds, failure conditions and reader closure.
    The owner preserves its existing always-close path and refuses missing review
    or full-result bindings. This candidate uses the normal completion path;
    historical collection failures remain preserved. Execution still requires the

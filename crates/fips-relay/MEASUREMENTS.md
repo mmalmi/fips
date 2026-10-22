@@ -411,6 +411,24 @@ quiescent gaps, the two-second limit, complete event coverage and independent
 credit/delivery checks remain required. Software checks establish these observer
 rules; a fresh genuine hardware run must establish acceptance.
 
+FULL11 supplies that genuine workload: 5,480 receipts and 31 channels with the
+unchanged runtime and financial terms. Its separate delivery observer incorrectly
+counts waiting after the final packet as a delivery gap. The qualified correction
+ends only delivery timing at complete arrival; all payment observations continue.
+Independent reassessment of the immutable reads gives a 0.889467-second delivery
+bound, with both authorization, signature and provider-credit bounds below two
+seconds. All 84 packets arrive. Cleanup takes 24.611484 seconds, before the final
+delivery at 28.329593 seconds; final custody completes at 30.623802 seconds.
+The corrected acceptance preserves the original failed producer verdict.
+
+Its separate whole-process observer records 11,265 samples with zero capture
+errors and five all-five-profile cycles before cleanup. Maximum sampled sums of
+RSS are 55,228/39,348/53,444 KiB across the three routers; minimum observed host
+available memory is 215,424/208,748/216,480 KiB. Observed same-process CPU deltas
+sum to 3,767.08 seconds across the full preparation and workload. Missing process
+endpoints and possible missed short epochs prevent a complete CPU total; these
+are sampled bounds with no payment-specific CPU attribution or hard memory claim.
+
 ### Current controlled phone regression
 
 `work/wallet-phase-phone-controlled-1` verifies unpaid denial and four paid
