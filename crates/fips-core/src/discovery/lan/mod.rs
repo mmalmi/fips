@@ -25,7 +25,7 @@
 //! matching scope. Nodes on the same physical LAN but configured for
 //! different mesh networks don't cross-feed each other.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 #[cfg(test)]
@@ -54,6 +54,11 @@ const IP_CHECK_INTERVAL_SECS: u32 = 30;
 const BROWSE_WINDOW: Duration = Duration::from_secs(5);
 const BROWSE_PERIOD_MS: u128 = 60_000;
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+// Bound unauthenticated hints independently of the authenticated peer limit.
+// A busy LAN can advertise many addresses and repeat them on every interface.
+const MAX_PENDING_ADVERTS: usize = 256;
+const MAX_PENDING_ADDRS_PER_PEER: usize = 8;
+const MAX_ADVERTS_PER_TICK: usize = 16;
 
 /// TXT key carrying the bech32-encoded npub of the publishing node.
 pub const TXT_KEY_NPUB: &str = "npub";
@@ -94,6 +99,44 @@ pub struct LanDiscoveredPeer {
 #[derive(Debug, Clone)]
 pub enum LanEvent {
     Discovered(LanDiscoveredPeer),
+}
+
+#[derive(Default)]
+struct PendingAdverts {
+    queue: VecDeque<LanDiscoveredPeer>,
+    paths: HashSet<(String, SocketAddr)>,
+    peers: HashMap<String, usize>,
+}
+
+impl PendingAdverts {
+    fn push(&mut self, peer: LanDiscoveredPeer) {
+        if self.queue.len() >= MAX_PENDING_ADVERTS
+            || self.peers.get(&peer.npub).copied().unwrap_or(0) >= MAX_PENDING_ADDRS_PER_PEER
+            || !self.paths.insert((peer.npub.clone(), peer.addr))
+        {
+            return;
+        }
+        *self.peers.entry(peer.npub.clone()).or_default() += 1;
+        self.queue.push_back(peer);
+    }
+
+    fn drain_batch(&mut self) -> Vec<LanEvent> {
+        let mut events = Vec::with_capacity(self.queue.len().min(MAX_ADVERTS_PER_TICK));
+        while events.len() < MAX_ADVERTS_PER_TICK {
+            let Some(peer) = self.queue.pop_front() else {
+                break;
+            };
+            self.paths.remove(&(peer.npub.clone(), peer.addr));
+            if let Some(count) = self.peers.get_mut(&peer.npub) {
+                *count -= 1;
+                if *count == 0 {
+                    self.peers.remove(&peer.npub);
+                }
+            }
+            events.push(LanEvent::Discovered(peer));
+        }
+        events
+    }
 }
 
 /// Runtime configuration for the mDNS responder + browser.
@@ -140,7 +183,7 @@ impl LanDiscoveryConfig {
 /// Running mDNS responder + browser bound to the node's UDP advert port.
 pub struct LanDiscovery {
     own_npub: String,
-    events_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<LanEvent>>,
+    events: Arc<Mutex<PendingAdverts>>,
     shutdown_tx: watch::Sender<bool>,
     event_pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     #[cfg(test)]
@@ -221,7 +264,8 @@ impl LanDiscovery {
         let (daemon, browse_rx) =
             start_scan_daemon(&service_info, &service_type, host_network.as_ref())?;
 
-        let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let events = Arc::new(Mutex::new(PendingAdverts::default()));
+        let pending_events = Arc::clone(&events);
         let own_npub = npub.clone();
         let scope_filter = scope.clone().filter(|s| !s.is_empty());
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -291,6 +335,11 @@ impl LanDiscovery {
                                 );
                                 continue;
                             }
+                            // Reject malformed identities before they can occupy
+                            // the bounded queue or consume a Node tick's work.
+                            if crate::PeerIdentity::from_npub(&peer_npub).is_err() {
+                                continue;
+                            }
                             let port = info.get_port();
                             if port == 0 {
                                 continue;
@@ -298,7 +347,7 @@ impl LanDiscovery {
                             let observed_at = Instant::now();
                             // mdns-sd may report multiple interface IPs for
                             // a multi-homed responder. Surface all routable
-                            // candidates — the Node side filters/dedups and
+                            // candidates within the queue limits — the Node
                             // only dials addresses compatible with an active
                             // UDP socket family. IPv6 link-local addresses
                             // require an interface scope; preserve it when
@@ -313,17 +362,12 @@ impl LanDiscovery {
                                     );
                                     continue;
                                 };
-                                if events_tx
-                                    .send(LanEvent::Discovered(LanDiscoveredPeer {
-                                        npub: peer_npub.clone(),
-                                        scope: peer_scope.clone(),
-                                        addr,
-                                        observed_at,
-                                    }))
-                                    .is_err()
-                                {
-                                    return;
-                                }
+                                pending_events.lock().await.push(LanDiscoveredPeer {
+                                    npub: peer_npub.clone(),
+                                    scope: peer_scope.clone(),
+                                    addr,
+                                    observed_at,
+                                });
                             }
                         }
                         ServiceEvent::ServiceRemoved(_, fullname) => {
@@ -381,7 +425,7 @@ impl LanDiscovery {
         );
         Ok(Arc::new(Self {
             own_npub: npub,
-            events_rx: Mutex::new(events_rx),
+            events,
             shutdown_tx,
             event_pump: Mutex::new(Some(event_pump)),
             #[cfg(test)]
@@ -396,14 +440,9 @@ impl LanDiscovery {
         &self.own_npub
     }
 
-    /// Drain pending browser events. Called once per Node tick.
+    /// Take a bounded batch, retaining the remaining hints for later Node ticks.
     pub async fn drain_events(&self) -> Vec<LanEvent> {
-        let mut rx = self.events_rx.lock().await;
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        events
+        self.events.lock().await.drain_batch()
     }
 
     /// Tear down the responder, browser, and event pump.

@@ -7,6 +7,69 @@ use mdns_sd::ScopedIp;
 
 use super::{LanDiscovery, LanDiscoveryConfig, LanEvent};
 
+fn advert(npub: &str, port: u16) -> super::LanDiscoveredPeer {
+    super::LanDiscoveredPeer {
+        npub: npub.to_owned(),
+        scope: Some("crowded-lan".into()),
+        addr: SocketAddr::from(([192, 168, 1, 10], port)),
+        observed_at: std::time::Instant::now(),
+    }
+}
+
+#[test]
+fn crowded_lan_retains_distinct_peers_and_coalesces_duplicate_paths() {
+    let mut pending = super::PendingAdverts::default();
+    let peers: Vec<_> = (0..100).map(|_| Identity::generate().npub()).collect();
+    for _ in 0..10 {
+        for peer in &peers {
+            pending.push(advert(peer, 61001));
+            pending.push(advert(peer, 61002));
+        }
+    }
+    assert_eq!(pending.queue.len(), 200);
+    let mut observed = std::collections::HashMap::new();
+    while !pending.queue.is_empty() {
+        let batch = pending.drain_batch();
+        assert!(batch.len() <= super::MAX_ADVERTS_PER_TICK);
+        for LanEvent::Discovered(peer) in batch {
+            *observed.entry(peer.npub).or_insert(0) += 1;
+        }
+    }
+    assert_eq!(observed.len(), 100);
+    assert!(observed.values().all(|count| *count == 2));
+    assert!(pending.paths.is_empty());
+    assert!(pending.peers.is_empty());
+}
+
+#[test]
+fn advert_limits_bound_memory_and_allow_retry_after_drain() {
+    let mut pending = super::PendingAdverts::default();
+    let noisy = Identity::generate().npub();
+    for port in 1..1000 {
+        pending.push(advert(&noisy, port));
+    }
+    assert_eq!(pending.queue.len(), super::MAX_PENDING_ADDRS_PER_PEER);
+    for _ in 0..1000 {
+        pending.push(advert(&Identity::generate().npub(), 61000));
+    }
+    assert_eq!(pending.queue.len(), super::MAX_PENDING_ADVERTS);
+    assert_eq!(pending.paths.len(), super::MAX_PENDING_ADVERTS);
+    assert!(pending.peers.len() <= super::MAX_PENDING_ADVERTS);
+    let overflow = Identity::generate().npub();
+    pending.push(advert(&overflow, 61000));
+    assert!(!pending.peers.contains_key(&overflow));
+    pending.drain_batch();
+    pending.push(advert(&overflow, 61000));
+    assert!(pending.peers.contains_key(&overflow));
+    while !pending.queue.is_empty() {
+        pending.drain_batch();
+    }
+    assert!(pending.paths.is_empty());
+    assert!(pending.peers.is_empty());
+    pending.push(advert(&noisy, 1));
+    assert_eq!(pending.queue.len(), 1);
+}
+
 #[test]
 fn browse_windows_align_across_independent_processes() {
     assert_eq!(
@@ -23,9 +86,12 @@ fn browse_windows_align_across_independent_processes() {
 /// on the same machine don't cross-feed each other's adverts via the
 /// shared 224.0.0.251 multicast group. The trailing `.local.` is
 /// required by RFC 6763 — mdns-sd will reject anything else.
-fn isolated_service_type(tag: &str) -> String {
+fn isolated_service_type(_tag: &str) -> String {
     let rand: u32 = rand::random();
-    format!("_fipstest-{tag}-{rand:08x}._udp.local.")
+    // DNS-SD service names are limited to 15 bytes excluding the underscore.
+    // A longer name is rejected asynchronously after register() returns Ok,
+    // making negative discovery tests pass without any advert on the wire.
+    format!("_ft-{rand:08x}._udp.local.")
 }
 
 fn config_for(service_type: String) -> LanDiscoveryConfig {
@@ -191,8 +257,8 @@ async fn isolated_service_types_do_not_cross_feed() {
 ///
 /// Ignored by default: relies on multicast-loopback semantics that
 /// vary across macOS/Linux/Windows when two `ServiceDaemon` instances
-/// run in the same process. Real cross-host LAN deployment exercises
-/// the same code path correctly — verify with `cargo test -- --ignored
+/// run in the same process. This does not prove cross-host discovery
+/// or an authenticated FIPS connection. Run with `cargo test -- --ignored
 /// matched_scope_peers_observe_each_other` on a setup where this
 /// matters, or via end-to-end integration with two daemons.
 #[ignore]
