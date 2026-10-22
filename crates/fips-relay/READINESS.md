@@ -1,7 +1,12 @@
 # Paid-relay v1 readiness
 
-**Status: active; production readiness is not established.** Reviewed on
-22 October 2026.
+**Status: locally qualified for the scoped paid-relay v1 deployment.** Reviewed
+on 22 October 2026. The requirement-level assessment is complete for the pinned
+Linux/ARM64 OpenWrt artifacts and the controlled Android bench client below.
+This is bounded, sender-funded, best-effort forwarding with explicit spending,
+storage and mint-trust policies. Public deployment and real-money operation have
+not been performed. The known diagnostic issue and capability limits remain part
+of this assessment.
 
 ## Current state
 
@@ -24,7 +29,21 @@ automatic-payment acknowledgement timeout remains unexplained. A follow-up with
 the current artifact, ordinary logging and failure-only snapshots passes in
 838.12 seconds; independent audit conserves its 3,072 original test sats. Neither
 this run nor the preceding debug-logged pass explains the original timeout.
+The missing silent-reply boundary is now covered by the existing controller
+fixture: both an unapplied update and an accepted update whose reply never arrives
+recover automatically after the real 30-second transport deadline. Original
+channels, funding records and spending limits remain intact; accepted credit is
+reconciled without a duplicate payment. Formatting and strict test lint pass.
 No timeout or runtime code was changed, and no device work was repeated.
+
+The older timeout remains a known diagnostic issue, not a retroactive pass or a
+proven runtime fix. Its 15-second quiescence helper can expire while a legitimate
+30-second exchange is still pending; the new test proves that boundary, not the
+cause of the old failure. Current ordinary-load recovery and deliberate silent
+failure recovery both pass. A universal 15-second acknowledgment guarantee under
+loss is therefore not claimed. The separate two-second router workload bound is
+unchanged and passes. With that distinction, the scoped requirements are covered;
+another unexplained repetition would add no defined acceptance requirement.
 
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
@@ -45,6 +64,7 @@ No timeout or runtime code was changed, and no device work was repeated.
 | `work/payment-cohort-canonical-fixture-build-1`, `work/payment-cohort-large-export-check-2` | Both canonical integration targets compile. The explicit large-export case passes in 299.24 seconds: admission refuses at 20,875,237 charged bytes within the 20 MiB cap, retains 79 exports, continues spending and collects all 1,024 original test sats. All 32 original files have a verified archive; the test owner and child are absent. | The other 34 listed cases have not run. The first launch failed before mint creation because the fixture socket path exceeded the existing limit; the passing launch uses a short, private persistent directory and the same executable. The 17.09-second offline reopen/ack observation is not a hardware timing guarantee. |
 | `work/payment-cohort-installed-check-2`, `work/payment-cohort-current-capacity-1` | Unfunded current-artifact reader and independent staged-capacity checks pass all unchanged floors; temporary copies are removed. | Preflight evidence does not replace paid hardware acceptance or a fresh post-run capacity check. |
 | `work/final-canonical-fixtures-1` | Both current integration targets compile; eight CLI/custody checks and four selected real-wallet checks pass. Coverage includes payout/refund process cuts, three retirement cycles with cumulative spending preserved, and automatic recovery of a distinct abandoned send alongside retained selected-route history. The latter reconciles 501 spendable sats plus 11 mint fees against 512 issued. Independent readback verifies source, artifact identity and absent owners. | Two long CLI cases are intentionally ignored here and retain their separate evidence. The original preparation failure, mismatched crash-test/ordinary-daemon launch and symbolic-link audit error are preserved. Only the crash-hook case uses the matching `testbench` daemon; the other selected funding checks use the qualified ordinary executable. No production source or deadline was changed. |
+| `work/silent-payment-reply-1` | The existing slow-neighbor controller scenario passes in 137.95 seconds. Silent applied/unapplied requests expire after 29.992/29.995 seconds and recover automatically, with unchanged original purchases, funding and lifetime caps. The accepted payment is not signed twice; another neighbor progresses while a request is held. Package formatting and strict controller lint pass; source/artifact identity and stopped owners are independently checked. | This test-only extension does not identify the older intermittent timeout's cause. The initial whole-workspace formatting failure is preserved; it concerns two unchanged core fixtures. No production code, request deadline or device state changes. |
 
 ### Current router run
 
@@ -253,8 +273,9 @@ Current implementation and deployment boundaries:
 
 “Covered” below means the named tests or historical runs provide evidence for
 that requirement on their recorded builds. It does not certify a newer binary.
-Final sign-off requires the exact source/dependency/features and target artifacts,
-closed financial recovery and the remaining controlled observations listed here.
+The final assessment binds source/dependency/features and target artifacts,
+closed financial recovery and the controlled observations listed here in
+`work/current-v1-reconciliation-1/scoped-acceptance.json`.
 An explicit unqualified capability is a limit on claims, not an added requirement
 for manual testing or an unlimited sequence of longer runs.
 
@@ -265,7 +286,7 @@ for manual testing or an unlimited sequence of longer runs.
 | Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. The current session-recovery graph passes all seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS, with independent 2,688-sat conservation; r531/r532 cover unchanged native quote/admission contracts. | Recorded Linux carrier reconciliation is complete. Physical target acceptance remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Recorded native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
 | Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Current controlled open-radio departure/rejoin, root replacement and route recovery pass; sampled resource observations are recorded above. Actual movement, seamless roaming, automatic channel selection and unrestricted-identity fairness are not established. |
-| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Current physical-radio route recovery and final source reconciliation pass; no global-optimality claim. The earlier native payment-acknowledgement timeout still needs resolution. |
+| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Current physical-radio route recovery, final source reconciliation and silent-payment recovery pass; no global-optimality claim. The earlier diagnostic timeout remains unexplained, as described above. |
 | Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | Current unattended first-purchase and committed-settlement cuts pass with original-fund closure. Canonical payout/refund, real-wallet history-handoff and retained-trial recovery checks also pass. Earlier kernel/full-filesystem evidence retains its recorded graph; additional manual cuts are cancelled. |
 | Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. Recorded source reconciliation matches all 34 catalog and 43 export review entries; the reachable service roles and exclusions are mapped below. | Current full-history pressure/progress and sampled aggregate process-resource observations are accepted. Finite cycles do not establish an indefinite physical-storage plateau, hard RSS ceiling or generic whole-call deadline. |
 | Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | The final candidate passes Linux/OpenWrt builds, Android compile/package verification and the controlled Pixel regression with independent financial closure and owned-app removal. Current router acceptance, selected final integration checks and cleanup verification pass with preserved accounts. Natural Android deep idle remains an explicit limitation. |
@@ -395,7 +416,7 @@ for manual testing or an unlimited sequence of longer runs.
    are verified. All 103 shared collection and eleven recovery checks pass on
    Linux; the original missing-import-path failure remains recorded separately.
    No electrical cut or flash-write atomicity claim follows from these tests.
-5. **Final targets reconciled; diagnose the remaining native timeout.**
+5. **Final targets reconciled; scoped qualification complete.**
    `work/current-v1-reconciliation-1/final-check-reconciliation.json` binds all
    631 production paths, 136 canonical Rust integration files, 200 harness files,
    target/device acceptance, cleanup and the operational/threat/proposal documents.
@@ -408,11 +429,31 @@ for manual testing or an unlimited sequence of longer runs.
    preserves 120 original files with all owners stopped. The first audit stops
    on a file-inventory change after SQLite reads; its successor archives originals
    first and audits a separate copy. Both audit records are retained.
-   The intermittent failure is not yet explained. Inspect the existing control
-   request/rekey recovery coverage and reproduce a concrete missing case before
-   changing code or repeating this long scenario. Do not infer a fix from a pass,
-   relax the deadline, or request manual device work. Final sign-off remains withheld.
-6. **Clean only completed owned fixtures.** Verify inactivity and recovery before
+   The existing control/rekey fixture now tests the missing silent reply after
+   durable payment acceptance, as well as silence before acceptance. It holds
+   the original requests through their actual deadlines and proves automatic
+   reconciliation, monotonic credit and unchanged spending authority. Its
+   15-second observation deliberately remains pending; both requests recover
+   after about 30 seconds. The original failure is still unexplained and its
+   failed verdict remains intact. No deadline or runtime change is justified
+   by the available evidence.
+
+   `work/current-v1-reconciliation-1/scoped-acceptance.json` binds this one
+   changed fixture to its passing native check, the unchanged production graph,
+   all current target acceptance and the requirement assessment. The earlier
+   reconciliation remains preserved. This closes the missing recovery coverage,
+   not the old failure's diagnosis. The scoped deployment accepts bounded retry
+   behavior; it does not promise acknowledgment within 15 seconds during loss.
+   Further testing is required for affected changes or a new concrete failure,
+   not another unchanged run or manual device handling.
+6. **Current fixture cleanup complete.** Independent readback verifies restored
+   router baselines, preserved accounts, stopped test owners/mints and removed
+   owned device tools. The owned phone app and empty native fixture directory
+   are removed. No managed worktree is attached to this task. Financial originals,
+   source/artifact provenance and failed attempts remain in verified private
+   archives; shared build caches are retained.
+
+   For subsequent work, verify inactivity and recovery before
    removing test installations. Use managed archival only for finished,
    integrated, inactive task-owned worktrees; preserve active/shared work,
    unmanaged checkouts, unmerged history and operational state. Revoke only this
@@ -638,13 +679,14 @@ is deliberately not a general metadata/curve/canonical-ID integrity scan.
 Four existing focused regression results are reused with verified source/log
 bindings. This adds no test execution, device acceptance or performance claim.
 
-Paid forwarding and retirement still need aggregate current-target resource and
-progress acceptance. Proof capture and ownership/receipt scans can traverse many
+FULL11 supplies the current-target sampled resource and progress acceptance.
+Proof capture and ownership/receipt scans can traverse many
 bounded pages in one call; removing a controller lock does not make them constant
 time. Finite native/ARM lifecycle, refund, large-export and logical-pressure cases
 retain their exact sources and scopes in [history](HISTORY.md) and
-[funding/recovery](FUNDING-COSTS.md). The current runtime's physical full-history
-window remains the outstanding combined observation.
+[funding/recovery](FUNDING-COSTS.md). The accepted physical full-history window
+provides the combined observation within its recorded workload; it does not
+establish an indefinite storage plateau or hard resource ceiling.
 
 ### Recovery record read bounds
 

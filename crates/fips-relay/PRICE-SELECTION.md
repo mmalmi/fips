@@ -3,7 +3,8 @@
 This opt-in policy compares real adjacent providers' downstream quotes and binds
 the accepted source route to the selected provider. Transit still uses the native
 FIPS planner. It is a bounded local search, not a globally cheapest-path algorithm
-or a delivery guarantee. The broader [readiness work](READINESS.md) remains active.
+or a delivery guarantee. The [readiness assessment](READINESS.md) records the
+qualified targets, workload and known limits.
 
 ## Decision rule
 

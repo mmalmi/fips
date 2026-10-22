@@ -335,8 +335,8 @@ evidence also supports the SDK's receiver-custody checks. Proof cleanup must
 coordinate all of those owners, not merely observe a spent state or completed
 spending operation. Logical storage limits and finite retirement checks do not
 bound total physical database size or prove indefinite operation under hostile
-identity churn. The pending router pressure/resource acceptance is tracked in
-[the current completion sequence](READINESS.md#completion-sequence).
+identity churn. The accepted finite router pressure/resource workload is recorded
+in [the completion sequence](READINESS.md#completion-sequence).
 
 The SDK provides an explicit local proof-release queue for that handoff.
 Its caller must durably release every external owner before adding the original

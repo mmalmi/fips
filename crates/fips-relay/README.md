@@ -1,11 +1,11 @@
-# FIPS paid forwarding prototype
+# FIPS paid forwarding
 
-Experimental service components for **sender-funded, best-effort forwarding**.
+Service components for **sender-funded, best-effort forwarding**.
 Delivery receipts are an optional future experiment. The relay does not inspect
 TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 
-See [the current v1 assessment](READINESS.md) for tested builds and outstanding
-acceptance, [SERVICE.md](SERVICE.md) for operation, and [TESTBENCH.md](TESTBENCH.md)
+See [the current v1 assessment](READINESS.md) for qualified builds and known
+limits, [SERVICE.md](SERVICE.md) for operation, and [TESTBENCH.md](TESTBENCH.md)
 for isolated funding and collection. The [original prototype report](PROTOTYPE-RESULTS.md)
 records the completed three-router/Pixel demonstration; its scope and totals are
 historical. Current [cadence comparisons](CADENCE-RESULTS.md) report CPU, storage
@@ -15,15 +15,16 @@ retained its baseline after two tuning experiments failed to show reliable savin
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
 
-The v1 goal remains active. [Adaptive cadence](CADENCE.md), authenticated adjacent
+The scoped v1 is locally qualified. [Adaptive cadence](CADENCE.md), authenticated adjacent
 admission, UDP/TCP/native Ethernet/WebSocket forwarding and financial-history
 retirement have software and controlled device evidence. This includes open Wi-Fi
 joining, paid route recovery, phone transit and wallet failure/recovery. Current
 Linux/ARM64/Android builds and controlled phone acceptance are complete on their
 recorded graphs. Full-history router forwarding/resource acceptance and controlled
-open-radio recovery remain open. The [acceptance checklist](READINESS.md#acceptance-checklist)
-defines the remaining requirements and the explicit physical power-loss, storage
-and mobility limits.
+open-radio recovery pass. The [acceptance checklist](READINESS.md#acceptance-checklist)
+records the requirement evidence, the known historical acknowledgment timeout,
+and the explicit physical power-loss, storage and mobility limits. Public release
+and real-money operation have not been performed.
 The prototype reports below describe the earlier r6 hardware build.
 
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)

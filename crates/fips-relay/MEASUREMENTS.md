@@ -472,3 +472,20 @@ phone process CPU seconds respectively per delivered MiB, measured across each
 transfer itself; they do not isolate payment cost or establish peak throughput.
 The phone stays plugged
 in, so the result does not measure battery consumption or natural off-charge idle.
+
+### Silent payment reply recovery
+
+The existing slow-neighbor controller fixture now holds both an unapplied update
+and a durably accepted payment's reply until the real transport deadline.
+`work/silent-payment-reply-1` passes in 137.95 seconds; the two holds expire after
+29.992 and 29.995 seconds. Automatic recovery retains the original channels,
+funding records and lifetime spending limits, reconciles accepted credit without
+another signature at the same balance, and lets a healthy neighbor progress.
+Package formatting and strict controller lint pass. The initial whole-workspace
+format check fails only on two unchanged core fixtures and remains recorded.
+
+The accepted-reply phase also verifies that a 15-second quiescence observation
+can expire while that original request is still pending. This explains why such
+a timeout alone cannot establish broken recovery; it does not establish the cause
+of the older native timeout, which had no phase snapshot. These are controlled
+fault observations, not normal payment latency or a hardware performance result.

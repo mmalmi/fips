@@ -56,8 +56,8 @@ Service submissions can include quotes and carrier traffic; they are not a
 payment-only class or proof of physical transmission. Shared core/TCP CPU,
 opaque transit and shared handshake/MMP/rekey traffic, wallet SQLite and physical
 writes, outer network/link headers, radio airtime, battery and impaired links
-remain excluded. See the [measurement boundaries](MEASUREMENTS.md). Router timing
-acceptance is still pending.
+remain excluded. See the [measurement boundaries](MEASUREMENTS.md). The later
+FULL11 router timing acceptance is recorded in [readiness](READINESS.md).
 
 ## Native rate-wait candidate — 21 October 2026
 
