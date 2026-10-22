@@ -32,7 +32,7 @@ unqualified for these new artifacts.
 | `work/wallet-phase-android-macos-1/verified-artifacts` | The wallet/phase Android engine compiles locally with actual compiler records confirming measurement features and no simulation. Package assembly, strict lint, signature, SDK/ABI and exact stripped-library checks pass. Source inputs remain unchanged; the unchanged Java shell retains its recorded lifecycle evidence. | The initial compiler-launcher failure and both packaging-verifier failures remain preserved. The final audit uses the actual compiler records and minimum-SDK field. This is software qualification; the new package's controlled phone acceptance remains pending. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
 | `work/payment-cohort-phone-harness-check-1` | 32 focused Linux checks pass with zero skips; original owners/groups are gone. | Local fixtures and mocks operate no devices or funds. |
-| `work/payment-cohort-phone-controlled-4`, `work/payment-cohort-phone-controlled-4-close-resumption-1` | Current ARM/Android artifacts pass unpaid denial and 4 MiB of foreground/background/forced-idle routing, including 48.30 seconds of forced idle. The original four channels and all 512 test sats independently reconcile; accounts/Wi-Fi/baselines are restored and the owned app is removed. The unchanged 223 harness files reuse 176 Linux checks. | The first install used a stale expected package name; the corrected case adopts the same owned, pristine APK before any funding. The original closer fails its separate 8 MiB space check; read-only archival and the original financial authority then complete under a new owner. Both failures remain preserved. The newer synchronized diagnostic-artifact capacity check passes. |
+| `work/payment-cohort-phone-controlled-4`, `work/payment-cohort-phone-controlled-4-close-resumption-1` | The preceding cohort's ARM/Android artifacts pass unpaid denial and 4 MiB of foreground/background/forced-idle routing, including 48.30 seconds of forced idle. The original four channels and all 512 test sats independently reconcile; accounts/Wi-Fi/baselines are restored and the owned app is removed. The unchanged 223 harness files reuse 176 Linux checks. | The first install used a stale expected package name; the corrected case adopts the same owned, pristine APK before any funding. The original closer fails its separate 8 MiB space check; read-only archival and the original financial authority then complete under a new owner. Both failures remain preserved. The newer synchronized diagnostic-artifact capacity check passes. |
 | `work/payment-cohort-canonical-fixture-build-1`, `work/payment-cohort-large-export-check-2` | Both canonical integration targets compile. The explicit large-export case passes in 299.24 seconds: admission refuses at 20,875,237 charged bytes within the 20 MiB cap, retains 79 exports, continues spending and collects all 1,024 original test sats. All 32 original files have a verified archive; the test owner and child are absent. | The other 34 listed cases have not run. The first launch failed before mint creation because the fixture socket path exceeded the existing limit; the passing launch uses a short, private persistent directory and the same executable. The 17.09-second offline reopen/ack observation is not a hardware timing guarantee. |
 | `work/payment-cohort-installed-check-2`, `work/payment-cohort-current-capacity-1` | Unfunded current-artifact reader and independent staged-capacity checks pass all unchanged floors; temporary copies are removed. | Preflight evidence does not replace paid hardware acceptance or a fresh post-run capacity check. |
 
@@ -263,7 +263,11 @@ for manual testing or an unlimited sequence of longer runs.
    movement, fading, seamless roaming and automatic channel selection.
 4. **Reconcile affected targets and recovery.** The current wallet/phase Android
    graph compiles and packages successfully; its controlled phone regression is
-   pending. The preceding cohort graph's controlled USB regression retains its
+   pending. Source preparation in `work/wallet-phase-phone-controlled-1` binds the
+   current ARM/APK and preserves the controlled USB workload. Eight source checks
+   pass; dispatch remains refused until the actual full-history run's financial
+   release is independently reviewed and bound. The preceding cohort graph's
+   controlled USB regression retains its
    independent financial closure and owned-app removal. Retain its
    recorded space failure: archive observations are 5,288/14,432/5,580 KiB on the
    three routers, below the archiver's 8 MiB floor on two. No databases or financial
@@ -396,12 +400,21 @@ its temporary app. Historical cost, renewal and corrupted/lost-traffic cases ret
 their original graphs; they do not qualify a newer binary.
 
 `work/payment-cohort-phone-controlled-4` passes that controlled regression on the
-current ARM executable and matching Android package: 4 MiB delivered, including
+preceding cohort's ARM executable and matching Android package: 4 MiB delivered, including
 48.30 seconds of forced idle, with the phone plugged in. The handoff preserves
 the failed router verdict and its independently closed original funds. The same
 223 frozen harness files reuse all 176 passing Linux checks. The corrected setup
 uses the qualified APK's actual package and adopts its owned pristine install
 after a pre-funding setup failure; it does not reinstall or reset an account.
+
+`work/wallet-phase-phone-controlled-1` prepares the same workload for the newer
+wallet/phase ARM executable and verified APK. Its eight source checks verify
+artifact custody, reuse of all 176 harness checks, unchanged financial closure,
+fresh absent-package installation and refusal before device operations while
+the full-history run remains active. The mirrored preparation is unfunded and
+has operated no devices. Its future release adapter remains unbound and must be
+reviewed against actual original-funds closure, stopped owners and restored
+baselines before dispatch; it is not phone acceptance.
 
 The original closer passes functional postflight but fails a separate free-space
 assertion. Its failure and partial archives are preserved. Read-only resumption
