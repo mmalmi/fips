@@ -1,0 +1,7 @@
+{
+  "luci-app-freedom": {
+    "description": "Manage Freedom forwarding",
+    "read": { "ubus": { "luci.freedom": ["status"] } },
+    "write": { "ubus": { "luci.freedom": ["configure", "action"] } }
+  }
+}

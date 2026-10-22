@@ -14,6 +14,9 @@ retained its baseline after two tuning experiments failed to show reliable savin
 
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
+The optional [Freedom web interface](openwrt/README.md#freedom-web-interface)
+adds service controls, account setup, peers and payment credit to OpenWrt LuCI.
+It preserves the existing relay executable and saved financial terms.
 
 The scoped v1 is locally qualified. [Adaptive cadence](CADENCE.md), authenticated adjacent
 admission, UDP/TCP/native Ethernet/WebSocket forwarding and financial-history

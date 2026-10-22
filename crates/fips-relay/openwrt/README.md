@@ -9,6 +9,66 @@ The binary must be cross-compiled for the selected CPU architecture. The package
 builder checks its ELF machine against the APK architecture. Hardware validation
 currently uses ARM64; other architectures need their own build and runtime check.
 
+## Freedom web interface
+
+The optional `luci-app-freedom` package adds **Services → Freedom** to LuCI.
+It uses the existing `fips-relay` UCI instance and private local controls. Installing
+it refreshes rpcd/LuCI only; it never initializes accounts, funds channels, starts
+the relay, or changes radios, bridges, DHCP or firewall rules.
+
+- Start/stop forwarding and independently enable/disable startup at boot.
+- View connected peers and traffic, outgoing locked funds, remaining payment
+  authority and accepted signed payments. Accepted credit includes retained
+  channel history; it is not settled wallet income or profit. Unavailable data
+  is shown explicitly, never as a zero balance.
+- Before initialization, choose free/paid forwarding, price and spending limits,
+  a trusted mint and an existing mesh interface. Save settings, then explicitly
+  create the account. This enables bounded authenticated adjacent discovery on
+  that interface using the forwarding-data tariff. The page does not create or
+  bridge a radio interface. Fund onward purchases through the existing
+  [wallet workflow](../TESTBENCH.md#fund-a-relay).
+- Existing or partially initialized state makes financial settings read-only.
+  The page never resets budgets, reinitializes accounts, migrates old terms or
+  edits wallets. Zero onward price permits free routes only; free local service
+  with a positive onward ceiling can still consume the configured budget.
+
+The backend exposes only `status`, `configure` and enumerated service actions.
+Separate read/write ACLs protect them; there is no arbitrary file, shell, wallet
+or operator-socket proxy. Settings use a private atomic replacement with a stale
+form check. Polling uses bounded, projected status and never publishes full
+configuration, financial history, keys or tokens. Wallet funding/withdrawal,
+changing established financial terms and destination-specific policies remain
+outside this first web interface.
+
+Build the architecture-independent APK with the same APKv3 tool as the relay:
+
+```sh
+crates/fips-relay/openwrt/build-luci-apk.sh /path/to/apk \
+  0.1.0-r1 REPLACE_WITH_SOURCE_COMMIT /output/luci-app-freedom-0.1.0-r1.apk
+```
+
+Install this locally built unsigned package on an authorized router with
+`apk add --allow-untrusted /path/to/luci-app-freedom-0.1.0-r1.apk`, then open
+**Services → Freedom**. The relay package and LuCI/rpcd/ucode dependencies must
+already be available from that router's package feeds. For SDK builds, copy
+`openwrt/luci/` to `package/luci-app-freedom/` and use its standard LuCI Makefile.
+The normal relay package remains usable without LuCI.
+
+Focused verification uses real OpenWrt UCI, filesystem and process execution in
+an isolated scratch account, plus browser flows through the actual view:
+
+```sh
+ucode testing/openwrt/test_freedom.uc \
+  crates/fips-relay/openwrt/luci/root/usr/share/rpcd/ucode/freedom.uc \
+  crates/fips-relay/service.example.json
+node testing/openwrt/test_freedom_ui.cjs /private/test-output
+```
+
+The browser check requires Playwright; set `FREEDOM_TEST_CHROME` to an installed
+Chrome executable when its bundled browser is unavailable. It covers setup,
+start/stop, boot controls, stale forms, read-only access, escaped peer text and
+precise payment display. Neither test issues money or mutates an operator account.
+
 ## Build
 
 Use the [source-bundle workflow](../FUNDING-COSTS.md#portable-development-source-bundle)
