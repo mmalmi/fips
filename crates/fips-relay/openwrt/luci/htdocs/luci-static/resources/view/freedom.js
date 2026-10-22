@@ -110,15 +110,15 @@ return view.extend({
 				this.row(_('Remaining payment limit'), data.ready ? data.remaining_budget_sat + ' sat' : '—'),
 				this.row(_('Start at boot'), data.boot ? _('Enabled') : _('Disabled'))
 			]),
-			E('p', { 'class': 'cbi-value-description' }, _('Accepted payments are signed credit, including retained history. They are not settled wallet income or profit.'))
+			E('p', {}, _('Accepted payments are signed credit, including retained history. They are not settled wallet income or profit.'))
 		]));
 		var rows = (data.peers || []).map(function(p) {
 			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td', 'style': 'overflow-wrap:anywhere', 'title': p.npub }, p.npub),
-				E('td', { 'class': 'td' }, p.connected ? _('Connected') : _('Disconnected')),
-				E('td', { 'class': 'td' }, p.transport || '—'),
-				E('td', { 'class': 'td' }, bytes(p.sent_bytes)),
-				E('td', { 'class': 'td' }, bytes(p.received_bytes))
+				E('td', { 'class': 'td', 'data-title': _('Peer'), 'style': 'overflow-wrap:anywhere', 'title': p.npub }, p.npub),
+				E('td', { 'class': 'td', 'data-title': _('Status') }, p.connected ? _('Connected') : _('Disconnected')),
+				E('td', { 'class': 'td', 'data-title': _('Link') }, p.transport || '—'),
+				E('td', { 'class': 'td', 'data-title': _('Sent') }, bytes(p.sent_bytes)),
+				E('td', { 'class': 'td', 'data-title': _('Received') }, bytes(p.received_bytes))
 			]);
 		});
 		dom.content(this.peerList, rows.length ? E('table', { 'class': 'table' }, [
