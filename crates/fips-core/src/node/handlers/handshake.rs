@@ -912,7 +912,10 @@ impl Node {
                     .dataplane_fmp_link_metrics(&peer_node_addr, Instant::now())
                     .is_some_and(|metrics| metrics.current_epoch_authenticated)
         }) {
-            conn.bind_refresh_owner(peer);
+            let unconfirmed = self
+                .dataplane_fmp_link_metrics(&peer_node_addr, Instant::now())
+                .is_some_and(|metrics| !metrics.current_epoch_authenticated);
+            conn.bind_refresh_owner(peer, unconfirmed);
         }
 
         // Create link
