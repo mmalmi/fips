@@ -245,7 +245,8 @@ for manual testing or an unlimited sequence of longer runs.
    radio or qualify forwarding. Both failed runs remain closed in
    `work/current-device-sequences/full-history-4-final` and
    `work/current-device-sequences/full-history-7-final-recovery-4`.
-3. **Complete controlled radio recovery after that full pass and closure.** Bind
+3. **Complete controlled radio recovery after that full pass and closure.** Wait
+   for any queued phone test to independently release the devices, then bind
    the current-runtime preparation in `work/current-radio-autonomous-v13`, using
    `work/current-radio-sequence-owner-v5`, to the actual accepted full run. Six
    software checks validate the current wallet/phase graph, reject the old
@@ -263,12 +264,15 @@ for manual testing or an unlimited sequence of longer runs.
    movement, fading, seamless roaming and automatic channel selection.
 4. **Reconcile affected targets and recovery.** The current wallet/phase Android
    graph compiles and packages successfully; its controlled phone regression is
-   pending. Source preparation in `work/wallet-phase-phone-controlled-1` binds the
-   current ARM/APK and preserves the controlled USB workload. Eight source checks
-   pass; dispatch remains refused until the actual full-history run's financial
-   release is independently reviewed and bound. The preceding cohort graph's
-   controlled USB regression retains its
-   independent financial closure and owned-app removal. Retain its
+   pending. `work/wallet-phase-phone-controlled-1` binds the current ARM/APK and
+   preserves the controlled USB workload. The detached follow-up in
+   `work/wallet-phase-phone-followup-durable-owner-1` waits for actual FULL10
+   financial closure and stopped owners, checks fresh space including the ARM
+   copy, then attempts the original independent closer even after a failed
+   launch reply. Source checks cover the artifact/workload binding, release
+   verifier and follow-up owner; none establishes phone acceptance. The preceding
+   cohort graph's controlled USB regression retains its independent financial
+   closure and owned-app removal. Retain its
    recorded space failure: archive observations are 5,288/14,432/5,580 KiB on the
    three routers, below the archiver's 8 MiB floor on two. No databases or financial
    histories were deleted to clear it. New paid router work still needs fresh
@@ -408,13 +412,22 @@ uses the qualified APK's actual package and adopts its owned pristine install
 after a pre-funding setup failure; it does not reinstall or reset an account.
 
 `work/wallet-phase-phone-controlled-1` prepares the same workload for the newer
-wallet/phase ARM executable and verified APK. Its eight source checks verify
-artifact custody, reuse of all 176 harness checks, unchanged financial closure,
-fresh absent-package installation and refusal before device operations while
-the full-history run remains active. The mirrored preparation is unfunded and
-has operated no devices. Its future release adapter remains unbound and must be
-reviewed against actual original-funds closure, stopped owners and restored
-baselines before dispatch; it is not phone acceptance.
+wallet/phase ARM executable and verified APK. Eight source checks verify artifact
+custody, reuse of all 176 harness checks, unchanged financial closure, fresh
+absent-package installation and refusal while the full-history run remains active.
+The reviewed release adapter in `work/wallet-phase-phone-release-adapter-1` checks
+the actual FULL10 closure, waits, archives and current artifact; eight checks
+include preserving the separate failed hardware verdict and refusing live owners.
+The original unfunded source revision is preserved byte for byte and mirrored.
+
+The detached follow-up uses `work/wallet-phase-phone-wait-owner-1`; seven source
+checks cover waiting, conservative space floors including the new ARM copy and
+always attempting the original independent closer after launch. It waits for
+actual financial closure and stopped owners before checking space or operating
+devices. Live preflight also verifies restored baselines, absence of active
+profiles and USB readiness. This is an automated pending test, with its original
+512-test-sat cap and four channels; acceptance still requires its real result,
+independent financial audit, restoration and owned-app removal.
 
 The original closer passes functional postflight but fails a separate free-space
 assertion. Its failure and partial archives are preserved. Read-only resumption
