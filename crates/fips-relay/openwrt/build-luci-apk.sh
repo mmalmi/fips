@@ -26,7 +26,7 @@ find "$data" -type d -exec chmod 0755 {} \;
 find "$data" -type f -exec chmod 0644 {} \;
 printf '{"source_revision":"%s"}\n' "$revision" > "$data/usr/share/freedom/build.json"
 "$apk_tool" mkpkg --compat 3.0.0_pre3 \
-	--info name:luci-app-freedom --info "version:$version" --info arch:all \
+	--info name:luci-app-freedom --info "version:$version" --info arch:noarch \
 	--info license:MIT --info 'description:Freedom mesh forwarding controls' \
 	--info 'depends:fips-relay luci-base rpcd-mod-ucode ucode-mod-fs ucode-mod-uci ucode-mod-digest' \
 	--script "post-install:$source_dir/luci-reload" \
