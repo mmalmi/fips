@@ -16,8 +16,9 @@ The local successor also reuses one capacity-checked wallet per offline command.
 Its ordinary native/static ARM builds and custody checks pass with the same
 dependencies. [Preparation measurements](MEASUREMENTS.md#offline-wallet-preparation)
 cover small native samples. FULL11 qualifies the current full-history router
-workload with a corrected observer. Controlled radio recovery also passes;
-the two unattended payment-interruption cases remain pending.
+workload with a corrected observer. Controlled radio recovery and unattended
+first-purchase and settlement recovery also pass. Final canonical integration
+checks and requirement reconciliation remain pending.
 
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
@@ -102,6 +103,22 @@ preserves and removes the closed log and expanded profile instead. Both failed
 attempts remain recorded. `work/terminal-current-capacity-3` passes the same
 floors with the actual ARM copies before the radio launch; all copies are removed.
 
+`work/current-payment-recovery-1/initial-accepted.json` accepts unattended
+first-purchase recovery on that same ARM artifact. All three owned processes are
+interrupted after the mint commits the channel opening, before its reply.
+Restart restores the same request, quote and channel automatically: the mint's
+swap count stays at four while its restore count advances from one to two.
+Both 1,280-packet streams arrive, all 267 management checks pass, and independent
+closure verifies the original two channels and all 384 test sats. The corrected
+shared collector closes its native sends while the original mint is still live.
+The separate `settlement-accepted.json` accepts the committed-settlement cut.
+The provider recovers without its buyer, completes the reverse channel at expiry,
+and the late buyer receives its original 28-sat refund against four sats paid.
+All 339 management checks pass. Independent closure verifies both original
+channels and all 384 test sats. Both test owners and child groups are absent,
+all originals are archived and normal router baselines are restored. These are
+process-interruption tests; no additional physical power cut is requested.
+
 ### Earlier router evidence
 
 FULL7 fails the unchanged two-second
@@ -182,8 +199,8 @@ active collector, incomplete full result and known failed predecessor before
 allocation. Execution still requires the actual full pass, original financial
 closure, normally closed recovered collectors/final owner and useful resource
 capture. The six qualified Python observer changes remain distinct from the
-unchanged compiled runtime; nine source checks pass. No radio case has been
-staged or funded.
+unchanged compiled runtime; nine source checks pass. That preparation was not
+staged or funded; the later v15 acceptance is recorded above.
 
 ## Scope and outstanding acceptance
 
@@ -213,7 +230,7 @@ Current implementation and deployment boundaries:
   are complete for their recorded graph. Natural off-charge idle, physical movement
   and battery cost remain
   unqualified capabilities; they do not require further operator actions.
-  The app remains a bench tool, and router/history acceptance below is still open.
+  The app remains a bench tool; current router/history acceptance is recorded below.
 - Acceptance uses fresh profiles and test money. Legacy profile migration is
   outside this greenfield scope. Existing operator accounts must be preserved.
 - Public release, deployment, real-money operation and contacting upstream are
@@ -230,17 +247,17 @@ for manual testing or an unlimited sequence of longer runs.
 
 | Requirement | Existing evidence and canonical contract | Required to close v1 |
 | --- | --- | --- |
-| Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. The preceding native four-age matrix passes all 32 workload windows, and seven paid-carrier scenarios cover fault progress. The current worker regression proves debt age survives an in-flight exchange without duplicate or idle work. | The current native cost comparison is complete. Finish router acceptance with unchanged financial terms. Retain historical target evidence within its recorded graph. |
+| Adaptive payments, idle suppression and independent checkpoints | [Cadence](CADENCE.md): cumulative payments per neighbor and paying direction, triggered by priced usage/remaining allowance or maximum age; separate checkpoints and renewal. The preceding native four-age matrix passes all 32 workload windows, and seven paid-carrier scenarios cover fault progress. The current worker regression proves debt age survives an in-flight exchange without duplicate or idle work. | The current native cost comparison and full-history router acceptance are complete. Retain historical target evidence within its recorded graph. |
 | CPU, storage, wire and delivery costs | The preceding candidate's native matrix and earlier recorded-graph Wi-Fi CPU, local payment-service packet captures, ARM64 storage syscalls and controlled phone-rate costs are reconciled in [results](CADENCE-RESULTS.md); [measurements](MEASUREMENTS.md) defines attribution limits. | Complete for these recorded scopes. Requalify affected observations if runtime/SDK changes; retain excluded shared work, physical-media/airtime and battery limitations rather than claiming complete attribution. |
 | Every supported forwarding path | The [native path inventory](ACCOUNTING.md#native-path-inventory) maps individual/batched/deferred sends and source observations to shared admission/completion. r528 passes 438 recorded-graph contract/startup checks. The current session-recovery graph passes all seven paid carrier scenarios across UDP, TCP, Ethernet and WebSocket/TLS, with independent 2,688-sat conservation; r531/r532 cover unchanged native quote/admission contracts. | Recorded Linux carrier reconciliation is complete. Physical target acceptance remains below. Unsupported adapters cannot silently bypass validation or be advertised as qualified. |
 | Bounded free bootstrap, ordinary priced quotes and configured free destinations | [Bootstrap](BOOTSTRAP.md), [return allowance](RETURN-ALLOWANCE.md), [destination pricing](DESTINATION-PRICING.md), r528 quote/admission contracts and r531/r532 native free/funded cases. Unpaid transit and unauthorized spending remain rejected while bounded joining/payment progress succeeds. | Recorded native checks are complete. Preserve these boundaries in final target/device acceptance; local free-traffic scheduling does not reserve radio airtime. |
-| Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Qualify controlled open-radio departure/rejoin, root replacement and route recovery on the final graph, recording admission/resource bounds. Actual movement, seamless roaming, automatic channel selection and unrestricted-identity fairness are not established. |
-| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Complete current physical-radio route-recovery observations and final target reconciliation. No global-optimality claim. |
-| Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | The captured first-funding cut recovers with controller intervention in the [recorded checkpoints](#recorded-verification-checkpoints). Unattended recovery with the corrected runner and committed settlement/history handoff cuts remain unqualified. Additional manual cuts are cancelled; continue automated recovery checks without substituting them for physical evidence. Preserve originals and test-fund conservation. |
-| Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. Recorded source reconciliation matches all 34 catalog and 43 export review entries; the reachable service roles and exclusions are mapped below. | Complete current full-history pressure/progress and aggregate process-resource observation. Finite cycles do not establish an indefinite physical-storage plateau, hard RSS ceiling or generic whole-call deadline. |
-| Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | The final candidate passes Linux/OpenWrt builds, Android compile/package verification and the controlled Pixel regression with independent financial closure and owned-app removal. Finish router acceptance, final reconciliation and cleanup with preserved accounts. Natural Android deep idle remains an explicit limitation. |
+| Permissionless mobile admission and spending policy | Authenticated adjacency, open-radio joining, merge/split and crowded-neighbor simulations; physical root replacement, newcomer admission and controlled channel handover. | Current controlled open-radio departure/rejoin, root replacement and route recovery pass; sampled resource observations are recorded above. Actual movement, seamless roaming, automatic channel selection and unrestricted-identity fairness are not established. |
+| Useful routes selected by price and quality | [Price selection](PRICE-SELECTION.md): real quotes, native feedback, trial quotas, loss/delay/partition/rejoin tests and physical alternative-path selection. r521 qualifies 28 selector checks and eight native paid scenarios on the r519 dependency graph before the r523 runtime fix, including delayed funding/renewal and merge/split. | Current physical-radio route recovery passes. Final target reconciliation remains; no global-optimality claim. |
+| Financial crash and failure recovery | Real funding/settlement/refund interruptions, mint outages, full-filesystem recovery, guest kernel loss and physical process loss; [funding costs](FUNDING-COSTS.md). | Current unattended first-purchase and committed-settlement cuts pass with original-fund closure. Canonical real-wallet history-handoff integration remains in the final check set. Earlier kernel/full-filesystem evidence retains its recorded graph; additional manual cuts are cancelled. |
+| Bounded lifetime history and useful progress | [History](HISTORY.md), SDK wallet capacity/admission, exact retirement plans, three real wallet lifecycle cycles and physical full-wallet/retirement-contention runs. Recorded source reconciliation matches all 34 catalog and 43 export review entries; the reachable service roles and exclusions are mapped below. | Current full-history pressure/progress and sampled aggregate process-resource observations are accepted. Finite cycles do not establish an indefinite physical-storage plateau, hard RSS ceiling or generic whole-call deadline. |
+| Reproducible target operation | Relocatable offline source bundles, [OpenWrt packaging/recovery](openwrt/README.md), [service operation](SERVICE.md), [test funding/collection](TESTBENCH.md) and [Android lifecycle](../fips-relay-app/README.md). | The final candidate passes Linux/OpenWrt builds, Android compile/package verification and the controlled Pixel regression with independent financial closure and owned-app removal. Current router acceptance also passes. Finish final integration reconciliation and cleanup verification with preserved accounts. Natural Android deep idle remains an explicit limitation. |
 | Threat model and integration proposal | [Threat model below](#boundaries-and-threats), explicit mint trust and [local TollGate proposal](TOLLGATE.md). r618 checks the current interfaces against the proposal and its pinned upstream specifications, including price/quality trials and raw mint-bridge limits. | Recheck affected contracts if the final runtime changes. The deliverable is a proposal; actual TollGate interoperability needs its separate acceptance before it is claimed. |
-| Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. The checkout matches all 922 Rust source files in the wallet/phase qualified inventory; all 174 relay/Android source files and integration files meet their respective 600/1000-line limits. | Retain those limits; remove superseded code/tests without losing distinct failure coverage. Source agreement does not replace target acceptance. |
+| Maintainability and simulation reuse | Existing SimNetwork/chaos facilities, shared Cashu logic, source-size gate and focused production-path regressions. The final reconciliation matches all 631 production Rust/Java/manifest paths and all 200 current Python harness files. All 317 relay/Android source and integration files meet their respective 600/1000-line limits; the full 1,101-file gate passes. | Retain those limits; remove superseded code/tests without losing distinct failure coverage. Source agreement does not replace target acceptance. |
 
 ## Completion sequence
 
@@ -262,7 +279,7 @@ for manual testing or an unlimited sequence of longer runs.
    completes 5,480 genuine retained receipts and 31 settlements; independent
    closure conserves all 3,072 original test sats, verifies stopped owners and
    restores the three baselines. Its relay authorization bound is 2.153–2.187
-   seconds, so the original failed verdict remains and radio is not released.
+   seconds, so that original failed verdict remains unaccepted.
    Every relay inter-commit interval is at most 1.510 seconds; the failure is the
    terminal observation tail after the final commit. The harness waited for both
    channels to reconcile and then made another pair of status calls.
@@ -356,14 +373,14 @@ for manual testing or an unlimited sequence of longer runs.
    flash power-loss safety. Existing mint-over-FIPS lifecycle/recovery evidence in
    [TESTBENCH.md](TESTBENCH.md#mint-http-over-fips) is separate from the storage
    fixture's LAN mint and does not qualify Android mint-over-FIPS integration.
-   For the remaining unattended recovery boundary, reuse the existing
-   `sim.wifi_funding --initial` and `sim.wifi_settlement` scenarios after the
-   current device owner releases the routers. Their nine recovery/accounting
-   modules match the qualified frozen harness. These scenarios interrupt owned
-   processes at a committed mint reply, retain the original request/channel and
-   verify recovery without another purchase or settlement request. Each retains
-   its 384-test-sat cap and independent original-fund audit. Source agreement is
-   preparation evidence only; actual current-build device results remain required.
+   Both existing `sim.wifi_funding --initial` and `sim.wifi_settlement` scenarios
+   now pass on the current artifact in `work/current-payment-recovery-1`.
+   They interrupt owned processes at a committed mint reply, retain the original
+   request/channel and recover automatically without a replacement purchase or
+   settlement. Each independently closes its original two channels and 384 sats;
+   normal baselines, actual child waits, absent groups and archived originals
+   are verified. All 103 shared collection and eleven recovery checks pass on
+   Linux; the original missing-import-path failure remains recorded separately.
    No electrical cut or flash-write atomicity claim follows from these tests.
 5. **Complete the requirement-by-requirement reconciliation.** Check every row of
    the [acceptance checklist](#acceptance-checklist) against final sources,

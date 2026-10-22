@@ -443,6 +443,19 @@ ledger with no new issuance. The original failed audit remains recorded.
 This does not measure movement, fading, seamless roaming or automatic channel
 selection, and the bookkeeping recovery is not a mint-restart test.
 
+### Current payment recovery
+
+The current ARM artifact passes two independent 384-test-sat recovery cases.
+The first cuts all three relay processes after a committed initial channel
+opening, then restores the original request and quote without another buy.
+Both 1,280-packet streams arrive and all 267 management checks pass. The second
+cuts a committed settlement reply: the provider recovers while its buyer is
+offline, expires the reverse channel, and returns the original 28-sat refund to
+the late buyer. All 339 management checks pass. Independent audits reconcile
+both channels and all original money in each case; test processes are gone and
+normal router baselines restored. These results measure process recovery, not
+physical power-loss safety.
+
 ### Current controlled phone regression
 
 `work/wallet-phase-phone-controlled-1` verifies unpaid denial and four paid
