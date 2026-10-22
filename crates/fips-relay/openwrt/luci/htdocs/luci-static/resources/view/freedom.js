@@ -76,7 +76,7 @@ return view.extend({
 		});
 		this.fields.mode.dispatchEvent(new Event('change'));
 		if (!data.account_exists) settings.appendChild(E('button', {
-			'class': 'cbi-button cbi-button-save', 'disabled': this.readonly,
+			'class': 'cbi-button cbi-button-save', 'disabled': this.readonly || null,
 			'click': ui.createHandlerFn(this, 'saveSettings')
 		}, _('Save settings')));
 		var page = E('div', { 'class': 'freedom' }, [
@@ -128,7 +128,7 @@ return view.extend({
 		]) : E('p', {}, data.ready ? _('No peers connected yet.') : _('Peer information appears when the relay is running.')));
 		var self = this;
 		function button(label, name) {
-			return E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': self.readonly || self.busy,
+			return E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': self.readonly || self.busy || null,
 				'click': ui.createHandlerFn(self, 'serviceAction', name) }, label);
 		}
 		dom.content(this.buttons, data.account_exists ? [

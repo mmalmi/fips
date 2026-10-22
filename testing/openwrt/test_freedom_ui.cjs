@@ -23,8 +23,7 @@ fs.mkdirSync(output, { recursive: true });
           const el = document.createElement(tag);
           for (const [k, v] of Object.entries(attrs)) {
             if (k === 'click') el.addEventListener('click', v);
-            else if (k === 'disabled') el.disabled = !!v;
-            else el.setAttribute(k, v);
+            else if (v != null) el.setAttribute(k, v);
           }
           for (const child of Array.isArray(children) ? children : [children])
             if (child != null) el.append(child instanceof Node ? child : document.createTextNode(String(child)));
