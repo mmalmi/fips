@@ -70,6 +70,40 @@ class ReceiverTimingTests(unittest.TestCase):
         self.assertFalse(result['timing_resolution_sufficient'])
         self.assertEqual(result['timing_verdict'], ['unqualified'] * 5)
 
+    def test_delivery_finishes_at_last_expected_packet_while_payments_continue(self):
+        samples = [point(at, index) for index, at in enumerate(range(500_000, 3_000_001, 500_000), 1)]
+        for sample in samples:
+            sample['delivered'] = min(sample['delivered'], 2)
+        legacy = progress(point(0, 0), samples)
+        result = progress(point(0, 0), samples, expected_packets=2)
+        self.assertTrue(result['within_limit'])
+        self.assertFalse(legacy['within_limit'])
+        self.assertEqual(result['delivery_complete_us'], 1_000_000)
+        self.assertEqual(result['observed_counter_reads'][0], 2)
+        self.assertEqual(result['observation_us'], legacy['observation_us'])
+        self.assertEqual(result['max_observed_gap_us'][1:], legacy['max_observed_gap_us'][1:])
+
+    def test_delivery_completion_preserves_initial_final_and_payment_stall_checks(self):
+        cases = [
+            ('initial', [point(2_100_000, 0), point(2_200_000, 1), point(2_300_000, 2)], 0),
+            ('final', [point(500_000, 1), point(2_600_000, 1), point(2_800_000, 2)], 0),
+            ('payment', [point(500_000, 1), point(1_000_000, 2), point(3_100_000, 2)], 1),
+        ]
+        for name, samples, index in cases:
+            with self.subTest(name=name):
+                result = progress(point(0, 0), samples, expected_packets=2)
+                self.assertFalse(result['within_limit'])
+                self.assertEqual(result['timing_verdict'][index], 'failed')
+
+    def test_delivery_completion_requires_the_exact_fresh_stream(self):
+        for values in ((1, 1), (1, 3), (1, 2, 1)):
+            with self.subTest(values=values):
+                samples = [point(index * 500_000, value) for index, value in enumerate(values, 1)]
+                with self.assertRaises(RuntimeError):
+                    progress(point(0, 0), samples, expected_packets=2)
+        with self.assertRaises(RuntimeError):
+            progress(point(0, 1), [point(500_000, 2), point(1_000_000, 2)], expected_packets=2)
+
     def test_only_checked_pending_custody_brackets_prove_overlap(self):
         samples = [point(500_000, 1), point(1_000_000, 2), point(1_500_000, 3)]
         custody = [dict(started_us=0, elapsed_us=100_000, cleanup_pending=True),

@@ -41,7 +41,7 @@ def values(sample, payment_field='authorized_sat'):
     return [sample['delivered'], *[p[payment_field] for p in sample['payments']], *sample['credits']]
 
 
-def progress(baseline, samples, custody_samples=(), *, payment_field='authorized_sat'):
+def progress(baseline, samples, custody_samples=(), *, payment_field='authorized_sat', expected_packets=None):
     require(len(samples) >= 2, 'whole-window progress requires multiple observations')
     first, previous = values(baseline, payment_field), values(baseline, payment_field)
     previous_time = baseline['elapsed_us']
@@ -50,6 +50,10 @@ def progress(baseline, samples, custody_samples=(), *, payment_field='authorized
                   limit_us=2_000_000, all_counters_advanced=False, within_limit=False,
                   progress_between_unfinished_cleanup_samples=False,
                   timing_resolution_sufficient=False, timing_verdict=['unqualified'] * 5)
+    if expected_packets is not None:
+        require(type(expected_packets) is int and expected_packets > 0 and first[0] == 0,
+                'delivery timing requires a fresh bounded stream')
+        result.update(delivery_expected_packets=expected_packets, delivery_complete_us=None)
     if any('counter_reads' not in sample for sample in [baseline, *samples]):
         return dict(result, timing_refusal='per-counter read intervals missing')
     previous_reads = baseline['counter_reads']
@@ -59,6 +63,8 @@ def progress(baseline, samples, custody_samples=(), *, payment_field='authorized
     for sample in samples:
         now, current = sample['elapsed_us'], values(sample, payment_field)
         require(now > previous_time, 'progress observation time did not advance')
+        require(expected_packets is None or current[0] <= expected_packets,
+                'delivery count exceeds the original stream')
         require(len(sample['counter_reads']) == len(previous_reads) == 5, 'progress timing count changed')
         for index, value in enumerate(current):
             require(value >= previous[index], 'paid progress counter reset')
@@ -68,6 +74,11 @@ def progress(baseline, samples, custody_samples=(), *, payment_field='authorized
                 continue
             start, end = reading['started_us'], reading['finished_us']
             require(prior['finished_us'] <= start <= end <= now, 'progress read intervals overlap or run backwards')
+            # Once every expected packet arrived, waiting for payment receipts
+            # is no longer a delivery gap. Still validate all subsequent reads
+            # and retain the full payment and provider-credit observation.
+            if index == 0 and expected_packets is not None and previous[0] == expected_packets:
+                continue
             observed[index] += 1
             durations[index] = max(durations[index], end - start)
             read_gaps[index] = max(read_gaps[index], end - prior['started_us'])
@@ -76,9 +87,14 @@ def progress(baseline, samples, custody_samples=(), *, payment_field='authorized
             gaps[index] = max(gaps[index], end - lower[index])
             if value > previous[index]:
                 lower[index], upper[index] = prior['started_us'], end
+                if index == 0 and value == expected_packets:
+                    result['delivery_complete_us'] = end
             else:
                 minimum[index] = max(minimum[index], start - upper[index])
         previous, previous_time, previous_reads = current, now, sample['counter_reads']
+    if expected_packets is not None:
+        require(previous[0] == expected_packets and result['delivery_complete_us'] is not None,
+                'delivery timing requires every original packet')
     verdict = ['failed' if least > 2_000_000 else 'passed' if count >= 2 and gap <= 2_000_000 else 'unqualified'
                for gap, least, count in zip(gaps, minimum, observed)]
     pending = [sample for sample in custody_samples if sample.get('complete', True) and sample['cleanup_pending']]
@@ -220,9 +236,11 @@ def measure(run, held, held_credits):
                     run.save()
     submitted(row['sender'], shape)
     row['receiver'] = probes.receive(run, 'source', 'destination', shape, complete=True)
-    row['polled_progress'] = progress(baseline, row['samples'], row['custody_samples'])
+    row['polled_progress'] = progress(baseline, row['samples'], row['custody_samples'],
+                                      expected_packets=shape['packet_count'])
     row['progress'] = authorization_trace.qualify(row['polled_progress'], row)
-    row['signed_progress'] = progress(baseline, row['samples'], row['custody_samples'], payment_field='signed_sat')
+    row['signed_progress'] = progress(baseline, row['samples'], row['custody_samples'],
+                                      payment_field='signed_sat', expected_packets=shape['packet_count'])
     # Even if the last packet and cleanup appear in one polling sample, only
     # claim coverage when cleanup preceded the earliest possible final send.
     earliest_final = row['stream_started_us'] + int((shape['packet_count'] - 1) / 3 * 1_000_000)

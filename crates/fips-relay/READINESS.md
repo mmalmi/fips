@@ -40,11 +40,28 @@ unqualified for these new artifacts.
 ### Current router run
 
 FULL10 is financially closed but fails the two-second relay authorization bound
-in its terminal observation tail. The corrected Python observer is qualified on
-macOS and Linux; the runtime and financial limits are unchanged. FULL11, using
-`work/full-history-autonomous-v19`, has passed unfunded Linux staging and verification
-and is running under its single durable owner. It must still earn hardware acceptance and
-independent financial closure before the controlled radio case can run.
+in its terminal observation tail. FULL11, using `work/full-history-autonomous-v19`,
+completes 5,480 genuine receipts, all 31 settlements and collection of all 3,072
+original test sats. Its original failed verdict is preserved; the independent
+financial closer and resource observer have not yet released the devices.
+
+FULL11 delivers all 84 packets without loss, duplication or invalid packets.
+Its delivery bound is 0.889467 seconds while delivery remains incomplete. The
+recorded 2.065211-second bound counts waiting after the last packet for payment
+reconciliation. `work/delivery-window-boundary-1` corrects only that boundary:
+delivery timing ends at the first read proving every original packet arrived;
+all payment and provider-credit observations continue. Initial and final packet
+stalls still fail. All 53 focused checks pass on both macOS and Linux.
+
+A separate reassessment reproduces the original failure from the retained reads,
+independently checks the corrected delivery bound and passes the existing window
+checks. Authorization, signature and provider-credit bounds are unchanged and
+pass two seconds. Cleanup takes 24.611484 seconds, before traffic ends at
+28.329593 seconds; fresh terminal custody finishes within 35 seconds. This is
+window evidence, not acceptance of the complete run. Before radio testing, bind
+any corrected assessment to the final immutable run, independent original-fund
+closure, restored baselines, stopped owners and useful resource observations.
+Neither the original result nor the frozen active run is modified.
 
 The fresh `work/terminal-current-capacity-1` check stages the actual ARM executable
 on every router and passes all existing flash/RAM floors. Independent readback
@@ -230,6 +247,12 @@ for manual testing or an unlimited sequence of longer runs.
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
    within its actual scope.
 
+   FULL11's separate delivery-boundary correction and retained-window
+   reassessment are described above. Reuse those measurements only after the
+   final audit binds their exact bytes and verifies every other acceptance
+   condition. Preserve both the failed producer verdict and the explicit
+   corrected assessment; do not substitute financial closure for acceptance.
+
    Preserve verified archives before removing only proven-inactive expanded
    duplicates. Select targets from current custody; never replay an old cleanup
    list. Full history requires synced flash floors of 8/24/8 MiB and strictly
@@ -363,6 +386,11 @@ is an explicit missing observation, while JSON/schema/count/identity failures ar
 fatal. Missing custody cannot prove cleanup overlap or completion. Ambiguous
 counter intervals crossing two seconds remain unqualified, and fresh complete
 custody is mandatory after all terminal payment observations within 35 seconds.
+Delivery timing includes the first and final expected arrivals and ends when a
+fresh read proves the complete original stream arrived. Waiting afterward for
+payment reconciliation does not create a delivery gap. Payment and provider
+credit timing continue through their unchanged terminal observations; stream
+completeness, counter integrity and cleanup coverage remain mandatory.
 The four persistent numerical-reader sessions must close normally with exact
 group absence. Their accepted synthetic smoke observes 3.1–6.3 ms steady reads;
 it does not establish the paid window's timing.
