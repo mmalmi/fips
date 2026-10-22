@@ -20,10 +20,11 @@ workload with a corrected observer. Controlled radio recovery and unattended
 first-purchase and settlement recovery also pass. Final canonical integration
 checks now pass: eight CLI/custody cases and four selected real-wallet cases.
 Independent source, executable and cleanup checks pass. One earlier intermittent
-automatic-payment acknowledgement timeout remains unexplained; the successful
-diagnostic used continuous debug logging. A bounded current-artifact diagnosis
-keeps ordinary logging and records payment state only on failure. It does not
-change any timeout or repeat device work.
+automatic-payment acknowledgement timeout remains unexplained. A follow-up with
+the current artifact, ordinary logging and failure-only snapshots passes in
+838.12 seconds; independent audit conserves its 3,072 original test sats. Neither
+this run nor the preceding debug-logged pass explains the original timeout.
+No timeout or runtime code was changed, and no device work was repeated.
 
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
@@ -400,11 +401,17 @@ for manual testing or an unlimited sequence of longer runs.
    target/device acceptance, cleanup and the operational/threat/proposal documents.
    The original native timeout lacks a payment-phase snapshot. Its retained buyer
    and provider both record 31 sats, which does not prove when acknowledgement
-   arrived or explain the delay. `work/current-native-payment-recovery-1` keeps
-   ordinary logging and the current failure-only snapshot, with the same deadlines,
-   in one bounded Linux-only diagnosis. Do not infer a fix from unrelated passing
-   tests, relax the deadline, or request manual device work. Preserve the original
-   failed verdict and reconciled funds. Final sign-off remains withheld.
+   arrived or explain the delay. `work/current-native-payment-recovery-1` passes
+   the same scenario with ordinary logging, current failure-only snapshots and
+   unchanged deadlines. Its independent audit checks all 1,317 wallet proof rows,
+   conserves 3,072 original sats, finds no incomplete wallet operations, and
+   preserves 120 original files with all owners stopped. The first audit stops
+   on a file-inventory change after SQLite reads; its successor archives originals
+   first and audits a separate copy. Both audit records are retained.
+   The intermittent failure is not yet explained. Inspect the existing control
+   request/rekey recovery coverage and reproduce a concrete missing case before
+   changing code or repeating this long scenario. Do not infer a fix from a pass,
+   relax the deadline, or request manual device work. Final sign-off remains withheld.
 6. **Clean only completed owned fixtures.** Verify inactivity and recovery before
    removing test installations. Use managed archival only for finished,
    integrated, inactive task-owned worktrees; preserve active/shared work,
