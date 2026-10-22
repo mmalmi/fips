@@ -29,7 +29,8 @@ unqualified for these new artifacts.
 | `work/wallet-runtime-qualification-1`, `work/wallet-phase-installed-check-2`, `work/wallet-phase-current-capacity-1` | The actual wallet/phase graph passes its explicit qualification and eleven rejection checks. The unfunded installed reader records 4,707 samples, passes its overhead limit and independently restores all baselines. The actual 26,699,912-byte ARM copy fits on all three routers with unchanged full-history floors; copies and exact owners are independently absent afterward. | The first capacity preflight stops before activation. Preserving every byte and metadata of one inactive closed snapshot in verified archives recovers 9,113,600 RAM bytes. These checks authorize investigation; they supply no paid forwarding or radio acceptance. |
 | `work/payment-cohort-native-cadence-matrix-1` | Eight trials and 32 windows pass; all 285,696 packets arrive, 48 channels close and 40,960 original test sats reconcile across 96 SQLite sets and 872 archived members. | See [performance scopes](#performance-acceptance); no general optimum or total-overhead claim. |
 | `work/payment-cohort-android-build-1` | Current source/dependencies, compiler input, normal features, native/package/signature identity and actual stopped build owners are verified. The unchanged 21 app files retain ten lifecycle tests. | The controlled Pixel case below supplies physical evidence for this package; production-wallet/VPN behavior remains outside scope. |
-| `work/wallet-phase-android-macos-1/verified-artifacts` | The wallet/phase Android engine compiles locally with actual compiler records confirming measurement features and no simulation. Package assembly, strict lint, signature, SDK/ABI and exact stripped-library checks pass. Source inputs remain unchanged; the unchanged Java shell retains its recorded lifecycle evidence. | The initial compiler-launcher failure and both packaging-verifier failures remain preserved. The final audit uses the actual compiler records and minimum-SDK field. This is software qualification; the new package's controlled phone acceptance remains pending. |
+| `work/wallet-phase-android-macos-1/verified-artifacts` | The wallet/phase Android engine compiles locally with actual compiler records confirming measurement features and no simulation. Package assembly, strict lint, signature, SDK/ABI and exact stripped-library checks pass. Source inputs remain unchanged; the unchanged Java shell retains its recorded lifecycle evidence. | The initial compiler-launcher failure and both packaging-verifier failures remain preserved. Controlled phone acceptance is recorded below; natural off-charge idle remains untested. |
+| `work/wallet-phase-phone-controlled-1`, `work/wallet-phase-phone-cleanup-resumption-1` | The current ARM/APK passes unpaid denial and 4 MiB of paid forwarding in foreground, background, forced idle and after idle. Forced idle lasts 48.07 seconds; all 594 management checks pass. All four channels and 512 original test sats independently reconcile. Baselines, Wi-Fi and original accounts are preserved, the owned app is removed and the final evidence is mirrored. | The phone stays plugged in. The first owner stops at unfunded capacity preflight. The second passes the workload and audit but its uninstall guard refers to the preceding case's mirror; a bounded cleanup resumption corrects only that path and completes normally. Both failures remain preserved. |
 | `work/payment-cohort-source-reconciliation-1` | The 1,753-file qualified inventory and 1,754 canonical paths have 1,731 identical entries, including 641 production code/manifest files. All differences are classified. | Differences include six Rust fixtures and six phone-tooling files, documentation, the protected user lock, relocated build configuration and three script execute bits. No physical acceptance follows from source identity. |
 | `work/payment-cohort-phone-harness-check-1` | 32 focused Linux checks pass with zero skips; original owners/groups are gone. | Local fixtures and mocks operate no devices or funds. |
 | `work/payment-cohort-phone-controlled-4`, `work/payment-cohort-phone-controlled-4-close-resumption-1` | The preceding cohort's ARM/Android artifacts pass unpaid denial and 4 MiB of foreground/background/forced-idle routing, including 48.30 seconds of forced idle. The original four channels and all 512 test sats independently reconcile; accounts/Wi-Fi/baselines are restored and the owned app is removed. The unchanged 223 harness files reuse 176 Linux checks. | The first install used a stale expected package name; the corrected case adopts the same owned, pristine APK before any funding. The original closer fails its separate 8 MiB space check; read-only archival and the original financial authority then complete under a new owner. Both failures remain preserved. The newer synchronized diagnostic-artifact capacity check passes. |
@@ -38,7 +39,21 @@ unqualified for these new artifacts.
 
 ### Current router run
 
-The last genuine-history router attempt fails the unchanged two-second
+FULL10 is financially closed but fails the two-second relay authorization bound
+in its terminal observation tail. The corrected Python observer is qualified on
+macOS and Linux; the runtime and financial limits are unchanged. FULL11, using
+`work/full-history-autonomous-v19`, has passed unfunded Linux staging and verification
+and is running under its single durable owner. It must still earn hardware acceptance and
+independent financial closure before the controlled radio case can run.
+
+The fresh `work/terminal-current-capacity-1` check stages the actual ARM executable
+on every router and passes all existing flash/RAM floors. Independent readback
+verifies normal baselines, stopped owners and removal of only those inert copies.
+The current phone case is independently closed and its test app removed.
+
+### Earlier router evidence
+
+FULL7 fails the unchanged two-second
 progress requirement. All 84 packets arrive; cleanup takes 24.639534 seconds,
 within 35 seconds and before traffic ends at 28.278187 seconds. Relay authorization
 has a confirmed minimum gap of 2.208247159 seconds and maximum 2.245729648 seconds;
@@ -109,8 +124,8 @@ observation and the current staged-capacity check pass. Before any further clean
 recheck exact custody, actual owners/open references and normal baselines; never
 replay an old removal list or use an idle timestamp as authority.
 
-Radio preparation in `work/current-radio-autonomous-v12` and its reviewed
-`work/current-radio-sequence-owner-v4` verify the current runtime/resource-harness
+Radio preparation in `work/current-radio-autonomous-v13` and its reviewed
+`work/current-radio-sequence-owner-v5` verify the current runtime/resource-harness
 bindings and retain the original collector failures. Read-only checks reject the
 active collector, incomplete full result and known failed predecessor before
 allocation. Execution still requires the actual full pass, original financial
@@ -204,8 +219,10 @@ for manual testing or an unlimited sequence of longer runs.
    state and process identity remain unchanged. It still measures both trace
    boundaries, rejects real two-second stalls, and checks final acknowledgment,
    provider credits and complete durable commit coverage. All 50 focused checks
-   pass. This Python-only change needs a fresh genuine hardware acceptance run;
-   it does not change the runtime or requalify FULL10. Require a meaningful qualified runtime or diagnostic change
+   pass on both macOS and Linux. Two independent-oracle checks and six resource
+   observer checks also pass. This Python-only change needs a fresh genuine
+   hardware acceptance run; it does not change the runtime or requalify FULL10.
+   Require a meaningful qualified runtime or diagnostic change
    before a new paid attempt; a logging change supplies no presumption of a timing
    fix. Do not relabel historical hardware evidence or silently remove an
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
@@ -249,9 +266,10 @@ for manual testing or an unlimited sequence of longer runs.
    settlements, conservation of the 3,072 original sats, stopped original
    producer/supervisor/root children, restored baselines and complete archives.
    A failed window may release devices after financial closure; it cannot release
-   radio or qualify forwarding. Both failed runs remain closed in
+   radio or qualify forwarding. Failed runs remain closed in
    `work/current-device-sequences/full-history-4-final` and
-   `work/current-device-sequences/full-history-7-final-recovery-4`.
+   `work/current-device-sequences/full-history-7-final-recovery-4`, with FULL10 in
+   `work/current-device-sequences/full-history-10-final`.
 3. **Complete controlled radio recovery after that full pass and closure.** Wait
    for any queued phone test to independently release the devices, then bind
    the current-runtime preparation in `work/current-radio-autonomous-v13`, using
@@ -270,18 +288,13 @@ for manual testing or an unlimited sequence of longer runs.
    root replacement and route recovery. Preserve the distinction from physical
    movement, fading, seamless roaming and automatic channel selection.
 4. **Reconcile affected targets and recovery.** The current wallet/phase Android
-   graph compiles and packages successfully; its controlled phone regression is
-   pending. `work/wallet-phase-phone-controlled-1` binds the current ARM/APK and
-   preserves the controlled USB workload. The detached follow-up in
-   `work/wallet-phase-phone-followup-durable-owner-1` verified actual FULL10
-   financial closure and stopped owners, then failed fresh flash capacity before
-   installation, phone actions or funding. Preserve that unfunded failure and
-   prepare a fresh owner after verified space recovery. The owner checks space
-   including the ARM copy and attempts the original independent closer even
-   after a failed launch reply. Source checks cover the artifact/workload binding, release
-   verifier and follow-up owner; none establishes phone acceptance. The preceding
-   cohort graph's controlled USB regression retains its independent financial
-   closure and owned-app removal. Retain its
+   graph passes its controlled USB regression: unpaid denial, 4 MiB of paid
+   forwarding and 48.07 seconds of forced idle. Independent closure recovers all
+   512 original test sats; the bounded cleanup resumption removes only the owned
+   app after correcting an obsolete archive path. Actual waits, stopped owners,
+   mirrored evidence and preserved original accounts are verified. Keep the
+   initial unfunded capacity failure and failed uninstall guard as recorded.
+   The preceding cohort graph retains its separate acceptance and
    recorded space failure: archive observations are 5,288/14,432/5,580 KiB on the
    three routers, below the archiver's 8 MiB floor on two. No databases or financial
    histories were deleted to clear it. New paid router work still needs fresh
@@ -420,7 +433,7 @@ the failed router verdict and its independently closed original funds. The same
 uses the qualified APK's actual package and adopts its owned pristine install
 after a pre-funding setup failure; it does not reinstall or reset an account.
 
-`work/wallet-phase-phone-controlled-1` prepares the same workload for the newer
+`work/wallet-phase-phone-controlled-1` passes the same workload for the current
 wallet/phase ARM executable and verified APK. Eight source checks verify artifact
 custody, reuse of all 176 harness checks, unchanged financial closure, fresh
 absent-package installation and refusal while the full-history run remains active.
@@ -429,18 +442,25 @@ the actual FULL10 closure, waits, archives and current artifact; eight checks
 include preserving the separate failed hardware verdict and refusing live owners.
 The original unfunded source revision is preserved byte for byte and mirrored.
 
-The detached follow-up uses `work/wallet-phase-phone-wait-owner-1`; seven source
+The detached follow-up uses `work/wallet-phase-phone-wait-owner-2`; seven source
 checks cover waiting, conservative space floors including the new ARM copy and
 always attempting the original independent closer after launch. Its first owner
 verified financial release but failed flash preflight before any installation or
-funding. A fresh owner requires verified capacity recovery. Live preflight also
-verifies restored baselines, absence of active profiles and USB readiness.
-This is an automated pending test, with its original
-512-test-sat cap and four channels; acceptance still requires its real result,
-independent financial audit, restoration and owned-app removal.
+funding. After verified capacity recovery, the second owner passes unpaid denial
+and four paid 1 MiB windows: foreground, background, forced idle and after idle.
+Forced idle lasts 48.07 seconds with the same phone process. All 594 management
+checks pass. Independent accounting reconciles the four original channels and
+all 512 test sats, with no unaccounted value or pending mint operations.
 
-The original closer passes functional postflight but fails a separate free-space
-assertion. Its failure and partial archives are preserved. Read-only resumption
+The original uninstall guard points to the preceding case's archive and stops
+before removing anything. `work/wallet-phase-phone-cleanup-resumption-1` resolves
+the current case's existing archive path while retaining every financial, app,
+account and Wi-Fi check. It removes only the owned app, mirrors 465 evidence files
+and exits normally with all owners absent. The original failure remains recorded.
+
+For the preceding cohort case, the original closer passes functional postflight
+but fails a separate free-space assertion. Its failure and partial archives are
+preserved. Read-only resumption
 records the failed space floors, uses the unchanged financial authority to verify
 all four channels and 512 original sats, mirrors the evidence and removes only
 the owned temporary app. All resumption children exit normally; original accounts,

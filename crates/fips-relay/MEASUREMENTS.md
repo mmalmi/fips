@@ -410,3 +410,20 @@ earlier boundary; a changed process epoch is rejected. Initial and terminal
 quiescent gaps, the two-second limit, complete event coverage and independent
 credit/delivery checks remain required. Software checks establish these observer
 rules; a fresh genuine hardware run must establish acceptance.
+
+### Current controlled phone regression
+
+`work/wallet-phase-phone-controlled-1` verifies unpaid denial and four paid
+1 MiB bidirectional windows on the current wallet/phase ARM and Android artifacts:
+foreground, background, forced idle and after idle. Forced idle lasts 48.07 seconds
+with the same phone process; all 594 management checks pass. Independent accounting
+reconciles the original four channels and 512 test sats. The owned app is removed
+after correcting the cleanup script's obsolete archive path; original accounts,
+Wi-Fi and router baselines are preserved.
+
+The foreground, background and after-idle windows consume 13.69, 14.45 and 14.56
+phone process CPU seconds respectively per delivered MiB, measured across each
+30-second window. These include forwarding and measurement work outside the
+transfer itself; they do not isolate payment cost or establish peak throughput.
+The phone stays plugged
+in, so the result does not measure battery consumption or natural off-charge idle.
