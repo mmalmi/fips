@@ -429,6 +429,20 @@ sum to 3,767.08 seconds across the full preparation and workload. Missing proces
 endpoints and possible missed short epochs prevent a complete CPU total; these
 are sampled bounds with no payment-specific CPU attribution or hard memory claim.
 
+### Current controlled radio recovery
+
+The current wallet/phase ARM artifact passes stationary open-radio departure,
+root replacement and rejoin. The independent acceptance checks 32 healthy
+one-way packets and eight complete round trips after recovery; the interrupted
+window delivers two round trips before isolation. Original processes and the two
+32-sat channels remain unchanged, and automatic payment resumes after rejoin.
+All 384 original test sats independently reconcile. The shared collector now
+finishes redeemed exports before shutting down the mint; the original run's
+unfinished export receipts are separately reconciled against the preserved mint
+ledger with no new issuance. The original failed audit remains recorded.
+This does not measure movement, fading, seamless roaming or automatic channel
+selection, and the bookkeeping recovery is not a mint-restart test.
+
 ### Current controlled phone regression
 
 `work/wallet-phase-phone-controlled-1` verifies unpaid denial and four paid

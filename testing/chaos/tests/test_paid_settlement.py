@@ -53,6 +53,8 @@ class FakeRun:
         self.collected = 0
         self.calls = []
         self.exports = {}
+        self.reconciled = set()
+        self.acknowledged = {}
         self.transform = lambda _action, value: value
 
     def ctl(self, node, kind):
@@ -94,6 +96,19 @@ class FakeRun:
             return self.transform("export", {
                 "path": f"/tmp/bench-state/exports/{request['id']}.json",
                 "amount_sat": amount, "operation_id": operation})
+        if kind == "recover":
+            self.reconciled.add(node)
+            return self.transform("recover", {
+                "recovery_pass_complete": True, "minted_amount": 0,
+                "finalized_melts": 0, "compensated_sagas": 0,
+                "pending_sagas": 0, "failed_sagas": 0, "warning_count": 0})
+        if kind == "acknowledge_exports":
+            assert node in self.reconciled
+            self.acknowledged[node] = request["through"]
+            total = sum(p.get("amount_sat", 0) for (owner, _), p in self.exports.items() if owner == node)
+            return self.transform("acknowledge_exports", {
+                "through": request["through"], "requested_sat": total,
+                "cost": {"wallet_debit_sat": total, "swap_fee_sat": 0}})
         assert kind == "collect" and node == "mint"
         payment = next(p for p in self.exports.values() if p["token"] == request["token"])
         self.collected += payment["amount_sat"]
@@ -166,10 +181,30 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(run.balances, dict.fromkeys(NODES, 0))
         for node in NODES:
             self.assertEqual(run.calls.count((node, "export")), 1)
+            self.assertEqual(run.calls.count((node, "recover")), 1)
+            self.assertEqual(run.acknowledged[node], 1)
+            self.assertLess(run.calls.index((node, "recover")), run.calls.index((node, "acknowledge_exports")))
         self.assertEqual(run.calls.count(("mint", "collect")), 3)
         self.assertEqual(run.evidence["mint"]["collected_sat"], 384)
         self.assertNotIn("private-token", json.dumps(run.evidence))
         self.assertNotIn('"token"', json.dumps(run.evidence))
+
+    def test_incomplete_reconciliation_preserves_exports_and_never_reports_closure(self):
+        for field, value in (("recovery_pass_complete", False), ("minted_amount", 1),
+                             ("finalized_melts", 1), ("compensated_sagas", 1),
+                             ("pending_sagas", 1), ("failed_sagas", 1), ("warning_count", 1)):
+            with self.subTest(field=field):
+                run = FakeRun()
+                def transform(action, result):
+                    if action == "recover":
+                        result[field] = value
+                    return result
+                run.transform = transform
+                with self.assertRaises(RuntimeError):
+                    self.run_closure(run)
+                self.assertEqual(run.calls.count(("mint", "collect")), 1)
+                self.assertFalse(run.acknowledged)
+                self.assertNotIn("mint", run.evidence)
 
     def test_changed_original_account_or_funding_terms_fail_before_any_action(self):
         changes = (

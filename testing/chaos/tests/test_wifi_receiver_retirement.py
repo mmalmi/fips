@@ -349,7 +349,16 @@ class StoppedCustodyTests(unittest.TestCase):
         run.evidence = {'receiver_history': {}, 'phases': []}
 
         def collected(*_args, **_kwargs):
-            run.evidence['phases'].append({'settlement_collection': {'collected_by_node': amounts}})
+            recovery = {}
+            for name, amount in amounts.items():
+                if amount:
+                    through = starts[name] - 1 + (amount + 31) // 32
+                    current_starts[name] = through + 1
+                    total = starts[name] - 1 + amount
+                    recovery[name] = {'acknowledged': {'through': through, 'requested_sat': total,
+                        'cost': {'wallet_debit_sat': total, 'swap_fee_sat': 0}}}
+            run.evidence['phases'].append({'settlement_collection': {
+                'collected_by_node': amounts, 'collection_recovery': recovery}})
 
         with patch('sim.wifi_receiver_retirement.collect_settled_wallets', side_effect=collected), \
                 patch.object(custody, 'export_start', side_effect=current_starts.__getitem__), \
@@ -357,9 +366,9 @@ class StoppedCustodyTests(unittest.TestCase):
             run.collect_stopped({})
         for name in ('n01', 'n02'):
             sequence = [(kind, fields) for node, kind, fields in calls if node == name]
-            self.assertEqual([kind for kind, _ in sequence], ['acknowledge_exports', 'recover', 'acknowledge_exports'])
-            self.assertEqual(sequence[1][1], {'action': 'wallet', 'operation_timeout': 330})
-            self.assertEqual(sequence[-1][1]['through'], starts[name] - 1 + (amounts[name] + 31) // 32)
+            self.assertEqual([kind for kind, _ in sequence], ['acknowledge_exports'])
+            self.assertEqual(sequence[0][1]['through'], starts[name] - 1)
+            self.assertIn(name, run.evidence['receiver_history']['collection_recovery'])
         self.assertEqual(audit.call_args.args[2], 0)
         self.assertEqual(unchanged.call_count, 2)
         self.assertTrue(run.evidence['receiver_history']['retained_fingerprints_after_collection'])

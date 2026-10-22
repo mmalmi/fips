@@ -257,23 +257,15 @@ exit 1
             export_path=lambda name, relative: self.participants()[name].state + '/' + relative,
             fixture=fixture, max_export_sat=32, export_start=starts.__getitem__)
         amounts = self.evidence['phases'][-1]['settlement_collection']['collected_by_node']
-        recovery = self.evidence['receiver_history']['collection_recovery'] = {}
+        recovery = self.evidence['receiver_history']['collection_recovery'] = (
+            self.evidence['phases'][-1]['settlement_collection']['collection_recovery'])
         for name, amount in amounts.items():
             if not amount:
                 continue
-            profile = self.participants()[name]
-            # Collection consumed these originals in another wallet. Reconcile
-            # their native sends before acknowledging the exact export prefix.
-            report = profile.control('recover', action='wallet', operation_timeout=330)
-            require(report['recovery_pass_complete'] and report['minted_amount'] == 0
-                    and report['finalized_melts'] == 0, 'final export recovery is incomplete')
-            through = starts[name] - 1 + (amount + 31) // 32
-            acknowledged = profile.control('acknowledge_exports', action='wallet',
-                                           through=through, operation_timeout=330)
+            acknowledged = recovery[name]['acknowledged']
             require(acknowledged['requested_sat'] == acknowledged['cost']['wallet_debit_sat']
                     == prior_exports[name] + amount and acknowledged['cost']['swap_fee_sat'] == 0,
                     'final collection changed gross original export costs')
-            recovery[name] = dict(report=report, acknowledged=acknowledged)
         final_archives = {name: self.snapshot(name, 'collected-original-custody') for name in INITIAL}
         self.evidence['receiver_history']['collected_audit'] = custody.audit(final_archives, self.mint_url, 0)
         for name, archive in final_archives.items():

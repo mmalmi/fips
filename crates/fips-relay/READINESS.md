@@ -15,8 +15,9 @@ unless a demonstrated failure or unmet requirement needs a change.
 The local successor also reuses one capacity-checked wallet per offline command.
 Its ordinary native/static ARM builds and custody checks pass with the same
 dependencies. [Preparation measurements](MEASUREMENTS.md#offline-wallet-preparation)
-cover small native samples. The FULL11 corrected-observer acceptance below now
-qualifies the current full-history router workload; radio recovery remains pending.
+cover small native samples. FULL11 qualifies the current full-history router
+workload with a corrected observer. Controlled radio recovery also passes;
+the two unattended payment-interruption cases remain pending.
 
 | Evidence | Verified result | Boundary |
 | --- | --- | --- |
@@ -69,7 +70,23 @@ the original failed verdict nor its frozen inputs are modified.
 and the original financial closure. Nine focused release checks pass, including
 rejection of changed measurements, additional failures, relabelled producer
 verdicts and incomplete reader closure. The runtime, prices and workload limits
-are unchanged; controlled radio acceptance remains pending.
+are unchanged. Its controlled departure/rejoin, root replacement and route
+recovery run passes. `work/current-radio-closure-recovery-1` independently
+conserves all 384 original test sats and verifies restored baselines.
+
+The original closer correctly stops on unfinished export receipts: collection
+redeemed the tokens but the harness stopped the mint before the sending wallets
+reconciled them. Three ordinary wallet recovery commands finish those sends
+using only proof states from the archived original mint ledger, then acknowledge
+the exact export prefixes. All three recoveries have no pending operations or
+warnings; the mint files remain unchanged and no new issuance or purchase occurs.
+Completed original funding records remain identical. Temporary executables and
+the read-only proof-state endpoint are removed. This is administrative
+reconciliation, not a mint-restart test. The original failed audit is preserved.
+The shared collector now performs this recovery and acknowledgement while the
+original mint is live, replacing the duplicate full-history-specific tail.
+Focused collection checks pass: 102 on macOS with one Linux-only check skipped,
+and all 103 on Linux (`work/current-recovery-harness-1`).
 
 The fresh `work/terminal-current-capacity-1` check stages the actual ARM executable
 on every router and passes all existing flash/RAM floors. Independent readback
@@ -82,8 +99,8 @@ metadata in three off-device archives, recovering 12,627,968 flash bytes and
 6,971,392 RAM bytes from that router. The initial cleanup stops before mutation
 because the ordinary test cleanup already removed its ELF; a bounded resumption
 preserves and removes the closed log and expanded profile instead. Both failed
-attempts remain recorded. `work/terminal-current-capacity-3` rechecks the same
-floors with the actual ARM copies before any radio launch.
+attempts remain recorded. `work/terminal-current-capacity-3` passes the same
+floors with the actual ARM copies before the radio launch; all copies are removed.
 
 ### Earlier router evidence
 
@@ -313,25 +330,13 @@ for manual testing or an unlimited sequence of longer runs.
    `work/current-device-sequences/full-history-4-final` and
    `work/current-device-sequences/full-history-7-final-recovery-4`, with FULL10 in
    `work/current-device-sequences/full-history-10-final`.
-3. **Complete controlled radio recovery after that full pass and closure.** Wait
-   for any queued phone test to independently release the devices, then bind
-   the current-runtime preparation in `work/current-radio-autonomous-v15`, using
-   `work/current-radio-sequence-owner-v7`, to the exact FULL11 corrected assessment
-   and original closure. The current wallet/phase graph, resource provenance,
-   archives and absent owners retain their existing checks. Nine additional
-   release checks qualify the explicit retained-data acceptance and reject
-   changed measurements, funds, failure conditions and reader closure.
-   The owner preserves its existing always-close path and refuses missing review
-   or full-result bindings. This candidate uses the normal completion path;
-   historical collection failures remain preserved. Execution still requires the
-   actual functional pass, original-fund closure and stopped owners. Retain its 384-sat cap, two original 32-sat channels,
-   original accounting and fresh all-router capacity including the ARM copy.
-   Verify the complete helper graph, nested manifests, current sources and useful
-   all-five-profile resource summary before staging. The existing owner records
-   actual child waits and attempts the original closer once after launch,
-   including a failed launch reply. Test stationary open-radio departure/rejoin,
-   root replacement and route recovery. Preserve the distinction from physical
-   movement, fading, seamless roaming and automatic channel selection.
+3. **Controlled radio recovery accepted.** The current-runtime preparation in
+   `work/current-radio-autonomous-v15` passes stationary departure/rejoin, root
+   replacement and route recovery. The original 384 sats independently reconcile
+   in `work/current-radio-closure-recovery-1`; original failures and accounts are
+   preserved, temporary recovery tools removed and owners stopped. Physical
+   movement, fading, seamless roaming and automatic channel selection remain
+   outside this evidence.
 4. **Reconcile affected targets and recovery.** The current wallet/phase Android
    graph passes its controlled USB regression: unpaid denial, 4 MiB of paid
    forwarding and 48.07 seconds of forced idle. Independent closure recovers all

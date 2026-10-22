@@ -278,7 +278,7 @@ def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, sto
     for node in run.nodes:
         stop(node)
 
-    balances, collections = {}, {}
+    balances, collections, recovery = {}, {}, {}
     for node in run.nodes:
         balance = execute(node, "fips-relay", "wallet", {"type": "balance"})
         require(balance["mint_url"] == mint and balance["unit"] == "sat",
@@ -323,6 +323,22 @@ def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, sto
             remaining -= transfer
             export_id += 1
         collections[node] = balance
+        if balance:
+            # The collector consumed the original tokens. Finish their native
+            # sends while that mint is still available, then release custody.
+            report = execute(node, "fips-relay", "wallet", {"type": "recover"})
+            require(report["recovery_pass_complete"] is True and all(
+                amount(report[field]) == 0 for field in ("minted_amount", "finalized_melts",
+                "compensated_sagas", "pending_sagas", "failed_sagas", "warning_count")),
+                "collected exports still need original-state reconciliation")
+            acknowledged = execute(node, "fips-relay", "wallet", {
+                "type": "acknowledge_exports", "through": export_id - 1})
+            require(acknowledged["through"] == export_id - 1
+                    and amount(acknowledged["requested_sat"]) >= balance
+                    and acknowledged["requested_sat"] == acknowledged["cost"]["wallet_debit_sat"]
+                    and amount(acknowledged["cost"]["swap_fee_sat"]) == 0,
+                    "collection acknowledgement changed its original prefix or costs")
+            recovery[node] = dict(report=report, acknowledged=acknowledged)
         empty = execute(node, "fips-relay", "wallet", {"type": "balance"})
         require(empty["mint_url"] == mint and empty["unit"] == "sat"
                 and amount(empty["balance_sat"]) == 0, "node wallet is not empty")
@@ -333,7 +349,7 @@ def collect_settled_wallets(run, settled, reports, owners, mint, *, execute, sto
     run.evidence["phases"].append({"settlement_collection": {
         "settlements": list(reports.values()), "settled_wallet_balances": balances,
         "collected_by_node": collections, "final_wallet_balances": dict.fromkeys(run.nodes, 0),
-        "financial": settled,
+        "financial": settled, "collection_recovery": recovery,
     }})
     run.evidence["mint"] = {key: final[key] for key in (
         "test_only", "issued_sat", "collected_sat", "external_funding_sat",
