@@ -124,13 +124,15 @@ observation and the current staged-capacity check pass. Before any further clean
 recheck exact custody, actual owners/open references and normal baselines; never
 replay an old removal list or use an idle timestamp as authority.
 
-Radio preparation in `work/current-radio-autonomous-v13` and its reviewed
-`work/current-radio-sequence-owner-v5` verify the current runtime/resource-harness
+Radio preparation in `work/current-radio-autonomous-v14` and its reviewed
+`work/current-radio-sequence-owner-v6` verify the current runtime/resource-harness
 bindings and retain the original collector failures. Read-only checks reject the
 active collector, incomplete full result and known failed predecessor before
 allocation. Execution still requires the actual full pass, original financial
 closure, normally closed recovered collectors/final owner and useful resource
-capture. No radio case has been staged or funded.
+capture. The six qualified Python observer changes remain distinct from the
+unchanged compiled runtime; nine source checks pass. No radio case has been
+staged or funded.
 
 ## Scope and outstanding acceptance
 
@@ -272,8 +274,8 @@ for manual testing or an unlimited sequence of longer runs.
    `work/current-device-sequences/full-history-10-final`.
 3. **Complete controlled radio recovery after that full pass and closure.** Wait
    for any queued phone test to independently release the devices, then bind
-   the current-runtime preparation in `work/current-radio-autonomous-v13`, using
-   `work/current-radio-sequence-owner-v5`, to the actual accepted full run. Six
+   the current-runtime preparation in `work/current-radio-autonomous-v14`, using
+   `work/current-radio-sequence-owner-v6`, to the actual accepted full run. Six
    software checks validate the current wallet/phase graph, reject the old
    resource manifest and failed FULL7 verdict, and refuse a live predecessor.
    The owner preserves its existing always-close path and refuses missing review
