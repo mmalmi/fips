@@ -97,17 +97,18 @@ def progress(baseline, samples, custody_samples=(), *, payment_field='authorized
                 observation_us=previous_time - baseline['elapsed_us'])
 
 
-def reconciled(sample, statuses, after):
-    if statuses is None or any(read['started_us'] < after for read in sample['counter_reads']):
+def payment_reconciled(sample, reading, index, after):
+    if any(read['started_us'] < after for read in sample['counter_reads']):
         return False
-    for index, name in enumerate(('source', 'n02')):
-        reading = statuses[name]
-        payment, state = sample['payments'][index], reading['value']
-        if (reading['started_us'] < after or not caught_up(state)
-                or payment['authorized_sat'] != payment['signed_sat'] or payment['signed_sat'] != state['authorized_sat']
-                or sample['credits'][index] < state['authorized_sat'] * 1000):
-            return False
-    return True
+    payment, state = sample['payments'][index], reading['value']
+    return (reading['started_us'] >= after and caught_up(state) and state['pending'] is None
+            and payment['authorized_sat'] == payment['signed_sat'] == state['authorized_sat']
+            and sample['credits'][index] >= state['authorized_sat'] * 1000)
+
+
+def reconciled(sample, statuses, after):
+    return statuses is not None and all(payment_reconciled(sample, statuses[name], index, after)
+                                       for index, name in enumerate(('source', 'n02')))
 
 
 def measure(run, held, held_credits):
@@ -153,6 +154,7 @@ def measure(run, held, held_credits):
         sending = sender.submit(probes.send, run, 'source', 'destination', shape, 3,
                                 max_duration_secs=60, operation_timeout=75)
         released, final_custody, terminal_progress = False, False, None
+        authorization_terminal = {}
         try:
             while time.monotonic() - started < 35:
                 observer.start_custody()
@@ -163,11 +165,18 @@ def measure(run, held, held_credits):
                         if row['traffic_finished_us'] is None:
                             row['traffic_finished_us'] = current['counter_reads'][0]['finished_us']
                         statuses = observer.payment_status()
-                        if reconciled(current, statuses, row['traffic_finished_us']):
+                        if statuses is not None:
+                            candidates = {name: observer.authorization_status[name]
+                                          for index, name in enumerate(('source', 'n02'))
+                                          if payment_reconciled(current, statuses[name], index, row['traffic_finished_us'])}
+                            authorization_terminal = authorization_trace.terminal_records(authorization_terminal, candidates)
+                        if reconciled(current, statuses, row['traffic_finished_us']) and len(authorization_terminal) == 2:
                             row['samples'].extend(observer.stop_and_drain())
                             require(reconciled(row['samples'][-1], statuses, row['traffic_finished_us']),
                                     'final progress differs from fresh scheduler acknowledgment')
-                            row['authorization_commit_observation']['terminal'] = authorization_trace.capture(run, started)
+                            row['authorization_commit_observation']['terminal'] = authorization_terminal
+                            run.check_forwards()
+                            run.monitor.check()
                             terminal_progress = int((time.monotonic() - started) * 1_000_000)
                             row['terminal_progress_us'] = terminal_progress
                             row['terminal_payment_status'] = statuses

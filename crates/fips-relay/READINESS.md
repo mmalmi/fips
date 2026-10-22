@@ -190,15 +190,22 @@ for manual testing or an unlimited sequence of longer runs.
    [the results](CADENCE-RESULTS.md); keep the 500 ms default unless measurements
    justify changing it. Never replace a failed case's grants or replay financial
    work. Device tests and competing builds run separately from this measurement.
-2. **Genuine-history router successor: failed timing; financially closed.** The rounded-credit
-   and payment-cohort regressions are reproduced and fixed. Current source,
-   dependency, feature, artifact and stopped-build evidence, affected harness
-   checks, unfunded installed-reader acceptance and staged capacity are bound to
-   the completed original attempt. Collection and independent audit recovered from local connection
-   failures without restarting the workload or replacing its funds. The relay still
-   exceeds two seconds. The next diagnostic must capture completed payment phases
-   on the routers under the same genuine pressure. The historical rehearsal qualifies
-   the observer only. Require a meaningful qualified runtime or diagnostic change
+2. **Genuine-history router successor: failed timing; financially closed.** FULL10
+   completes 5,480 genuine retained receipts and 31 settlements; independent
+   closure conserves all 3,072 original test sats, verifies stopped owners and
+   restores the three baselines. Its relay authorization bound is 2.153–2.187
+   seconds, so the original failed verdict remains and radio is not released.
+   Every relay inter-commit interval is at most 1.510 seconds; the failure is the
+   terminal observation tail after the final commit. The harness waited for both
+   channels to reconcile and then made another pair of status calls.
+
+   The corrected harness reuses each channel's first fully reconciled scheduler
+   read after all 84 packets arrive, retaining it only while final financial
+   state and process identity remain unchanged. It still measures both trace
+   boundaries, rejects real two-second stalls, and checks final acknowledgment,
+   provider credits and complete durable commit coverage. All 50 focused checks
+   pass. This Python-only change needs a fresh genuine hardware acceptance run;
+   it does not change the runtime or requalify FULL10. Require a meaningful qualified runtime or diagnostic change
    before a new paid attempt; a logging change supplies no presumption of a timing
    fix. Do not relabel historical hardware evidence or silently remove an
    equality check. Reuse unchanged SDK/CDK, observer, archive and workload evidence
@@ -266,10 +273,12 @@ for manual testing or an unlimited sequence of longer runs.
    graph compiles and packages successfully; its controlled phone regression is
    pending. `work/wallet-phase-phone-controlled-1` binds the current ARM/APK and
    preserves the controlled USB workload. The detached follow-up in
-   `work/wallet-phase-phone-followup-durable-owner-1` waits for actual FULL10
-   financial closure and stopped owners, checks fresh space including the ARM
-   copy, then attempts the original independent closer even after a failed
-   launch reply. Source checks cover the artifact/workload binding, release
+   `work/wallet-phase-phone-followup-durable-owner-1` verified actual FULL10
+   financial closure and stopped owners, then failed fresh flash capacity before
+   installation, phone actions or funding. Preserve that unfunded failure and
+   prepare a fresh owner after verified space recovery. The owner checks space
+   including the ARM copy and attempts the original independent closer even
+   after a failed launch reply. Source checks cover the artifact/workload binding, release
    verifier and follow-up owner; none establishes phone acceptance. The preceding
    cohort graph's controlled USB regression retains its independent financial
    closure and owned-app removal. Retain its
@@ -422,10 +431,11 @@ The original unfunded source revision is preserved byte for byte and mirrored.
 
 The detached follow-up uses `work/wallet-phase-phone-wait-owner-1`; seven source
 checks cover waiting, conservative space floors including the new ARM copy and
-always attempting the original independent closer after launch. It waits for
-actual financial closure and stopped owners before checking space or operating
-devices. Live preflight also verifies restored baselines, absence of active
-profiles and USB readiness. This is an automated pending test, with its original
+always attempting the original independent closer after launch. Its first owner
+verified financial release but failed flash preflight before any installation or
+funding. A fresh owner requires verified capacity recovery. Live preflight also
+verifies restored baselines, absence of active profiles and USB readiness.
+This is an automated pending test, with its original
 512-test-sat cap and four channels; acceptance still requires its real result,
 independent financial audit, restoration and owned-app removal.
 

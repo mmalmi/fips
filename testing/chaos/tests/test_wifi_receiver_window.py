@@ -95,9 +95,11 @@ class ReceiverTimingTests(unittest.TestCase):
         sample = point(1_000_000, 2)
         states = {name: dict(started_us=1_000_000, finished_us=1_000_001,
                             value=dict(authorized_sat=2, evidence_msat=2000,
-                                       acknowledged_msat=2000, in_flight=False)) for name in ('source', 'n02')}
+                                       acknowledged_msat=2000, in_flight=False, pending=None))
+                  for name in ('source', 'n02')}
         self.assertTrue(reconciled(sample, states, 1_000_000))
-        for field, wrong in (('acknowledged_msat', 1999), ('in_flight', True), ('authorized_sat', 3)):
+        for field, wrong in (('acknowledged_msat', 1999), ('in_flight', True), ('authorized_sat', 3),
+                             ('pending', {'amount': 1})):
             changed = json.loads(json.dumps(states))
             changed['n02']['value'][field] = wrong
             self.assertFalse(reconciled(sample, changed, 1_000_000))
@@ -209,6 +211,25 @@ class ReceiverObserverTests(unittest.TestCase):
                              sorted(set(sample['elapsed_us'] for sample in samples)))
             self.assertTrue(all(future.done() for future in observer.progress_pending.values()))
 
+    def test_terminal_trace_reuses_the_same_bounded_scheduler_reads(self):
+        from sim.wifi_receiver_observer import ReceiverObserver
+        records = {name: {'payment_progress': {'authorized_sat': amount}, 'trace': {'pending': 0}}
+                   for name, amount in (('source', 2), ('n02', 1))}
+        with patch('sim.wifi_receiver_observer.authorization_trace.read_channel',
+                   side_effect=lambda _run, name, *_args, **_kwargs: records[name]) as read, \
+                ReceiverObserver(self.fixture(), {}, time.monotonic()) as observer:
+            result, deadline = None, time.monotonic() + 2
+            while result is None and time.monotonic() < deadline:
+                result = observer.payment_status()
+                time.sleep(.001)
+            self.assertIsNotNone(result)
+            self.assertEqual(read.call_count, 2)
+            for name in records:
+                self.assertIs(observer.authorization_status[name], records[name])
+                self.assertIs(result[name]['value'], records[name]['payment_progress'])
+                self.assertLessEqual(result[name]['started_us'], result[name]['finished_us'])
+            self.assertTrue(all(call.kwargs == {'timeout': 3} for call in read.call_args_list))
+
     def test_overflow_and_reader_error_refuse_without_leaving_workers(self):
         from sim.wifi_receiver_observer import ReceiverObserver
         for fail in (False, True):
@@ -315,6 +336,7 @@ class ReceiverMeasurementTests(unittest.TestCase):
         clock = SimpleNamespace(elapsed=0)
         run = SimpleNamespace(evidence={'receiver_history': {}}, save=Mock(),
                               transit='transit', guard='guard', held_nodes=['n02'],
+                              check_forwards=Mock(), monitor=SimpleNamespace(check=Mock()),
                               nodes={'n02': SimpleNamespace(held=Mock(return_value=True))},
                               release_holds=Mock())
         def saved():
@@ -370,6 +392,10 @@ class ReceiverMeasurementTests(unittest.TestCase):
 
             def payment_status(self):
                 current = self.last_sample
+                self.authorization_status = {name: dict(channel_id=channel, payment_progress=payment,
+                    npub=name, host_process=dict(pid=42, start_ticks=100), process_id=42,
+                    trace=dict(pending=0)) for name, channel, payment in
+                    zip(('source', 'n02'), ('transit', 'guard'), current['payments'])}
                 return {name: dict(started_us=current['elapsed_us'], finished_us=current['elapsed_us'],
                                    value=payment) for name, payment in zip(('source', 'n02'), current['payments'])}
 
@@ -384,7 +410,7 @@ class ReceiverMeasurementTests(unittest.TestCase):
                         reading['started_us'] -= 100_000
                         reading['finished_us'] -= 100_000
                 sample['payments'] = [dict(authorized_sat=count, signed_sat=count, evidence_msat=count * 1000,
-                                           in_flight=count != 84, acknowledged_msat=count * 1000)] * 2
+                                           in_flight=count != 84, acknowledged_msat=count * 1000, pending=None)] * 2
                 self.last_sample = sample
                 return sample
 
@@ -415,6 +441,7 @@ class ReceiverMeasurementTests(unittest.TestCase):
                 patch('sim.wifi_receiver_window.ReceiverObserver', return_value=instance), \
                 patch('sim.wifi_receiver_window.ThreadPoolExecutor', return_value=pool), \
                 patch('sim.wifi_receiver_window.authorization_trace.capture', return_value={}), \
+                patch('sim.wifi_receiver_window.authorization_trace.checked'), \
                 patch('sim.wifi_receiver_window.authorization_trace.qualify', side_effect=lambda polled, _: polled), \
                 patch('sim.wifi_receiver_window.probes.arm', return_value=shape), \
                 patch('sim.wifi_receiver_window.probes.receive', return_value={'unique_packets': 84}):

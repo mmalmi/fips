@@ -14,6 +14,7 @@ from . import wifi_measurements
 CAPACITY = 1024
 LIMIT_NS = 2_000_000_000
 U64_MAX = (1 << 64) - 1
+PAYMENT_STATE = ('authorized_sat', 'acknowledged_msat', 'evidence_msat', 'in_flight', 'pending')
 
 
 def number(value):
@@ -21,33 +22,50 @@ def number(value):
     return value
 
 
+def read_channel(run, name, host, channel, started, *, timeout=45):
+    status = wifi_measurements.snapshot(run.participants()[name], host, timeout=timeout)
+    measurements, timing = status['measurements'], status['sample_timing']
+    origin = int(started * 1_000_000_000)
+    return dict(channel_id=channel, npub=status['npub'],
+                host_process={key: status['host_process'][key] for key in ('host', 'pid', 'start_ticks')},
+                process_id=measurements['process_id'], process_cpu_ns=measurements['process_cpu_ns'],
+                operations=measurements['operations'], trace=measurements.get('authorization_commits'),
+                payment_progress=status['payment_progress'][channel],
+                started_us=(timing['started_monotonic_ns'] - origin) // 1000,
+                finished_us=(timing['finished_monotonic_ns'] - origin + 999) // 1000)
+
+
 def capture(run, started):
     """Two read-only status calls, with the existing exact process-epoch checks."""
     run.check_forwards()
     run.monitor.check()
-    profiles = run.participants()
-
-    def read(name, host, channel):
-        status = wifi_measurements.snapshot(profiles[name], host)
-        measurements = status['measurements']
-        timing = status['sample_timing']
-        origin = int(started * 1_000_000_000)
-        return dict(channel_id=channel, npub=status['npub'],
-                    host_process={key: status['host_process'][key] for key in ('host', 'pid', 'start_ticks')},
-                    process_id=measurements['process_id'],
-                    process_cpu_ns=measurements['process_cpu_ns'],
-                    operations=measurements['operations'],
-                    trace=measurements.get('authorization_commits'),
-                    payment_progress=status['payment_progress'][channel],
-                    started_us=(timing['started_monotonic_ns'] - origin) // 1000,
-                    finished_us=(timing['finished_monotonic_ns'] - origin + 999) // 1000)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        pending = {name: pool.submit(read, name, host, channel)
+        pending = {name: pool.submit(read_channel, run, name, host, channel, started)
                    for name, host, channel in (('source', 'n01', run.transit), ('n02', 'n02', run.guard))}
         result = {name: future.result() for name, future in pending.items()}
     run.check_forwards()
     run.monitor.check()
+    return result
+
+
+def same_payment(first, second):
+    return all(first[key] == second[key] for key in PAYMENT_STATE)
+
+
+def terminal_records(previous, candidates):
+    """Keep each channel's first unchanged reconciled state, not another's later read."""
+    result = {}
+    for name, record in candidates.items():
+        if record['trace']['pending']:
+            continue
+        checked(record, record['channel_id'], record['payment_progress']['authorized_sat'])
+        earlier = previous.get(name)
+        if earlier is not None:
+            require(all(earlier[key] == record[key] for key in ('npub', 'host_process', 'process_id')),
+                    'authorization trace process epoch changed')
+        result[name] = (earlier if earlier is not None
+                        and same_payment(earlier['payment_progress'], record['payment_progress']) else record)
     return result
 
 
@@ -65,6 +83,7 @@ def checked(snapshot, channel, balance):
             'authorization trace read exceeds window')
     payment = snapshot['payment_progress']
     require(number(payment['authorized_sat']) == balance and payment['in_flight'] is False
+            and payment['pending'] is None
             and number(payment['acknowledged_msat']) >= max(balance * 1000, number(payment['evidence_msat'])),
             'authorization trace boundary is not reconciled')
     trace = snapshot['trace']
@@ -136,9 +155,11 @@ def qualify(polled, row):
     for index, name in enumerate(('source', 'n02')):
         before, after = boundaries['baseline'][name], boundaries['terminal'][name]
         require(before['finished_us'] <= row['stream_started_us']
-                and after['started_us'] >= max(read['finished_us'] for read in terminal['counter_reads'])
+                and after['started_us'] >= row['traffic_finished_us']
                 and after['finished_us'] <= row['terminal_progress_us'],
                 'authorization trace does not bracket the complete original stream')
+        require(same_payment(after['payment_progress'], row['terminal_payment_status'][name]['value']),
+                'authorization trace differs from the final reconciled payment')
         results.append(channel_progress(before, after, row['payment_channels'][index],
                        baseline['payments'][index]['authorized_sat'], terminal['payments'][index]['authorized_sat']))
     result = dict(polled, timing_verdict=list(polled['timing_verdict']),

@@ -399,3 +399,14 @@ of serialization, below its unchanged 25,000-microsecond limit. The independent
 check verifies stopped owners, removed fixtures and restored baselines
 (`work/wallet-phase-installed-check-2`). This measures observer overhead with
 an empty authorization trace; it does not measure paid forwarding performance.
+
+FULL10's genuine-history run records a 2.153–2.187-second relay authorization
+gap, entirely in the terminal observation tail; actual relay inter-commit gaps
+are at most 1.510 seconds. Its failed verdict remains preserved. The corrected
+observer reuses each channel's existing scheduler read once all stream packets
+are delivered and that channel is fully acknowledged, instead of adding status
+round trips after both channels finish. Later changed accounting invalidates an
+earlier boundary; a changed process epoch is rejected. Initial and terminal
+quiescent gaps, the two-second limit, complete event coverage and independent
+credit/delivery checks remain required. Software checks establish these observer
+rules; a fresh genuine hardware run must establish acceptance.

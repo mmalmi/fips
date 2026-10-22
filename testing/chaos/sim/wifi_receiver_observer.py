@@ -9,6 +9,7 @@ import time
 
 from . import wifi_probes as probes
 from . import wifi_receiver_custody as custody
+from . import wifi_authorization_trace as authorization_trace
 from .paid_settlement import require
 from .wifi_receiver_numeric import NumericReaders
 
@@ -27,6 +28,7 @@ class ReceiverObserver:
         self.pending = {}
         self.progress_pending, self.latest = {}, [None] * 5
         self.status_pending = {}
+        self.authorization_status = {}
         self.last_custody_started = None
         self.actions = None
 
@@ -136,14 +138,15 @@ class ReceiverObserver:
     def payment_status(self):
         if not self.status_pending:
             self.status_pending = {name: self.custody_readers.submit(self.read,
-                lambda name=name, channel=channel:
-                    self.run.ctl(name, 'status', operation_timeout=3)['payment_progress'][channel])
-                for name, channel in (('source', self.run.transit), ('n02', self.run.guard))}
+                lambda name=name, host=host, channel=channel:
+                    authorization_trace.read_channel(self.run, name, host, channel, self.started, timeout=3))
+                for name, host, channel in (('source', 'n01', self.run.transit), ('n02', 'n02', self.run.guard))}
         if not all(future.done() for future in self.status_pending.values()):
             return None
         results = {name: future.result(timeout=0) for name, future in self.status_pending.items()}
         self.status_pending = {}
-        return results
+        self.authorization_status = {name: reading['value'] for name, reading in results.items()}
+        return {name: dict(reading, value=reading['value']['payment_progress']) for name, reading in results.items()}
 
     def journal(self):
         self.run.check_forwards()

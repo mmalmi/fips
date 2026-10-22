@@ -146,7 +146,7 @@ printf '%s\\000' "$pid" "$before" "$after" "$resources" "$io" "$relay" "$availab
 """
 
 
-def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=False, *, aqm_peer=None):
+def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=False, *, aqm_peer=None, timeout=45):
     """Return one normal status response with validated host/process evidence."""
     if (hostlabel not in ("n01", "n02", "n03") or type(native_counters) is not bool
             or type(drop_logs) is not bool or type(link_loss) is not bool):
@@ -154,7 +154,7 @@ def snapshot(node, hostlabel, native_counters=False, drop_logs=False, link_loss=
     if aqm_peer is not None and (not link_loss or hostlabel != "n02"):
         raise ValueError("AQM observation requires middle-router link-loss capture")
     started = time.monotonic_ns()
-    raw = node.remote(command(node, native_counters, drop_logs, link_loss, aqm_peer=aqm_peer), timeout=45)
+    raw = node.remote(command(node, native_counters, drop_logs, link_loss, aqm_peer=aqm_peer), timeout=timeout)
     finished = time.monotonic_ns()
     parts = raw.decode("utf-8").split("\0")
     extra = len(wifi_link_loss.fields(aqm_peer)) if link_loss else 0

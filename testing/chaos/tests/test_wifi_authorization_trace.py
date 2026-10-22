@@ -3,6 +3,7 @@
 import copy
 import unittest
 
+from sim import wifi_authorization_trace as trace
 from sim.wifi_authorization_trace import channel_progress, qualify
 
 
@@ -15,7 +16,7 @@ def snapshot(sequence, at, balance, events):
     return dict(channel_id='original', npub='original-node', process_id=42,
                 host_process=dict(host='n02', pid=42, start_ticks=100), started_us=0, finished_us=1,
                 payment_progress=dict(authorized_sat=balance, evidence_msat=balance * 1000,
-                                      in_flight=False, acknowledged_msat=balance * 1000),
+                                      in_flight=False, pending=None, acknowledged_msat=balance * 1000),
                 trace=dict(version=1, clock='CLOCK_MONOTONIC', capacity=1024, measured_at_ns=at,
                            completed_sequence=sequence, overwritten=0, missing_intervals=0,
                            clock_failures=0, aborted=0, pending=0, sequence_exhausted=False,
@@ -33,6 +34,37 @@ def fixture():
 
 
 class AuthorizationTraceTests(unittest.TestCase):
+    def test_each_channel_keeps_its_first_unchanged_quiescent_terminal(self):
+        before, first = fixture()
+        selected = trace.terminal_records({}, {'n02': first})
+        late = copy.deepcopy(first)
+        late['trace']['measured_at_ns'] = 6_800_000_001
+        selected = trace.terminal_records(selected, {'source': late, 'n02': late})
+        self.assertIs(selected['n02'], first)
+        self.assertIs(selected['source'], late)
+        self.assertEqual(channel_progress(before, selected['n02'], 'original', 1, 3)['timing_verdict'], 'passed')
+        self.assertEqual(channel_progress(before, late, 'original', 1, 3)['timing_verdict'], 'failed')
+
+    def test_changed_accounted_work_replaces_an_earlier_terminal(self):
+        _, first = fixture()
+        selected = trace.terminal_records({}, {'n02': first})
+        newer = copy.deepcopy(first)
+        newer['payment_progress'].update(authorized_sat=4, acknowledged_msat=4000, evidence_msat=4000)
+        newer['trace'].update(completed_sequence=14, measured_at_ns=6_200_000_000)
+        newer['trace']['events'].append(event(14, 3, 4, 5_800_000_000, 5_810_000_000))
+        self.assertIs(trace.terminal_records(selected, {'n02': newer})['n02'], newer)
+
+    def test_unfinished_trace_cannot_reuse_a_quiescent_terminal(self):
+        _, first = fixture()
+        selected = trace.terminal_records({}, {'n02': first})
+        busy = copy.deepcopy(first)
+        busy['trace']['pending'] = 1
+        self.assertEqual(trace.terminal_records(selected, {'n02': busy}), {})
+        restarted = copy.deepcopy(first)
+        restarted['host_process']['start_ticks'] += 1
+        with self.assertRaisesRegex(RuntimeError, 'process epoch changed'):
+            trace.terminal_records(selected, {'n02': restarted})
+
     def test_complete_commit_intervals_include_both_quiescent_boundaries(self):
         before, after = fixture()
         result = channel_progress(before, after, 'original', 1, 3)
@@ -67,6 +99,7 @@ class AuthorizationTraceTests(unittest.TestCase):
             lambda row: row['trace']['events'][-1].update(finished_ns=5_000_000_000),
             lambda row: row['host_process'].update(start_ticks=101),
             lambda row: row['payment_progress'].update(acknowledged_msat=2999),
+            lambda row: row['payment_progress'].update(pending=3000),
         ]
         for change in changes:
             before, after = fixture()
@@ -78,12 +111,15 @@ class AuthorizationTraceTests(unittest.TestCase):
         before, after = fixture()
         before.update(started_us=10, finished_us=20)
         after.update(started_us=4_000_001, finished_us=4_100_000)
-        row = dict(payment_channels=['original'] * 2, stream_started_us=30, terminal_progress_us=4_200_000,
+        row = dict(payment_channels=['original'] * 2, stream_started_us=30, traffic_finished_us=3_900_000,
+                   terminal_progress_us=4_200_000,
                    baseline=dict(payments=[dict(authorized_sat=1)] * 2),
                    samples=[dict(payments=[dict(authorized_sat=3)] * 2,
                                  counter_reads=[dict(finished_us=4_000_000)] * 5)],
                    authorization_commit_observation=dict(baseline=dict(source=before, n02=before),
-                                                         terminal=dict(source=after, n02=after)))
+                                                         terminal=dict(source=after, n02=after)),
+                   terminal_payment_status={name: dict(value=copy.deepcopy(after['payment_progress']))
+                                            for name in ('source', 'n02')})
         polled = dict(timing_verdict=['passed', 'unqualified', 'unqualified', 'failed', 'passed'],
                       max_observed_gap_us=[1_900_000, 2_100_000, 2_100_000, 2_200_000, 1_900_000],
                       minimum_gap_us=[1_800_000, 1_900_000, 1_900_000, 2_100_000, 1_800_000],
@@ -94,6 +130,12 @@ class AuthorizationTraceTests(unittest.TestCase):
         self.assertEqual(result['timing_verdict'], ['passed', 'passed', 'passed', 'failed', 'passed'])
         self.assertFalse(result['within_limit'])
         self.assertEqual(result['max_observed_gap_us'][1:3], [1_910_000] * 2)
+        row['samples'][-1]['counter_reads'][-1]['finished_us'] = 4_150_000
+        self.assertEqual(qualify(polled, row)['timing_verdict'], result['timing_verdict'])
+        row['terminal_payment_status']['n02']['value']['evidence_msat'] = 3001
+        with self.assertRaisesRegex(RuntimeError, 'final reconciled payment'):
+            qualify(polled, row)
+        row['terminal_payment_status']['n02']['value']['evidence_msat'] = 3000
         row['stream_started_us'] = 19
         with self.assertRaisesRegex(RuntimeError, 'bracket'):
             qualify(polled, row)
