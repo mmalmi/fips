@@ -100,7 +100,14 @@ OpenWrt services, physical links and router performance require separate accepta
 The process-based service, customer and funding-cost tests accept
 `FIPS_RELAY_TEST_PROGRAM` as the executable to launch. Without it, they use the
 binary built by Cargo. This lets a native Linux harness exercise a separately
-built candidate, including an ARM64 binary through an explicit QEMU launcher:
+built candidate.
+
+Wallet-handoff crash tests compiled with `testbench` require a daemon built with
+that feature too. Keep their default Cargo binary, or supply a matching build;
+an ordinary production binary has no crash barriers. Tests without these hooks
+can use the ordinary candidate.
+
+For an ARM64 candidate, use an explicit QEMU launcher:
 
 ```sh
 cat > run-relay-arm64 <<'SH'
