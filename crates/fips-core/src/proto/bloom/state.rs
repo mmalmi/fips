@@ -45,9 +45,28 @@ impl OutgoingBloomFilters<'_> {
                 .zip(&self.shared)
                 .zip(excluded.as_bytes())
                 .all(|(((last, all), shared), excluded)| *last == *all & (!*excluded | *shared)),
-            None => last.as_bytes() == self.combined,
+            None => equal_filter_bytes(last.as_bytes(), &self.combined),
         }
     }
+}
+
+/// Compare whole words so equal Bloom filters do not require a byte-at-a-time
+/// libc memcmp on targets such as musl. Chunk conversion permits unaligned
+/// buffers; equality is exact and the short tail retains ordinary slice rules.
+fn equal_filter_bytes(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let (left_words, left_tail) = left.as_chunks::<8>();
+    let (right_words, right_tail) = right.as_chunks::<8>();
+    left_words
+        .iter()
+        .zip(right_words)
+        .all(|(left, right)| u64::from_ne_bytes(*left) == u64::from_ne_bytes(*right))
+        && left_tail
+            .iter()
+            .zip(right_tail)
+            .all(|(left, right)| left == right)
 }
 
 /// State for managing Bloom filter announcements.
@@ -311,7 +330,9 @@ impl BloomState {
         let filters = self.prepare_outgoing_filters(peer_filters);
 
         for peer_addr in peer_addrs {
-            if peer_addr == exclude_from {
+            if peer_addr == exclude_from || self.needs_update(peer_addr) {
+                // mark_update_needed is idempotent: an already-pending peer
+                // keeps its dirty state and retry/debounce deadline either way.
                 continue;
             }
             let changed = self
@@ -400,3 +421,7 @@ impl BloomState {
         filter
     }
 }
+
+#[cfg(test)]
+#[path = "state_comparison_tests.rs"]
+mod comparison_tests;
