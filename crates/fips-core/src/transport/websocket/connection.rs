@@ -130,6 +130,7 @@ where
                             "invalid WebSocket FIPS physical record".into(),
                         ));
                     }
+                    let mut msg1_read = crate::msg1_ingress_diagnostic::websocket_read(&data);
                     let len = data.len();
                     let packet = ReceivedPacket::with_timestamp(
                         runtime.transport_id,
@@ -137,6 +138,9 @@ where
                         PacketBuffer::new(data.to_vec()),
                         now_ms(),
                     );
+                    if let Some(msg1_read) = msg1_read.as_mut() {
+                        msg1_read.begin_admission();
+                    }
                     runtime
                         .packet_tx
                         .send_stream_packet(packet)
@@ -144,6 +148,9 @@ where
                         .map_err(|_| {
                             TransportError::RecvFailed("node packet channel closed".into())
                         })?;
+                    if let Some(msg1_read) = msg1_read {
+                        msg1_read.admitted();
+                    }
                     runtime
                         .stats
                         .frames_received
@@ -187,6 +194,9 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod diagnostic_tests;
 
 // Read progress can extend an idle deadline while a write is pending. Deadlines
 // only move later or disappear, so the timer rechecks after its earlier wakeup.

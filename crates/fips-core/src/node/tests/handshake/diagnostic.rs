@@ -75,6 +75,52 @@ fn packet(index: u32) -> ReceivedPacket {
     )
 }
 
+#[tokio::test]
+#[ignore = "run alone: exercises the fixed process-wide diagnostic window"]
+async fn ingress_hook_records_websocket_entry_before_early_refusal_only() {
+    use crate::config::WebSocketConfig;
+    use crate::msg1_ingress_diagnostic::tests::{capture, install_isolated_test_window};
+    use crate::transport::websocket::WebSocketTransport;
+
+    install_isolated_test_window();
+    let (events, _guard) = capture(true);
+    let mut node = refusing_node(1);
+    node.handle_msg1(packet(1)).await;
+    assert!(
+        events.lock().unwrap().is_empty(),
+        "TCP is outside this diagnostic"
+    );
+
+    let (tx, _rx) = packet_channel(8);
+    let transport = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig::default(),
+        tx,
+        node.identity(),
+    );
+    node.transports.insert(
+        TransportId::new(1),
+        TransportHandle::WebSocket(Box::new(transport)),
+    );
+    node.handle_msg1(packet(1517719947)).await;
+    let previous = packet(42);
+    node.transport_rebind_packet_cutoffs_ms
+        .insert(previous.transport_id, previous.timestamp_ms);
+    node.handle_msg1(previous).await;
+    assert_eq!(node.peer_count(), 0);
+    assert_eq!(node.connection_count(), 0);
+    assert_eq!(node.msg1_rate_limiter.pending_count(), 0);
+    let captured = events.lock().unwrap();
+    let entries: Vec<_> = captured
+        .iter()
+        .filter(|event| event["stage"] == "handler_entry")
+        .collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["sender_index"], "1517719947");
+    assert_eq!(entries[1]["sender_index"], "42");
+}
+
 async fn observe(node: &mut Node, packet: ReceivedPacket, enabled: bool) -> Arc<Mutex<Capture>> {
     let capture = Arc::new(Mutex::new(Capture::default()));
     let subscriber = DiagnosticSubscriber {

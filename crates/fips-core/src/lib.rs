@@ -19,6 +19,7 @@ pub mod identity {
 }
 pub(crate) mod dataplane;
 pub mod mmp;
+mod msg1_ingress_diagnostic;
 pub mod node;
 pub mod noise;
 pub mod peer;

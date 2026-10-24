@@ -200,6 +200,14 @@ impl Node {
     /// This creates a new inbound connection. Rate limiting is applied
     /// before any expensive crypto operations.
     pub(in crate::node) async fn handle_msg1(&mut self, packet: ReceivedPacket) {
+        if crate::msg1_ingress_diagnostic::enabled()
+            && matches!(
+                self.transports.get(&packet.transport_id),
+                Some(crate::transport::TransportHandle::WebSocket(_))
+            )
+        {
+            crate::msg1_ingress_diagnostic::handler_entry(packet.data.as_slice());
+        }
         let mut diagnostic = Msg1Diagnostic::new(packet.data.as_slice());
         if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
             diagnostic.reason = "previous_carrier_incarnation";
