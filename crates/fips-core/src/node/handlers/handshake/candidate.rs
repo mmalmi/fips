@@ -154,15 +154,15 @@ impl Node {
         &self,
         transport_id: TransportId,
         remote_addr: &TransportAddr,
-    ) {
+    ) -> &'static str {
         if self.handshake_carrier_is_owned(transport_id, remote_addr) {
-            msg1_diagnostic!("retained", "handshake_carrier_owned");
-            return;
+            return "retained";
         }
         if let Some(transport) = self.transports.get(&transport_id) {
-            msg1_diagnostic!("closing", "no_handshake_carrier_owner");
             transport.close_connection(remote_addr).await;
+            return "close_requested";
         }
+        "transport_missing"
     }
 
     pub(in crate::node) fn handshake_carrier_is_owned(
@@ -354,7 +354,7 @@ impl Node {
             .clone();
         let duplicate = first.data.as_slice() == packet.data.as_slice();
         if self
-            .finish_inbound_handshake(link_id, identity, &first, true)
+            .finish_inbound_handshake(link_id, identity, &first, true, None)
             .await
             .is_none()
         {
@@ -371,6 +371,7 @@ impl Node {
         peer_identity: PeerIdentity,
         packet: &ReceivedPacket,
         confirmed: bool,
+        mut diagnostic: Option<&mut super::Msg1Diagnostic>,
     ) -> Option<NodeAddr> {
         let connection = self.peers.get_connection(&link_id)?;
         let our_index = connection.our_index()?;
@@ -402,7 +403,9 @@ impl Node {
                 node_addr,
             }) => (node_addr, Some(loser_link_id)),
             Ok(PromotionResult::CrossConnectionLost { winner_link_id }) => {
-                msg1_diagnostic!("refused", "cross_connection_lost");
+                if let Some(diagnostic) = diagnostic.as_mut() {
+                    diagnostic.reason = "cross_connection_lost";
+                }
                 self.close_cross_connection_loser_physical_path(link_id, Some(winner_link_id))
                     .await;
                 self.cleanup_failed_promotion(link_id).await;
@@ -417,7 +420,9 @@ impl Node {
                 return None;
             }
             Err(e) => {
-                msg1_diagnostic!("failed", "promotion_failed");
+                if let Some(diagnostic) = diagnostic.as_mut() {
+                    diagnostic.reason = "promotion_failed";
+                }
                 warn!(
                     link_id = %link_id,
                     error = %e,
@@ -444,7 +449,9 @@ impl Node {
             self.dataplane.defer_fmp_handshake_proof(proof);
         }
         let msg2_sent = if !receiver_route_owned {
-            msg1_diagnostic!("retained", "receiver_route_not_owned");
+            if let Some(diagnostic) = diagnostic.as_mut() {
+                diagnostic.reason = "receiver_route_not_owned";
+            }
             warn!(
                 peer = %self.peer_display_name(&node_addr),
                 our_index = %our_index,
@@ -457,7 +464,9 @@ impl Node {
             match self.transports.get(&packet.transport_id) {
                 Some(transport) => match transport.send(&packet.remote_addr, &wire_msg2).await {
                     Ok(bytes) => {
-                        msg1_diagnostic!("transport_accepted", "msg2_transport_send_ok");
+                        if let Some(diagnostic) = diagnostic.as_mut() {
+                            diagnostic.reason = "msg2_transport_send_ok";
+                        }
                         debug!(
                             link_id = %link_id,
                             our_index = %our_index,
@@ -468,7 +477,9 @@ impl Node {
                         true
                     }
                     Err(e) => {
-                        msg1_diagnostic!("retained", "msg2_transport_send_failed");
+                        if let Some(diagnostic) = diagnostic.as_mut() {
+                            diagnostic.reason = "msg2_transport_send_failed";
+                        }
                         warn!(
                             link_id = %link_id,
                             error = %e,
@@ -478,7 +489,9 @@ impl Node {
                     }
                 },
                 None => {
-                    msg1_diagnostic!("retained", "msg2_transport_missing");
+                    if let Some(diagnostic) = diagnostic.as_mut() {
+                        diagnostic.reason = "msg2_transport_missing";
+                    }
                     warn!(
                         link_id = %link_id,
                         "Msg2 transport disappeared; retaining owned response for retry"
