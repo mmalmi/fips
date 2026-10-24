@@ -1,6 +1,7 @@
 include!("helpers_and_edges.rs");
 include!("helpers_wire.rs");
 mod fmp_reports;
+mod route_snapshots;
 mod service_carrier;
 mod source_admission;
 include!("aead_runtime_owner_fairness.rs");
