@@ -9,6 +9,7 @@ mod cleanup_rekey;
 #[cfg(feature = "sim-transport")]
 mod control_progress;
 mod delayed_startup;
+mod diagnostic;
 mod early_rekey;
 mod epoch_restart;
 mod forged_msg2;

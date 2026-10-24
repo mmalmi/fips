@@ -31,6 +31,15 @@ enum Msg1Waiver {
     Unattributed,
 }
 
+// Separate from broad handshake/transport DEBUG. Records contain only the
+// untrusted public wire index and static decisions, never identities/addresses.
+macro_rules! msg1_diagnostic {
+    ($outcome:literal, $reason:expr) => {
+        debug!(target: "fips_core::msg1_diagnostic", outcome = $outcome,
+            reason = %$reason, "Msg1 decision");
+    };
+}
+
 impl Node {
     /// WebRTC addresses are bound to authenticated FSP signaling identities,
     /// not caller-selected socket source tuples. A peer upgrading its existing
@@ -196,8 +205,17 @@ impl Node {
     ///
     /// This creates a new inbound connection. Rate limiting is applied
     /// before any expensive crypto operations.
+    #[tracing::instrument(
+        level = "debug", target = "fips_core::msg1_diagnostic", name = "msg1_probe",
+        skip_all, fields(sender_index = Msg1Header::parse(packet.data.as_slice())
+            .map(|header| u64::from(header.sender_idx.as_u32())).unwrap_or(u64::MAX))
+    )]
     pub(in crate::node) async fn handle_msg1(&mut self, packet: ReceivedPacket) {
+        // u64::MAX denotes an invalid header; real wire indices fit in u32.
+        // The index is a correlation hint, never authenticated peer identity.
+        msg1_diagnostic!("received", "untrusted_wire_index");
         if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
+            msg1_diagnostic!("refused", "previous_carrier_incarnation");
             debug!(
                 transport_id = %packet.transport_id,
                 remote_addr = %packet.remote_addr,
@@ -233,6 +251,8 @@ impl Node {
         let _pending_slot = match self.msg1_rate_limiter.start_handshake(class) {
             Ok(slot) => slot,
             Err(reason) => {
+                debug!(target: "fips_core::msg1_diagnostic", class = ?class,
+                    outcome = "refused", reason = %reason, "Msg1 decision");
                 debug!(
                     transport_id = %packet.transport_id,
                     remote_addr = %packet.remote_addr,
@@ -249,6 +269,7 @@ impl Node {
         // from strangers. Without this carve-out, the dual-init tie-breaker
         // deadlocks when the larger-NodeAddr side has accept_connections=false.
         if !established && !self.should_admit_msg1(packet.transport_id, &packet.remote_addr) {
+            msg1_diagnostic!("refused", "accept_connections");
             debug!(
                 transport_id = %packet.transport_id,
                 remote_addr = %packet.remote_addr,
@@ -266,10 +287,13 @@ impl Node {
         let header = match Msg1Header::parse(packet.data.as_slice()) {
             Some(h) => h,
             None => {
+                msg1_diagnostic!("refused", "invalid_header");
                 debug!("Invalid msg1 header");
                 return;
             }
         };
+
+        msg1_diagnostic!("admitted", "header_parsed");
 
         // Check for existing connection from this address.
         //
@@ -323,6 +347,7 @@ impl Node {
                         superseded_candidate = Some(existing_link_id);
                     } else {
                         // Retry the exact pending request without extending its deadline.
+                        msg1_diagnostic!("retained", "duplicate_pending_response");
                         self.send_retained_handshake_response(existing_link_id)
                             .await;
                         return;
@@ -366,6 +391,7 @@ impl Node {
         ) {
             Ok(m) => m,
             Err(e) => {
+                msg1_diagnostic!("refused", "noise_init_failed");
                 debug!(
                     error = %e,
                     "Failed to process msg1"
@@ -378,12 +404,14 @@ impl Node {
         let peer_identity = match conn.expected_identity() {
             Some(id) => *id,
             None => {
+                msg1_diagnostic!("refused", "identity_missing");
                 warn!("Identity not learned from msg1");
                 return;
             }
         };
 
         let peer_node_addr = *peer_identity.node_addr();
+        msg1_diagnostic!("processed", "noise_complete");
         // A fresh Noise request may replace a parked stranger, but cannot keep
         // its full-roster slot alive beyond the original handshake deadline.
         let restarted_activity = superseded_candidate
@@ -408,6 +436,7 @@ impl Node {
             Msg1Waiver::NotNeeded => {}
             Msg1Waiver::Expect(expected) if expected == peer_node_addr => {}
             Msg1Waiver::Expect(expected) => {
+                msg1_diagnostic!("refused", "waiver_identity_mismatch");
                 warn!(
                     expected = %self.peer_display_name(&expected),
                     actual = %self.peer_display_name(&peer_node_addr),
@@ -417,6 +446,7 @@ impl Node {
                 return;
             }
             Msg1Waiver::Unattributed => {
+                msg1_diagnostic!("refused", "waiver_unattributed");
                 warn!(
                     actual = %self.peer_display_name(&peer_node_addr),
                     transport_id = %packet.transport_id,
@@ -445,6 +475,7 @@ impl Node {
                 && !is_pending_identity
                 && !self.can_receive_neighbor_rotation(&peer_node_addr, Self::now_ms())
             {
+                msg1_diagnostic!("refused", "max_peers");
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
                     max = self.max_peers,
@@ -498,6 +529,7 @@ impl Node {
                     let peering_is_live =
                         carrier_is_open && peering_idle_ms < EPOCH_RESTART_MIN_INTERVAL_SECS * 1000;
                     if peering_is_live || dampened {
+                        msg1_diagnostic!("refused", "epoch_mismatch_dampened");
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
                             idle_ms = peering_idle_ms,
@@ -588,6 +620,7 @@ impl Node {
                             if existing_peer.pending_new_session().is_some()
                                 && existing_peer.pending_rekey_initiator()
                             {
+                                msg1_diagnostic!("refused", "local_rekey_pending_cutover");
                                 debug!(
                                     peer = %self.peer_display_name(&peer_node_addr),
                                     "Rekey msg1 received while local pending session awaits cutover, dropping"
@@ -626,6 +659,7 @@ impl Node {
                             if local_rekey_in_progress {
                                 let our_addr = self.identity.node_addr();
                                 if our_addr < &peer_node_addr {
+                                    msg1_diagnostic!("refused", "dual_rekey_local_winner");
                                     // We win as initiator — drop their msg1.
                                     // Our msg2 will arrive at peer, who completes
                                     // as our responder.
@@ -657,6 +691,7 @@ impl Node {
                             let our_new_index = match self.index_allocator.allocate() {
                                 Ok(idx) => idx,
                                 Err(e) => {
+                                    msg1_diagnostic!("refused", "rekey_index_allocation_failed");
                                     warn!(error = %e, "Failed to allocate index for rekey");
                                     return;
                                 }
@@ -665,6 +700,7 @@ impl Node {
                             let noise_session = match noise_session {
                                 Some(s) => s,
                                 None => {
+                                    msg1_diagnostic!("refused", "rekey_session_missing");
                                     warn!("Rekey msg1: no session from handshake");
                                     let _ = self.index_allocator.free(our_new_index);
                                     return;
@@ -686,6 +722,7 @@ impl Node {
                                     None,
                                 )
                             else {
+                                msg1_diagnostic!("refused", "rekey_install_failed");
                                 warn!(
                                     peer = %self.peer_display_name(&peer_node_addr),
                                     "Could not install responder pending rekey session"
@@ -711,6 +748,7 @@ impl Node {
                                 )
                             });
                             if !(route_ready && epoch_ready) {
+                                msg1_diagnostic!("refused", "rekey_receiver_ownership_failed");
                                 warn!(
                                     peer = %self.peer_display_name(&peer_node_addr),
                                     route_ready,
@@ -825,6 +863,7 @@ impl Node {
             )
             .is_err()
         {
+            msg1_diagnostic!("refused", "peer_acl");
             return;
         }
 
@@ -842,6 +881,7 @@ impl Node {
                 )
                 .await
         {
+            msg1_diagnostic!("refused", "neighbor_rotation_not_admitted");
             return;
         }
         if let Some(old_link_id) = superseded_candidate {
@@ -883,11 +923,13 @@ impl Node {
         // same bound for authenticated inbound paths; retries on an existing
         // path were handled above without consuming another reservation.
         if !crossed_dial && self.peer_candidate_slots(&peer_node_addr) == 0 {
+            msg1_diagnostic!("refused", "peer_candidate_slots");
             return;
         }
         if (replacing_neighbor || !crossed_dial)
             && (self.outbound_handshake_slots() == 0 || self.outbound_link_slots() == 0)
         {
+            msg1_diagnostic!("refused", "connection_or_link_slots");
             self.resend_crossed_rotation_request(&peer_node_addr).await;
             return;
         }
@@ -896,6 +938,7 @@ impl Node {
         let our_index = match self.index_allocator.allocate() {
             Ok(idx) => idx,
             Err(e) => {
+                msg1_diagnostic!("refused", "inbound_index_allocation_failed");
                 warn!(error = %e, "Failed to allocate session index for inbound");
                 return;
             }
@@ -936,6 +979,7 @@ impl Node {
         }
 
         if await_confirmation {
+            msg1_diagnostic!("retained", "await_confirmation");
             self.dataplane.register_fmp_handshake_candidate(
                 packet.transport_id,
                 &packet.remote_addr,
@@ -954,6 +998,7 @@ impl Node {
             self.send_retained_handshake_response(link_id).await;
             return;
         }
+        msg1_diagnostic!("promoting", "initial_inbound");
         self.finish_inbound_handshake(link_id, peer_identity, &packet, false)
             .await;
     }
