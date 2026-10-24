@@ -225,9 +225,7 @@ impl DataplaneEstablishedFastIngressSnapshot {
             .fmp
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut routes = (**guard).clone();
-        update(&mut routes);
-        *guard = Arc::new(routes);
+        update(Arc::make_mut(&mut *guard));
     }
 
     fn update_fsp<F>(&self, update: F)
@@ -238,9 +236,7 @@ impl DataplaneEstablishedFastIngressSnapshot {
             .fsp
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut routes = (**guard).clone();
-        update(&mut routes);
-        *guard = Arc::new(routes);
+        update(Arc::make_mut(&mut *guard));
     }
 }
 
