@@ -46,7 +46,7 @@ nav a:not(.nav-cta):hover,.text-link:hover,.footer a:hover{color:#6948ac}
 .scene-footer>span:last-child{font-size:7px;color:var(--muted)}
 .mesh-map{display:block;width:100%;height:auto}
 .map-links path{stroke:#b6bca9;stroke-width:2;fill:none;stroke-dasharray:5 7}
-.map-links .active-link{stroke:#8b6dc2;stroke-width:3;stroke-dasharray:none}
+.map-links .active-link{stroke:#8b6dc2;stroke-width:3}
 .map-node{fill:#fff;stroke:#bbbdb1;stroke-width:1.5}
 .map-node.central{fill:var(--green);stroke:#a7bf7c}
 .map-node.lilac{fill:var(--lilac);stroke:#c3b7df}
