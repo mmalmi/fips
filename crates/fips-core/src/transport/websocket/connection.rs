@@ -176,7 +176,10 @@ where
                     if let Some(msg1_read) = msg1_read.as_mut() {
                         msg1_read.begin_admission();
                     }
-                    let admitted = runtime.packet_tx.send_stream_packet(packet).await;
+                    let admitted = runtime
+                        .packet_tx
+                        .send_stream_packet(packet, marked_read.as_ref())
+                        .await;
                     if let Some(marked_read) = marked_read {
                         marked_read.finish(if admitted.is_ok() {
                             "admitted"

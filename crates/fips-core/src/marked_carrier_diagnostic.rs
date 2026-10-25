@@ -11,6 +11,10 @@
 //! cutoff is explicit. Closed carriers stay indexed until cutoff for queued
 //! Msg1s. Times are monotonic wall time, not CPU. Socket-write completion is
 //! local completion, not proof of remote receipt.
+//! Admission entry and FIFO-turn acquisition split the pre-handler wait.
+//! Queue counts are independent relaxed observations, not a consistent snapshot.
+//! Window totals cover all Msg1 limiter starts, including unmarked transports;
+//! an accepted start is only limiter admission, not authenticated peer admission.
 
 use crate::node::wire::{Msg1Header, Msg2Header};
 use crate::transport::{TransportAddr, TransportId};
@@ -87,6 +91,81 @@ struct Event {
     class: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     carrier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue: Option<QueueObservation>,
+}
+
+#[derive(Serialize)]
+struct QueueObservation {
+    reserved: usize,
+    queued: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize)]
+pub(crate) struct LimiterParameters {
+    pub(crate) stranger_burst: u32,
+    pub(crate) stranger_rate: f64,
+    pub(crate) established_burst: u32,
+    pub(crate) established_rate: f64,
+    pub(crate) max_pending: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum StartResult {
+    Accepted,
+    RateLimit,
+    PendingLimit,
+}
+
+#[derive(Default, Serialize)]
+struct StartCounts {
+    attempts: u64,
+    accepted: u64,
+    rate_limit: u64,
+    pending_limit: u64,
+}
+
+#[derive(Default, Serialize)]
+struct Msg1Starts {
+    stranger: StartCounts,
+    established_link: StartCounts,
+    parameters: Option<LimiterParameters>,
+    parameters_changed: bool,
+    counter_overflow: bool,
+}
+
+impl Msg1Starts {
+    fn parameters(&mut self, parameters: LimiterParameters) {
+        match self.parameters {
+            None => self.parameters = Some(parameters),
+            Some(first) => self.parameters_changed |= first != parameters,
+        }
+    }
+
+    fn record(&mut self, established: bool, result: StartResult, parameters: LimiterParameters) {
+        self.parameters(parameters);
+        let counts = if established {
+            &mut self.established_link
+        } else {
+            &mut self.stranger
+        };
+        let outcome = match result {
+            StartResult::Accepted => &mut counts.accepted,
+            StartResult::RateLimit => &mut counts.rate_limit,
+            StartResult::PendingLimit => &mut counts.pending_limit,
+        };
+        for counter in [&mut counts.attempts, outcome] {
+            if let Some(next) = counter.checked_add(1) {
+                *counter = next;
+            } else {
+                self.counter_overflow = true;
+            }
+        }
+    }
+
+    fn incomplete(&self) -> bool {
+        self.parameters.is_none() || self.parameters_changed || self.counter_overflow
+    }
 }
 
 #[derive(Serialize)]
@@ -155,6 +234,7 @@ struct State {
     selected_outside_window: u64,
     rx_loops: u64,
     early_exit: bool,
+    msg1_starts: Msg1Starts,
 }
 
 struct Recorder {
@@ -187,6 +267,7 @@ impl Recorder {
             detail,
             class: None,
             carrier: None,
+            queue: None,
         }
     }
 
@@ -207,9 +288,10 @@ impl Recorder {
                 || state.carrier_overflow != 0
                 || state.selected_outside_window != 0
                 || state.rx_loops != 1
-                || state.early_exit;
+                || state.early_exit
+                || state.msg1_starts.incomplete();
             let summary = Summary {
-                schema: 1,
+                schema: 2,
                 start_unix_ms: self.plan.epoch_ms,
                 window_ms: WINDOW_MS,
                 open_late_us,
@@ -221,6 +303,7 @@ impl Recorder {
                 early_exit: state.early_exit,
                 encoding_overflow: false,
                 incomplete,
+                msg1_starts: std::mem::take(&mut state.msg1_starts),
             };
             (std::mem::take(&mut state.carriers), summary)
         };
@@ -263,6 +346,7 @@ struct Summary {
     early_exit: bool,
     encoding_overflow: bool,
     incomplete: bool,
+    msg1_starts: Msg1Starts,
 }
 
 fn bounded_json(value: &impl Serialize, limit: usize) -> Result<String, serde_json::Error> {
@@ -299,7 +383,7 @@ fn sleep_until(deadline: Instant) {
     }
 }
 
-fn activate() -> Result<Option<Arc<Recorder>>, &'static str> {
+fn activate(parameters: LimiterParameters) -> Result<Option<Arc<Recorder>>, &'static str> {
     let epoch = match std::env::var("FIPS_MARKED_CARRIER_START_UNIX_MS") {
         Ok(value) => value,
         Err(std::env::VarError::NotPresent) => return Ok(None),
@@ -319,9 +403,11 @@ fn activate() -> Result<Option<Arc<Recorder>>, &'static str> {
         u64::try_from(epoch_now).map_err(|_| "clock_out_of_range")?,
         Instant::now(),
     )?;
+    let mut state = State::default();
+    state.msg1_starts.parameters(parameters);
     let recorder = Arc::new(Recorder {
         plan,
-        state: Mutex::new(State::default()),
+        state: Mutex::new(state),
         closed: AtomicBool::new(false),
     });
     let worker = Arc::clone(&recorder);
@@ -336,8 +422,8 @@ fn activate() -> Result<Option<Arc<Recorder>>, &'static str> {
 }
 
 pub(crate) struct RxLoopGuard(Option<Arc<Recorder>>);
-pub(crate) fn initialize_rx_loop() -> RxLoopGuard {
-    let session = SESSION.get_or_init(|| match activate() {
+pub(crate) fn initialize_rx_loop(parameters: LimiterParameters) -> RxLoopGuard {
+    let session = SESSION.get_or_init(|| match activate(parameters) {
         Ok(session) => session,
         Err(reason) => {
             tracing::warn!(parent: None, reason, "Marked carrier diagnostic rejected");
@@ -347,6 +433,7 @@ pub(crate) fn initialize_rx_loop() -> RxLoopGuard {
     if let Some(recorder) = session {
         let mut state = recorder.lock();
         state.rx_loops = state.rx_loops.saturating_add(1);
+        state.msg1_starts.parameters(parameters);
         if state.rx_loops == 1 {
             tracing::info!(target: "fips_core::marked_carrier_diagnostic", parent: None,
                 stage = "ready", start_unix_ms = recorder.plan.epoch_ms, window_ms = WINDOW_MS,
@@ -435,6 +522,21 @@ fn observing() -> bool {
         .is_some_and(|r| r.in_window(Instant::now()))
 }
 impl Recorder {
+    fn msg1_start_result(
+        &self,
+        established: bool,
+        result: StartResult,
+        parameters: LimiterParameters,
+    ) {
+        if !self.in_window(Instant::now()) {
+            return;
+        }
+        let mut state = self.lock();
+        if self.in_window(Instant::now()) {
+            state.msg1_starts.record(established, result, parameters);
+        }
+    }
+
     fn lookup(self: &Arc<Self>, transport: TransportId, addr: &TransportAddr) -> Option<Handle> {
         if !self.in_window(Instant::now()) {
             return None;
@@ -448,6 +550,18 @@ impl Recorder {
             recorder: Arc::clone(self),
             slot,
         })
+    }
+}
+
+pub(crate) fn msg1_start_result(
+    established: bool,
+    result: StartResult,
+    parameters: LimiterParameters,
+) {
+    if let Some(recorder) = SESSION.get().and_then(Option::as_ref)
+        && !recorder.closed.load(Ordering::Relaxed)
+    {
+        recorder.msg1_start_result(established, result, parameters);
     }
 }
 impl Handle {
@@ -510,6 +624,19 @@ pub(crate) struct Span {
     done: bool,
 }
 impl Span {
+    pub(crate) fn admission_point(&self, turn_acquired: bool, reserved: usize, queued: usize) {
+        self.handle.update(|c, r| {
+            let stage = if turn_acquired {
+                "turn_acquired"
+            } else {
+                "admission_enter"
+            };
+            let mut event = r.event(stage, Some(self.index), self.seq, None);
+            event.queue = Some(QueueObservation { reserved, queued });
+            c.record(event);
+        });
+    }
+
     pub(crate) fn finish(mut self, detail: &'static str) {
         self.end(detail, None, None);
     }
@@ -675,4 +802,4 @@ pub(crate) fn msg2_write(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

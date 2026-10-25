@@ -2,8 +2,20 @@ use super::*;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
+fn parameters() -> LimiterParameters {
+    LimiterParameters {
+        stranger_burst: 100,
+        stranger_rate: 10.0,
+        established_burst: 640,
+        established_rate: 10.0,
+        max_pending: 64,
+    }
+}
+
 fn recorder() -> Arc<Recorder> {
     let now = Instant::now();
+    let mut state = State::default();
+    state.msg1_starts.parameters(parameters());
     Arc::new(Recorder {
         plan: Plan {
             token: TOKEN.into(),
@@ -11,7 +23,7 @@ fn recorder() -> Arc<Recorder> {
             start: now,
             end: now + Duration::from_secs(30),
         },
-        state: Mutex::new(State::default()),
+        state: Mutex::new(state),
         closed: AtomicBool::new(false),
     })
 }
@@ -20,6 +32,22 @@ fn carrier(recorder: &Arc<Recorder>, generation: u64) -> Handle {
     let addr = TransportAddr::from_string(&format!("private-must-not-escape/{generation}"));
     recorder.register(TransportId::new(1), &addr, generation);
     recorder.lookup(TransportId::new(1), &addr).unwrap()
+}
+
+// Only the isolated limiter test installs this process-wide fixture. This
+// helper is compiled inside the test module, never into production artifacts.
+pub(crate) fn capture_limiter_starts(
+    parameters: LimiterParameters,
+    exercise: impl FnOnce(),
+) -> serde_json::Value {
+    let recorder = recorder();
+    recorder.lock().msg1_starts = Msg1Starts::default();
+    recorder.lock().msg1_starts.parameters(parameters);
+    assert!(SESSION.set(Some(Arc::clone(&recorder))).is_ok());
+    exercise();
+    let state = recorder.lock();
+    assert!(state.carriers.is_empty());
+    serde_json::to_value(&state.msg1_starts).unwrap()
 }
 
 #[test]
@@ -193,13 +221,249 @@ fn cutoff_exposes_unfinished_work_and_late_calls_do_not_mutate_the_snapshot() {
 fn serializer_has_hard_byte_cap_and_never_exports_marker_or_addresses() {
     let recorder = recorder();
     let handle = carrier(&recorder, 1);
+    Span {
+        handle: handle.clone(),
+        operation: Operation::Admission,
+        index: 42,
+        seq: Some(1),
+        done: true,
+    }
+    .admission_point(false, 64, 63);
     handle.terminal("peer_close");
-    let state = recorder.lock();
+    let mut state = recorder.lock();
     let json = bounded_json(&state.carriers[0], CARRIER_BYTES).unwrap();
     assert!(!json.contains("private-must-not-escape"));
     assert!(!json.contains(TOKEN));
     assert!(bounded_json(&state.carriers[0], 10).is_err());
+    let c = &mut state.carriers[0];
+    c.events.clear();
+    c.generation = u64::MAX;
+    for i in 0..EVENTS {
+        let mut event = recorder.event(
+            if i % 2 == 0 {
+                "admission_enter"
+            } else {
+                "turn_acquired"
+            },
+            Some(u32::MAX),
+            Some(u32::MAX),
+            None,
+        );
+        event.us = WINDOW_MS * 1000;
+        event.queue = Some(QueueObservation {
+            reserved: 64,
+            queued: 64,
+        });
+        c.record(event);
+    }
+    assert_eq!(c.events.len(), EVENTS);
+    assert!(
+        bounded_json(c, CARRIER_BYTES).is_ok(),
+        "48 widest admission events must fit"
+    );
+    c.record(recorder.event("turn_acquired", Some(42), Some(1), None));
+    c.cutoff();
+    assert_eq!(c.event_overflow, 1);
+    assert!(c.incomplete);
     assert!(CARRIERS * CARRIER_BYTES + TERMINAL_BYTES + 1024 <= 65536);
+}
+
+#[test]
+fn msg1_start_totals_keep_classes_outcomes_and_window_boundaries_separate() {
+    let mut recorder = recorder();
+    let start = recorder.plan.start;
+    Arc::get_mut(&mut recorder).unwrap().plan.start = start + Duration::from_secs(60);
+    recorder.msg1_start_result(false, StartResult::Accepted, parameters());
+    assert_eq!(recorder.lock().msg1_starts.stranger.attempts, 0);
+    Arc::get_mut(&mut recorder).unwrap().plan.start = start;
+    for established in [false, true] {
+        for result in [
+            StartResult::Accepted,
+            StartResult::RateLimit,
+            StartResult::PendingLimit,
+        ] {
+            recorder.msg1_start_result(established, result, parameters());
+        }
+    }
+    // Neither the elapsed cutoff nor the explicit closed flag may count a result.
+    Arc::get_mut(&mut recorder).unwrap().plan.end = start;
+    recorder.msg1_start_result(false, StartResult::Accepted, parameters());
+    Arc::get_mut(&mut recorder).unwrap().plan.end = start + Duration::from_secs(30);
+    recorder.closed.store(true, Ordering::Relaxed);
+    recorder.msg1_start_result(true, StartResult::Accepted, parameters());
+    let state = recorder.lock();
+    for counts in [
+        &state.msg1_starts.stranger,
+        &state.msg1_starts.established_link,
+    ] {
+        assert_eq!(
+            (
+                counts.attempts,
+                counts.accepted,
+                counts.rate_limit,
+                counts.pending_limit
+            ),
+            (3, 1, 1, 1)
+        );
+    }
+    assert!(!state.msg1_starts.incomplete());
+}
+
+#[test]
+fn msg1_start_saturation_and_parameter_changes_are_explicit_and_bounded() {
+    let mut starts = Msg1Starts::default();
+    assert!(starts.incomplete());
+    starts.parameters(parameters());
+    starts.stranger.attempts = u64::MAX;
+    starts.stranger.accepted = u64::MAX;
+    let mut changed = parameters();
+    changed.max_pending += 1;
+    starts.record(false, StartResult::Accepted, changed);
+    assert_eq!(starts.stranger.attempts, u64::MAX);
+    assert_eq!(starts.stranger.accepted, u64::MAX);
+    assert!(starts.counter_overflow && starts.parameters_changed && starts.incomplete());
+    assert!(starts.parameters == Some(parameters()));
+    let summary = Summary {
+        schema: 2,
+        start_unix_ms: u64::MAX,
+        window_ms: WINDOW_MS,
+        open_late_us: u64::MAX,
+        terminal_late_us: u64::MAX,
+        carriers: CARRIERS,
+        carrier_overflow: u64::MAX,
+        selected_outside_window: u64::MAX,
+        rx_loops: u64::MAX,
+        early_exit: true,
+        encoding_overflow: false,
+        incomplete: starts.incomplete(),
+        msg1_starts: starts,
+    };
+    let json = bounded_json(&summary, TERMINAL_BYTES).unwrap();
+    assert!(!json.contains(TOKEN) && !json.contains("private-must-not-escape"));
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["schema"], 2);
+    assert_eq!(value["incomplete"], true);
+    assert_eq!(value["msg1_starts"]["parameters"]["max_pending"], 64);
+}
+
+#[tokio::test]
+async fn marked_admission_distinguishes_fifo_wait_credit_wait_and_fifo_cancellation() {
+    use crate::node::wire::build_msg1;
+    use crate::transport::{PacketBuffer, ReceivedPacket, packet_channel};
+    use crate::utils::index::SessionIndex;
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let recorder = recorder();
+    let handle = carrier(&recorder, 1);
+    let (tx, mut rx) = packet_channel(1);
+    let packet = ReceivedPacket::with_timestamp(
+        TransportId::new(1),
+        TransportAddr::from_string("private-must-not-escape/1"),
+        PacketBuffer::new(build_msg1(
+            SessionIndex::new(42),
+            &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+        )),
+        0,
+    );
+    for _ in 0..64 {
+        tx.send(packet.clone()).unwrap();
+    }
+    let make_span = |seq| {
+        handle.update(|c, r| {
+            c.admissions_active += 1;
+            c.record(r.event("msg1_read", Some(42), Some(seq), None));
+        });
+        Span {
+            handle: handle.clone(),
+            operation: Operation::Admission,
+            index: 42,
+            seq: Some(seq),
+            done: false,
+        }
+    };
+    let mut older = Box::pin(tx.send_stream_packet(packet.clone(), None));
+    poll_fn(|cx| {
+        assert!(older.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let span = make_span(1);
+    let mut marked = Box::pin(tx.send_stream_packet(packet.clone(), Some(&span)));
+    poll_fn(|cx| {
+        assert!(marked.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(
+        recorder.lock().carriers[0].events.last().unwrap().stage,
+        "admission_enter"
+    );
+    rx.try_recv().unwrap();
+    older.await.unwrap();
+    poll_fn(|cx| {
+        assert!(marked.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    {
+        let state = recorder.lock();
+        let event = state.carriers[0].events.last().unwrap();
+        assert_eq!(event.stage, "turn_acquired");
+        assert_eq!(
+            (
+                event.queue.as_ref().unwrap().reserved,
+                event.queue.as_ref().unwrap().queued
+            ),
+            (64, 64)
+        );
+    }
+    rx.try_recv().unwrap();
+    marked.await.unwrap();
+    span.finish("admitted");
+
+    // A cancelled FIFO waiter must have no invented turn-acquired event.
+    let mut older = Box::pin(tx.send_stream_packet(packet.clone(), None));
+    poll_fn(|cx| {
+        assert!(older.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let cancelled = make_span(2);
+    let mut waiting = Box::pin(tx.send_stream_packet(packet, Some(&cancelled)));
+    poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(waiting);
+    drop(cancelled);
+    drop(older);
+    assert_eq!(tx.reserved_packets_for_test(), 64);
+    while rx.try_recv().is_ok() {}
+    assert_eq!(tx.reserved_packets_for_test(), 0);
+    let state = recorder.lock();
+    let events = &state.carriers[0].events;
+    let stages = |seq| {
+        events
+            .iter()
+            .filter(|e| e.seq == Some(seq))
+            .map(|e| e.stage)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        stages(1),
+        [
+            "msg1_read",
+            "admission_enter",
+            "turn_acquired",
+            "admission_end"
+        ]
+    );
+    assert_eq!(stages(2), ["msg1_read", "admission_enter", "admission_end"]);
+    assert_eq!(events.last().unwrap().detail, Some("cancelled"));
+    assert!(events.windows(2).all(|pair| pair[0].us <= pair[1].us));
+    assert_eq!(state.carriers[0].admissions_active, 0);
 }
 
 // One isolated process exercises the real HTTP selector, stream queue and
@@ -316,7 +580,7 @@ async fn marked_upgrade_covers_reconnect_queue_cancellation_and_delayed_handler(
                 state
                     .carriers
                     .get(1)
-                    .filter(|c| c.admissions_active == 1)
+                    .filter(|c| c.events.iter().any(|e| e.stage == "turn_acquired"))
                     .map(|c| c.addr.clone())
             };
             if let Some(addr) = found {
@@ -387,6 +651,12 @@ async fn marked_upgrade_covers_reconnect_queue_cancellation_and_delayed_handler(
             .iter()
             .any(|e| e.stage == "admission_end" && e.detail == Some("cancelled"))
     );
+    assert!(state.carriers[1].events.iter().any(|e| {
+        e.stage == "turn_acquired"
+            && e.queue
+                .as_ref()
+                .is_some_and(|q| q.reserved == 64 && q.queued == 64)
+    }));
     assert!(
         state.carriers[2]
             .events

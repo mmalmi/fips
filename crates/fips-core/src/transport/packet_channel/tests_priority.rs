@@ -247,7 +247,7 @@ async fn stream_control_waits_for_consumed_batch_credit_without_blocking_bulk() 
     .unwrap();
     rx.try_recv().unwrap();
     tx.send(forged_priority(0x22)).unwrap();
-    let mut waiting = Box::pin(tx.send_stream_packet(forged_priority(0x33)));
+    let mut waiting = Box::pin(tx.send_stream_packet(forged_priority(0x33), None));
     poll_fn(|cx| {
         assert!(waiting.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -257,11 +257,14 @@ async fn stream_control_waits_for_consumed_batch_credit_without_blocking_bulk() 
     // Full bulk still drops immediately: it cannot stall a stream reader ahead
     // of later control frames or consume the separate priority reserve.
     for marker in [0xaa, 0xbb] {
-        tx.send_stream_packet(received_packet(
-            TransportId::new(1),
-            TransportAddr::from_string("test"),
-            bulk_packet(marker),
-        ))
+        tx.send_stream_packet(
+            received_packet(
+                TransportId::new(1),
+                TransportAddr::from_string("test"),
+                bulk_packet(marker),
+            ),
+            None,
+        )
         .await
         .unwrap();
     }
@@ -292,8 +295,8 @@ async fn cancelling_notified_stream_reader_hands_space_to_next_reader() {
         (0..64).map(|_| forged_priority(0x11)).collect(),
     ))
     .unwrap();
-    let mut first = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
-    let mut second = Box::pin(tx.send_stream_packet(forged_priority(0x33)));
+    let mut first = Box::pin(tx.send_stream_packet(forged_priority(0x22), None));
+    let mut second = Box::pin(tx.send_stream_packet(forged_priority(0x33), None));
     poll_fn(|cx| {
         assert!(first.as_mut().poll(cx).is_pending());
         assert!(second.as_mut().poll(cx).is_pending());
@@ -325,7 +328,7 @@ async fn receiver_close_wakes_all_stream_control_waiters() {
     for marker in 0..8 {
         let tx = tx.clone();
         tasks.push(tokio::spawn(async move {
-            tx.send_stream_packet(forged_priority(marker)).await
+            tx.send_stream_packet(forged_priority(marker), None).await
         }));
     }
     tokio::task::yield_now().await;
@@ -352,7 +355,7 @@ async fn stream_control_capacity_cannot_be_stolen_from_an_older_waiter() {
     for _ in 0..64 {
         tx.send(forged_priority(0x11)).unwrap();
     }
-    let mut older = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    let mut older = Box::pin(tx.send_stream_packet(forged_priority(0x22), None));
     poll_fn(|cx| {
         assert!(older.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -362,7 +365,7 @@ async fn stream_control_capacity_cannot_be_stolen_from_an_older_waiter() {
 
     // The consumer has released one credit and woken the waiting reader, but
     // it has not been scheduled yet. A hot new reader must not steal its turn.
-    let mut newer = Box::pin(tx.send_stream_packet(forged_priority(0x33)));
+    let mut newer = Box::pin(tx.send_stream_packet(forged_priority(0x33), None));
     poll_fn(|cx| {
         assert!(
             newer.as_mut().poll(cx).is_pending(),
@@ -390,7 +393,7 @@ async fn stream_control_is_not_starved_by_native_datagram_refill() {
     for _ in 0..64 {
         tx.send(forged_priority(0x11)).unwrap();
     }
-    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22), None));
     poll_fn(|cx| {
         assert!(reader.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -434,7 +437,7 @@ async fn native_batch_keeps_one_credit_for_waiting_stream() {
         (0..64).map(|_| forged_priority(0x11)).collect(),
     ))
     .unwrap();
-    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22), None));
     poll_fn(|cx| {
         assert!(reader.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -472,7 +475,7 @@ async fn cancelling_stream_restores_full_native_capacity() {
     for _ in 0..64 {
         tx.send(forged_priority(0x11)).unwrap();
     }
-    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22)));
+    let mut reader = Box::pin(tx.send_stream_packet(forged_priority(0x22), None));
     poll_fn(|cx| {
         assert!(reader.as_mut().poll(cx).is_pending());
         Poll::Ready(())

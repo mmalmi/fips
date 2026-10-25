@@ -102,15 +102,30 @@ impl PacketTx {
     pub(crate) async fn send_stream_packet(
         &self,
         packet: ReceivedPacket,
+        diagnostic: Option<&crate::marked_carrier_diagnostic::Span>,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
         if !packet.is_transport_priority() {
             return self.send(packet);
+        }
+        if let Some(span) = diagnostic {
+            span.admission_point(
+                false,
+                self.priority_reserved_packets.load(Relaxed),
+                self.priority_queued_packets.load(Relaxed),
+            );
         }
         // A notification is not a reservation: a hot reader could otherwise
         // repeatedly take released credits before a woken reader is polled.
         // FIFO stream admission keeps that reader's turn across the capacity
         // wait. Native datagrams and bulk retain their nonblocking paths.
         let _turn = self.priority_stream_turn.lock().await;
+        if let Some(span) = diagnostic {
+            span.admission_point(
+                true,
+                self.priority_reserved_packets.load(Relaxed),
+                self.priority_queued_packets.load(Relaxed),
+            );
+        }
         let available = self.priority_space.notified();
         tokio::pin!(available);
         loop {

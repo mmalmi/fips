@@ -252,6 +252,30 @@ pub struct HandshakeRateLimiter {
 }
 
 impl HandshakeRateLimiter {
+    pub(in crate::node) fn diagnostic_parameters(
+        &self,
+    ) -> crate::marked_carrier_diagnostic::LimiterParameters {
+        crate::marked_carrier_diagnostic::LimiterParameters {
+            stranger_burst: self.bucket.capacity,
+            stranger_rate: self.bucket.refill_rate,
+            established_burst: self.established.capacity,
+            established_rate: self.established.refill_rate,
+            max_pending: self.max_pending,
+        }
+    }
+
+    fn observe_start(
+        &self,
+        class: Msg1Class,
+        result: crate::marked_carrier_diagnostic::StartResult,
+    ) {
+        crate::marked_carrier_diagnostic::msg1_start_result(
+            class == Msg1Class::EstablishedLink,
+            result,
+            self.diagnostic_parameters(),
+        );
+    }
+
     pub fn with_params(bucket: TokenBucket, established: TokenBucket, max_pending: usize) -> Self {
         Self {
             bucket,
@@ -273,13 +297,25 @@ impl HandshakeRateLimiter {
         class: Msg1Class,
     ) -> Result<PendingHandshake, Msg1Refusal> {
         if self.pending.load(Ordering::Relaxed) >= self.max_pending {
+            self.observe_start(
+                class,
+                crate::marked_carrier_diagnostic::StartResult::PendingLimit,
+            );
             return Err(Msg1Refusal::PendingLimit);
         }
         if !self.bucket_for(class).try_acquire() {
+            self.observe_start(
+                class,
+                crate::marked_carrier_diagnostic::StartResult::RateLimit,
+            );
             return Err(Msg1Refusal::RateLimit);
         }
 
         self.pending.fetch_add(1, Ordering::Relaxed);
+        self.observe_start(
+            class,
+            crate::marked_carrier_diagnostic::StartResult::Accepted,
+        );
         Ok(PendingHandshake {
             pending: Arc::clone(&self.pending),
         })
@@ -375,6 +411,50 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    #[test]
+    #[ignore = "run alone: installs the process-wide marked-carrier recorder"]
+    fn marked_recorder_observes_actual_limiter_outcomes() {
+        let mut limiter = HandshakeRateLimiter::with_params(
+            TokenBucket::with_params(1, 0.0),
+            TokenBucket::with_params(1, 0.0),
+            1,
+        );
+        let observed = crate::marked_carrier_diagnostic::tests::capture_limiter_starts(
+            limiter.diagnostic_parameters(),
+            || {
+                let slot = limiter.start_handshake(Msg1Class::Stranger).unwrap();
+                for class in [Msg1Class::Stranger, Msg1Class::EstablishedLink] {
+                    assert_eq!(
+                        limiter.start_handshake(class).unwrap_err(),
+                        Msg1Refusal::PendingLimit
+                    );
+                }
+                drop(slot);
+                assert_eq!(
+                    limiter.start_handshake(Msg1Class::Stranger).unwrap_err(),
+                    Msg1Refusal::RateLimit
+                );
+                drop(limiter.start_handshake(Msg1Class::EstablishedLink).unwrap());
+                assert_eq!(
+                    limiter
+                        .start_handshake(Msg1Class::EstablishedLink)
+                        .unwrap_err(),
+                    Msg1Refusal::RateLimit
+                );
+                assert_eq!(limiter.pending_count(), 0);
+            },
+        );
+        assert_eq!(
+            observed,
+            serde_json::json!({
+                "stranger": {"attempts": 3, "accepted": 1, "rate_limit": 1, "pending_limit": 1},
+                "established_link": {"attempts": 3, "accepted": 1, "rate_limit": 1, "pending_limit": 1},
+                "parameters": {"stranger_burst": 1, "stranger_rate": 0.0,
+                    "established_burst": 1, "established_rate": 0.0, "max_pending": 1},
+                "parameters_changed": false, "counter_overflow": false,
+            })
+        );
+    }
     #[test]
     fn test_token_bucket_basic() {
         let mut bucket = TokenBucket::with_params(10, 1.0);

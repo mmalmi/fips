@@ -121,7 +121,9 @@ impl Node {
 
     async fn run_rx_loop_inner(&mut self, packet_rx: PacketRx) -> Result<(), NodeError> {
         let _service_time_window = crate::service_time_diagnostic::initialize_rx_loop();
-        let _marked_carrier_window = crate::marked_carrier_diagnostic::initialize_rx_loop();
+        let _marked_carrier_window = crate::marked_carrier_diagnostic::initialize_rx_loop(
+            self.msg1_rate_limiter.diagnostic_parameters(),
+        );
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
         // the channel from closing.
