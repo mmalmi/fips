@@ -27,6 +27,7 @@ pub mod peer_rating;
 pub(crate) mod perf_profile;
 pub(crate) mod proto;
 pub mod protocol;
+mod service_time_diagnostic;
 pub(crate) mod time;
 pub mod transport;
 pub mod tree;

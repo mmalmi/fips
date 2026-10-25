@@ -106,6 +106,9 @@ impl Node {
         &mut self,
         turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
+        let _service_time = crate::service_time_diagnostic::Span::start(
+            crate::service_time_diagnostic::Stage::SerialControl,
+        );
         if !turn.has_activity()
             && self.deferred_session_forwards.is_empty()
             && !self.dataplane.has_deferred_application_ingress()

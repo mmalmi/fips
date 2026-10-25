@@ -24,6 +24,9 @@ impl Node {
     }
 
     pub(in crate::node) fn sync_dataplane_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {
+        let _service_time = crate::service_time_diagnostic::Span::start(
+            crate::service_time_diagnostic::Stage::FmpOwnerSync,
+        );
         let Some(seed) = self.dataplane_fmp_owner_seed(node_addr) else {
             self.mark_dataplane_direct_fsp_sources_dirty();
             self.remove_dataplane_fmp_owner(node_addr);
@@ -265,7 +268,11 @@ impl Node {
         &mut self,
         next_hop_addr: &NodeAddr,
     ) -> usize {
+        let mut service_time = crate::service_time_diagnostic::Span::start(
+            crate::service_time_diagnostic::Stage::FspRouteRefresh,
+        );
         let destinations = self.dataplane.fsp_owner_destinations();
+        let destinations_scanned = destinations.len();
         let now_ms = Self::now_ms();
         let mut refreshed = 0usize;
         for dest in destinations {
@@ -294,6 +301,7 @@ impl Node {
                 refreshed = refreshed.saturating_add(1);
             }
         }
+        service_time.fanout(destinations_scanned, refreshed);
         refreshed
     }
 

@@ -7,6 +7,7 @@
 use super::Msg1Header;
 
 pub(super) struct Msg1Diagnostic {
+    pub(super) service_time: crate::service_time_diagnostic::Span,
     enabled: bool,
     sender_index: u64,
     pub(super) class: &'static str,
@@ -14,10 +15,11 @@ pub(super) struct Msg1Diagnostic {
 }
 
 impl Msg1Diagnostic {
-    pub(super) fn new(data: &[u8]) -> Self {
+    pub(super) fn new(data: &[u8], service_time: crate::service_time_diagnostic::Span) -> Self {
         let enabled =
             tracing::enabled!(target: "fips_core::msg1_diagnostic", tracing::Level::DEBUG);
         Self {
+            service_time,
             enabled,
             // Invalid headers have a sentinel outside the public u32 index range.
             // Parsing for diagnostics must not reorder the actual admission gate.

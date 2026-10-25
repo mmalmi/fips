@@ -200,6 +200,9 @@ impl Node {
     /// This creates a new inbound connection. Rate limiting is applied
     /// before any expensive crypto operations.
     pub(in crate::node) async fn handle_msg1(&mut self, packet: ReceivedPacket) {
+        let service_time = crate::service_time_diagnostic::Span::start(
+            crate::service_time_diagnostic::Stage::Msg1Unclassified,
+        );
         if crate::msg1_ingress_diagnostic::enabled()
             && matches!(
                 self.transports.get(&packet.transport_id),
@@ -208,7 +211,7 @@ impl Node {
         {
             crate::msg1_ingress_diagnostic::handler_entry(packet.data.as_slice());
         }
-        let mut diagnostic = Msg1Diagnostic::new(packet.data.as_slice());
+        let mut diagnostic = Msg1Diagnostic::new(packet.data.as_slice(), service_time);
         if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
             diagnostic.reason = "previous_carrier_incarnation";
             diagnostic.finish("unchecked");
@@ -245,6 +248,7 @@ impl Node {
         // Classify before crypto so established-link maintenance does not
         // compete with stranger traffic for rate capacity.
         let established = self.is_established_link_msg1(packet.transport_id, &packet.remote_addr);
+        diagnostic.service_time.classify_msg1(established);
         let class = if established {
             Msg1Class::EstablishedLink
         } else {
@@ -747,8 +751,12 @@ impl Node {
                                 &registered,
                                 "responder_pending_rekey",
                             );
-                            let route_ready = self.sync_dataplane_fmp_owner(&peer_node_addr)
-                                && self.dataplane_has_fmp_owner(&peer_node_addr);
+                            let route_ready = {
+                                let _service_time = crate::service_time_diagnostic::Span::start(
+                                    crate::service_time_diagnostic::Stage::Msg1RekeyOwnerSync,
+                                );
+                                self.sync_dataplane_fmp_owner(&peer_node_addr)
+                            } && self.dataplane_has_fmp_owner(&peer_node_addr);
                             let epoch_ready = pending_fmp_open.is_some_and(|open| {
                                 self.install_dataplane_fmp_pending_receive_epoch(
                                     &peer_node_addr,
