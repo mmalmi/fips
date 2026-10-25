@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.109] - 2026-10-25
+
+### Performance
+
+- Compare unchanged Bloom filters in whole words and avoid repeated comparisons
+  for peers already awaiting an update, preserving their retry deadlines.
+- Update uniquely owned route snapshots in place while preserving the snapshots
+  held by active readers.
+
 ## [0.4.106] - 2026-10-18
 
 ### Fixed
