@@ -1,0 +1,56 @@
+name: Marked carrier diagnostic qualification
+
+on:
+  push:
+    branches: [codex/marked-carrier-trace]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marked-carrier-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  focused-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      DIAGNOSTIC_SOURCE_SHA: e8ffed70d96a29a6a0355d5979e7111987f8d3b2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Preserve harness and select exact source
+        run: |
+          cp scripts/run-marked-carrier-ci.py "$RUNNER_TEMP/run-marked-carrier-ci.py"
+          git checkout --detach "$DIAGNOSTIC_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$DIAGNOSTIC_SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('Cargo.lock') }}-
+      - name: Compile and run only focused qualification
+        run: python3 "$RUNNER_TEMP/run-marked-carrier-ci.py"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: marked-carrier-qualification-${{ github.run_id }}
+          path: diagnostic-results/
+          if-no-files-found: warn
+          retention-days: 14

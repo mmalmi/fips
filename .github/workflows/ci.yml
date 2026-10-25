@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches-ignore: ["codex/marked-carrier-trace"]
   pull_request:
   workflow_dispatch:
     inputs:
