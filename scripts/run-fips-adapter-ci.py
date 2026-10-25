@@ -36,6 +36,8 @@ allowed = (["rust/Cargo.lock", "rust/fips-tcp-endpoint/Cargo.toml"]
            ["Cargo.toml", "crates/nostr-pubsub-fips/Cargo.toml"])
 assert sorted(changed) == sorted(allowed)
 lock_before = Path("Cargo.lock").read_bytes()
+if os.environ.get("ADAPTER_EXPECTED_LOCK_SHA256"):
+    assert sha(lock_before) == os.environ["ADAPTER_EXPECTED_LOCK_SHA256"]
 result = {"source_sha": source, "source_tree": git("rev-parse", "HEAD^{tree}"),
           "base_sha": os.environ["ADAPTER_BASE_SHA"], "source_changed_files": changed,
           "workflow_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],

@@ -23,26 +23,29 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
       CARGO_TERM_COLOR: never
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      ADAPTER_SOURCE_SHA: 1cf6d579352f64574c23de869220ba7e3ee9bbc7
-      ADAPTER_BASE_SHA: 2816724498d2e14c19bd2c92a629f7eabccbbf51
-      ADAPTER_WORKSPACE: rust
-      ADAPTER_PACKAGE: nvpn-fips-tcp-endpoint
-      ADAPTER_PACKAGE_PATH: rust/fips-tcp-endpoint
-      ADAPTER_VERSION: 0.2.44
-      ADAPTER_BASE_VERSION: 0.2.43
-      ADAPTER_BASE_CHECKSUM: 033a3287387c86f27e2f98fb5fb191bddaedf5845de5307352a49c9b16fe4ebf
-      ADAPTER_EXPECTED_TESTS: 15
+      ADAPTER_SOURCE_SHA: 5fe2001634fcf2d5d55ec501ea001cb192f092b5
+      ADAPTER_BASE_SHA: e811b3c96036c7fae917293a41a933d1d48ed9d4
+      ADAPTER_WORKSPACE: .
+      ADAPTER_PACKAGE: nostr-pubsub-fips
+      ADAPTER_PACKAGE_PATH: crates/nostr-pubsub-fips
+      ADAPTER_VERSION: 0.5.39
+      ADAPTER_BASE_VERSION: 0.5.38
+      ADAPTER_BASE_CHECKSUM: 858f3030892bb79590d0883763612b9f0afd82f794b4295c7f05c869f3a24ff6
+      ADAPTER_EXPECTED_TESTS: 111
+      ADAPTER_EXPECTED_LOCK_SHA256: 34395d5e8a025327d2a9458763489874b05c1e810caf4e003b1452bf6c136e89
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: mmalmi/fips-tcp
-          ref: 1cf6d579352f64574c23de869220ba7e3ee9bbc7
+          repository: mmalmi/nostr-pubsub
+          ref: 5fe2001634fcf2d5d55ec501ea001cb192f092b5
           path: adapter
           fetch-depth: 2
           persist-credentials: false
+      - name: Materialize the exact dependency lock
+        run: cp scripts/adapter-locks/pubsub-core109.lock adapter/Cargo.lock
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -51,8 +54,8 @@ jobs:
           path: |
             ~/.cargo/registry
             target
-          key: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('adapter/rust/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: fips-marked-carrier-1.95.0-debug0-e514e1028713089eb883dc41fc70852acb1965bd7778dabaa5dbc268d03c4780-40205937708
+          key: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('adapter/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: fips-marked-carrier-1.95.0-debug0-1bc1bf826224d1bb6eca6540ebedbd2a6426ca3ee81c6c809cd0ebbd5890ea9e-40207906100
       - name: Test and verify the exact adapter package
         run: python3 scripts/run-fips-adapter-ci.py
       - uses: actions/upload-artifact@v4
