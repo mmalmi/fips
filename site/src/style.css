@@ -227,3 +227,4 @@ nav>a:nth-child(2){display:none}
 .section-heading h2{align-self:start}
 .section-heading>p:last-child{align-self:center}
 
+.scene-footer>span:last-child{display:inline;font-size:10px}
