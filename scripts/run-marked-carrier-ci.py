@@ -55,9 +55,22 @@ logs.mkdir()
 started = time.monotonic()
 base = ["cargo", "test", "--locked", "-p", "nvpn-fips-core", "--lib", "--features", "sim-transport"]
 groups = [
-    ("recorder", "marked_carrier_diagnostic::tests::", [], 7, 1),
+    ("recorder", "marked_carrier_diagnostic::tests::", [], 10, 1),
     ("isolated-websocket", "marked_carrier_diagnostic::tests::marked_upgrade_covers_reconnect_queue_cancellation_and_delayed_handler",
      ["--ignored", "--exact"], 1, 0),
+    ("isolated-limiter", "node::rate_limit::tests::marked_recorder_observes_actual_limiter_outcomes",
+     ["--ignored", "--exact"], 1, 0),
+    ("limiter", "node::rate_limit::tests::", [], 14, 1),
+    *[("queue-" + name, "transport::packet_channel::tests::" + name, ["--exact"], 1, 0)
+      for name in [
+          "stream_control_waits_for_consumed_batch_credit_without_blocking_bulk",
+          "cancelling_notified_stream_reader_hands_space_to_next_reader",
+          "receiver_close_wakes_all_stream_control_waiters",
+          "stream_control_capacity_cannot_be_stolen_from_an_older_waiter",
+          "stream_control_is_not_starved_by_native_datagram_refill",
+          "native_batch_keeps_one_credit_for_waiting_stream",
+          "cancelling_stream_restores_full_native_capacity",
+      ]],
     ("write-lifetime", "transport::websocket::tests::write_lifetime::", [], 5, 0),
     ("url-only-seed", "node::tests::websocket::url_only_seed_hint_completes_noise_ik_and_datagram_exchange",
      ["--exact"], 1, 0),
@@ -93,7 +106,7 @@ try:
     if compiled:
         for name, test_filter, flags, expected, ignored in groups:
             run(name, base + [test_filter, "--", "--test-threads=1"] + flags, expected, ignored)
-    result["success"] = len(result["commands"]) == 5 and all(row["success"] for row in result["commands"])
+    result["success"] = len(result["commands"]) == 1 + len(groups) and all(row["success"] for row in result["commands"])
 finally:
     result["seconds"] = time.monotonic() - started
     result["tracked_diff_after"] = output("git", "diff", "--name-only", "HEAD")

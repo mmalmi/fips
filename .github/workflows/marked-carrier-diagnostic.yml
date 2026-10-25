@@ -23,11 +23,11 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
       CARGO_TERM_COLOR: never
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      DIAGNOSTIC_SOURCE_SHA: e8ffed70d96a29a6a0355d5979e7111987f8d3b2
+      DIAGNOSTIC_SOURCE_SHA: c06d566108d0c696acd2cf97e594a335287fef5d
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 4
           persist-credentials: false
       - name: Preserve harness and select exact source
         run: |
