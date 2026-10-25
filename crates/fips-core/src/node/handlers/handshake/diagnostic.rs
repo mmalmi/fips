@@ -12,6 +12,7 @@ pub(super) struct Msg1Diagnostic {
     sender_index: u64,
     pub(super) class: &'static str,
     pub(super) reason: &'static str,
+    pub(super) marked_carrier: Option<crate::marked_carrier_diagnostic::Span>,
 }
 
 impl Msg1Diagnostic {
@@ -32,10 +33,14 @@ impl Msg1Diagnostic {
             },
             class: "unchecked",
             reason: "unclassified",
+            marked_carrier: None,
         }
     }
 
-    pub(super) fn finish(self, carrier: &'static str) {
+    pub(super) fn finish(mut self, carrier: &'static str) {
+        if let Some(span) = self.marked_carrier.take() {
+            span.decision(self.class, self.reason, carrier);
+        }
         if self.enabled {
             // Exactly one record, including on early refusal. Cancellation before
             // handler completion emits none; close_requested is not delivery proof.

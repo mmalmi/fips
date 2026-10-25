@@ -20,14 +20,26 @@ where
     // small reserve closes the connection rather than blocking its reader.
     let (replies, reply_rx) = mpsc::channel(8);
     tokio::select! {
-        result = read(runtime, addr, stream, replies, nonce, generation, &deadlines) => result,
-        result = write(runtime, sink, rx, reply_rx, nonce) => result,
-        _ = deadlines.expired() => Err(TransportError::Timeout),
+        result = read(runtime, addr, stream, replies, nonce, generation, &deadlines) => {
+            crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr,
+                if result.is_err() { "read_error" } else { "read_end" });
+            result
+        },
+        result = write(runtime, addr, sink, rx, reply_rx, nonce) => {
+            crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr,
+                if result.is_err() { "write_error" } else { "write_end" });
+            result
+        },
+        reason = deadlines.expired() => {
+            crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr, reason);
+            Err(TransportError::Timeout)
+        },
     }
 }
 
 async fn write<S>(
     runtime: &Runtime,
+    addr: &TransportAddr,
     mut sink: S,
     mut rx: mpsc::Receiver<Vec<u8>>,
     mut replies: mpsc::Receiver<Message>,
@@ -53,19 +65,32 @@ where
     loop {
         let (message, data_len) = tokio::select! {
             reply = replies.recv() => {
-                let Some(reply) = reply else { return Ok(()); };
+                let Some(reply) = reply else {
+                    crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr, "reply_queue_closed");
+                    return Ok(());
+                };
                 (reply, None)
             }
             outbound = rx.recv() => {
-                let Some(data) = outbound else { return Ok(()); };
+                let Some(data) = outbound else {
+                    crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr, "output_queue_closed");
+                    return Ok(());
+                };
                 let len = data.len();
                 (Message::Binary(data.into()), Some(len))
             }
             _ = ping.tick(), if ping_secs > 0 => (Message::Ping(Bytes::new()), None),
         };
-        sink.send(message)
-            .await
-            .map_err(|error| TransportError::SendFailed(error.to_string()))?;
+        let marked_write = if let Message::Binary(data) = &message {
+            crate::marked_carrier_diagnostic::msg2_write(runtime.transport_id, addr, data)
+        } else {
+            None
+        };
+        let sent = sink.send(message).await;
+        if let Some(marked_write) = marked_write {
+            marked_write.finish(if sent.is_ok() { "sent" } else { "error" });
+        }
+        sent.map_err(|error| TransportError::SendFailed(error.to_string()))?;
         if let Some(len) = data_len {
             runtime.stats.frames_sent.fetch_add(1, Ordering::Relaxed);
             runtime
@@ -126,11 +151,21 @@ where
                         || validate_websocket_record(&data).is_err()
                     {
                         runtime.stats.invalid_frames.fetch_add(1, Ordering::Relaxed);
+                        crate::marked_carrier_diagnostic::terminal(
+                            runtime.transport_id,
+                            addr,
+                            "invalid_record",
+                        );
                         return Err(TransportError::RecvFailed(
                             "invalid WebSocket FIPS physical record".into(),
                         ));
                     }
                     let mut msg1_read = crate::msg1_ingress_diagnostic::websocket_read(&data);
+                    let marked_read = crate::marked_carrier_diagnostic::msg1_read(
+                        runtime.transport_id,
+                        addr,
+                        &data,
+                    );
                     let len = data.len();
                     let packet = ReceivedPacket::with_timestamp(
                         runtime.transport_id,
@@ -141,13 +176,22 @@ where
                     if let Some(msg1_read) = msg1_read.as_mut() {
                         msg1_read.begin_admission();
                     }
-                    runtime
-                        .packet_tx
-                        .send_stream_packet(packet)
-                        .await
-                        .map_err(|_| {
-                            TransportError::RecvFailed("node packet channel closed".into())
-                        })?;
+                    let admitted = runtime.packet_tx.send_stream_packet(packet).await;
+                    if let Some(marked_read) = marked_read {
+                        marked_read.finish(if admitted.is_ok() {
+                            "admitted"
+                        } else {
+                            "channel_closed"
+                        });
+                    }
+                    admitted.map_err(|_| {
+                        crate::marked_carrier_diagnostic::terminal(
+                            runtime.transport_id,
+                            addr,
+                            "node_channel_closed",
+                        );
+                        TransportError::RecvFailed("node packet channel closed".into())
+                    })?;
                     if let Some(msg1_read) = msg1_read {
                         msg1_read.admitted();
                     }
@@ -170,17 +214,52 @@ where
                 deadlines.received();
                 None
             }
-            Some(Ok(Message::Close(_))) | None => return Ok(()),
+            Some(Ok(Message::Close(_))) => {
+                crate::marked_carrier_diagnostic::terminal(
+                    runtime.transport_id,
+                    addr,
+                    "peer_close",
+                );
+                return Ok(());
+            }
+            None => {
+                crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr, "peer_eof");
+                return Ok(());
+            }
             Some(Ok(Message::Text(_) | Message::Frame(_))) => {
                 runtime.stats.invalid_frames.fetch_add(1, Ordering::Relaxed);
+                crate::marked_carrier_diagnostic::terminal(
+                    runtime.transport_id,
+                    addr,
+                    "non_binary",
+                );
                 return Err(TransportError::RecvFailed(
                     "WebSocket transport accepts binary messages only".into(),
                 ));
             }
-            Some(Err(error)) => return Err(TransportError::RecvFailed(error.to_string())),
+            Some(Err(error)) => {
+                use tokio_tungstenite::tungstenite::{Error, error::ProtocolError};
+                let reason = match &error {
+                    Error::Protocol(ProtocolError::ResetWithoutClosingHandshake) => "peer_reset",
+                    Error::Protocol(_) => "read_protocol",
+                    Error::Io(_) => "read_io",
+                    _ => "read_error",
+                };
+                crate::marked_carrier_diagnostic::terminal(runtime.transport_id, addr, reason);
+                return Err(TransportError::RecvFailed(error.to_string()));
+            }
         };
         if let Some(reply) = reply {
-            replies.try_send(reply).map_err(|_| {
+            replies.try_send(reply).map_err(|error| {
+                crate::marked_carrier_diagnostic::terminal(
+                    runtime.transport_id,
+                    addr,
+                    if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                        "reply_queue_full"
+                    } else {
+                        "reply_queue_closed"
+                    },
+                );
                 TransportError::SendFailed("WebSocket control reply queue unavailable".into())
             })?;
         }
@@ -240,22 +319,24 @@ impl Deadlines {
         self.activity().hint = None;
     }
 
-    async fn expired(&self) {
+    async fn expired(&self) -> &'static str {
         loop {
             let deadline = {
                 let activity = self.activity();
                 activity
                     .hint
                     .into_iter()
+                    .map(|deadline| (deadline, "hint_timeout"))
                     .chain(
                         self.idle_after
-                            .and_then(|idle| activity.received.checked_add(idle)),
+                            .and_then(|idle| activity.received.checked_add(idle))
+                            .map(|deadline| (deadline, "idle_timeout")),
                     )
-                    .min()
+                    .min_by_key(|(deadline, _)| *deadline)
             };
             match deadline {
-                Some(deadline) if deadline <= Instant::now() => return,
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                Some((deadline, reason)) if deadline <= Instant::now() => return reason,
+                Some((deadline, _)) => tokio::time::sleep_until(deadline).await,
                 None => std::future::pending().await,
             }
         }

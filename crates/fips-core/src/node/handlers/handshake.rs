@@ -212,6 +212,11 @@ impl Node {
             crate::msg1_ingress_diagnostic::handler_entry(packet.data.as_slice());
         }
         let mut diagnostic = Msg1Diagnostic::new(packet.data.as_slice(), service_time);
+        diagnostic.marked_carrier = crate::marked_carrier_diagnostic::handler_entry(
+            packet.transport_id,
+            &packet.remote_addr,
+            packet.data.as_slice(),
+        );
         if self.packet_predates_carrier_rebind(packet.transport_id, packet.timestamp_ms) {
             diagnostic.reason = "previous_carrier_incarnation";
             diagnostic.finish("unchecked");

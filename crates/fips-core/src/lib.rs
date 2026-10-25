@@ -18,6 +18,7 @@ pub mod identity {
     pub use fips_identity::*;
 }
 pub(crate) mod dataplane;
+mod marked_carrier_diagnostic;
 pub mod mmp;
 mod msg1_ingress_diagnostic;
 pub mod node;

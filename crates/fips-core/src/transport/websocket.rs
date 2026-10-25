@@ -365,6 +365,26 @@ impl WebSocketTransport {
         addr: &TransportAddr,
         data: &[u8],
     ) -> Result<usize, TransportError> {
+        let result = self.send_queued(addr, data);
+        let reason = match &result {
+            Ok(_) => "queued",
+            Err(TransportError::NotStarted) => "not_started",
+            Err(TransportError::MtuExceeded { .. }) => "mtu_exceeded",
+            Err(TransportError::SendFailed(message)) if message == "WebSocket send queue full" => {
+                "queue_full"
+            }
+            Err(TransportError::SendFailed(message))
+                if message == "WebSocket connection closed" =>
+            {
+                "queue_closed"
+            }
+            Err(_) => "send_failed",
+        };
+        crate::marked_carrier_diagnostic::msg2_queued(self.transport_id, addr, data, reason);
+        result
+    }
+
+    fn send_queued(&self, addr: &TransportAddr, data: &[u8]) -> Result<usize, TransportError> {
         if !self.state.is_operational() {
             return Err(TransportError::NotStarted);
         }
@@ -602,8 +622,10 @@ async fn accept_connection(
     network_rebind_generation: u64,
 ) -> Result<(), TransportError> {
     let path = runtime.config.path().to_owned();
-    let callback = move |request: &Request, response: Response| {
+    let mut marked = false;
+    let callback = |request: &Request, response: Response| {
         if request.uri().path() == path {
+            marked = crate::marked_carrier_diagnostic::matches_query(request.uri().query());
             Ok(response)
         } else {
             let mut error = ErrorResponse::new(Some("not found".into()));
@@ -620,6 +642,9 @@ async fn accept_connection(
     .map_err(|_| TransportError::ConnectionRefused)?;
     let generation = runtime.next_generation();
     let addr = TransportAddr::from_string(&format!("ws-peer://{peer_addr}/{generation}"));
+    if marked {
+        crate::marked_carrier_diagnostic::register(runtime.transport_id, &addr, generation);
+    }
     run_connection(
         runtime,
         addr,
@@ -644,17 +669,29 @@ async fn run_connection<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let _marked_guard =
+        crate::marked_carrier_diagnostic::connection_guard(runtime.transport_id, &addr);
     let (tx, rx) = mpsc::channel::<Vec<u8>>(runtime.config.max_send_queue());
     let (close_tx, close_rx) = oneshot::channel();
     {
         let mut pool = runtime.connections();
         // A handshake started on the previous underlay must not repopulate the cleared pool.
         if *runtime.network_rebind_generation.borrow() != expected_network_rebind_generation {
+            crate::marked_carrier_diagnostic::terminal(
+                runtime.transport_id,
+                &addr,
+                "registration_rebind",
+            );
             return Err(TransportError::StartFailed(
                 "network changed during WebSocket handshake".into(),
             ));
         }
         if pool.contains_key(&addr) {
+            crate::marked_carrier_diagnostic::terminal(
+                runtime.transport_id,
+                &addr,
+                "registration_duplicate",
+            );
             return Err(TransportError::AlreadyStarted);
         }
         let mut statuses = runtime.statuses();
@@ -663,6 +700,11 @@ where
                 status.generation == generation && status.state == ConnectionState::Connecting
             })
         {
+            crate::marked_carrier_diagnostic::terminal(
+                runtime.transport_id,
+                &addr,
+                "registration_retired",
+            );
             return Err(TransportError::StartFailed(
                 "WebSocket dial retired during handshake".into(),
             ));
@@ -694,7 +736,10 @@ where
 
     let outcome = tokio::select! {
         biased;
-        _ = close_rx => Ok(()),
+        _ = close_rx => {
+            crate::marked_carrier_diagnostic::terminal(runtime.transport_id, &addr, "local_close");
+            Ok(())
+        },
         result = connection::run(&runtime, &addr, websocket, rx, request_key_hint, generation) => result,
     };
     runtime.remove_connection(&addr, Some(generation));
