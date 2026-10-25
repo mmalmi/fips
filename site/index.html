@@ -29,9 +29,10 @@
 <main id="main" class="overview wrap">
   <div class="intro">
     <h1>Router software for free or paid mesh networks</h1>
-    <p class="lede">Freedom forwards encrypted data between devices running FIPS. Several routers can pass the data along, so the sender and receiver do not need a direct connection.</p>
+    <p class="lede">Freedom forwards encrypted data between devices running <a href="https://fips.network/">FIPS</a>. Several routers can pass the data along, so the sender and receiver do not need a direct connection.</p>
     <p>You can offer forwarding for free, or charge according to the amount of traffic. On a paid route, each router automatically pays the next router.</p>
-    <p class="availability"><strong>Current status:</strong> developer software tested on OpenWrt routers. It requires compatible clients and manual setup. It is not yet a ready-to-use paid Wi-Fi internet hotspot.</p>
+    <p><strong>For internet access, use an exit.</strong> <a href="https://nostrvpn.org/">Nostr VPN</a> provides internet exits through a trusted device or a paid provider. <a href="#internet-access">See how it fits with Freedom.</a></p>
+    <p class="availability"><strong>Current status:</strong> developer software tested on OpenWrt routers and Android phones. It requires compatible clients and manual setup. It is not yet a ready-to-use paid Wi-Fi internet hotspot.</p>
     <a class="button primary" href="/setup/">OpenWrt setup instructions</a>
   </div>
 
@@ -90,10 +91,11 @@
   </section>
 
   <section id="internet-access">
-    <h2>Can I sell normal Wi-Fi internet access with it?</h2>
-    <p><strong>Not as a complete service today.</strong> The current software sells forwarding inside the FIPS network.</p>
-    <p>To give ordinary Wi-Fi users paid access to websites and other internet services, it also needs an internet exit, a client or gateway integration, and a customer payment flow. A captive portal—the sign-in or payment page shown by a hotspot—is not included.</p>
-    <p>Joining a Freedom router’s Wi-Fi does not automatically give an ordinary phone internet access or make it a paying FIPS client.</p>
+    <h2>How do I get internet access?</h2>
+    <p>An <strong>internet exit</strong> connects your traffic to ordinary websites and other internet services. Freedom carries traffic between mesh nodes; an exit provides the connection beyond the mesh.</p>
+    <p><strong><a href="https://nostrvpn.org/">Nostr VPN</a> provides client apps and internet exits.</strong> You can use a trusted device as your exit or buy bandwidth from an independent provider. You can also run an exit and set a price for its traffic. Paid exits are experimental.</p>
+    <p>The setup guide here configures Freedom relays. It does not yet configure or verify Nostr VPN over a paid Freedom route; that connection needs separate integration and testing.</p>
+    <p>Joining a Freedom router’s Wi-Fi does not automatically provide internet access or make a phone a paying client. Freedom does not include a hotspot sign-in or payment page.</p>
   </section>
 
   <section id="requirements">
@@ -101,27 +103,27 @@
     <ul>
       <li><strong>Compatible OpenWrt hardware.</strong> The package targets OpenWrt 25.12 or newer. Testing used ARM64 Cudy TR3000 v1 routers. Other models need their own compatibility and resource checks.</li>
       <li><strong>A link between devices.</strong> Start with a dedicated Wi-Fi mesh interface or Ethernet interface, while keeping your normal management network available.</li>
-      <li><strong>Matching software builds and a compatible client.</strong> An Android test client is available as source. It is not a finished consumer app.</li>
+      <li><strong>Matching software builds and a compatible client.</strong> The Android <strong>FIPS Bench</strong> app has been built and tested on phones. It is a developer test tool, available as source, rather than an everyday VPN app.</li>
       <li><strong>Build and configuration work.</strong> There is no public signed one-click Freedom release or standard package-feed install yet. The current relay requires matched development dependencies.</li>
     </ul>
     <p>Start with two nodes to check connectivity, then use at least three to test forwarding through an intermediate node. Add payments after the free route works.</p>
-    <p><a href="/setup/">Read the OpenWrt setup guide</a> · <a href="https://github.com/mmalmi/fips/blob/master/crates/fips-relay-app/README.md">Android test-client instructions</a></p>
+    <p><a href="/setup/">Read the OpenWrt setup guide</a> · <a href="https://github.com/mmalmi/fips/blob/master/crates/fips-relay-app/README.md">Android FIPS Bench instructions</a></p>
   </section>
 
   <section id="status">
     <h2>What has been tested?</h2>
-    <p>Controlled tests on Linux, three OpenWrt routers and an Android test client cover paid forwarding, spending limits, route changes and recovery from selected failures.</p>
+    <p>Controlled tests on Linux, three OpenWrt routers and Android phones running the test client cover paid forwarding, spending limits, route changes and recovery from selected failures.</p>
     <p>That does not establish public real-money readiness, compatibility across different software versions, support for every OpenWrt router, or uninterrupted service while routers move around.</p>
     <p><a href="https://github.com/mmalmi/fips/blob/master/crates/fips-relay/READINESS.md">Detailed test evidence and known limits</a></p>
   </section>
 
   <section id="fips">
     <h2>What is the difference between Freedom and FIPS?</h2>
-    <p><strong>FIPS</strong> is the underlying encrypted routing system. It gives devices cryptographic identities and routes traffic across different links.</p>
+    <p><strong><a href="https://fips.network/">FIPS</a></strong> is the underlying encrypted routing system. It gives devices cryptographic identities and routes traffic across different links.</p>
     <p><strong>Freedom</strong> is the forwarding service described on this site, including optional payments and the OpenWrt controls. It is implemented in the Iris FIPS repository as <code>fips-relay</code>. FIPS can also be used without paid forwarding.</p>
     <p><a href="https://github.com/mmalmi/fips">Iris FIPS implementation</a> · <a href="https://github.com/jmcorgan/fips">Original FIPS project</a></p>
   </section>
 </main>
-<footer class="footer wrap"><span>Freedom · Open-source software built on FIPS</span><div><a href="/setup/">Setup guide</a><a href="https://github.com/mmalmi/fips">Source</a><a href="https://iris.to">Iris</a></div></footer>
+<footer class="footer wrap"><span>Freedom · Open-source software built on <a href="https://fips.network/">FIPS</a></span><div><a href="/setup/">Setup guide</a><a href="https://github.com/mmalmi/fips">Source</a><a href="https://iris.to">Iris</a></div></footer>
 </body>
 </html>
