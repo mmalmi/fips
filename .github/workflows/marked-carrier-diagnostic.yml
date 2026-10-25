@@ -1,4 +1,4 @@
-name: FIPS 0.4.109 package qualification
+name: FIPS 0.4.109 adapter qualification
 
 on:
   push:
@@ -23,18 +23,26 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
       CARGO_TERM_COLOR: never
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      PRODUCTION_SOURCE_SHA: 824ed235d8422f99c51d898affb1931a83fb98ca
+      ADAPTER_SOURCE_SHA: 1cf6d579352f64574c23de869220ba7e3ee9bbc7
+      ADAPTER_BASE_SHA: 2816724498d2e14c19bd2c92a629f7eabccbbf51
+      ADAPTER_WORKSPACE: rust
+      ADAPTER_PACKAGE: nvpn-fips-tcp-endpoint
+      ADAPTER_PACKAGE_PATH: rust/fips-tcp-endpoint
+      ADAPTER_VERSION: 0.2.44
+      ADAPTER_BASE_VERSION: 0.2.43
+      ADAPTER_BASE_CHECKSUM: 033a3287387c86f27e2f98fb5fb191bddaedf5845de5307352a49c9b16fe4ebf
+      ADAPTER_EXPECTED_TESTS: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 4
           persist-credentials: false
-      - name: Preserve harness and select exact source
-        run: |
-          cp scripts/run-fips-package-ci.py "$RUNNER_TEMP/run-fips-package-ci.py"
-          git checkout --detach "$PRODUCTION_SOURCE_SHA"
-          test "$(git rev-parse HEAD)" = "$PRODUCTION_SOURCE_SHA"
-          test -z "$(git status --porcelain)"
+      - uses: actions/checkout@v4
+        with:
+          repository: mmalmi/fips-tcp
+          ref: 1cf6d579352f64574c23de869220ba7e3ee9bbc7
+          path: adapter
+          fetch-depth: 2
+          persist-credentials: false
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -43,14 +51,14 @@ jobs:
           path: |
             ~/.cargo/registry
             target
-          key: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: fips-marked-carrier-1.95.0-debug0-e514e1028713089eb883dc41fc70852acb1965bd7778dabaa5dbc268d03c4780-40205177265
-      - name: Package and verify both default libraries
-        run: python3 "$RUNNER_TEMP/run-fips-package-ci.py"
+          key: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('adapter/rust/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: fips-marked-carrier-1.95.0-debug0-e514e1028713089eb883dc41fc70852acb1965bd7778dabaa5dbc268d03c4780-40205937708
+      - name: Test and verify the exact adapter package
+        run: python3 scripts/run-fips-adapter-ci.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fips-package-qualification-${{ github.run_id }}
-          path: package-results/
+          name: fips-adapter-qualification-${{ github.run_id }}
+          path: adapter-results/
           if-no-files-found: warn
           retention-days: 14
