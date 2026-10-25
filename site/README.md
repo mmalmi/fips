@@ -1,7 +1,7 @@
 # freedom.iris.to
 
-Static Freedom overview and OpenWrt setup guide. Vite builds plain HTML, CSS
-and small progressive enhancements; all explanations and setup steps work without
+Plain-language Freedom overview and OpenWrt setup guide. Vite builds plain HTML, CSS
+and copy buttons; all explanations and setup steps work without
 JavaScript. The site lives with the implementation so feature claims and operator
 instructions can be reviewed together.
 
@@ -32,6 +32,6 @@ package guide. Do not add private bench identities, addresses or financial data.
 
 The focused built-output test checks internal navigation, source links, basic
 metadata, static content and the deployment/privacy boundary. Visual acceptance
-also checks desktop/mobile, the free/paid example, copy controls and JavaScript-
+also checks desktop/mobile, the message route, payment example, copy controls and JavaScript-
 disabled rendering in a real browser. Recheck the public root, `/setup/`, a missing
 URL and security headers after deploying.

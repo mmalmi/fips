@@ -25,13 +25,10 @@ fs.mkdirSync(output, { recursive: true });
       }
     }
     await page.goto(base + '/', { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: 'Paid', exact: true }).click();
-    await page.getByText('3 sats / MiB', { exact: true }).waitFor();
-    assert.equal(await page.getByRole('button', { name: 'Paid', exact: true }).getAttribute('aria-pressed'), 'true');
-    await page.getByRole('button', { name: 'Free', exact: true }).click();
-    await page.getByText('0 sats', { exact: true }).waitFor();
-    await page.getByText('Does this sell ordinary Wi-Fi internet access?', { exact: true }).click();
-    assert(await page.locator('details[open]').innerText().then(s => s.includes('separate integrations')));
+    await page.getByRole('heading', { name: 'What can I do with it?', exact: true }).waitFor();
+    assert.equal(await page.locator('.message-hops li').count(), 4);
+    assert.equal(await page.locator('.payment-example tbody tr').count(), 3);
+    assert(await page.locator('#internet-access').innerText().then(s => s.includes('Not as a complete service today.')));
     await page.goto(base + '/setup/');
     const copy = page.locator('[data-copy="status-command"]');
     await copy.click();
@@ -50,7 +47,7 @@ fs.mkdirSync(output, { recursive: true });
     assert.equal(await plain.locator('details[open]').count(), 1);
     assert.deepEqual(errors, []);
     assert.deepEqual(failures, []);
-    console.log('Passed desktop/390px/320px layouts, free/paid example, copy, anchors, FAQ, no-JS content; zero page errors or failed requests.');
+    console.log('Passed desktop/390px/320px layouts, message route, payment example, copy, anchors, troubleshooting, no-JS content; zero page errors or failed requests.');
     await noJS.close();
     await context.close();
   } finally { await browser.close(); }
