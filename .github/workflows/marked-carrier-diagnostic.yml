@@ -1,4 +1,4 @@
-name: FIPS production composition qualification
+name: FIPS 0.4.109 package qualification
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
           persist-credentials: false
       - name: Preserve harness and select exact source
         run: |
-          cp scripts/run-marked-carrier-ci.py "$RUNNER_TEMP/run-marked-carrier-ci.py"
+          cp scripts/run-fips-package-ci.py "$RUNNER_TEMP/run-fips-package-ci.py"
           git checkout --detach "$PRODUCTION_SOURCE_SHA"
           test "$(git rev-parse HEAD)" = "$PRODUCTION_SOURCE_SHA"
           test -z "$(git status --porcelain)"
@@ -44,13 +44,13 @@ jobs:
             ~/.cargo/registry
             target
           key: fips-marked-carrier-1.95.0-debug0-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: fips-marked-carrier-1.95.0-debug0-f0a6f8ff3f1dc64a0b1e26ae68a2772552f1fb5bbb763f10c11024c386bac0d9-40201064936
-      - name: Compile and run only focused qualification
-        run: python3 "$RUNNER_TEMP/run-marked-carrier-ci.py"
+          restore-keys: fips-marked-carrier-1.95.0-debug0-e514e1028713089eb883dc41fc70852acb1965bd7778dabaa5dbc268d03c4780-40205177265
+      - name: Package and verify both default libraries
+        run: python3 "$RUNNER_TEMP/run-fips-package-ci.py"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fips-production-qualification-${{ github.run_id }}
-          path: production-results/
+          name: fips-package-qualification-${{ github.run_id }}
+          path: package-results/
           if-no-files-found: warn
           retention-days: 14
