@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+<rect width="1200" height="630" fill="#f7f7ef"/>
+<rect x="45" y="45" width="1110" height="540" rx="20" fill="none" stroke="#dcded3"/>
+<g fill="#282439" font-family="Arial, Helvetica, sans-serif"><text x="85" y="125" font-size="36" font-weight="700">freedom</text><text x="85" y="275" font-size="72" font-weight="700" letter-spacing="-3">A network built</text><text x="85" y="359" font-size="72" font-weight="700" letter-spacing="-3">by its neighbors.</text><text x="85" y="435" font-size="23" fill="#65646c">Encrypted mesh routing. Optional paid forwarding.</text><text x="85" y="540" font-size="20">freedom.iris.to</text></g>
+<g stroke="#8b6dc2" stroke-width="4" fill="none"><path d="m875 180 125 135-125 130-100-130zm-100 135h225"/></g>
+<g stroke="#b5b1be" stroke-width="2"><rect x="830" y="135" width="90" height="90" rx="23" fill="#dfd7f8"/><rect x="955" y="270" width="90" height="90" rx="23" fill="#cbf48a"/><rect x="830" y="400" width="90" height="90" rx="23" fill="#dfd7f8"/><rect x="730" y="270" width="90" height="90" rx="23" fill="#fff"/></g>
+<g fill="#282439"><circle cx="875" cy="180" r="8"/><circle cx="1000" cy="315" r="8"/><circle cx="875" cy="445" r="8"/><circle cx="775" cy="315" r="8"/></g>
+</svg>

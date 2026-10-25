@@ -1,0 +1,70 @@
+.guide-intro{padding:66px 0 45px;border-bottom:1px solid var(--line)}
+.guide-intro h1{font-size:clamp(48px,5.4vw,72px)}
+.guide-intro .lede{max-width:640px}
+.guide-meta{display:flex;gap:25px;font-size:11px;color:var(--muted);margin-top:25px}
+.guide-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:75px;padding-top:45px;padding-bottom:65px}
+.guide-nav{align-self:start;position:sticky;top:25px}
+.guide-nav nav{display:flex;flex-direction:column;align-items:flex-start;gap:18px;font-size:12px}
+.guide-nav .eyebrow{margin-bottom:8px}
+.guide-nav nav a{display:block;padding:0;border:none}
+.guide-source{font-size:11px;display:block;margin-top:32px;line-height:1.7;color:var(--muted)}
+.guide-body{max-width:780px}
+.guide-body section{padding-top:48px;margin-top:48px;border-top:1px solid var(--line);scroll-margin-top:25px}
+.guide-body section:first-of-type{margin-top:40px}
+.guide-body section .eyebrow{margin-bottom:18px}
+.guide-body h2{font-size:35px;line-height:1.15;margin-bottom:24px}
+.guide-body p,.guide-body li{font-size:15px;color:#56545e;line-height:1.8}
+.guide-body strong{color:var(--ink);font-weight:600}
+.guide-body ul,.guide-body ol{padding-left:22px;margin:20px 0}
+.guide-body li{padding-left:5px;margin:0 0 14px}
+.guide-body li::marker{color:#71608e;font-weight:600}
+.guide-body a:not(.button){text-decoration:underline;text-decoration-color:#b9afc9;text-underline-offset:4px}
+.guide-body .text-link{line-height:1.6}
+.guide-body code{font-family:"SFMono-Regular",Consolas,monospace;font-size:.88em;overflow-wrap:anywhere;background:#eaeae1;padding:2px 4px;border-radius:3px;color:var(--ink)}
+.callout{background:#eee8fa;border-left:3px solid #9b83c5;padding:22px 25px;border-radius:0 7px 7px 0}
+.callout>strong{font-size:16px;line-height:1.5;display:block}
+.callout p{margin:9px 0 0;font-size:14px;line-height:1.75}
+.callout.subtle{background:#e9edde;border-color:#9da984;margin:25px 0}
+.package-pair{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:28px 0}
+.package-pair>div{border:1px solid var(--line);padding:20px;border-radius:6px}
+.package-pair code{background:none;padding:0;font-size:15px;font-weight:600}
+.package-pair p{font-size:13px;margin:12px 0 0;line-height:1.65}
+.guide-links{display:flex;flex-direction:column;gap:12px;margin:22px 0 28px;font-size:13px;line-height:1.6}
+.code-block{margin:22px 0 16px;border-radius:7px;background:var(--ink);color:var(--paper);overflow:hidden}
+.code-block>div{border-bottom:1px solid #50495f;display:flex;justify-content:space-between;align-items:center;gap:15px;padding:11px 16px;font:9px Consolas,monospace;letter-spacing:.5px}
+.code-block button{background:#4c445e;border:1px solid #756a86;color:white;font-size:11px;border-radius:4px;padding:5px 11px}
+.code-block button:hover{background:#655876}
+.code-block pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:21px 18px;line-height:1.8}
+.code-block code{background:none;color:#e2f7c2;font-size:12px;padding:0}
+.guide-body p.caption{font-size:12px;line-height:1.7}
+.guide-body .faqs p{padding-right:0}
+.guide-body summary{font-size:16px}
+.guide-end{margin-top:50px;border-radius:8px;padding:30px;background:#e9edde}
+.guide-end h3{margin-bottom:15px}
+.guide-end p{font-size:14px}
+.missing{min-height:70vh;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding-block:60px}
+.missing p:not(.eyebrow){max-width:440px;margin-top:25px;color:var(--muted)}
+
+@media(max-width:1050px){.guide-layout{grid-template-columns:180px minmax(0,1fr);gap:38px}
+}
+
+@media(max-width:760px){.guide-intro{padding-top:45px}
+.guide-meta{flex-direction:column;gap:9px}
+.guide-layout{grid-template-columns:1fr;gap:30px;padding-top:30px}
+.guide-nav{position:static;border-bottom:1px solid var(--line);padding-bottom:28px}
+.guide-nav nav{display:grid;grid-template-columns:1fr 1fr;gap:18px 10px}
+.guide-nav nav .eyebrow{grid-column:1/-1;margin:0}
+.guide-nav nav>a:first-of-type{display:block}
+.guide-source{margin-top:22px}
+.guide-body h2{font-size:30px}
+.guide-body section{padding-top:35px;margin-top:35px}
+.guide-body p,.guide-body li{font-size:14px}
+.callout{padding:20px}
+.package-pair{grid-template-columns:1fr;gap:14px}
+.package-pair>div{padding:18px}
+.guide-end{padding:25px}
+.guide-end .button{font-size:12px}
+.code-block pre{padding:18px 14px}
+.code-block code{font-size:11px}
+}
+

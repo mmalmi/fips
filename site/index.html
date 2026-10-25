@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Freedom — A network built by its neighbors</title>
+  <meta name="description" content="Turn everyday routers into an encrypted peer-to-peer mesh. Explore Freedom's optional paid forwarding, and the OpenWrt setup guide.">
+  <link rel="canonical" href="https://freedom.iris.to/">
+  <meta property="og:title" content="Freedom — A network built by its neighbors"><meta property="og:description" content="Your router. Your network. Encrypted mesh routing with optional payments for forwarding."><meta property="og:type" content="website"><meta property="og:url" content="https://freedom.iris.to/"><meta property="og:image" content="https://freedom.iris.to/social.png">
+  <meta name="twitter:card" content="summary_large_image"><meta name="theme-color" content="#f7f7ef">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/src/style.css"><script type="module" src="/src/main.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header wrap">
+  <a class="brand" href="/" aria-label="Freedom home"><img src="/favicon.svg" width="32" height="32" alt="">freedom</a>
+  <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="https://github.com/mmalmi/fips">Source <span aria-hidden="true">↗</span></a><a class="nav-cta" href="/setup/">Set up a router <span aria-hidden="true">↗</span></a></nav>
+</header>
+<main id="main">
+<section class="hero wrap">
+  <div class="hero-copy">
+    <h1>A network built<br>by its <em>neighbors.</em></h1>
+    <p class="lede">Your router can be part of something bigger. Freedom connects peers across Wi-Fi, cables, and the internet—with optional payments for the traffic you carry.</p>
+    <div class="actions"><a class="button primary" href="/setup/">Build your first mesh <span aria-hidden="true">↗</span></a><a class="text-link" href="#freedom">Meet Freedom <span aria-hidden="true">↓</span></a></div>
+    <p class="hero-note">Open source. Self-generated identities. Optional paid forwarding.</p>
+  </div>
+  <div class="mesh-scene">
+    <svg class="mesh-map" viewBox="0 0 560 400" role="img" aria-labelledby="mesh-title mesh-desc">
+      <title id="mesh-title">An illustrative FIPS neighborhood mesh</title><desc id="mesh-desc">A phone connects to a home router. Routers at a home, café and mobile camper link together, and a cable connects another peer. FIPS can route encrypted traffic across these links.</desc>
+      <defs><pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#d7d8ce"/></pattern></defs>
+      <rect width="560" height="400" fill="url(#grid)"/>
+      <g class="map-links"><path d="M100 115 280 200 450 90M280 200 440 310M100 115 115 330M115 330 280 200M450 90 440 310"/><path class="active-link" d="M100 115 280 200 440 310"/></g>
+      <g class="link-label"><rect x="175" y="124" width="60" height="24" rx="12"/><text x="205" y="141">Wi-Fi</text><rect x="357" y="242" width="66" height="24" rx="12"/><text x="390" y="259">cable</text></g>
+      <g transform="translate(52 69)"><rect class="map-node" width="96" height="92" rx="23"/><path class="device-line" d="M28 35v-16m40 16v-16M25 40h46v22H25z"/><circle cx="35" cy="51" r="3" fill="#75a44a"/><path class="device-line" d="M45 51h16"/><text class="node-name" x="48" y="120">Home router</text></g>
+      <g transform="translate(222 144)"><rect class="map-node central" width="116" height="110" rx="27"/><path class="device-line" d="M35 46V27m46 19V27M30 50h56v28H30z"/><circle cx="42" cy="64" r="3" fill="#282439"/><path class="device-line" d="M54 64h20M43 25q15-15 30 0m-23 6q8-8 16 0"/><text class="node-name" x="58" y="138">Your router</text></g>
+      <g transform="translate(407 48)"><rect class="map-node lilac" width="86" height="82" rx="22"/><path class="device-line" d="M24 32h32v23q-16 14-32 0zm32 4h6q13 11-6 14M21 65h41M35 24v-8m12 8v-8"/><text class="node-name" x="43" y="108">Café</text></g>
+      <g transform="translate(75 289)"><rect class="map-node lilac" width="80" height="80" rx="22"/><rect class="device-line" x="27" y="17" width="26" height="46" rx="5"/><path class="device-line" d="M36 56h8"/><text class="node-name" x="40" y="105">Phone</text></g>
+      <g transform="translate(389 265)"><rect class="map-node" width="102" height="87" rx="22"/><path class="device-line" d="M23 56V30h38l17 16v10H23m28-26v19H23m39-13v12h14"/><circle class="device-line wheel" cx="34" cy="59" r="7"/><circle class="device-line wheel" cx="68" cy="59" r="7"/><text class="node-name" x="51" y="113">On the move</text></g>
+    </svg>
+    <div class="scene-footer"><span>Illustrative FIPS network</span></div>
+  </div>
+</section>
+<section id="how-it-works" class="section wrap">
+  <div class="section-heading"><h2>Many small connections.<br>One shared network.</h2><p>Underneath Freedom is FIPS: the Free Internetworking Peering System. Each node knows its neighbors. Together, they find paths across the mesh.</p></div>
+  <div class="three-col">
+    <article><span class="step-num">01</span><h3>Bring a link.</h3><p>A nearby Wi-Fi peer, an Ethernet cable, or a connection over the existing internet. Different links can be part of the same FIPS network.</p></article>
+    <article><span class="step-num">02</span><h3>Own your address.</h3><p>A node creates its own cryptographic identity. That public key is its address, independent of the IP address or network it happens to use.</p></article>
+    <article><span class="step-num">03</span><h3>Pass it along.</h3><p>Routers carry encrypted traffic between peers. End-to-end encryption protects the contents across the route; each adjacent link is authenticated too.</p></article>
+  </div>
+</section>
+<section id="freedom" class="freedom-section">
+  <div class="wrap freedom-grid">
+    <div><h2>Share freely.<br>Or get paid<br>to forward.</h2><p class="lede">Choose free forwarding or payments by usage. You choose the price of carrying traffic, and the limits on what you spend.</p><p>On OpenWrt, a small web interface puts the service, peers and payment credit in <strong>Services → Freedom</strong>.</p><a class="text-link" href="/setup/#freedom-settings">Explore the setup <span aria-hidden="true">↗</span></a></div>
+    <div class="relay-demo" aria-label="Illustrative forwarding model">
+      <div class="demo-top"><div class="mode-controls" role="group" aria-label="Forwarding example" hidden><button type="button" data-mode="free" aria-pressed="true">Free</button><button type="button" data-mode="paid" aria-pressed="false">Paid</button></div></div>
+      <div class="route-chain" aria-label="Sender through relay A and relay B to destination"><div><span class="route-node endpoint">↗</span><strong>Sender</strong></div><span class="chain-link" aria-hidden="true">→</span><div><span class="route-node">A</span><strong>Relay A</strong></div><span class="chain-link" aria-hidden="true">→</span><div><span class="route-node">B</span><strong>Relay B</strong></div><span class="chain-link" aria-hidden="true">→</span><div><span class="route-node endpoint">◎</span><strong>Destination</strong></div></div>
+      <div class="demo-output" aria-live="polite"><h3 id="demo-title">A little bandwidth, freely shared.</h3><p id="demo-description">When every relay on this route charges zero, traffic can flow without opening payment channels.</p><div class="demo-tally"><span id="demo-tally-label">Forwarding fee on this example route</span><strong id="demo-tally">0 sats</strong></div></div>
+      <p class="fine-print">Illustrative route, not a live quote. Free local forwarding can still incur onward costs if the next provider charges.</p>
+      <noscript><p class="fine-print">In paid mode, each relay quotes its own fee plus the onward cost. The sender pays its neighbor, which pays the next neighbor through a separate persistent channel.</p></noscript>
+    </div>
+  </div>
+  <div class="wrap payment-notes"><div><h3>Sender pays.</h3><p>Authorize a route price and spending limit. Returning traffic needs its own authorization, or an explicitly configured allowance.</p></div><div><h3>Neighbors settle up.</h3><p>Persistent Cashu Spilman channels carry cumulative payments for many packets. Every paying hop has its own channel.</p></div><div><h3>Delivery is best effort.</h3><p>Payment buys the agreed forwarding service, not proof of arrival. The mint is trusted; relays need funds for onward purchases.</p></div></div>
+</section>
+<section class="section wrap start-section">
+  <div><h2>Two routers. <br>A link. <br>Your first mesh.</h2><p>Start with free forwarding on an isolated test network. Add a third node to try relaying, then explore paid routes with test funds.</p><a class="button primary" href="/setup/">Open the setup guide <span aria-hidden="true">↗</span></a></div>
+  <ol class="setup-preview"><li><span>1</span><div><h3>Use compatible OpenWrt hardware</h3><p>The relay package targets OpenWrt 25.12+. ARM64 Cudy TR3000 v1 routers have been tested; other hardware needs verification.</p></div></li><li><span>2</span><div><h3>Install the relay and Freedom UI</h3><p>Build matching packages, prepare a separate mesh interface, and open Services → Freedom.</p></div></li><li><span>3</span><div><h3>Connect, inspect, experiment</h3><p>Start the service, check both peers, and test an actual FIPS flow. Add payments only after the free path works.</p></div></li></ol>
+</section>
+<section class="status-band wrap"><div><h2>Working hardware.<br>Still for builders.</h2></div><div><p>The scoped relay has been tested on Linux, three OpenWrt routers and an Android test client, including paid forwarding and controlled recovery tests.</p><p>This is active development. Public real-money operation, mixed-version upgrades, broad hardware compatibility and seamless mobile roaming are not established. The current setup uses matched development dependencies.</p><a class="text-link" href="https://github.com/mmalmi/fips/blob/master/crates/fips-relay/READINESS.md">Read the evidence and limits <span aria-hidden="true">↗</span></a></div></section>
+<section class="section wrap faq-section"><div><h2>Before you plug in.</h2></div><div class="faqs">
+  <details><summary>Does this sell ordinary Wi-Fi internet access?</summary><p>Freedom currently provides free or paid forwarding inside the FIPS network. A captive portal, general internet exit and consumer payment flow are separate integrations. Joining the Wi-Fi alone does not turn an ordinary phone into a paying FIPS client.</p></details>
+  <details><summary>Is this tied to Cudy routers?</summary><p>No. FIPS uses standard interfaces, and Freedom is an optional OpenWrt package. The physical acceptance work used ARM64 Cudy TR3000 v1 hardware. A different router still needs compatible OpenWrt support, enough storage and RAM, and a verified build for its CPU.</p></details>
+  <details><summary>Can the routers move around?</summary><p>Identities do not depend on location. Nearby nodes can discover and connect over a prepared link, and FIPS can find other routes as links change. Radio channels still have to overlap, and seamless roaming or arbitrary movement with uninterrupted payments is not a current guarantee.</p></details>
+  <details><summary>Why not just use a normal Wi-Fi mesh?</summary><p>FIPS routes across different kinds of links and addresses nodes by cryptographic identity. For paid native Wi-Fi forwarding, lower-layer mesh forwarding must be disabled: each paid hop must pass through FIPS rather than bypassing its accounting.</p></details>
+  <details><summary>Do I need payments to use FIPS?</summary><p>No. FIPS routing works without the paid service. Freedom can also offer zero-priced forwarding or destination-specific prices. With paid routes, price and quality selection can compare offers using measured loss and latency; it does not promise a globally cheapest path.</p></details>
+</div></section>
+<section class="closing wrap"><h2>Set up Freedom.</h2><div class="actions"><a class="button primary" href="/setup/">Set up a router <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/mmalmi/fips">Explore the code <span aria-hidden="true">↗</span></a></div></section>
+</main>
+<footer class="footer wrap"><a class="brand" href="/"><img src="/favicon.svg" width="26" height="26" alt="">freedom</a><p>Freedom · Built on FIPS<br><span>Open-source mesh routing with optional paid forwarding.</span></p><div><a href="https://github.com/mmalmi/fips">Source</a><a href="https://github.com/jmcorgan/fips">Original FIPS project</a><a href="https://iris.to">Iris ↗</a></div></footer>
+</body></html>
