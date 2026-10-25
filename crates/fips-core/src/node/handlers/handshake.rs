@@ -216,10 +216,14 @@ impl Node {
     }
 
     async fn handle_current_msg1(&mut self, packet: ReceivedPacket) {
+        // The wire index is untrusted; it only correlates admission diagnostics.
+        // Keep parsing inside the macro so disabled DEBUG adds no header work.
         debug!(
             transport_id = %packet.transport_id,
             remote_addr = %packet.remote_addr,
             bytes = packet.data.len(),
+            sender_index = ?Msg1Header::parse(packet.data.as_slice())
+                .map(|header| header.sender_idx.as_u32()),
             "Received msg1"
         );
         // Classify before crypto so established-link maintenance does not

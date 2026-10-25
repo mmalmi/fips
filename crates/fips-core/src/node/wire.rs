@@ -335,6 +335,21 @@ mod tests {
     }
 
     #[test]
+    fn test_msg1_header_rejects_truncated_prefix_and_index() {
+        let packet = build_msg1(SessionIndex::new(u32::MAX), &[0u8; HANDSHAKE_MSG1_SIZE]);
+        for length in 0..=COMMON_PREFIX_SIZE + 4 {
+            assert!(Msg1Header::parse(&packet[..length]).is_none());
+        }
+    }
+
+    #[test]
+    fn test_msg1_header_wrong_version() {
+        let mut packet = build_msg1(SessionIndex::new(1), &[0u8; HANDSHAKE_MSG1_SIZE]);
+        packet[0] = 0x11; // version 1, phase 1
+        assert!(Msg1Header::parse(&packet).is_none());
+    }
+
+    #[test]
     fn test_msg1_header_wrong_phase() {
         let mut packet = vec![0x00; MSG1_WIRE_SIZE];
         packet[0] = 0x02; // phase 2, not phase 1
