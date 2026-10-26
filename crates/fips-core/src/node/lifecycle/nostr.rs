@@ -490,15 +490,19 @@ impl Node {
             return;
         }
 
+        // Requested clients use configured or application-requested peers,
+        // even while a legacy neighbor requires the negotiated router role.
+        // Ambient topology growth must not prolong that compatibility fallback.
         // A WebSocket listener is an operator-selected public adjacency: its
         // open-discovery budget exists to admit authenticated inbound clients,
         // not to turn every ambient relay advert into an outbound connection.
         // Keep scanning adverts so configured-peer retries can be expedited,
         // while leaving ambient peers to dial the advertised listener URL.
-        let allow_ambient_outbound = !self.transports.values().any(|transport| {
-            matches!(transport, crate::transport::TransportHandle::WebSocket(_))
-                && transport.accept_connections()
-        });
+        let allow_ambient_outbound = !self.config.node.leaf_only
+            && !self.transports.values().any(|transport| {
+                matches!(transport, crate::transport::TransportHandle::WebSocket(_))
+                    && transport.accept_connections()
+            });
 
         let configured_npubs = self
             .config
@@ -550,7 +554,7 @@ impl Node {
         let mut skipped_connected = 0usize;
         let mut skipped_retry_pending = 0usize;
         let mut skipped_connecting = 0usize;
-        let mut skipped_listener_outbound = 0usize;
+        let mut skipped_ambient_outbound = 0usize;
         let mut skipped_no_endpoints = 0usize;
         let mut skipped_invalid_npub = 0usize;
         let mut skipped_cooldown = 0usize;
@@ -612,7 +616,7 @@ impl Node {
             }
 
             if !allow_ambient_outbound {
-                skipped_listener_outbound = skipped_listener_outbound.saturating_add(1);
+                skipped_ambient_outbound = skipped_ambient_outbound.saturating_add(1);
                 continue;
             }
 
@@ -721,7 +725,7 @@ impl Node {
             + skipped_connected
             + skipped_retry_pending
             + skipped_connecting
-            + skipped_listener_outbound
+            + skipped_ambient_outbound
             + skipped_no_endpoints
             + skipped_invalid_npub
             + skipped_cooldown;
@@ -737,7 +741,7 @@ impl Node {
                 skipped_connected = skipped_connected,
                 skipped_retry_pending = skipped_retry_pending,
                 skipped_connecting = skipped_connecting,
-                skipped_listener_outbound = skipped_listener_outbound,
+                skipped_ambient_outbound = skipped_ambient_outbound,
                 skipped_no_endpoints = skipped_no_endpoints,
                 skipped_invalid_npub = skipped_invalid_npub,
                 skipped_cooldown = skipped_cooldown,

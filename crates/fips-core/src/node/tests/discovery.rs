@@ -15,6 +15,7 @@ use spanning_tree::{
 };
 
 mod admission_churn;
+mod client_open_sweep;
 mod convergent_paths_large;
 mod foreign_root_controls;
 mod foreign_root_origin;
