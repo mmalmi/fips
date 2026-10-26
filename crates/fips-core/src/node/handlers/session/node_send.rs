@@ -205,6 +205,7 @@ impl Node {
                 capability,
                 response_tx,
             } => {
+                self.remove_closed_local_capabilities();
                 let registered = self.endpoint_services.register(port, sender);
                 if registered && let Some(capability) = capability {
                     self.register_local_instance_capability(capability);

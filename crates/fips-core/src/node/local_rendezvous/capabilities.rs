@@ -83,7 +83,7 @@ impl Node {
         }
     }
 
-    pub(super) fn remove_closed_local_capabilities(&mut self) {
+    pub(in crate::node) fn remove_closed_local_capabilities(&mut self) {
         let closed_ports = self.endpoint_services.remove_closed();
         let before = self.local_rendezvous.capabilities.len();
         self.local_rendezvous.capabilities.retain(|capability| {
@@ -318,5 +318,154 @@ impl Node {
             .providers
             .retain(|node_addr, _| active.contains(node_addr));
         before != self.local_rendezvous.providers.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::endpoint_service::{
+        EndpointServiceDatagramDelivery, EndpointServiceEventReceiver, EndpointServiceEventSender,
+    };
+
+    async fn register_service(
+        node: &mut Node,
+        port: u16,
+        capability: Option<LocalInstanceCapability>,
+    ) -> (bool, EndpointServiceEventReceiver) {
+        let (sender, receiver) = EndpointServiceEventSender::channel(8);
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        assert!(
+            node.handle_endpoint_control(NodeEndpointControlCommand::RegisterService {
+                port,
+                sender,
+                capability,
+                response_tx,
+            })
+            .await
+            .is_none()
+        );
+        (response_rx.await.unwrap(), receiver)
+    }
+
+    fn assert_capabilities(node: &Node, expected: &[LocalInstanceCapability]) {
+        assert_eq!(node.local_rendezvous.capabilities, expected);
+        let adverts = node.local_capability_directory().snapshot();
+        assert_eq!(adverts.len(), 1);
+        assert_eq!(adverts[0].npub, node.npub());
+        assert_eq!(adverts[0].capabilities, expected);
+    }
+
+    #[tokio::test]
+    async fn closed_service_registration_is_reclaimed_without_maintenance() {
+        const PORT: u16 = 7368;
+        for replacement in [
+            None,
+            Some(LocalInstanceCapability::service("replacement/1", PORT)),
+        ] {
+            let mut config = Config::new();
+            config.node.discovery.local.enabled = true;
+            config.node.system_files_enabled = false;
+            let mut node = Node::new(config).unwrap();
+            node.local_rendezvous.role = Some(LocalRendezvousRole::Anchor);
+            let role = LocalInstanceCapability::role("provider/1");
+            node.set_local_instance_roles(vec![role.clone()]);
+            let old = LocalInstanceCapability::service("original/1", PORT);
+            let live = LocalInstanceCapability::service("other/1", PORT + 1);
+            let (registered, old_receiver) =
+                register_service(&mut node, PORT, Some(old.clone())).await;
+            assert!(registered);
+            let (registered, _live_receiver) =
+                register_service(&mut node, PORT + 1, Some(live.clone())).await;
+            assert!(registered);
+            assert_capabilities(&node, &[role.clone(), old, live.clone()]);
+
+            drop(old_receiver);
+            let revision = node.local_rendezvous.capability_revision;
+            let roster_revision = node.local_rendezvous.roster_revision;
+            node.local_rendezvous.last_capability_sync_ms = 123;
+            node.local_rendezvous.roster_dirty = false;
+            // Dispatch directly, without starting the node or polling maintenance.
+            let (registered, mut receiver) =
+                register_service(&mut node, PORT, replacement.clone()).await;
+            assert!(
+                registered,
+                "a dropped receiver must release its service port immediately"
+            );
+            let mut expected = vec![role, live];
+            expected.extend(replacement);
+            assert_capabilities(&node, &expected);
+            assert!(node.local_rendezvous.capability_revision > revision);
+            assert!(node.local_rendezvous.roster_revision > roster_revision);
+            assert!(node.local_rendezvous.roster_dirty);
+            assert_eq!(node.local_rendezvous.last_capability_sync_ms, 0);
+
+            node.endpoint_services
+                .deliver(vec![EndpointServiceDatagramDelivery::new(
+                    PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+                    PORT + 1,
+                    PORT,
+                    crate::transport::PacketBuffer::new(b"restarted".to_vec()),
+                )])
+                .unwrap();
+            let event = receiver.try_recv().unwrap();
+            assert_eq!(event.messages.len(), 1);
+            assert_eq!(event.messages[0].payload.as_slice(), b"restarted");
+            receiver.release_messages(event.messages.len());
+        }
+    }
+
+    #[tokio::test]
+    async fn live_service_registration_keeps_its_receiver_and_capability() {
+        const PORT: u16 = 7368;
+        let mut config = Config::new();
+        config.node.discovery.local.enabled = true;
+        config.node.system_files_enabled = false;
+        let mut node = Node::new(config).unwrap();
+        let original = LocalInstanceCapability::service("original/1", PORT);
+        let (registered, mut receiver) =
+            register_service(&mut node, PORT, Some(original.clone())).await;
+        assert!(registered);
+        let revision = node.local_rendezvous.capability_revision;
+        let (registered, mut rejected_receiver) = register_service(
+            &mut node,
+            PORT,
+            Some(LocalInstanceCapability::service("replacement/1", PORT)),
+        )
+        .await;
+        assert!(
+            !registered,
+            "a live receiver must retain its exclusive service port"
+        );
+        assert_capabilities(&node, &[original]);
+        assert_eq!(node.local_rendezvous.capability_revision, revision);
+        assert!(matches!(
+            rejected_receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+        node.endpoint_services
+            .deliver(vec![EndpointServiceDatagramDelivery::new(
+                PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+                PORT + 1,
+                PORT,
+                crate::transport::PacketBuffer::new(b"original".to_vec()),
+            )])
+            .unwrap();
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(event.messages[0].payload.as_slice(), b"original");
+        receiver.release_messages(event.messages.len());
+    }
+
+    #[tokio::test]
+    async fn closed_service_registration_is_reclaimed_with_local_discovery_disabled() {
+        let mut config = Config::new();
+        config.node.discovery.local.enabled = false;
+        config.node.system_files_enabled = false;
+        let mut node = Node::new(config).unwrap();
+        let (registered, receiver) = register_service(&mut node, 7368, None).await;
+        assert!(registered);
+        drop(receiver);
+        let (registered, _receiver) = register_service(&mut node, 7368, None).await;
+        assert!(registered);
     }
 }
