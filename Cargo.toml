@@ -20,6 +20,7 @@ members = [
     "vendor/turn",
     "vendor/webrtc-ice",
     "vendor/webrtc",
+    "vendor/dtls",
     "vendor/mdns-sd",
     "vendor/igd-next",
     "vendor/crab_nat",
@@ -39,7 +40,7 @@ codegen-units = 1
 strip = "symbols"
 
 [dependencies]
-nvpn-fips-core = { version = "=0.4.107", path = "crates/fips-core", features = ["webrtc-transport"] }
+nvpn-fips-core = { version = "=0.4.110", path = "crates/fips-core", features = ["webrtc-transport"] }
 
 ratatui = "0.30"
 serde_json = "1.0"

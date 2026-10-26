@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "nvpn-webrtc"
-version = "0.17.3"
+version = "0.17.4"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false
@@ -53,7 +53,9 @@ version = "=0.17.2"
 package = "webrtc-data"
 
 [dependencies.dtls]
-version = "=0.17.2"
+package = "nvpn-dtls"
+path = "../dtls"
+version = "=0.17.3"
 
 [dependencies.hex]
 version = "0.4"

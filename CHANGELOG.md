@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.110] - 2026-10-26
+
+### Security
+
+- Update DTLS P-256/P-384 key agreement to the fixed RustCrypto arithmetic for
+  RUSTSEC-2026-0387 through `nvpn-dtls` 0.17.3 and `nvpn-webrtc` 0.17.4.
+  Require `crypto-bigint` 0.7.10 or newer within the 0.7 series for published
+  consumers. The migration follows upstream WebRTC PR #943.
+- This security release is based on 0.4.107. Curve negotiation, DTLS encodings,
+  FIPS wire formats, and routing behavior are unchanged.
+
 ## [0.4.106] - 2026-10-18
 
 ### Fixed
