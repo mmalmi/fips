@@ -490,15 +490,21 @@ impl Node {
             return;
         }
 
-        // Requested clients use configured or application-requested peers,
-        // even while a legacy neighbor requires the negotiated router role.
-        // Ambient topology growth must not prolong that compatibility fallback.
+        // Requested clients stop ambient growth once a router is sendable,
+        // including a legacy router that requires compatibility fallback.
+        // Isolated clients still need discovery to bootstrap or recover; a
+        // client-only neighbor cannot provide that forwarding path.
         // A WebSocket listener is an operator-selected public adjacency: its
         // open-discovery budget exists to admit authenticated inbound clients,
         // not to turn every ambient relay advert into an outbound connection.
         // Keep scanning adverts so configured-peer retries can be expedited,
         // while leaving ambient peers to dial the advertised listener URL.
-        let allow_ambient_outbound = !self.config.node.leaf_only
+        let client_has_uplink = self.config.node.leaf_only
+            && self
+                .peers
+                .values()
+                .any(|peer| peer.can_send() && !peer.client_only);
+        let allow_ambient_outbound = !client_has_uplink
             && !self.transports.values().any(|transport| {
                 matches!(transport, crate::transport::TransportHandle::WebSocket(_))
                     && transport.accept_connections()
