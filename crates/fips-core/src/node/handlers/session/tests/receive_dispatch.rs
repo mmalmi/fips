@@ -743,6 +743,26 @@
             Some(source_addr),
             "fresh authenticated direct control must keep the bounded FSP validation staged"
         );
+        node.session_direct_degradation.mark_degraded(
+            source_addr, Node::now_ms(), SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        receive_direct_control(&mut node, 17);
+        assert!(
+            !node.session_direct_path_degradation_active(&source_addr, Node::now_ms()),
+            "a new hard hold must still be released when the cached owner is already direct"
+        );
+        assert!(!std::sync::Arc::ptr_eq(
+            &staged_routes, &node.dataplane.fsp_ingress_routes_for_test(),
+        ), "new recovery must refresh the direct owner");
+
+        node.source_routes.insert(source_addr, fallback_addr);
+        receive_direct_control(&mut node, 18);
+        assert_eq!(node.dataplane.fsp_owner_next_hop(&source_addr), Some(fallback_addr),
+            "an explicit source route must still override an already staged direct owner");
+        node.source_routes.remove(&source_addr);
+        receive_direct_control(&mut node, 19);
+        assert_eq!(node.dataplane.fsp_owner_next_hop(&source_addr), Some(source_addr),
+            "removing the explicit override must allow direct validation again");
         assert!(node.dataplane.invalidate_fsp_carrier_activity(
             source_addr,
             &[source_addr, fallback_addr],
@@ -788,7 +808,7 @@
             "the proven fallback must take over once the bounded direct payload validation expires without authenticated return"
         );
         let fallback_routes = node.dataplane.fsp_ingress_routes_for_test();
-        receive_direct_control(&mut node, 17);
+        receive_direct_control(&mut node, 20);
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
             Some(source_addr),
