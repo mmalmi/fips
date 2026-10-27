@@ -213,6 +213,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(turn.has_node_control_ingress());
         let fmp_ingress_receipts = turn.take_fmp_ingress_receipts();
         assert_eq!(fmp_ingress_receipts.len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
@@ -352,6 +353,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.fsp_coord_warmups().len(), 1);
+        assert!(turn.has_node_control_ingress());
         let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
         turn.fsp_coord_warmups()[0]
             .clone()
@@ -462,6 +464,7 @@
         assert!(turn.fmp_link_ingress().is_empty());
         assert_eq!(turn.fsp_session_ingress_count(), 0);
         assert_eq!(turn.fsp_local_session_ingress().len(), 1);
+        assert!(turn.has_node_control_ingress());
         assert_fmp_receipt(
             &fmp_ingress_receipts[0],
             ExpectedFmpReceipt {
@@ -539,6 +542,7 @@
         assert_eq!(turn.summary().outputs_dropped(), 0);
         assert!(turn.take_fmp_ingress_receipts().is_empty());
         assert_eq!(turn.fmp_link_ingress().len(), 1);
+        assert!(turn.has_node_control_ingress());
         let ingress = &turn.fmp_link_ingress()[0];
         assert_eq!(
             ingress.msg_type(),

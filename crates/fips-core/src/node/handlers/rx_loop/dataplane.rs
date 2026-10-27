@@ -106,7 +106,10 @@ impl Node {
         &mut self,
         turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
-        if !turn.has_activity()
+        // Sending or retiring output is activity, but need not construct the
+        // large control future. Keep deferred forwards and application ingress
+        // eligible even when this turn itself has no control work.
+        if !turn.has_node_control_ingress()
             && self.deferred_session_forwards.is_empty()
             && !self.dataplane.has_deferred_application_ingress()
         {

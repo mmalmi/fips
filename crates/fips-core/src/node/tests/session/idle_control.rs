@@ -295,8 +295,18 @@ fn warmed_control_turns_preserve_encrypted_wire_and_send_receipts() {
                 loop {
                     assert!(turn.drops().is_empty());
                     assert!(turn.output_drops().is_empty());
+                    assert!(!turn.has_node_control_ingress());
+                    assert_eq!(
+                        nodes[0]
+                            .node
+                            .process_dataplane_control_ingress(&mut turn)
+                            .await,
+                        0,
+                        "an output-only turn has no node control work"
+                    );
                     let mut receipts = turn.take_transport_sent_receipts();
                     if !receipts.is_empty() {
+                        assert!(turn.has_activity(), "completed output remains activity");
                         assert_eq!(receipts.len(), 1);
                         break receipts.remove(0);
                     }

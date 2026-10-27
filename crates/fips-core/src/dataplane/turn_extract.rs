@@ -1,4 +1,18 @@
 impl DataplaneLiveNodeTurn {
+    /// Work consumed by the node's control-ingress handler. Output statistics
+    /// alone do not need that handler; deferred-forward terminal receipts are
+    /// handled separately when the node has a pending or completed forward.
+    pub(crate) fn has_node_control_ingress(&self) -> bool {
+        !self.fmp_control_ingress.is_empty()
+            || !self.fmp_ingress_receipts.is_empty()
+            || !self.fmp_link_ingress.is_empty()
+            || !self.fsp_coord_warmups.is_empty()
+            || !self.fsp_local_session_ingress.is_empty()
+            || !self.fsp_authenticated_ingress.is_empty()
+            || !self.tun_outbound_drops.is_empty()
+            || !self.drops.is_empty()
+    }
+
     pub(crate) fn consume_transport_sent_receipts(
         &mut self,
         consume: impl FnMut(&DataplaneTransportSentReceipt) -> bool,

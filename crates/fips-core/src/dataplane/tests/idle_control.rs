@@ -55,6 +55,13 @@ fn small_idle_wire_packet_keeps_bulk_lane_without_waking_crypto_worker() {
             assert!(outputs.is_empty());
             assert_eq!(drops.len(), 1);
             assert_eq!(drops[0].reason(), PacketDropReason::CryptoFailed);
+            assert!(
+                DataplaneLiveNodeTurn {
+                    drops,
+                    ..Default::default()
+                }.has_node_control_ingress(),
+                "crypto failures still need node recovery"
+            );
         } else {
             assert!(drops.is_empty());
             assert_eq!(outputs.len(), 1);

@@ -129,6 +129,8 @@
         };
         assert_eq!(completed.transport_sent(), 1);
         assert_eq!(completed.transport_dropped(), 0);
+        assert!(completed.has_activity());
+        assert!(!completed.has_node_control_ingress());
         let mut sent_receipts = completed.take_transport_sent_receipts();
         assert_eq!(sent_receipts.len(), 1);
         let sent = sent_receipts.pop().unwrap();

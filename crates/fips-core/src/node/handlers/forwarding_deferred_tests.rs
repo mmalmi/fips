@@ -112,6 +112,34 @@ fn forwarding_window_bounds_saturated_owner_and_source_but_admits_peer() {
     assert!(!deferred.has_capacity(&saturated, ForwardingLane::Priority));
 }
 
+#[tokio::test(start_paused = true)]
+async fn empty_control_turn_finishes_completed_and_expired_forwards() {
+    use crate::node::ForwardingOutcome::{Submitted, Unconfirmed};
+    for already_completed in [true, false] {
+        let mut node = Node::new(crate::Config::new()).unwrap();
+        let audit = std::sync::Arc::new(CompletionAudit::default());
+        let forward = admitted_test_forward(&node, &audit);
+        node.deferred_session_forwards
+            .insert(7, forward, ForwardingLane::Bulk);
+        if already_completed {
+            let forward = node.deferred_session_forwards.take_pending(7).unwrap();
+            node.deferred_session_forwards.push_completed(forward, Ok(()));
+        } else {
+            tokio::time::advance(DEFERRED_SESSION_FORWARD_RECEIPT_TIMEOUT).await;
+        }
+        let mut turn = crate::dataplane::DataplaneLiveNodeTurn::default();
+        assert!(!turn.has_activity());
+        assert!(!turn.has_node_control_ingress());
+        assert_eq!(node.process_dataplane_control_ingress(&mut turn).await, 1);
+        assert!(node.deferred_session_forwards.is_empty());
+        assert!(node.deferred_session_forwards.window.is_empty());
+        assert_eq!(
+            *audit.0.lock().unwrap(),
+            vec![if already_completed { Submitted } else { Unconfirmed }]
+        );
+    }
+}
+
 #[derive(Debug)]
 struct ClassifiedAudit {
     class: crate::node::ForwardingClass,
