@@ -734,8 +734,12 @@
 
         /// Wrap this socket in a tokio `AsyncFd` for async I/O.
         pub fn into_async(self) -> Result<AsyncUdpSocket, TransportError> {
-            let async_fd = AsyncFd::new(self)
-                .map_err(|e| TransportError::StartFailed(format!("AsyncFd::new failed: {}", e)))?;
+            // SAFETY: `self` owns its socket, and `as_raw_fd` always returns
+            // that socket's descriptor. The private `AsyncUdpSocket` only shares
+            // this registration through `Arc`; it never replaces or closes the
+            // socket before `AsyncFd` deregisters it and drops the owned value.
+            let async_fd = unsafe { AsyncFd::register(self) }
+                .map_err(|e| TransportError::StartFailed(format!("AsyncFd::register failed: {}", e)))?;
             Ok(AsyncUdpSocket {
                 inner: Arc::new(async_fd),
             })
