@@ -500,7 +500,17 @@ impl Node {
                     .peers
                     .get(source_addr)
                     .is_some_and(|peer| peer.is_healthy() && peer.can_send());
-            if direct_payload_validation_ready {
+            // Ordinary link traffic must not rebuild an already staged direct
+            // validation route. Address/epoch changes synchronize their owners
+            // separately; a new hold or fallback selection still needs recovery.
+            // Explicit source routes keep their existing refresh/override path.
+            if direct_payload_validation_ready
+                && (update.address_changed
+                    || self.session_direct_path_degradation_active(source_addr, Self::now_ms())
+                    || self.source_routes.contains_key(source_addr)
+                    || !self.dataplane_has_fmp_owner(source_addr)
+                    || self.dataplane.fsp_owner_next_hop(source_addr) != Some(*source_addr))
+            {
                 self.make_direct_payload_eligible_for_validation_after_fmp_recovery(source_addr);
             }
         }

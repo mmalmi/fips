@@ -448,6 +448,13 @@ impl DataplaneLiveNode {
     }
 
     #[cfg(test)]
+    pub(crate) fn fsp_ingress_routes_for_test(
+        &self,
+    ) -> std::sync::Arc<std::collections::HashMap<NodeAddr, DataplaneIngressRoute>> {
+        self.routes.established_fast_ingress_snapshot().fsp_routes()
+    }
+
+    #[cfg(test)]
     pub(crate) fn fsp_coords_warmup_remaining_for_test(&mut self, dest: &NodeAddr) -> u8 {
         self.driver.owner_mut(OwnerId::fsp_node(*dest))
             .expect("FSP owner exists").fsp_coords_warmup_remaining()

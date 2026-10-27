@@ -699,19 +699,44 @@
             Some(fallback_addr),
             "staging direct validation must preserve the proven fallback until direct payload is sent"
         );
-        node.record_authenticated_fmp_receive_facts(
-            crate::node::AuthenticatedFmpReceiveFacts {
-                elicits_report: true,
-                source_peer: crate::PeerIdentity::from_pubkey_full(source.pubkey_full()),
-                transport_id: direct_transport_id,
-                remote_addr: &direct_transport_addr,
-                packet_timestamp_ms: Node::now_ms(),
-                packet_len: 128,
-                fmp_counter: 1,
-                inner_timestamp_ms: 1,
-                fmp_flags: 0,
-            },
-            Some(&source_addr),
+        let receive_direct_control = |node: &mut Node, counter| {
+            node.record_authenticated_fmp_receive_facts(
+                crate::node::AuthenticatedFmpReceiveFacts {
+                    elicits_report: true,
+                    source_peer: crate::PeerIdentity::from_pubkey_full(source.pubkey_full()),
+                    transport_id: direct_transport_id,
+                    remote_addr: &direct_transport_addr,
+                    packet_timestamp_ms: Node::now_ms(),
+                    packet_len: 128,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: counter as u32,
+                    fmp_flags: 0,
+                },
+                Some(&source_addr),
+            );
+        };
+        // Holding the shared ingress snapshot makes any unregister/reinstall
+        // observable, even if it reconstructs byte-for-byte identical routes.
+        let staged_routes = node.dataplane.fsp_ingress_routes_for_test();
+        let received_before = node.get_peer(&source_addr).unwrap().link_stats().packets_recv;
+        for counter in 1..=16 {
+            receive_direct_control(&mut node, counter);
+        }
+        assert_eq!(
+            node.get_peer(&source_addr).unwrap().link_stats().packets_recv,
+            received_before + 16,
+            "skipping route refresh must preserve authenticated link bookkeeping"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(
+                &staged_routes,
+                &node.dataplane.fsp_ingress_routes_for_test(),
+            ),
+            "ordinary authenticated control must not rewrite the already staged FSP ingress routes"
+        );
+        assert!(
+            node.session_direct_degradation.has_pending_validation(&source_addr),
+            "repeated FMP control must not count as authenticated FSP delivery"
         );
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
@@ -762,11 +787,19 @@
             Some(fallback_addr),
             "the proven fallback must take over once the bounded direct payload validation expires without authenticated return"
         );
-        node.make_direct_payload_eligible_for_validation_after_fmp_recovery(&source_addr);
+        let fallback_routes = node.dataplane.fsp_ingress_routes_for_test();
+        receive_direct_control(&mut node, 17);
         assert_eq!(
             node.dataplane.fsp_owner_next_hop(&source_addr),
             Some(source_addr),
             "fresh authenticated direct control must be able to stage a later validation attempt"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(
+                &fallback_routes,
+                &node.dataplane.fsp_ingress_routes_for_test(),
+            ),
+            "moving from fallback to a new direct validation must still replace owner routes"
         );
         crate::node::tests::seed_dataplane_fsp_data_sent_for_test(
             &mut node,
