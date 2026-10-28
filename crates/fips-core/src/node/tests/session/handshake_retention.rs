@@ -33,6 +33,8 @@ async fn cancel_after_delivery<F: Future>(
 
 async fn run_case(stage: Stage, rekey: bool, cancel: bool) {
     let _guard = lock_large_network_test().await;
+    let trace = super::fsp_handshake_log::Capture::default();
+    let _trace_guard = tracing::subscriber::set_default(trace.clone());
     let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
     populate_all_coord_caches(&mut nodes);
     let network = sim_harness::replace_session_100_node_carriers(&mut nodes, &[(0, 1)]).await;
@@ -136,6 +138,36 @@ async fn run_case(stage: Stage, rekey: bool, cancel: bool) {
         };
         network.set_node_send_completion_delay(&source, 0);
         delivered.assert_retained(&source_node.node, &destination, stage, rekey);
+        if !rekey {
+            let categories = trace.categories(&source_id, &destination);
+            let (submitting, submitted) = match stage {
+                Stage::Setup => ("msg1_submitting_initiating", "msg1_submitted"),
+                Stage::Ack => (
+                    "msg2_submitting_awaiting_msg3",
+                    "msg2_submitted_awaiting_msg3",
+                ),
+                Stage::Msg3 => ("msg3_submitting_established", "msg3_submitted"),
+                Stage::DuplicateAck => ("msg3_duplicate_submitting", "msg3_duplicate_submitted"),
+            };
+            assert!(categories.iter().any(|value| value == submitting));
+            assert!(
+                !categories.iter().any(|value| value == submitted),
+                "delivery while completion is canceled must not log a completed submission"
+            );
+            let before = |first: &str, second: &str| {
+                let first = categories.iter().position(|value| value == first).unwrap();
+                let second = categories.iter().position(|value| value == second).unwrap();
+                assert!(first < second);
+            };
+            if matches!(stage, Stage::Ack) {
+                before("msg1_received", "msg1_processed");
+                before("msg1_processed", submitting);
+            }
+            if matches!(stage, Stage::Msg3) {
+                before("msg2_received", "msg2_validated");
+                before("msg2_validated", submitting);
+            }
+        }
         delivered.release(receiver).await;
     } else {
         assert!(matches!(stage, Stage::Setup));

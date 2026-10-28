@@ -417,8 +417,7 @@ impl Node {
         }
 
         for addr in &timed_out {
-            let name = self.peer_display_name(addr);
-            info!(dest = %name, "Session handshake timed out, removing");
+            fsp_handshake_event!(info, self, addr, handshake_timed_out);
             self.remove_dataplane_fsp_owner(addr);
             self.sessions.remove(addr);
         }
@@ -498,13 +497,15 @@ impl Node {
                 setup.dest_coords = self.get_dest_coords(&candidate.dest_addr);
                 datagram.payload = setup.encode();
             }
+            fsp_handshake_event!(debug, self, &candidate.dest_addr, handshake_resubmitting);
             let sent = match self.send_session_datagram(&mut datagram).await {
                 Ok(_) => true,
-                Err(e) => {
-                    debug!(
-                        dest = %self.peer_display_name(&candidate.dest_addr),
-                        error = %e,
-                        "Session handshake resend failed"
+                Err(_e) => {
+                    fsp_handshake_event!(
+                        debug,
+                        self,
+                        &candidate.dest_addr,
+                        handshake_resubmit_failed
                     );
                     // A tree change can remove the route after msg1 was
                     // emitted. Keep that Noise generation and queued demand,
@@ -527,18 +528,14 @@ impl Node {
             };
 
             if sent
-                && let Some(count) = self.sessions.record_scheduled_session_handshake_resend(
+                && let Some(_count) = self.sessions.record_scheduled_session_handshake_resend(
                     &candidate.dest_addr,
                     now_ms,
                     interval_ms,
                     backoff,
                 )
             {
-                debug!(
-                    dest = %self.peer_display_name(&candidate.dest_addr),
-                    resend = count,
-                    "Resent session handshake"
-                );
+                fsp_handshake_event!(debug, self, &candidate.dest_addr, handshake_resubmitted);
             }
         }
     }

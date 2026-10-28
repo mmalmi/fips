@@ -22,6 +22,7 @@ mod entry_basics;
 mod fmp_rekey_forwarding;
 mod forwarded_edge;
 mod forwarding_policy;
+mod fsp_handshake_log;
 mod graph_fallback;
 #[cfg(feature = "sim-transport")]
 mod handshake_retention;

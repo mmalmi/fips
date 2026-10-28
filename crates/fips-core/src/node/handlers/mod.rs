@@ -1,5 +1,7 @@
 //! RX event loop and message handlers.
 
+include!("fsp_handshake_log.rs");
+
 pub(crate) mod discovery;
 mod dispatch;
 mod encrypted;

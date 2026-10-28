@@ -15,12 +15,7 @@ impl Node {
         }
 
         if self.sessions.len() >= max_sessions {
-            debug!(
-                peer = %self.peer_display_name(addr),
-                sessions = self.sessions.len(),
-                max_sessions,
-                "Session table full, refusing new session"
-            );
+            fsp_handshake_event!(debug, self, addr, session_refused_table_full);
             self.stats_mut().sessions.table_full += 1;
             return false;
         }
@@ -33,12 +28,7 @@ impl Node {
                 .filter(|entry| entry.is_awaiting_msg3())
                 .count();
             if half_open >= half_open_share {
-                debug!(
-                    peer = %self.peer_display_name(addr),
-                    half_open,
-                    half_open_share,
-                    "Half-open session share exhausted, refusing new session"
-                );
+                fsp_handshake_event!(debug, self, addr, session_refused_half_open);
                 self.stats_mut().sessions.half_open_full += 1;
                 return false;
             }
@@ -91,7 +81,11 @@ impl Node {
             .with_ttl(self.config.node.session.default_ttl);
 
         // A definitive routing refusal has not emitted anything yet.
-        let runtime_route = self.resolve_session_datagram_runtime_route(&mut datagram)?;
+        let runtime_route = self
+            .resolve_session_datagram_runtime_route(&mut datagram)
+            .inspect_err(|_| {
+                fsp_handshake_event!(debug, self, &dest_addr, msg1_refused_route);
+            })?;
 
         // Register destination identity for TUN → session routing
         self.register_identity(dest_addr, dest_pubkey);
@@ -109,10 +103,14 @@ impl Node {
             resend_interval,
         );
 
+        fsp_handshake_event!(debug, self, &dest_addr, msg1_submitting_initiating);
         self.send_session_datagram_on_runtime_route(&datagram, runtime_route)
-            .await?;
+            .await
+            .inspect_err(|_| {
+                fsp_handshake_event!(debug, self, &dest_addr, msg1_submit_failed);
+            })?;
 
-        debug!(dest = %self.peer_display_name(&dest_addr), "Session initiation started");
+        fsp_handshake_event!(debug, self, &dest_addr, msg1_submitted);
         Ok(())
     }
 
