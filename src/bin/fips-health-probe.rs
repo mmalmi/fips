@@ -47,6 +47,7 @@ struct Args {
 async fn main() {
     let args = Args::parse();
     let pipeline = PipelineTrace::default();
+    let setup = SetupTrace::default();
     let _ = tracing_subscriber::registry()
         .with(
             fmt::layer()
@@ -60,9 +61,16 @@ async fn main() {
                     pipeline_event_enabled,
                 )),
         )
+        .with(
+            setup
+                .clone()
+                .with_filter(tracing_subscriber::filter::filter_fn(
+                    pipeline_event_enabled,
+                )),
+        )
         .try_init();
 
-    match run(args, &pipeline).await {
+    match run(args, &pipeline, &setup).await {
         Ok(success) => println!(
             "fips-health-probe: healthy target={} transport=webrtc rtt_ms={}",
             success.target_npub,
@@ -174,6 +182,229 @@ impl std::fmt::Display for PipelineTrace {
             list(&counters.first_ms),
             list(&counters.last_ms)
         )
+    }
+}
+
+const SETUP_ATTEMPT_LIMIT: usize = 8;
+const SETUP_EVENT_LIMIT: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetupEvent {
+    FspDeferred,
+    OfferQueued,
+    AnswerReceived,
+    AnswerApplied,
+    ChannelOpen,
+    PendingTimeout,
+    OutboundOfferFailed,
+    InboundAnswerFailed,
+    ApplyAnswerFailed,
+    ConnectionFailed,
+    AuthToEcho,
+}
+
+impl SetupEvent {
+    fn label(self) -> &'static str {
+        match self {
+            Self::FspDeferred => "fsp_deferred",
+            Self::OfferQueued => "offer_queued",
+            Self::AnswerReceived => "answer_received",
+            Self::AnswerApplied => "answer_applied",
+            Self::ChannelOpen => "channel_open",
+            Self::PendingTimeout => "pending_timeout",
+            Self::OutboundOfferFailed => "outbound_offer_failed",
+            Self::InboundAnswerFailed => "inbound_answer_failed",
+            Self::ApplyAnswerFailed => "apply_answer_failed",
+            Self::ConnectionFailed => "connection_failed",
+            Self::AuthToEcho => "auth_to_echo",
+        }
+    }
+}
+
+#[derive(Default)]
+struct SetupTimeline {
+    // Same monotonic origin/deadline as bind, authentication and echo.
+    clock: Option<(tokio::time::Instant, tokio::time::Instant)>,
+    // Transient equality keys only; never formatted into diagnostic output.
+    // Ordinals correlate observed IDs, not target identity or auth ownership.
+    attempts: Vec<String>,
+    events: Vec<(u64, SetupEvent, Option<usize>)>,
+    attempt_overflow: bool,
+    event_overflow: bool,
+    auth_to_echo: Option<(u64, u64)>,
+}
+
+#[derive(Clone, Default)]
+struct SetupTrace(Arc<Mutex<SetupTimeline>>);
+
+fn setup_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
+}
+
+impl SetupTimeline {
+    fn record(
+        &mut self,
+        event: SetupEvent,
+        negotiation: Option<String>,
+        now: tokio::time::Instant,
+    ) {
+        let Some((started, deadline)) = self.clock else {
+            return;
+        };
+        let elapsed = setup_ms(now.saturating_duration_since(started));
+        if event == SetupEvent::AuthToEcho {
+            // Preserve the direct milestone even if earlier events filled the timeline.
+            self.auth_to_echo = Some((elapsed, setup_ms(deadline.saturating_duration_since(now))));
+        }
+        let attempt = negotiation.filter(|id| !id.is_empty()).and_then(|id| {
+            if let Some(index) = self.attempts.iter().position(|known| *known == id) {
+                Some(index + 1)
+            } else if self.attempts.len() < SETUP_ATTEMPT_LIMIT {
+                self.attempts.push(id);
+                Some(self.attempts.len())
+            } else {
+                self.attempt_overflow = true;
+                None
+            }
+        });
+        if self.events.len() < SETUP_EVENT_LIMIT {
+            self.events.push((elapsed, event, attempt));
+        } else {
+            self.event_overflow = true;
+        }
+    }
+}
+
+impl SetupTrace {
+    fn begin(&self, started: tokio::time::Instant, deadline: tokio::time::Instant) {
+        self.0.lock().unwrap().clock = Some((started, deadline));
+    }
+
+    fn auth_to_echo(&self) {
+        // The authenticated peer snapshot has no negotiation ID; keep it unbound.
+        let mut timeline = self.0.lock().unwrap();
+        timeline.record(SetupEvent::AuthToEcho, None, tokio::time::Instant::now());
+    }
+}
+
+// Read only a named field, with bounded formatting. A first pass classifies the
+// fixed message; only recognized events may read kind/stage/negotiation. Other
+// fields (addresses, SDP, errors, certificates, etc.) are never formatted.
+struct SetupField {
+    name: &'static str,
+    value: String,
+    overflow: bool,
+}
+
+impl std::fmt::Write for SetupField {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.value.len() + value.len() > 96 {
+            self.overflow = true;
+            return Err(std::fmt::Error);
+        }
+        self.value.push_str(value);
+        Ok(())
+    }
+}
+
+impl tracing::field::Visit for SetupField {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == self.name {
+            let _ = std::fmt::Write::write_str(self, value);
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == self.name {
+            use std::fmt::Write;
+            let _ = write!(self, "{value:?}");
+        }
+    }
+}
+
+fn setup_field(event: &tracing::Event<'_>, name: &'static str) -> Option<String> {
+    let mut field = SetupField {
+        name,
+        value: String::new(),
+        overflow: false,
+    };
+    event.record(&mut field);
+    (!field.overflow).then_some(field.value)
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SetupTrace {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let Some(message) = setup_field(event, "message") else {
+            return;
+        };
+        let kind = match message.as_str() {
+            "Deferring mesh traversal signal until end-to-end session is established" => {
+                SetupEvent::FspDeferred
+            }
+            "WebRTC offer sent" => SetupEvent::OfferQueued,
+            // This event precedes signal validation; it is not answer acceptance.
+            "WebRTC signal received" if setup_field(event, "kind").as_deref() == Some("Answer") => {
+                SetupEvent::AnswerReceived
+            }
+            "WebRTC answer applied" => SetupEvent::AnswerApplied,
+            "WebRTC data channel open" => SetupEvent::ChannelOpen,
+            "WebRTC connection failed" | "WebRTC negotiation failed" => {
+                match setup_field(event, "stage").as_deref() {
+                    Some("pending-before-data-channel-open") => SetupEvent::PendingTimeout,
+                    Some("outbound-offer-before-data-channel-open") => {
+                        SetupEvent::OutboundOfferFailed
+                    }
+                    Some("inbound-answer-before-data-channel-open") => {
+                        SetupEvent::InboundAnswerFailed
+                    }
+                    Some("apply-answer-before-data-channel-open") => SetupEvent::ApplyAnswerFailed,
+                    _ => SetupEvent::ConnectionFailed,
+                }
+            }
+            _ => return,
+        };
+        // These events have no negotiation association. Never infer one from
+        // recency, peer address, or the most recent successful answer.
+        let negotiation = if matches!(kind, SetupEvent::FspDeferred | SetupEvent::ChannelOpen) {
+            None
+        } else {
+            setup_field(event, "negotiation")
+        };
+        let mut timeline = self.0.lock().unwrap();
+        timeline.record(kind, negotiation, tokio::time::Instant::now());
+    }
+}
+
+impl std::fmt::Display for SetupTrace {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let timeline = self.0.lock().unwrap();
+        let scalar = |value: Option<u64>| value.map_or_else(|| "unknown".into(), |v| v.to_string());
+        write!(
+            out,
+            "v=1,end_ms={},attempts={},attempt_overflow={},event_overflow={},auth_ms={},echo_budget_ms={},events=",
+            scalar(
+                timeline
+                    .clock
+                    .map(|(started, _)| setup_ms(started.elapsed()))
+            ),
+            timeline.attempts.len(),
+            timeline.attempt_overflow,
+            timeline.event_overflow,
+            scalar(timeline.auth_to_echo.map(|(elapsed, _)| elapsed)),
+            scalar(timeline.auth_to_echo.map(|(_, budget)| budget))
+        )?;
+        for (index, (elapsed, kind, attempt)) in timeline.events.iter().enumerate() {
+            if index != 0 {
+                write!(out, "/")?;
+            }
+            write!(
+                out,
+                "{elapsed}:{}:{}",
+                kind.label(),
+                attempt.map_or_else(|| "unbound".into(), |v| v.to_string())
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -303,13 +534,19 @@ impl std::fmt::Display for EchoProgress {
     }
 }
 
-async fn run(args: Args, pipeline: &PipelineTrace) -> Result<ProbeSuccess, String> {
+async fn run(
+    args: Args,
+    pipeline: &PipelineTrace,
+    setup: &SetupTrace,
+) -> Result<ProbeSuccess, String> {
     if args.timeout_seconds == 0 {
         return Err("--timeout-seconds must be greater than zero".to_string());
     }
     let target = PeerIdentity::from_npub(args.target_npub.trim())
         .map_err(|error| format!("invalid target npub: {error}"))?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout_seconds);
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_secs(args.timeout_seconds);
+    setup.begin(started, deadline);
     let identity_secret = std::env::var("FIPS_HEALTH_SECRET")
         .ok()
         .map(|secret| secret.trim().to_string())
@@ -343,6 +580,7 @@ async fn run(args: Args, pipeline: &PipelineTrace) -> Result<ProbeSuccess, Strin
             &mut phase,
             &mut auth_progress,
             &mut echo_progress,
+            setup,
         ),
     )
     .await
@@ -356,6 +594,8 @@ async fn run(args: Args, pipeline: &PipelineTrace) -> Result<ProbeSuccess, Strin
     let probe_result = probe_result.map_err(|error| {
         format_probe_failure(error, phase, &auth_progress, &echo_progress, pipeline)
     });
+    // Snapshot before shutdown/cleanup. Preserve the existing final-result format.
+    eprintln!("fips-health-phase-summary: setup_progress=[{setup}]");
     let shutdown_result = endpoint.shutdown().await;
     settle_terminal_webrtc_cleanup().await;
     finish_probe_result(probe_result, shutdown_result).map(|rtt| ProbeSuccess { target_npub, rtt })
@@ -448,9 +688,11 @@ async fn probe_target(
     phase: &mut &'static str,
     auth_progress: &mut InitialAuthProgress,
     echo_progress: &mut EchoProgress,
+    setup: &SetupTrace,
 ) -> Result<Duration, String> {
     wait_for_authenticated_webrtc(endpoint, target, auth_progress).await?;
     *phase = "fsp_echo";
+    setup.auth_to_echo();
     echo_progress.started_at = Some(Instant::now());
 
     let nonce = *uuid::Uuid::new_v4().as_bytes();
@@ -667,6 +909,192 @@ mod tests {
         assert_eq!(counters.counts[2], 1);
         assert_eq!(counters.counts.iter().sum::<u32>(), 3);
         assert!(counters.last_ms[0] >= counters.first_ms[0]);
+    }
+
+    #[test]
+    fn setup_timeline_separates_failed_attempt_from_late_authentication() {
+        let trace = SetupTrace::default();
+        let start = tokio::time::Instant::now() - Duration::from_secs(25);
+        trace.begin(start, start + Duration::from_secs(25));
+        {
+            let mut timeline = trace.0.lock().unwrap();
+            for (ms, kind, attempt) in [
+                (3_000, SetupEvent::OfferQueued, Some("first-private-id")),
+                (18_000, SetupEvent::PendingTimeout, Some("first-private-id")),
+                (19_000, SetupEvent::OfferQueued, Some("second-private-id")),
+                (24_000, SetupEvent::AnswerApplied, Some("second-private-id")),
+                (24_500, SetupEvent::ChannelOpen, None),
+                (24_505, SetupEvent::AuthToEcho, None),
+            ] {
+                timeline.record(
+                    kind,
+                    attempt.map(str::to_string),
+                    start + Duration::from_millis(ms),
+                );
+            }
+            assert_eq!(
+                timeline
+                    .events
+                    .iter()
+                    .map(|entry| entry.2)
+                    .collect::<Vec<_>>(),
+                vec![Some(1), Some(1), Some(2), Some(2), None, None]
+            );
+            assert!(
+                timeline
+                    .events
+                    .windows(2)
+                    .all(|pair| pair[0].0 <= pair[1].0)
+            );
+            assert_eq!(timeline.auth_to_echo, Some((24_505, 495)));
+        }
+        let summary = trace.to_string();
+        assert!(summary.contains("auth_ms=24505,echo_budget_ms=495"));
+        assert!(summary.contains("18000:pending_timeout:1/19000:offer_queued:2"));
+        assert!(summary.ends_with("24500:channel_open:unbound/24505:auth_to_echo:unbound"));
+        assert!(!summary.contains("private"));
+    }
+
+    #[test]
+    fn setup_observer_allowlists_events_without_formatting_private_fields() {
+        struct PrivateField;
+        impl std::fmt::Debug for PrivateField {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("unrelated private fields must not be formatted")
+            }
+        }
+        #[derive(Debug)]
+        enum SignalKind {
+            Offer,
+            Answer,
+        }
+        let trace = SetupTrace::default();
+        let start = tokio::time::Instant::now();
+        trace.begin(start, start + Duration::from_secs(25));
+        let subscriber = tracing_subscriber::registry().with(trace.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(pipeline_event_enabled),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            let id = "private-negotiation";
+            tracing::debug!(target: "fips_core::transport", negotiation = %id,
+                remote_addr = ?PrivateField, sdp = ?PrivateField, "WebRTC offer sent");
+            tracing::debug!(target: "fips_core::transport", kind = ?SignalKind::Offer,
+                negotiation = ?PrivateField, "WebRTC signal received");
+            tracing::debug!(target: "fips_core::transport", kind = ?SignalKind::Answer,
+                negotiation = %id, sender = ?PrivateField, "WebRTC signal received");
+            tracing::debug!(target: "fips_core::transport", negotiation = %id,
+                error = ?PrivateField, "WebRTC answer applied");
+            tracing::debug!(target: "fips_core::transport", negotiation = ?PrivateField,
+                remote_addr = ?PrivateField, "WebRTC data channel open");
+            tracing::debug!(target: "fips_core::node", peer = ?PrivateField,
+                "Deferring mesh traversal signal until end-to-end session is established");
+            tracing::warn!(target: "fips_core::transport", negotiation = %id,
+                stage = "pending-before-data-channel-open", rtc = ?PrivateField,
+                reason = ?PrivateField, "WebRTC connection failed");
+            tracing::debug!(target: "fips_core::transport", negotiation = ?PrivateField,
+                kind = ?PrivateField, "unknown event");
+            tracing::debug!(target: "unrelated", negotiation = ?PrivateField, "WebRTC offer sent");
+        });
+        let timeline = trace.0.lock().unwrap();
+        assert_eq!(
+            timeline
+                .events
+                .iter()
+                .map(|entry| (entry.1, entry.2))
+                .collect::<Vec<_>>(),
+            vec![
+                (SetupEvent::OfferQueued, Some(1)),
+                (SetupEvent::AnswerReceived, Some(1)),
+                (SetupEvent::AnswerApplied, Some(1)),
+                (SetupEvent::ChannelOpen, None),
+                (SetupEvent::FspDeferred, None),
+                (SetupEvent::PendingTimeout, Some(1)),
+            ]
+        );
+        drop(timeline);
+        assert!(!trace.to_string().contains("private"));
+    }
+
+    #[test]
+    fn setup_observer_bounds_field_reads_and_sanitizes_failure_stages() {
+        let trace = SetupTrace::default();
+        let start = tokio::time::Instant::now();
+        trace.begin(start, start + Duration::from_secs(25));
+        let subscriber = tracing_subscriber::registry().with(trace.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(pipeline_event_enabled),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            for stage in [
+                "outbound-offer-before-data-channel-open",
+                "inbound-answer-before-data-channel-open",
+                "apply-answer-before-data-channel-open",
+                "private-unknown-stage",
+            ] {
+                tracing::warn!(target: "fips_core::transport", stage, negotiation = %"one-private-id",
+                    "WebRTC negotiation failed");
+            }
+            let oversized = "x".repeat(97);
+            tracing::debug!(target: "fips_core::transport", negotiation = %oversized, "WebRTC offer sent");
+        });
+        let timeline = trace.0.lock().unwrap();
+        assert_eq!(timeline.attempts.len(), 1);
+        assert_eq!(
+            timeline
+                .events
+                .iter()
+                .map(|entry| entry.1)
+                .collect::<Vec<_>>(),
+            vec![
+                SetupEvent::OutboundOfferFailed,
+                SetupEvent::InboundAnswerFailed,
+                SetupEvent::ApplyAnswerFailed,
+                SetupEvent::ConnectionFailed,
+                SetupEvent::OfferQueued,
+            ]
+        );
+        assert_eq!(timeline.events.last().unwrap().2, None);
+        drop(timeline);
+        let summary = trace.to_string();
+        assert!(!summary.contains("private"));
+        assert!(!summary.contains("xxx"));
+    }
+
+    #[test]
+    fn setup_caps_keep_known_ordinals_and_auth_milestone_after_overflow() {
+        let trace = SetupTrace::default();
+        let start = tokio::time::Instant::now();
+        trace.begin(start, start + Duration::from_secs(25));
+        {
+            let mut timeline = trace.0.lock().unwrap();
+            for index in 0..9 {
+                timeline.record(
+                    SetupEvent::OfferQueued,
+                    Some(format!("private-{index}")),
+                    start,
+                );
+            }
+            assert_eq!(timeline.attempts.len(), SETUP_ATTEMPT_LIMIT);
+            assert!(timeline.attempt_overflow);
+            assert_eq!(timeline.events[8].2, None);
+            timeline.record(SetupEvent::PendingTimeout, Some("private-0".into()), start);
+            assert_eq!(timeline.events[9].2, Some(1));
+            for _ in 0..SETUP_EVENT_LIMIT {
+                timeline.record(SetupEvent::FspDeferred, None, start);
+            }
+            timeline.record(
+                SetupEvent::AuthToEcho,
+                None,
+                start + Duration::from_secs(26),
+            );
+            assert_eq!(timeline.events.len(), SETUP_EVENT_LIMIT);
+            assert!(timeline.event_overflow);
+            assert_eq!(timeline.auth_to_echo, Some((26_000, 0)));
+        }
+        let summary = trace.to_string();
+        assert!(summary.contains("attempts=8,attempt_overflow=true,event_overflow=true"));
+        assert!(summary.contains("auth_ms=26000,echo_budget_ms=0"));
+        assert!(summary.len() < 4096);
+        assert!(!summary.contains("private"));
     }
 
     #[test]
