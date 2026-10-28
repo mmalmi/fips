@@ -910,6 +910,10 @@ impl Node {
         self.check_session_mmp_reports().await;
         self.check_rekey().await;
         self.check_session_rekey().await;
+        // Periodic route repair must survive optional discovery timeouts and
+        // skipped slow ticks under load. It still shares the liveness budget.
+        self.check_tree_state().await;
+        self.check_bloom_state().await;
         self.poll_pending_connects().await;
         self.process_pending_retries(now_ms).await;
         self.poll_transport_discovery().await;
@@ -928,8 +932,6 @@ impl Node {
         self.poll_nostr_discovery().await;
         self.poll_lan_discovery().await;
         self.poll_local_rendezvous().await;
-        self.check_tree_state().await;
-        self.check_bloom_state().await;
         self.compute_mesh_size();
         self.record_stats_history();
     }

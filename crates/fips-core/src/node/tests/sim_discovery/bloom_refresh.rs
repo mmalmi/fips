@@ -45,6 +45,31 @@ fn client_startup_never_advertises_a_temporary_root_to_modern_upstreams() {
     run(Case::ClientStartup);
 }
 
+#[test]
+fn periodic_routing_refresh_survives_slow_optional_maintenance() {
+    const FAULT: &str = "FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS";
+    if std::env::var(FAULT).as_deref() != Ok("25") {
+        // Keep the existing fault injection private to this test process.
+        let test = format!(
+            "{}::periodic_routing_refresh_survives_slow_optional_maintenance",
+            module_path!().split_once("::").unwrap().1
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--nocapture", "--test-threads=1"])
+            .env(FAULT, "25")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+            "isolated maintenance check failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    run(Case::SlowMaintenance);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Case {
     Refresh,
@@ -55,6 +80,7 @@ enum Case {
     RouterRefresh,
     ClientCapabilityCancellation,
     ClientStartup,
+    SlowMaintenance,
 }
 
 fn run(case: Case) {
@@ -91,6 +117,7 @@ fn run(case: Case) {
             let owners = owners(&nodes);
             match case {
                 Case::Refresh => unchanged(&mut nodes).await,
+                Case::SlowMaintenance => periodic_under_pressure(&mut nodes).await,
                 Case::Cancellation => cancellation(&mut nodes, &network).await,
                 Case::FastCancellation => fast_cancellation(&mut nodes, &network, false).await,
                 Case::TreeCancellation => fast_cancellation(&mut nodes, &network, true).await,
@@ -494,6 +521,88 @@ fn refreshed_receivers(nodes: &[TestNode], root: &NodeAddr, sequences: &[u64]) -
             nodes[*leaf].node.get_peer(root).unwrap().filter_sequence() > sequences[*leaf - 1]
         })
         .count()
+}
+
+async fn periodic_under_pressure(nodes: &mut [TestNode]) {
+    anchor_filter(nodes, 1, &[0]).await;
+    let root = *nodes[0].node.node_addr();
+    let leaf = *nodes[1].node.node_addr();
+    let before: Vec<_> = nodes
+        .iter()
+        .map(|node| node.node.stats().bloom.sent)
+        .collect();
+    let tree_sent = nodes[1].node.stats().tree.sent;
+    let tree_received = nodes[0].node.stats().tree.received;
+    nodes[1]
+        .node
+        .config
+        .node
+        .tree
+        .announce_refresh_interval_secs = 1;
+    let peer = nodes[0].node.get_peer(&leaf).unwrap();
+    let sequence = peer.filter_sequence();
+    let filter = peer.inbound_filter().unwrap().clone();
+    nodes[1]
+        .node
+        .config
+        .node
+        .bloom
+        .announce_refresh_interval_secs = 1;
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !nodes[1]
+        .node
+        .bloom_state
+        .refresh_due(&root, Node::now_ms(), 1_000)
+        || Node::now_ms().saturating_sub(
+            nodes[1]
+                .node
+                .get_peer(&root)
+                .unwrap()
+                .last_tree_announce_sent_ms(),
+        ) < 1_000
+    {
+        process_available_packets(nodes).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            tokio::time::Instant::now() < until,
+            "original refresh becomes due"
+        );
+    }
+    let mut skip_slow = false;
+    let mut timeouts = 0;
+    for _ in 0..6 {
+        // Follow the receive loop's timeout/one-skipped-turn policy under load.
+        skip_slow = nodes[1].node.busy_maintenance_tick(skip_slow).await;
+        timeouts += usize::from(skip_slow);
+        process_available_packets(nodes).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(timeouts >= 2, "optional work must exceed its busy budget");
+    assert_eq!(
+        (
+            nodes[1].node.stats().tree.sent > tree_sent,
+            nodes[1].node.stats().bloom.sent > before[1]
+        ),
+        (true, true),
+        "periodic tree and filter refresh must survive slow optional maintenance"
+    );
+    assert!(
+        nodes[0].node.stats().tree.received > tree_received,
+        "the encrypted tree refresh reaches its peer"
+    );
+    let peer = nodes[0].node.get_peer(&leaf).unwrap();
+    assert!(
+        peer.filter_sequence() > sequence,
+        "the encrypted refresh reaches its peer"
+    );
+    assert_eq!(peer.inbound_filter(), Some(&filter));
+    for other in [0, 2] {
+        assert_eq!(
+            nodes[other].node.stats().bloom.sent,
+            before[other],
+            "unchanged refresh cannot cascade"
+        );
+    }
 }
 
 async fn unchanged(nodes: &mut [TestNode]) {

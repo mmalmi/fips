@@ -6,6 +6,17 @@ use crate::transport::{PacketBuffer, ReceivedPacket, TransportAddr, TransportId,
 use std::time::{Duration, Instant};
 
 impl Node {
+    pub(in crate::node) async fn busy_maintenance_tick(&mut self, skip_slow: bool) -> bool {
+        use super::super::{budget, drain::RxLoopMaintenancePlan};
+        self.run_rx_loop_maintenance_tick(RxLoopMaintenancePlan::new(
+            true,
+            skip_slow,
+            budget::RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+            budget::RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+        ))
+        .await
+    }
+
     // Test-only adapter keeps the private RX turn private in production. Native
     // authentication, successful anchors and cleanup belong to bloom_refresh.
     pub(in crate::node) async fn assert_canceled_routing_turn_drains_data(
