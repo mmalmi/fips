@@ -4,8 +4,10 @@ use clap::Parser;
 use fips::config::{PeerAddress, PeerConfig, TransportInstances, WebSocketConfig};
 use fips::{Config, FipsEndpoint, PeerIdentity, WebRtcConfig};
 use std::net::Ipv6Addr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time::{MissedTickBehavior, timeout_at};
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
 const ICMPV6_NEXT_HEADER: u8 = 58;
@@ -44,12 +46,23 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args = Args::parse();
-    let _ = fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
+    let pipeline = PipelineTrace::default();
+    let _ = tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(EnvFilter::from_default_env()),
+        )
+        .with(
+            pipeline
+                .clone()
+                .with_filter(tracing_subscriber::filter::filter_fn(
+                    pipeline_event_enabled,
+                )),
+        )
         .try_init();
 
-    match run(args).await {
+    match run(args, &pipeline).await {
         Ok(success) => println!(
             "fips-health-probe: healthy target={} transport=webrtc rtt_ms={}",
             success.target_npub,
@@ -67,7 +80,230 @@ struct ProbeSuccess {
     rtt: Duration,
 }
 
-async fn run(args: Args) -> Result<ProbeSuccess, String> {
+// Observe existing local-node events only: fixed counters/timings, never event
+// fields, identities, packet contents or free-form errors. No library API or
+// packet-path behavior changes are required to distinguish FSP setup progress.
+const PIPELINE_EVENTS: [&str; 16] = [
+    "Session initiation started",
+    "SessionSetup processed (XK), SessionAck sent, awaiting msg3",
+    "Session established (initiator, XK)",
+    "Session established (responder, XK)",
+    "Resent session handshake",
+    "Session handshake resend failed",
+    "Session handshake timed out, removing",
+    "Session handshake resend budget exhausted",
+    "Failed to process Noise XK msg2 in SessionAck",
+    "SessionAck for unknown session",
+    "SessionAck but session not in Initiating state",
+    "Failed to send SessionMsg3",
+    "SessionSetup rate limited",
+    "Session table full, refusing new session",
+    "Failed to deliver packet to external app sink",
+    "SessionMsg3 for unknown session",
+];
+
+struct PipelineCounters {
+    started: Instant,
+    counts: [u32; 16],
+    first_ms: [u64; 16],
+    last_ms: [u64; 16],
+}
+
+#[derive(Clone)]
+struct PipelineTrace(Arc<Mutex<PipelineCounters>>);
+
+fn pipeline_event_enabled(metadata: &tracing::Metadata<'_>) -> bool {
+    metadata.is_event()
+        && metadata.target().starts_with("fips_core::")
+        && *metadata.level() <= tracing::Level::DEBUG
+}
+
+impl Default for PipelineTrace {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(PipelineCounters {
+            started: Instant::now(),
+            counts: [0; 16],
+            first_ms: [0; 16],
+            last_ms: [0; 16],
+        })))
+    }
+}
+
+#[derive(Default)]
+struct PipelineField(Option<usize>);
+
+impl tracing::field::Visit for PipelineField {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            let message = format!("{value:?}");
+            self.0 = PIPELINE_EVENTS.iter().position(|item| *item == message);
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PipelineTrace {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut field = PipelineField::default();
+        event.record(&mut field);
+        let Some(index) = field.0 else { return };
+        let mut counters = self.0.lock().unwrap();
+        let elapsed = counters.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        if counters.counts[index] == 0 {
+            counters.first_ms[index] = elapsed;
+        }
+        counters.counts[index] = counters.counts[index].saturating_add(1);
+        counters.last_ms[index] = elapsed;
+    }
+}
+
+impl std::fmt::Display for PipelineTrace {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let counters = self.0.lock().unwrap();
+        let list = |values: &[u64; 16]| {
+            values
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let counts = counters.counts.map(u64::from);
+        write!(
+            out,
+            "counts={},first_ms={},last_ms={}",
+            list(&counts),
+            list(&counters.first_ms),
+            list(&counters.last_ms)
+        )
+    }
+}
+
+// Kept outside the timed future so cancellation cannot erase a pending query.
+// Observes only the existing peer-snapshot loop and emits no peer data.
+// Carrier flags are cumulative ever-seen values, not the latest snapshot state.
+// The successful-snapshot age measures query completion, not carrier recency.
+#[derive(Default)]
+struct InitialAuthProgress {
+    snapshots_started: u32,
+    snapshots_completed: u32,
+    snapshot_errors: u32,
+    last_snapshot_error: Option<&'static str>,
+    snapshot_started_at: Option<Instant>,
+    max_snapshot_elapsed: Duration,
+    last_successful_snapshot_at: Option<Instant>,
+    target_websocket_seen: Option<bool>,
+    target_webrtc_seen: Option<bool>,
+}
+
+impl InitialAuthProgress {
+    fn start_snapshot(&mut self) {
+        self.snapshots_started += 1;
+        self.snapshot_started_at = Some(Instant::now());
+    }
+
+    fn complete_snapshot(&mut self, result: Result<Option<&str>, &fips::FipsEndpointError>) {
+        self.snapshots_completed += 1;
+        if let Some(started) = self.snapshot_started_at.take() {
+            self.max_snapshot_elapsed = self.max_snapshot_elapsed.max(started.elapsed());
+        }
+        match result {
+            Ok(transport) => {
+                self.last_successful_snapshot_at = Some(Instant::now());
+                self.target_websocket_seen = Some(
+                    self.target_websocket_seen.unwrap_or(false) || transport == Some("websocket"),
+                );
+                self.target_webrtc_seen =
+                    Some(self.target_webrtc_seen.unwrap_or(false) || transport == Some("webrtc"));
+            }
+            Err(error) => {
+                self.snapshot_errors += 1;
+                self.last_snapshot_error = Some(match error {
+                    fips::FipsEndpointError::Timeout { .. } => "timeout",
+                    fips::FipsEndpointError::Closed => "closed",
+                    _ => "other",
+                });
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for InitialAuthProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let flag = |value| match value {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        };
+        let successful_age = self.last_successful_snapshot_at.map_or_else(
+            || "unknown".to_string(),
+            |at| at.elapsed().as_millis().to_string(),
+        );
+        write!(
+            f,
+            "snapshots_started={},snapshots_completed={},snapshot_errors={},last_snapshot_error={},max_snapshot_ms={},pending_snapshot_ms={},last_successful_snapshot_age_ms={},target_websocket_seen={},target_webrtc_seen={}",
+            self.snapshots_started,
+            self.snapshots_completed,
+            self.snapshot_errors,
+            self.last_snapshot_error.unwrap_or("none"),
+            self.max_snapshot_elapsed.as_millis(),
+            self.snapshot_started_at
+                .map_or(0, |at| at.elapsed().as_millis()),
+            successful_age,
+            flag(self.target_websocket_seen),
+            flag(self.target_webrtc_seen),
+        )
+    }
+}
+
+// Kept outside the timed future, as with authentication progress. A completed
+// send means local submission only, not delivery; no packet contents are kept.
+#[derive(Default)]
+struct EchoProgress {
+    started_at: Option<Instant>,
+    sends_started: u32,
+    sends_completed: u32,
+    send_errors: u32,
+    send_started_at: Option<Instant>,
+    max_send_elapsed: Duration,
+    received_packets: u64,
+    target_packets: u64,
+}
+
+impl EchoProgress {
+    fn start_send(&mut self) {
+        self.sends_started += 1;
+        self.send_started_at = Some(Instant::now());
+    }
+
+    fn complete_send(&mut self, succeeded: bool) {
+        self.sends_completed += 1;
+        self.send_errors += u32::from(!succeeded);
+        if let Some(started) = self.send_started_at.take() {
+            self.max_send_elapsed = self.max_send_elapsed.max(started.elapsed());
+        }
+    }
+}
+
+impl std::fmt::Display for EchoProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let now = Instant::now();
+        write!(
+            f,
+            "elapsed_ms={},sends_started={},sends_completed={},send_errors={},max_send_ms={},pending_send_ms={},received_packets={},target_packets={}",
+            self.started_at
+                .map_or(0, |at| now.saturating_duration_since(at).as_millis()),
+            self.sends_started,
+            self.sends_completed,
+            self.send_errors,
+            self.max_send_elapsed.as_millis(),
+            self.send_started_at
+                .map_or(0, |at| now.saturating_duration_since(at).as_millis()),
+            self.received_packets,
+            self.target_packets
+        )
+    }
+}
+
+async fn run(args: Args, pipeline: &PipelineTrace) -> Result<ProbeSuccess, String> {
     if args.timeout_seconds == 0 {
         return Err("--timeout-seconds must be greater than zero".to_string());
     }
@@ -97,7 +333,19 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
     .map_err(|_| "timed out starting ephemeral FIPS endpoint".to_string())?
     .map_err(|error| format!("could not start ephemeral FIPS endpoint: {error}"))?;
     let mut phase = "webrtc_authentication";
-    let probe_result = match timeout_at(deadline, probe_target(&endpoint, target, &mut phase)).await
+    let mut auth_progress = InitialAuthProgress::default();
+    let mut echo_progress = EchoProgress::default();
+    let probe_result = match timeout_at(
+        deadline,
+        probe_target(
+            &endpoint,
+            target,
+            &mut phase,
+            &mut auth_progress,
+            &mut echo_progress,
+        ),
+    )
+    .await
     {
         Ok(result) => result,
         Err(_) => Err(format!(
@@ -105,15 +353,43 @@ async fn run(args: Args) -> Result<ProbeSuccess, String> {
             args.timeout_seconds
         )),
     };
+    let probe_result = probe_result.map_err(|error| {
+        format_probe_failure(error, phase, &auth_progress, &echo_progress, pipeline)
+    });
     let shutdown_result = endpoint.shutdown().await;
     settle_terminal_webrtc_cleanup().await;
-    if let Err(error) = shutdown_result {
-        return Err(format!(
-            "probe completed but endpoint shutdown failed: {error}"
-        ));
-    }
+    finish_probe_result(probe_result, shutdown_result).map(|rtt| ProbeSuccess { target_npub, rtt })
+}
 
-    probe_result.map(|rtt| ProbeSuccess { target_npub, rtt })
+fn format_probe_failure(
+    error: String,
+    phase: &str,
+    auth_progress: &InitialAuthProgress,
+    echo_progress: &EchoProgress,
+    pipeline: &PipelineTrace,
+) -> String {
+    if phase == "webrtc_authentication" {
+        // WebRTC negotiation uses FIPS sessions before the echo begins.
+        // These local events distinguish session setup from remote delivery.
+        format!("{error}; auth_progress=[{auth_progress}]; pipeline_progress=[{pipeline}]")
+    } else {
+        format!("{error}; echo_progress=[{echo_progress}]; pipeline_progress=[{pipeline}]")
+    }
+}
+
+fn finish_probe_result(
+    probe_result: Result<Duration, String>,
+    shutdown_result: Result<(), fips::FipsEndpointError>,
+) -> Result<Duration, String> {
+    match (probe_result, shutdown_result) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(format!(
+            "probe completed but endpoint shutdown failed: {error}"
+        )),
+        (Err(probe_error), Err(error)) => {
+            Err(format!("{probe_error}; endpoint shutdown failed: {error}"))
+        }
+    }
 }
 
 async fn settle_terminal_webrtc_cleanup() {
@@ -170,9 +446,12 @@ async fn probe_target(
     endpoint: &FipsEndpoint,
     target: PeerIdentity,
     phase: &mut &'static str,
+    auth_progress: &mut InitialAuthProgress,
+    echo_progress: &mut EchoProgress,
 ) -> Result<Duration, String> {
-    wait_for_authenticated_webrtc(endpoint, target).await?;
+    wait_for_authenticated_webrtc(endpoint, target, auth_progress).await?;
     *phase = "fsp_echo";
+    echo_progress.started_at = Some(Instant::now());
 
     let nonce = *uuid::Uuid::new_v4().as_bytes();
     let identifier = u16::from_be_bytes([nonce[0], nonce[1]]);
@@ -190,14 +469,19 @@ async fn probe_target(
 
     loop {
         tokio::select! {
-            _ = ping_tick.tick() => endpoint
-                .send_ip_packet(request.clone())
-                .await
-                .map_err(|error| format!("FSP echo send failed: {error}"))?,
+            _ = ping_tick.tick() => {
+                echo_progress.start_send();
+                let result = endpoint.send_ip_packet(request.clone()).await;
+                echo_progress.complete_send(result.is_ok());
+                result.map_err(|error| format!("FSP echo send failed: {error}"))?;
+            },
             delivered = endpoint.recv_ip_packet() => {
                 let delivered = delivered.ok_or_else(|| {
                     "ephemeral endpoint closed before receiving FSP echo".to_string()
                 })?;
+                echo_progress.received_packets += 1;
+                echo_progress.target_packets +=
+                    u64::from(delivered.source_node_addr == *target.node_addr());
                 if delivered.source_node_addr == *target.node_addr()
                     && echo_reply_matches(
                         &delivered.packet,
@@ -218,15 +502,21 @@ async fn probe_target(
 async fn wait_for_authenticated_webrtc(
     endpoint: &FipsEndpoint,
     target: PeerIdentity,
+    progress: &mut InitialAuthProgress,
 ) -> Result<(), String> {
     let mut poll = tokio::time::interval(PEER_POLL_INTERVAL);
     poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         poll.tick().await;
-        let peers = endpoint
-            .peers()
-            .await
-            .map_err(|error| format!("peer state query failed: {error}"))?;
+        progress.start_snapshot();
+        let snapshot = endpoint.peers().await;
+        progress.complete_snapshot(snapshot.as_ref().map(|peers| {
+            peers
+                .iter()
+                .find(|peer| peer.node_addr == *target.node_addr())
+                .and_then(|peer| peer.transport_type.as_deref())
+        }));
+        let peers = snapshot.map_err(|error| format!("peer state query failed: {error}"))?;
         if peers
             .iter()
             .any(|peer| is_authenticated_webrtc_peer(peer, &target))
@@ -327,11 +617,262 @@ fn add_words(sum: &mut u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_trace_sanitizes_and_bounds_existing_events() {
+        struct PrivateField;
+        impl std::fmt::Debug for PrivateField {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private event fields must not even be formatted")
+            }
+        }
+        let trace = PipelineTrace::default();
+        let subscriber = tracing_subscriber::registry().with(trace.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(pipeline_event_enabled),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "fips_core::node::handlers::session", private = ?PrivateField,
+                "Session initiation started");
+            tracing::debug!(target: "fips_core::node::handlers::session", "private-unknown-message");
+            tracing::debug!(target: "unrelated::module", "Session initiation started");
+        });
+        assert_eq!(trace.0.lock().unwrap().counts[0], 1);
+        trace.0.lock().unwrap().counts[0] = u32::MAX;
+        let subscriber = tracing_subscriber::registry().with(trace.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(pipeline_event_enabled),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "fips_core::node::handlers::session", "Session initiation started");
+        });
+        let snapshot = trace.to_string();
+        assert_eq!(trace.0.lock().unwrap().counts[0], u32::MAX);
+        assert!(snapshot.len() < 800);
+        assert!(!snapshot.contains("private"));
+        assert!(!snapshot.contains("session"));
+    }
+
+    #[test]
+    fn pipeline_trace_distinguishes_session_start_from_completion() {
+        let trace = PipelineTrace::default();
+        let subscriber = tracing_subscriber::registry().with(trace.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(pipeline_event_enabled),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "fips_core::node::handlers::session", "Session initiation started");
+            tracing::debug!(target: "fips_core::node::handlers::session", "Session initiation started");
+            tracing::info!(target: "fips_core::node::handlers::session", "Session established (initiator, XK)");
+        });
+        let counters = trace.0.lock().unwrap();
+        assert_eq!(counters.counts[0], 2);
+        assert_eq!(counters.counts[2], 1);
+        assert_eq!(counters.counts.iter().sum::<u32>(), 3);
+        assert!(counters.last_ms[0] >= counters.first_ms[0]);
+    }
+
+    #[test]
+    fn authentication_failure_includes_existing_pipeline_progress() {
+        let pipeline = PipelineTrace::default();
+        let subscriber = tracing_subscriber::registry().with(pipeline.clone().with_filter(
+            tracing_subscriber::filter::filter_fn(pipeline_event_enabled),
+        ));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "fips_core::node::handlers::session", "Session initiation started");
+            tracing::info!(target: "fips_core::node::handlers::session", "Session established (initiator, XK)");
+        });
+        let mut auth = InitialAuthProgress::default();
+        auth.start_snapshot();
+        auth.complete_snapshot(Ok(Some("websocket")));
+        let error = format_probe_failure(
+            "probe deadline; phase=webrtc_authentication".to_string(),
+            "webrtc_authentication",
+            &auth,
+            &EchoProgress::default(),
+            &pipeline,
+        );
+        assert!(error.contains("target_websocket_seen=true,target_webrtc_seen=false"));
+        assert!(error.contains("; pipeline_progress=[counts=1/0/1/0/0/0/0/0/0/0/0/0/0/0/0/0,"));
+        assert!(!error.contains("echo_progress="));
+        assert_eq!(error.matches("pipeline_progress=").count(), 1);
+        let retained_error =
+            finish_probe_result(Err(error.clone()), Err(fips::FipsEndpointError::Closed))
+                .unwrap_err();
+        assert!(retained_error.starts_with(&error));
+        assert!(retained_error.contains("; endpoint shutdown failed: "));
+    }
     use std::net::Ipv6Addr;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[tokio::test]
+    async fn cancelled_echo_send_remains_pending_in_failure_progress() {
+        let mut progress = EchoProgress::default();
+        progress.started_at = Some(Instant::now());
+        let result = tokio::time::timeout(Duration::from_millis(10), async {
+            progress.start_send();
+            std::future::pending::<()>().await;
+            progress.complete_send(true);
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(progress.sends_started, 1);
+        assert_eq!(progress.sends_completed, 0);
+        assert_eq!(progress.send_errors, 0);
+        assert!(progress.send_started_at.is_some());
+        assert!(
+            progress
+                .to_string()
+                .contains("sends_started=1,sends_completed=0")
+        );
+    }
+
+    #[test]
+    fn completed_echo_send_is_not_delivery_or_reply_proof() {
+        let mut progress = EchoProgress::default();
+        progress.start_send();
+        progress.complete_send(true);
+        assert_eq!(progress.sends_completed, 1);
+        assert!(progress.send_started_at.is_none());
+        assert_eq!(progress.received_packets, 0);
+        assert_eq!(progress.target_packets, 0);
+        progress.start_send();
+        progress.complete_send(false);
+        assert_eq!(progress.sends_started, 2);
+        assert_eq!(progress.sends_completed, 2);
+        assert_eq!(progress.send_errors, 1);
+    }
+
+    #[test]
+    fn echo_failure_progress_contains_only_static_counts_and_timings() {
+        assert_eq!(
+            EchoProgress::default().to_string(),
+            "elapsed_ms=0,sends_started=0,sends_completed=0,send_errors=0,max_send_ms=0,pending_send_ms=0,received_packets=0,target_packets=0"
+        );
+    }
+
+    #[test]
+    fn echo_progress_survives_shutdown_failure_without_changing_success() {
+        let error = format!(
+            "phase=fsp_echo; echo_progress=[{}]",
+            EchoProgress::default()
+        );
+        let expected = format!(
+            "{error}; endpoint shutdown failed: {}",
+            fips::FipsEndpointError::Closed
+        );
+        assert_eq!(
+            finish_probe_result(Err(error), Err(fips::FipsEndpointError::Closed)),
+            Err(expected)
+        );
+        let rtt = Duration::from_millis(5);
+        assert_eq!(finish_probe_result(Ok(rtt), Ok(())), Ok(rtt));
+    }
+
+    #[tokio::test]
+    async fn cancelled_peer_snapshot_remains_pending_in_failure_progress() {
+        let mut progress = InitialAuthProgress::default();
+        let result = tokio::time::timeout(Duration::from_millis(10), async {
+            progress.start_snapshot();
+            std::future::pending::<()>().await;
+            progress.complete_snapshot(Ok(None));
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(progress.snapshots_started, 1);
+        assert_eq!(progress.snapshots_completed, 0);
+        assert!(progress.snapshot_started_at.is_some());
+        assert_eq!(progress.target_websocket_seen, None);
+        assert_eq!(progress.target_webrtc_seen, None);
+        let summary = progress.to_string();
+        assert!(summary.contains("snapshots_started=1,snapshots_completed=0"));
+        assert!(summary.contains("target_websocket_seen=unknown,target_webrtc_seen=unknown"));
+    }
+
+    #[test]
+    fn completed_snapshot_and_target_carrier_progress_are_separate() {
+        let mut progress = InitialAuthProgress::default();
+        progress.start_snapshot();
+        progress.complete_snapshot(Ok(None));
+        assert_eq!(progress.snapshots_completed, 1);
+        assert!(progress.snapshot_started_at.is_none());
+        assert_eq!(progress.target_websocket_seen, Some(false));
+        assert_eq!(progress.target_webrtc_seen, Some(false));
+
+        progress.start_snapshot();
+        progress.complete_snapshot(Ok(Some("websocket")));
+        assert_eq!(progress.target_websocket_seen, Some(true));
+        assert_eq!(progress.target_webrtc_seen, Some(false));
+        progress.start_snapshot();
+        progress.complete_snapshot(Ok(Some("webrtc")));
+        assert_eq!(progress.target_websocket_seen, Some(true));
+        assert_eq!(progress.target_webrtc_seen, Some(true));
+        assert!(progress.last_successful_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn initial_auth_failure_progress_has_only_static_counts_and_flags() {
+        let progress = InitialAuthProgress::default();
+        let summary = progress.to_string();
+        assert_eq!(
+            summary,
+            "snapshots_started=0,snapshots_completed=0,snapshot_errors=0,last_snapshot_error=none,max_snapshot_ms=0,pending_snapshot_ms=0,last_successful_snapshot_age_ms=unknown,target_websocket_seen=unknown,target_webrtc_seen=unknown"
+        );
+    }
+
+    #[test]
+    fn typed_snapshot_errors_do_not_claim_target_absence() {
+        for (error, class) in [
+            (
+                fips::FipsEndpointError::Timeout {
+                    operation: "peer snapshot",
+                },
+                "timeout",
+            ),
+            (fips::FipsEndpointError::Closed, "closed"),
+        ] {
+            let mut progress = InitialAuthProgress::default();
+            progress.start_snapshot();
+            progress.complete_snapshot(Err(&error));
+            assert_eq!(progress.snapshots_started, 1);
+            assert_eq!(progress.snapshots_completed, 1);
+            assert_eq!(progress.snapshot_errors, 1);
+            assert_eq!(progress.last_snapshot_error, Some(class));
+            assert_eq!(progress.target_websocket_seen, None);
+            assert_eq!(progress.target_webrtc_seen, None);
+            assert!(progress.last_successful_snapshot_at.is_none());
+            assert!(progress.snapshot_started_at.is_none());
+        }
+    }
+
+    #[test]
+    fn authentication_progress_survives_a_shutdown_failure() {
+        let progress = InitialAuthProgress::default();
+        let probe_error = format!("phase=webrtc_authentication; auth_progress=[{progress}]");
+        let shutdown_error = fips::FipsEndpointError::Closed;
+        let expected = format!("{probe_error}; endpoint shutdown failed: {shutdown_error}");
+        assert_eq!(
+            finish_probe_result(Err(probe_error), Err(shutdown_error)),
+            Err(expected)
+        );
+    }
+
+    #[test]
+    fn successful_probe_result_and_cleanup_failure_remain_unchanged() {
+        let rtt = Duration::from_millis(7);
+        assert_eq!(finish_probe_result(Ok(rtt), Ok(())), Ok(rtt));
+        let shutdown_error = fips::FipsEndpointError::Closed;
+        let expected = format!("probe completed but endpoint shutdown failed: {shutdown_error}");
+        assert_eq!(
+            finish_probe_result(Ok(rtt), Err(shutdown_error)),
+            Err(expected)
+        );
+        assert_eq!(
+            finish_probe_result(Err("echo failed".to_string()), Ok(())),
+            Err("echo failed".to_string())
+        );
+    }
 
     #[tokio::test]
     async fn successful_probe_keeps_runtime_alive_for_detached_terminal_cleanup() {
