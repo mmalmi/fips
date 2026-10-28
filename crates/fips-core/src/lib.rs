@@ -33,6 +33,9 @@ pub mod upper;
 pub mod utils;
 pub mod version;
 
+#[cfg(test)]
+mod test_allocations;
+
 // Re-export identity types
 pub use fips_identity::{
     AuthChallenge, AuthResponse, FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity,

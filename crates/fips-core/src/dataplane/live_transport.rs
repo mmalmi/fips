@@ -243,13 +243,11 @@ impl DataplaneTransportSendGroups {
         self.groups.iter().map(|group| group.outputs.len()).sum()
     }
 
-    fn take_groups_preserving_capacity(&mut self) -> Vec<DataplaneTransportPlanGroup> {
-        // Empty completion turns can keep the warmed allocation in place.
-        if self.groups.is_empty() {
-            return Vec::new();
-        }
-        let capacity = self.groups.capacity();
-        std::mem::replace(&mut self.groups, Vec::with_capacity(capacity))
+    fn drain_groups(&mut self) -> std::vec::Drain<'_, DataplaneTransportPlanGroup> {
+        // The output turn owns this buffer across the send await. Draining
+        // consumes every group, including on cancellation, while retaining
+        // the outer allocation for the next turn.
+        self.groups.drain(..)
     }
 
     fn push_transport(
@@ -279,16 +277,12 @@ impl DataplaneTransportSendGroups {
 
 async fn send_dataplane_transport_groups(
     transports: &HashMap<TransportId, TransportHandle>,
-    groups: Vec<DataplaneTransportPlanGroup>,
+    groups: impl IntoIterator<Item = DataplaneTransportPlanGroup>,
     drops: &mut Vec<DataplaneOutputDrop>,
     max_batch_packets: usize,
     mut sent_receipts: Option<&mut Vec<DataplaneTransportSentReceipt>>,
 ) -> usize
 {
-    if groups.is_empty() {
-        return 0;
-    }
-
     let mut sent = 0usize;
     for group in groups {
         let Some(transport) = transports.get(&group.transport_id) else {

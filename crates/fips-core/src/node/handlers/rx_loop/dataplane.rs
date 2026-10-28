@@ -10,6 +10,9 @@ use tracing::{debug, trace, warn};
 
 use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits};
 
+#[cfg(test)]
+mod receipt_tests;
+
 impl Node {
     pub(in crate::node) async fn flush_pending_root_traffic(&mut self) -> bool {
         let Some(root) = self.pending_root_traffic else {
@@ -109,11 +112,24 @@ impl Node {
         // Sending or retiring output is activity, but need not construct the
         // large control future. Keep deferred forwards and application ingress
         // eligible even when this turn itself has no control work.
-        if !turn.has_node_control_ingress()
-            && self.deferred_session_forwards.is_empty()
+        if self.deferred_session_forwards.is_empty()
             && !self.dataplane.has_deferred_application_ingress()
         {
-            return 0;
+            if !turn.has_node_control_ingress() {
+                return 0;
+            }
+            // A receipt-only turn has no earlier deferred completion or crypto
+            // failure to process. Preserve the normal order for every mixed
+            // turn, and keep its large future off this synchronous path.
+            if turn.has_only_fmp_ingress_receipts() {
+                let mut processed = 0;
+                for receipt in turn.take_fmp_ingress_receipts() {
+                    if self.record_dataplane_fmp_ingress_receipt(&receipt) {
+                        processed += 1;
+                    }
+                }
+                return processed;
+            }
         }
         Box::pin(self.process_active_dataplane_control_ingress(turn)).await
     }

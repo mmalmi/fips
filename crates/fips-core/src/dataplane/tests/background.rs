@@ -260,7 +260,7 @@ fn background_transport_groups_yield_without_reordering_owner_counters() {
         output.lane = lane;
         groups.push_transport(transport, remote.clone(), output);
     }
-    let planned = groups.take_groups_preserving_capacity();
+    let planned = groups.drain_groups().collect::<Vec<_>>();
     let owners: Vec<_> = planned
         .iter()
         .flat_map(|group| group.outputs.iter())

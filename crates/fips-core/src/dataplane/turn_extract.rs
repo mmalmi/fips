@@ -3,8 +3,17 @@ impl DataplaneLiveNodeTurn {
     /// alone do not need that handler; deferred-forward terminal receipts are
     /// handled separately when the node has a pending or completed forward.
     pub(crate) fn has_node_control_ingress(&self) -> bool {
+        !self.fmp_ingress_receipts.is_empty() || self.has_non_receipt_node_control_ingress()
+    }
+
+    pub(crate) fn has_only_fmp_ingress_receipts(&self) -> bool {
+        !self.fmp_ingress_receipts.is_empty()
+            && !self.has_non_receipt_node_control_ingress()
+            && !self.has_failures()
+    }
+
+    fn has_non_receipt_node_control_ingress(&self) -> bool {
         !self.fmp_control_ingress.is_empty()
-            || !self.fmp_ingress_receipts.is_empty()
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()

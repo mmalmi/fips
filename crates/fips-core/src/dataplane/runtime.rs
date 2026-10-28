@@ -405,7 +405,7 @@ impl DataplaneTurnDriver {
             let _transport_send_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::DataplaneTransportSend,
             );
-            let groups = transport_output.take_groups_preserving_capacity();
+            let groups = transport_output.drain_groups();
             send_dataplane_transport_groups(
                 transports,
                 groups,
