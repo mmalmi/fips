@@ -14,6 +14,9 @@ published under the `nvpn-fips-*` crate namespace. The
 [original FIPS project](https://github.com/jmcorgan/fips) is maintained by
 Johnathan Corgan.
 
+See [Library release verification](docs/library-releases.md) for the pinned
+release inputs, source-availability checks, and package verification procedure.
+
 This fork preserves the FIPS protocol surface while substantially redesigning
 the data plane for high packet rates. In comparable direct-path benchmarks it
 delivers roughly three times the original implementation's throughput. Most of

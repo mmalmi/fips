@@ -1,0 +1,11 @@
+{
+  "rust_toolchain": "1.95.0",
+  "qualification_target": "aarch64-apple-darwin",
+  "qualification_features": [],
+  "git_remote_htree": {
+    "version": "0.2.150",
+    "platform": "aarch64-apple-darwin",
+    "sha256": "d60f75bc324e128b20b0bd1a1ba76b87c3161cbbb45cb656c79712bd9ee22ec4",
+    "archive_sha256": "ea575ecfb06d5dc461010fd577a6d3a7397f0bd82dc64fdddf0261d0a11706ad"
+  }
+}
