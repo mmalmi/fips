@@ -73,6 +73,9 @@ bluer = { version = "0.17", features = ["bluetoothd", "l2cap"] }
 wintun = "0.5"
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
+[target.'cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))'.dependencies]
+tempfile = "3.15"
+
 [dev-dependencies]
 tempfile = "3.15"
 tokio = { version = "1", features = ["test-util"] }
