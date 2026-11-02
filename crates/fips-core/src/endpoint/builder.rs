@@ -243,6 +243,11 @@ impl FipsEndpointBuilder {
 
         let mut node = Node::new(config)?;
         node.set_host_network(self.host_network.clone());
+        let forwarding_policy = self.forwarding_policy.as_ref().map(Arc::downgrade);
+        let originated_observer = self
+            .originated_session_observer
+            .as_ref()
+            .map(Arc::downgrade);
         node.set_forwarding_policy(self.forwarding_policy);
         node.set_originated_session_observer(self.originated_session_observer);
         node.set_local_instance_roles(self.local_instance_roles);
@@ -287,6 +292,8 @@ impl FipsEndpointBuilder {
 
         Ok(FipsEndpoint {
             host_network: self.host_network,
+            forwarding_policy,
+            originated_observer,
             identity,
             npub,
             node_addr,

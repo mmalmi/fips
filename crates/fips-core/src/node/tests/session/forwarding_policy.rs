@@ -3,6 +3,8 @@ use crate::node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod admission_wake;
+
 #[derive(Debug, Clone)]
 struct Record {
     ingress: NodeAddr,

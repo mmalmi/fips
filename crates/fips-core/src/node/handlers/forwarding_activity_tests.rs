@@ -83,7 +83,15 @@ async fn transit_protection_follows_real_admission_equally_across_classes() {
             }
         } else {
             assert!(matches!(prepared, PreparedSessionDatagram::Done));
-            assert_eq!(node.stats().forwarding.drop_policy_denied_packets, 1);
+            let stats = node.stats().forwarding.snapshot();
+            assert_eq!(stats.drop_policy_denied_packets, 1);
+            assert_eq!(stats.drop_policy_denied_bytes, (encoded.len() - 1) as u64);
+            assert_eq!(stats.drop_policy_wait_full_packets, 0);
+            assert_eq!(stats.drop_policy_wait_full_bytes, 0);
+            assert_eq!(stats.drop_policy_wait_expired_packets, 0);
+            assert_eq!(stats.drop_policy_wait_expired_bytes, 0);
+            assert_eq!(stats.drop_policy_wait_invalidated_packets, 0);
+            assert_eq!(stats.drop_policy_wait_invalidated_bytes, 0);
         }
     }
 }

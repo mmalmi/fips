@@ -2929,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-core"
-version = "0.4.115"
+version = "0.4.116"
 dependencies = [
  "async-wsocket",
  "base64",
@@ -2978,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn-fips-endpoint"
-version = "0.4.115"
+version = "0.4.116"
 dependencies = [
  "nvpn-fips-core",
 ]

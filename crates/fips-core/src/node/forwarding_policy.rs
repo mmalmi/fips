@@ -55,6 +55,24 @@ pub struct ForwardingAdmission {
     pub class: ForwardingClass,
 }
 
+/// A retry grants no forwarding or accounting authority. The node may retain
+/// the packet within its bounded wait queue and ask the current policy again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardingDecision {
+    Admit(ForwardingAdmission),
+    Reject,
+    Retry,
+}
+
+impl ForwardingDecision {
+    pub fn admission(self) -> Option<ForwardingAdmission> {
+        match self {
+            Self::Admit(admission) => Some(admission),
+            Self::Reject | Self::Retry => None,
+        }
+    }
+}
+
 /// Application-owned transit admission. No policy preserves normal forwarding.
 ///
 /// Calls run synchronously on the node loop: do not block on disk, networking or
@@ -71,6 +89,28 @@ pub trait ForwardingPolicy: Debug + Send + Sync + 'static {
             class: ForwardingClass::Unspecified,
         })
     }
+    /// Opt in to bounded waiting for a temporary allowance shortage. Existing
+    /// policies retain immediate rejection; retries have no completion token.
+    fn decide(&self, request: &ForwardingRequest<'_>) -> ForwardingDecision {
+        self.admit_classified(request)
+            .map_or(ForwardingDecision::Reject, ForwardingDecision::Admit)
+    }
+    /// Optionally attach a locally verified bid to this same reservation.
+    /// Only normal data admissions use the bid; it cannot promote protocol classes.
+    fn decide_with_bid(
+        &self,
+        request: &ForwardingRequest<'_>,
+        bid_msat_per_kib: &mut u64,
+    ) -> ForwardingDecision {
+        *bid_msat_per_kib = 0;
+        self.decide(request)
+    }
+
+    /// Optional coalesced wake after usable allowance changes. This is advisory:
+    /// queued packets still require a fresh decision under the current policy.
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
     fn complete(&self, token: u64, outcome: ForwardingOutcome);
 }
 
@@ -80,18 +120,33 @@ pub(super) struct ForwardingPermit {
     policy: Arc<dyn ForwardingPolicy>,
     token: Option<u64>,
     class: ForwardingClass,
+    bid_msat_per_kib: u64,
 }
 
 impl ForwardingPermit {
+    #[cfg(test)]
     pub(super) fn admit(
         policy: &Arc<dyn ForwardingPolicy>,
         request: &ForwardingRequest<'_>,
     ) -> Option<Self> {
-        policy.admit_classified(request).map(|admission| Self {
+        let mut bid = 0;
+        policy
+            .decide_with_bid(request, &mut bid)
+            .admission()
+            .map(|admission| Self::new(policy, admission, bid))
+    }
+
+    pub(super) fn new(
+        policy: &Arc<dyn ForwardingPolicy>,
+        admission: ForwardingAdmission,
+        bid_msat_per_kib: u64,
+    ) -> Self {
+        Self {
             policy: Arc::clone(policy),
             token: Some(admission.token),
             class: admission.class,
-        })
+            bid_msat_per_kib,
+        }
     }
 
     pub(super) fn packet_class(&self) -> Option<crate::dataplane::PacketClass> {
@@ -99,7 +154,10 @@ impl ForwardingPermit {
         match self.class {
             ForwardingClass::Unspecified => None,
             ForwardingClass::Control => Some(PacketClass::Control),
-            ForwardingClass::Normal => Some(PacketClass::Bulk),
+            ForwardingClass::Normal => Some(
+                std::num::NonZeroU64::new(self.bid_msat_per_kib)
+                    .map_or(PacketClass::Bulk, PacketClass::Paid),
+            ),
             ForwardingClass::Background => Some(PacketClass::Background),
         }
     }
@@ -124,6 +182,7 @@ impl super::Node {
     /// reservations complete against the policy that admitted them. Direct
     /// local services and locally originated packets do not use this hook.
     pub fn set_forwarding_policy(&mut self, policy: Option<Arc<dyn ForwardingPolicy>>) {
+        self.cancel_waiting_admissions();
         self.forwarding_policy = policy;
     }
 }

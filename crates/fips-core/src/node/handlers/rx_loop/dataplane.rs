@@ -8,12 +8,69 @@ use crate::transport::ReceivedPacket;
 use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, trace, warn};
 
-use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits};
+use super::budget::{PACKET_DRAIN_BUDGET, RX_LOOP_FAST_MAINTENANCE_TIMEOUT};
+use super::drain::RxLoopDataDrainStats;
+use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits, rx_loop_fast_maintenance_within_budget};
+use std::time::Duration;
 
 #[cfg(test)]
 mod receipt_tests;
 
 impl Node {
+    pub(super) async fn run_rx_loop_link_report_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed = rx_loop_fast_maintenance_within_budget(
+            self.fast_maintenance_budget(),
+            self.check_mmp_reports(),
+        )
+        .await;
+        // A successful slow batch can leave the next report already overdue.
+        // Give queued data a bounded turn before another reserved report turn.
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
+    }
+
+    pub(super) fn fast_maintenance_budget(&self) -> Duration {
+        // A lookup or heartbeat send can start before the first retry is due.
+        // Yield at that deadline instead of consuming the packet's lifetime.
+        self.admission_work_delay()
+            .map_or(RX_LOOP_FAST_MAINTENANCE_TIMEOUT, |delay| {
+                delay.clamp(Duration::from_millis(1), RX_LOOP_FAST_MAINTENANCE_TIMEOUT)
+            })
+    }
+
+    pub(super) async fn run_rx_loop_admission_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> RxLoopDataDrainStats {
+        // Admission has its own deadline and budget, independent of discovery
+        // timeouts/backoff. Each retry turn still services queued packet work.
+        self.service_waiting_admissions().await;
+        self.drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await
+    }
+
+    pub(super) async fn run_rx_loop_lookup_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+    ) -> (bool, RxLoopDataDrainStats) {
+        let completed = rx_loop_fast_maintenance_within_budget(
+            self.fast_maintenance_budget(),
+            self.check_discovery_work(Self::now_ms()),
+        )
+        .await;
+        // A cancelled batch leaves unprocessed retries due. Let queued data
+        // make bounded progress before another reserved lookup turn.
+        let drained = self
+            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
+            .await;
+        (completed, drained)
+    }
+
     pub(in crate::node) async fn flush_pending_root_traffic(&mut self) -> bool {
         let Some(root) = self.pending_root_traffic else {
             return false;
@@ -32,7 +89,7 @@ impl Node {
         // One step shares the existing fast-maintenance time limit; failure
         // leaves ordinary maintenance responsible instead of spinning Notify.
         let result = tokio::time::timeout(
-            super::budget::RX_LOOP_FAST_MAINTENANCE_TIMEOUT,
+            self.fast_maintenance_budget(),
             self.flush_one_pending_packet(&root),
         )
         .await;

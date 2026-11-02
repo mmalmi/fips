@@ -182,7 +182,11 @@ async fn endpoint_control_receiver_closes_on_rx_loop_return_or_cancellation() {
 #[tokio::test(start_paused = true)]
 async fn fast_maintenance_loses_no_more_than_its_total_budget() {
     let started = tokio::time::Instant::now();
-    let completed = rx_loop_fast_maintenance_within_budget(std::future::pending::<()>()).await;
+    let completed = rx_loop_fast_maintenance_within_budget(
+        RX_LOOP_FAST_MAINTENANCE_TIMEOUT,
+        std::future::pending::<()>(),
+    )
+    .await;
 
     assert!(!completed);
     assert_eq!(started.elapsed(), RX_LOOP_FAST_MAINTENANCE_TIMEOUT);

@@ -9,9 +9,7 @@ use crate::node::{
 };
 use crate::transport::PacketRx;
 use crate::upper::tun::TunOutboundRx;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Notify;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
 
@@ -19,12 +17,14 @@ mod budget;
 mod dataplane;
 mod drain;
 mod endpoint_control;
+mod wake;
 
 #[cfg(test)]
 mod tests;
 
 use budget::*;
 use drain::*;
+use wake::*;
 use endpoint_control::{RxLoopEndpointLifetime, next_endpoint_control};
 
 pub(in crate::node) struct RxLoopDataplaneIo<'a> {
@@ -219,8 +219,15 @@ impl Node {
         let mut nostr_event_turn_not_before = Instant::now();
         let mut mmp_report_not_before = Instant::now();
         let mut lookup_not_before_ms = 0;
+        let mut admission_not_before_ms = 0;
 
         loop {
+            self.expire_waiting_admissions();
+            let admission_notify = self
+                .forwarding_policy
+                .as_ref()
+                .and_then(|policy| policy.admission_notify());
+            let admission_deadline = self.admission_work_deadline_ms();
             let lookup_deadline = self
                 .discovery_work_deadline_ms()
                 .map(|due| due.max(lookup_not_before_ms));
@@ -291,6 +298,24 @@ impl Node {
                     if scheduled_at.elapsed() >= tick.period() {
                         tick.reset();
                     }
+                }
+                changed = wait_for_admission_retry(
+                    admission_deadline,
+                    admission_not_before_ms,
+                    admission_notify.as_ref(),
+                ) => {
+                    if changed {
+                        self.wake_waiting_admissions();
+                    }
+                    let drained = self.run_rx_loop_admission_turn(&mut dataplane_runtime.io()).await;
+                    // Leave a turn for other ready work even after a stalled retry.
+                    admission_not_before_ms = Self::now_ms().saturating_add(1);
+                    if drained.has_data_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                    self.drain_control_queries(
+                        &mut control_query_rx, None, CONTROL_QUERY_INTERLEAVE_BUDGET,
+                    ).await;
                 }
                 Some(message) = control_query_rx.recv() => {
                     self.drain_control_queries(
@@ -541,30 +566,18 @@ impl Node {
         Ok(())
     }
 
-    async fn run_rx_loop_link_report_turn(
-        &mut self,
-        io: &mut RxLoopDataplaneIo<'_>,
-    ) -> (bool, RxLoopDataDrainStats) {
-        let completed = rx_loop_fast_maintenance_within_budget(self.check_mmp_reports()).await;
-        // A successful slow batch can leave the next report already overdue.
-        // Give queued data a bounded turn before another reserved report turn.
-        let drained = self
-            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
-            .await;
-        (completed, drained)
-    }
-
     async fn run_rx_loop_routing_announce_turn(
         &mut self,
         io: &mut RxLoopDataplaneIo<'_>,
     ) -> (bool, RxLoopDataDrainStats) {
         let mut sending_filters = false;
-        let completed = rx_loop_fast_maintenance_within_budget(async {
-            self.send_pending_tree_announces().await;
-            sending_filters = true;
-            self.send_due_filter_announces().await;
-        })
-        .await;
+        let completed =
+            rx_loop_fast_maintenance_within_budget(self.fast_maintenance_budget(), async {
+                self.send_pending_tree_announces().await;
+                sending_filters = true;
+                self.send_due_filter_announces().await;
+            })
+            .await;
         if !completed {
             // Cancellation leaves the original pending flags intact. A due
             // hint must not cause repeated slow sends ahead of packet work,
@@ -575,20 +588,6 @@ impl Node {
                 self.defer_tree_announce_retry();
             }
         }
-        let drained = self
-            .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
-            .await;
-        (completed, drained)
-    }
-
-    async fn run_rx_loop_lookup_turn(
-        &mut self,
-        io: &mut RxLoopDataplaneIo<'_>,
-    ) -> (bool, RxLoopDataDrainStats) {
-        let completed =
-            rx_loop_fast_maintenance_within_budget(self.check_discovery_work(Self::now_ms())).await;
-        // A cancelled batch leaves unprocessed retries due. Let queued data
-        // make bounded progress before another reserved lookup turn.
         let drained = self
             .drain_rx_loop_data_queues(io, PACKET_DRAIN_BUDGET)
             .await;
@@ -852,13 +851,19 @@ impl Node {
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {
-        if !rx_loop_fast_maintenance_within_budget(self.run_rx_loop_fast_maintenance_tick()).await {
+        let fast_timeout = self.fast_maintenance_budget();
+        if !rx_loop_fast_maintenance_within_budget(
+            fast_timeout,
+            self.run_rx_loop_fast_maintenance_tick(),
+        )
+        .await
+        {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
             );
             self.mark_rx_loop_maintenance_timeout();
             warn!(
-                timeout_ms = RX_LOOP_FAST_MAINTENANCE_TIMEOUT.as_millis() as u64,
+                timeout_ms = fast_timeout.as_millis() as u64,
                 data_pressure = plan.data_pressure(),
                 "RX loop liveness maintenance timed out; continuing packet processing"
             );
@@ -872,6 +877,7 @@ impl Node {
             return false;
         };
 
+        let slow_timeout = slow_timeout.min(self.fast_maintenance_budget());
         if tokio::time::timeout(slow_timeout, self.run_rx_loop_slow_maintenance_tick())
             .await
             .is_err()
@@ -935,50 +941,11 @@ impl Node {
     }
 }
 
-async fn wait_for_optional_deadline(deadline: Option<Instant>, not_before: Instant) {
-    match deadline {
-        Some(due) => {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(due.max(not_before))).await
-        }
-        None => std::future::pending().await,
-    }
-}
-
-async fn wait_for_optional_epoch_deadline(deadline_ms: Option<u64>) {
-    let Some(due) = deadline_ms else {
-        return std::future::pending().await;
-    };
-    let remaining = due.saturating_sub(crate::time::now_ms());
-    if remaining == 0 {
-        return;
-    }
-    // Protocol deadlines use epoch milliseconds, including the simulation
-    // clock. This wake is advisory; dispatch rechecks that same clock.
-    match tokio::time::Instant::now().checked_add(Duration::from_millis(remaining)) {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending().await,
-    }
-}
-
-async fn wait_for_optional_notify_after(notify: Option<&Arc<Notify>>, not_before: Instant) {
-    let Some(notify) = notify else {
-        return std::future::pending().await;
-    };
-    // A zero-duration sleep can still arm the next millisecond timer tick.
-    // Once the rate limit has elapsed, wait directly for actual discovery work.
-    if not_before > Instant::now() {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(not_before)).await;
-    }
-    notify.notified().await;
-}
-
-async fn rx_loop_fast_maintenance_within_budget<F>(maintenance: F) -> bool
+async fn rx_loop_fast_maintenance_within_budget<F>(budget: Duration, maintenance: F) -> bool
 where
     F: std::future::Future<Output = ()>,
 {
-    tokio::time::timeout(RX_LOOP_FAST_MAINTENANCE_TIMEOUT, maintenance)
-        .await
-        .is_ok()
+    tokio::time::timeout(budget, maintenance).await.is_ok()
 }
 
 fn bulk_admission_pressure_relief_due(

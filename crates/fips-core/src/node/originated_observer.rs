@@ -41,10 +41,15 @@ pub enum OriginatedSessionAdmission {
     Reject,
 }
 
+/// A temporary shortage before the record has a sequence number or accounting token.
+/// The core can retry the same unsealed intent within its queue and time limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OriginatedSessionRetry;
+
 /// Observe locally originated FMP session envelopes and their local transport
 /// outcomes, with optional admission before sealing established records.
 /// `observe` is passive: returning `None` opts out of tracking without blocking
-/// sending. Only `prepare` can reject a record. Neither proves delivery.
+/// sending. Pre-seal admission can reject a record or request a bounded retry.
 ///
 /// Callbacks run on the packet-processing path and must not wait on disk,
 /// networking or payment validation. Keep bounded in-memory evidence and let
@@ -56,6 +61,15 @@ pub trait OriginatedSessionObserver: std::fmt::Debug + Send + Sync + 'static {
     /// bounded memory-only operation. A tracked reservation may finish uncertain.
     fn prepare(&self, _intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
         OriginatedSessionAdmission::Defer
+    }
+
+    /// Admit an intent now or request a bounded retry before sealing it.
+    /// The default preserves the immediate decision of existing observers.
+    fn prepare_with_retry(
+        &self,
+        intent: &OriginatedSessionIntent,
+    ) -> Result<OriginatedSessionAdmission, OriginatedSessionRetry> {
+        Ok(self.prepare(intent))
     }
     fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64>;
     fn complete(&self, token: u64, outcome: ForwardingOutcome);
@@ -121,8 +135,14 @@ impl OriginatedSessionPreparation {
     pub(crate) fn prepare(
         &self,
         intent: &OriginatedSessionIntent,
-    ) -> Result<(bool, Option<OriginatedSessionObservation>), ()> {
-        match self.0.prepare(intent) {
+    ) -> Result<(bool, Option<OriginatedSessionObservation>), crate::dataplane::OwnerReserveError>
+    {
+        use crate::dataplane::OwnerReserveError;
+        match self
+            .0
+            .prepare_with_retry(intent)
+            .map_err(|_| OwnerReserveError::SourcePolicyRetry)?
+        {
             OriginatedSessionAdmission::Defer => Ok((false, None)),
             OriginatedSessionAdmission::Untracked => Ok((true, None)),
             OriginatedSessionAdmission::Track(token) => {
@@ -139,7 +159,7 @@ impl OriginatedSessionPreparation {
                     Some(OriginatedSessionObservation::from_token(&self.0, token)),
                 ))
             }
-            OriginatedSessionAdmission::Reject => Err(()),
+            OriginatedSessionAdmission::Reject => Err(OwnerReserveError::SourcePolicy),
         }
     }
 }

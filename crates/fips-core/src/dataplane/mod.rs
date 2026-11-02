@@ -59,6 +59,7 @@ include!("types.rs");
 include!("session_wrap.rs");
 include!("wire.rs");
 include!("admission.rs");
+include!("source_wait.rs");
 include!("owner.rs");
 include!("owner_state.rs");
 include!("owner_io.rs");

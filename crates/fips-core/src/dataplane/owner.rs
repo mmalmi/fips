@@ -537,6 +537,7 @@ impl OwnerRetireSlot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnerReserveError {
     SourcePolicy,
+    SourcePolicyRetry,
     Replay,
     InFlightFull,
     StaleGeneration,

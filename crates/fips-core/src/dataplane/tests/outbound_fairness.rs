@@ -130,3 +130,28 @@ fn outbound_control_stays_ahead_of_local_and_transit_data() {
     assert_eq!(dispatched[0].reservation.owner, control);
     assert_eq!(dispatched[0].reservation.lane, Lane::Priority);
 }
+
+#[test]
+fn full_paid_queue_prefers_higher_bid_without_stealing_control_capacity() {
+    let mut mover = Dataplane::new(AdmissionConfig::new(1, 2));
+    let owner = fmp_owner(817);
+    mover.register_owner(owner, OwnerConfig::new(1, 8));
+    let bid = |rate| PacketClass::Paid(std::num::NonZeroU64::new(rate).unwrap());
+    let packet = |class| outbound_packet(owner, 1, class, b"transit");
+    assert_eq!(
+        mover.submit_outbound_packet_batch(vec![packet(bid(3)), packet(bid(3)), packet(bid(9))]),
+        (3, 0)
+    );
+    assert!(mover.submit_outbound_packet(packet(bid(1))).is_err());
+    assert!(
+        mover
+            .submit_outbound_packet(packet(PacketClass::Control))
+            .is_ok()
+    );
+    let firsts = dispatch_outbound_available(&mut mover, 3);
+    let seqs: Vec<_> = firsts
+        .iter()
+        .map(|work| work.reservation.ingress_seq)
+        .collect();
+    assert_eq!(seqs, vec![3, 2, 0]);
+}

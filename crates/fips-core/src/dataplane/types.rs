@@ -42,6 +42,7 @@ pub(crate) enum PacketClass {
     Mmp,
     Liveness,
     Bulk,
+    Paid(std::num::NonZeroU64),
     Background,
 }
 
@@ -49,7 +50,7 @@ impl PacketClass {
     fn lane(self) -> Lane {
         match self {
             Self::Control | Self::Mmp | Self::Liveness => Lane::Priority,
-            Self::Bulk => Lane::Bulk,
+            Self::Bulk | Self::Paid(_) => Lane::Bulk,
             Self::Background => Lane::Background,
         }
     }

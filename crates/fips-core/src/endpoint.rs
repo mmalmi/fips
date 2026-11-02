@@ -235,6 +235,8 @@ fn endpoint_data_payloads_from_vecs(
 /// A running embedded FIPS endpoint.
 pub struct FipsEndpoint {
     host_network: Option<Arc<dyn crate::host_network::HostNetwork>>,
+    forwarding_policy: Option<std::sync::Weak<dyn crate::node::ForwardingPolicy>>,
+    originated_observer: Option<std::sync::Weak<dyn crate::node::OriginatedSessionObserver>>,
     identity: PeerIdentity,
     npub: String,
     node_addr: NodeAddr,
@@ -933,6 +935,30 @@ impl FipsEndpoint {
     /// Receive the next source-attributed IPv6 packet delivered by FIPS.
     pub async fn recv_ip_packet(&self) -> Option<NodeDeliveredPacket> {
         self.delivered_packets.lock().await.recv().await
+    }
+
+    /// Verify that an attached service owns both hooks on this bound endpoint.
+    pub fn uses_forwarding_hooks(
+        &self,
+        policy: &Arc<dyn crate::node::ForwardingPolicy>,
+        observer: &Arc<dyn crate::node::OriginatedSessionObserver>,
+    ) -> bool {
+        self.forwarding_policy
+            .as_ref()
+            .is_some_and(|p| p.ptr_eq(&Arc::downgrade(policy)))
+            && self
+                .originated_observer
+                .as_ref()
+                .is_some_and(|o| o.ptr_eq(&Arc::downgrade(observer)))
+    }
+
+    /// True once the node task and its packet callbacks have stopped.
+    pub async fn is_stopped(&self) -> bool {
+        self.task
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(|task| task.is_finished())
     }
 
     /// Shut down the endpoint and wait for the node task to stop.

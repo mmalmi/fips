@@ -67,6 +67,7 @@ impl AdmissionDrop {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QueuedAdmission<P> {
     ingress_seq: u64,
+    enqueued_at: tokio::time::Instant,
     packet: P,
 }
 
@@ -79,9 +80,13 @@ pub(crate) type OutboundAdmissionQueue = PacketAdmissionQueue<OutboundPacket>;
 pub(crate) trait AdmissionPacket {
     fn owner(&self) -> OwnerId;
     fn lane(&self) -> Lane;
+    fn bid(&self) -> u64 {
+        0
+    }
 }
 
 trait OwnerQueuedAdmission {
+    fn bid(&self) -> u64;
     fn owner(&self) -> OwnerId;
     fn lane(&self) -> Lane;
 }
@@ -97,6 +102,13 @@ impl AdmissionPacket for SocketPacket {
 }
 
 impl AdmissionPacket for OutboundPacket {
+    fn bid(&self) -> u64 {
+        match self.class {
+            PacketClass::Paid(rate) => rate.get(),
+            _ => 0,
+        }
+    }
+
     fn owner(&self) -> OwnerId {
         self.owner
     }
@@ -112,6 +124,10 @@ where
 {
     fn owner(&self) -> OwnerId {
         self.packet.owner()
+    }
+
+    fn bid(&self) -> u64 {
+        self.packet.bid()
     }
 
     fn lane(&self) -> Lane {
@@ -159,6 +175,7 @@ struct OwnerAdmissionQueues<T> {
     bulk_ready: VecDeque<OwnerId>,
     background_ready: VecDeque<OwnerId>,
     bulk_cut_in_debt: u8,
+    ranked_len: usize,
     owners: HashMap<OwnerId, OwnerLaneQueues<T>>,
 }
 
@@ -188,6 +205,7 @@ where
             bulk_ready: VecDeque::new(),
             background_ready: VecDeque::new(),
             bulk_cut_in_debt: 0,
+            ranked_len: 0,
             owners: HashMap::new(),
         }
     }
@@ -197,7 +215,27 @@ where
     }
 
     fn len(&self) -> usize {
-        self.priority_len.saturating_add(self.bulk_len).saturating_add(self.background_len)
+        self.priority_len
+            .saturating_add(self.bulk_len)
+            .saturating_add(self.background_len)
+    }
+
+    // The queue is bounded by normal data admission. Equal bids preserve FIFO;
+    // a deferred reservation resumes before new packets of the same price.
+    fn insert_by_bid(queue: &mut VecDeque<T>, item: T, front: bool) {
+        let bid = item.bid();
+        if !front && bid == 0 {
+            queue.push_back(item);
+        } else {
+            let index = queue.partition_point(|old| {
+                if front {
+                    old.bid() > bid
+                } else {
+                    old.bid() >= bid
+                }
+            });
+            queue.insert(index, item);
+        }
     }
 
     fn push_run_back<I>(&mut self, owner: OwnerId, lane: Lane, items: I) -> bool
@@ -211,7 +249,8 @@ where
             for item in items {
                 debug_assert_eq!(item.owner(), owner);
                 debug_assert_eq!(item.lane(), lane);
-                queue.push_back(item);
+                self.ranked_len += usize::from(item.bid() > 0);
+                Self::insert_by_bid(queue, item, false);
                 pushed = pushed.saturating_add(1);
             }
             was_empty
@@ -232,11 +271,8 @@ where
         let was_empty = {
             let queue = self.owners.entry(owner).or_default().lane_mut(lane);
             let was_empty = queue.is_empty();
-            if front {
-                queue.push_front(item);
-            } else {
-                queue.push_back(item);
-            }
+            self.ranked_len += usize::from(item.bid() > 0);
+            Self::insert_by_bid(queue, item, front);
             was_empty
         };
         self.increment_lane_len_by(lane, 1);
@@ -262,7 +298,17 @@ where
         items.reserve(limit.min(self.len().saturating_add(1)));
         items.push(first.item);
 
+        let first_bid = items[0].bid();
         while items.len() < limit && cursor.owner_has_more {
+            if first_bid > 0
+                && self
+                    .owners
+                    .get(&cursor.owner)
+                    .and_then(|q| q.bulk.front())
+                    .is_some_and(|next| next.bid() < first_bid)
+            {
+                break;
+            }
             let Some(next) = self.pop_owner_continue(cursor) else {
                 cursor.owner_has_more = false;
                 break;
@@ -322,6 +368,7 @@ where
         let queues = self.owners.get_mut(&owner)?;
         let queue = queues.lane_mut(lane);
         let item = queue.pop_front()?;
+        self.ranked_len -= usize::from(item.bid() > 0);
         let owner_has_more = !queue.is_empty();
         let owner_empty = queues.is_empty();
         Some((item, owner_has_more, owner_empty))
@@ -346,6 +393,22 @@ where
     fn pop_ready_front(&mut self, lane: Lane) -> Option<OwnerId> {
         let owner = match lane {
             Lane::Priority => self.priority_ready.pop_front(),
+            Lane::Bulk if self.ranked_len != 0 => {
+                let mut best = 0;
+                let mut best_bid = 0;
+                for (index, owner) in self.bulk_ready.iter().enumerate() {
+                    let bid = self
+                        .owners
+                        .get(owner)
+                        .and_then(|q| q.bulk.front())
+                        .map_or(0, T::bid);
+                    if bid > best_bid {
+                        best = index;
+                        best_bid = bid;
+                    }
+                }
+                self.bulk_ready.remove(best)
+            }
             Lane::Bulk => self.bulk_ready.pop_front(),
             Lane::Background => self.background_ready.pop_front(),
         }?;
@@ -393,7 +456,8 @@ where
             .or_default()
             .lane_mut(cursor.lane);
         for item in items.drain(..).rev() {
-            queue.push_front(item);
+            self.ranked_len += usize::from(item.bid() > 0);
+            Self::insert_by_bid(queue, item, true);
         }
         self.increment_lane_len_by(cursor.lane, count);
     }
@@ -436,6 +500,7 @@ where
         self.queues.push(
             QueuedAdmission {
                 ingress_seq,
+                enqueued_at: tokio::time::Instant::now(),
                 packet,
             },
             false,
@@ -452,6 +517,7 @@ where
         let queued = packets.into_iter().map(move |packet| {
             let queued = QueuedAdmission {
                 ingress_seq,
+                enqueued_at: tokio::time::Instant::now(),
                 packet,
             };
             ingress_seq = ingress_seq.wrapping_add(1);
@@ -496,6 +562,27 @@ where
 
     fn wake_owner(&mut self, owner: OwnerId) {
         self.queues.wake_owner(owner);
+    }
+}
+
+impl OutboundAdmissionQueue {
+    /// Displace only a lower funded bid waiting for this same outgoing link.
+    /// Dispatch has not assigned its nonce or submitted it to transport yet.
+    fn displace_lower_bid(&mut self, incoming: &OutboundPacket) -> Option<AdmissionDrop> {
+        let PacketClass::Paid(bid) = incoming.class else {
+            return None;
+        };
+        let queue = &mut self.queues.owners.get_mut(&incoming.owner)?.bulk;
+        let cheapest = queue
+            .partition_point(|entry| entry.bid() != 0)
+            .checked_sub(1)?;
+        if queue[cheapest].bid() >= bid.get() {
+            return None;
+        }
+        let removed = queue.remove(cheapest)?;
+        self.queues.bulk_len -= 1;
+        self.queues.ranked_len -= 1;
+        Some(AdmissionDrop::outbound(&removed.packet))
     }
 }
 

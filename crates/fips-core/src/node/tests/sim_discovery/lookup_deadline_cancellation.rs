@@ -7,6 +7,8 @@ use futures::FutureExt;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
+mod admission_wait;
+
 #[test]
 fn canceled_lookup_batch_keeps_unreserved_target_due() {
     run_scenario(None);
@@ -27,8 +29,14 @@ fn due_lookup_progresses_under_continuous_endpoint_snapshots() {
     run_scenario(Some(ControlProbe::Continuous));
 }
 
-#[derive(Clone, Copy)]
+#[test]
+fn waiting_admission_expires_between_stalled_discovery_and_maintenance() {
+    run_scenario(Some(ControlProbe::AdmissionWait));
+}
+
+#[derive(Clone, Copy, Debug)]
 enum ControlProbe {
+    AdmissionWait,
     Queued,
     InFlight,
     Continuous,
@@ -36,7 +44,7 @@ enum ControlProbe {
 
 fn run_scenario(control_progress: Option<ControlProbe>) {
     run_large_stack_async_test("lookup-cancel", move || async move {
-        let name = format!("lookup-deadline-cancel-{}", std::process::id());
+        let name = format!("lookup-deadline-cancel-{}-{control_progress:?}", std::process::id());
         let network = SimNetwork::new(271);
         network.set_default_link(SimLink {
             up: false,
@@ -62,9 +70,15 @@ fn run_scenario(control_progress: Option<ControlProbe>) {
             nodes.push(configured_discovering_node(config, address).await);
         }
         nodes.sort_by_key(|node| *node.node.node_addr());
-        let result = AssertUnwindSafe(exercise(&mut nodes, &network, control_progress))
-            .catch_unwind()
-            .await;
+        let result = AssertUnwindSafe(async {
+            if matches!(control_progress, Some(ControlProbe::AdmissionWait)) {
+                admission_wait::exercise(&mut nodes, &network).await;
+            } else {
+                exercise(&mut nodes, &network, control_progress).await;
+            }
+        })
+        .catch_unwind()
+        .await;
         for node in &nodes {
             network.set_node_send_completion_delay(node.addr.as_str().unwrap(), 0);
         }
@@ -117,11 +131,7 @@ async fn cancel_after_delivery<F: Future<Output = ()>>(network: &SimNetwork, ope
     // Drop the unfinished future at a send await, as a maintenance budget does.
 }
 
-async fn exercise(
-    nodes: &mut [TestNode],
-    network: &SimNetwork,
-    control_progress: Option<ControlProbe>,
-) {
+async fn setup(nodes: &mut [TestNode], network: &SimNetwork) -> Vec<NodeAddr> {
     let ids: Vec<_> = nodes.iter().map(|node| *node.node.node_addr()).collect();
     for remote in [1, 2] {
         network.set_link(
@@ -162,6 +172,15 @@ async fn exercise(
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    ids
+}
+
+async fn exercise(
+    nodes: &mut [TestNode],
+    network: &SimNetwork,
+    control_progress: Option<ControlProbe>,
+) {
+    let ids = setup(nodes, network).await;
     let owners: Vec<_> = [1, 2]
         .into_iter()
         .map(|remote| {

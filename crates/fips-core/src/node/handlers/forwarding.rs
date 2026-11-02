@@ -43,6 +43,7 @@ struct PreparedSessionForward {
 }
 
 include!("forwarding_deferred.rs");
+include!("forwarding_wait.rs");
 include!("forwarding_terminal.rs");
 
 struct PreparedSessionForwardRoute {
@@ -83,43 +84,8 @@ impl Node {
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
     ) {
-        let payload = datagram.payload;
-        match self.prepare_session_datagram(datagram).await {
-            PreparedSessionDatagram::Forward(route) => {
-                let plaintext = {
-                    let _timer = crate::perf_profile::Timer::start(
-                        crate::perf_profile::Stage::TransitEncode,
-                    );
-                    copy_forwarded_session_datagram(payload, route.ttl, route.path_mtu)
-                };
-                let forward = route.with_plaintext(PacketBuffer::new(plaintext));
-                let result = self
-                    .send_dataplane_fmp_link_plaintext_with_class(
-                        &forward.next_hop_addr,
-                        forward.plaintext.as_slice(),
-                        forward.outgoing_ce,
-                        Some(forwarding_packet_class(&forward)),
-                    )
-                    .await;
-                self.finish_prepared_session_forward(forward, result, true)
-                    .await;
-            }
-            PreparedSessionDatagram::NoRoute {
-                ingress_peer,
-                datagram,
-                received_len,
-                loop_failure,
-            } => {
-                self.finish_session_datagram_no_route(
-                    ingress_peer,
-                    datagram,
-                    received_len,
-                    loop_failure,
-                )
-                .await;
-            }
-            PreparedSessionDatagram::Done => {}
-        }
+        self.handle_session_datagram_with_deadline(datagram, None)
+            .await;
     }
 
     pub(in crate::node) async fn handle_dataplane_fmp_link_ingress_batch(
@@ -348,6 +314,15 @@ impl Node {
         &mut self,
         datagram: AuthenticatedSessionDatagram<'_>,
     ) -> PreparedSessionDatagram {
+        self.prepare_session_datagram_with_deadline(datagram, None)
+            .await
+    }
+
+    async fn prepare_session_datagram_with_deadline(
+        &mut self,
+        datagram: AuthenticatedSessionDatagram<'_>,
+        expires: Option<tokio::time::Instant>,
+    ) -> PreparedSessionDatagram {
         let AuthenticatedSessionDatagram {
             previous_hop_peer,
             payload,
@@ -355,7 +330,9 @@ impl Node {
         } = datagram;
         let previous_hop = *previous_hop_peer.node_addr();
 
-        self.stats_mut().forwarding.record_received(payload.len());
+        if expires.is_none() {
+            self.stats_mut().forwarding.record_received(payload.len());
+        }
 
         let decode_result = {
             let _timer = crate::perf_profile::Timer::start(
@@ -393,22 +370,24 @@ impl Node {
             return PreparedSessionDatagram::Done;
         }
 
-        // Coordinate cache warming from plaintext session-layer headers
-        // — works directly on the ref, no allocation.
-        {
-            let _timer =
-                crate::perf_profile::Timer::start(crate::perf_profile::Stage::CoordCacheWarm);
-            self.try_warm_coord_cache_ref(&datagram_ref);
-        }
-        if datagram_ref.dest_addr != *self.node_addr()
-            && let Some(source) = session_ack_source(&datagram_ref)
-        {
-            // A transit node cannot open msg2, so a structurally valid ACK is
-            // its proof of which adjacent hop completed this handshake leg.
-            // The destination pins only after Noise authenticates msg2; doing
-            // so here would let a duplicate on another branch replace that
-            // stronger endpoint route.
-            self.pin_handshake_reverse_route(source, previous_hop);
+        if expires.is_none() {
+            // Coordinate cache warming from plaintext session-layer headers
+            // — works directly on the ref, no allocation.
+            {
+                let _timer =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::CoordCacheWarm);
+                self.try_warm_coord_cache_ref(&datagram_ref);
+            }
+            if datagram_ref.dest_addr != *self.node_addr()
+                && let Some(source) = session_ack_source(&datagram_ref)
+            {
+                // A transit node cannot open msg2, so a structurally valid ACK is
+                // its proof of which adjacent hop completed this handshake leg.
+                // The destination pins only after Noise authenticates msg2; doing
+                // so here would let a duplicate on another branch replace that
+                // stronger endpoint route.
+                self.pin_handshake_reverse_route(source, previous_hop);
+            }
         }
 
         // Local delivery: dispatch to session layer handlers. No alloc,
@@ -460,9 +439,25 @@ impl Node {
                 destination: datagram_ref.dest_addr,
                 session_payload: datagram_ref.payload,
             };
-            match crate::node::forwarding_policy::ForwardingPermit::admit(policy, &request) {
-                Some(permit) => Some(permit),
-                None => {
+            let mut bid_msat_per_kib = 0;
+            match policy.decide_with_bid(&request, &mut bid_msat_per_kib) {
+                crate::node::ForwardingDecision::Admit(admission) => {
+                    Some(crate::node::forwarding_policy::ForwardingPermit::new(
+                        policy,
+                        admission,
+                        bid_msat_per_kib,
+                    ))
+                }
+                crate::node::ForwardingDecision::Retry => {
+                    self.wait_for_forwarding_admission(
+                        previous_hop_peer,
+                        payload,
+                        incoming_ce,
+                        expires,
+                    );
+                    return PreparedSessionDatagram::Done;
+                }
+                crate::node::ForwardingDecision::Reject => {
                     self.stats_mut()
                         .forwarding
                         .record_drop_policy_denied(payload.len());
@@ -601,6 +596,7 @@ impl Node {
                         .forwarding
                         .record_drop_send_error(received_len);
                     debug!(
+                        target: "fips_core::forwarding_error",
                         next_hop = %next_hop_addr,
                         dest = %dest_addr,
                         error = %e,
@@ -968,4 +964,5 @@ include!("forwarding_tests.rs");
 mod application_demand_tests {
     use super::*;
     include!("forwarding_activity_tests.rs");
+    include!("forwarding_wait_tests.rs");
 }

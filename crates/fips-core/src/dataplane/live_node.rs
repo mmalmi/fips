@@ -169,6 +169,7 @@ pub(crate) struct DataplaneLiveTurnIo<'a> {
 
 impl DataplaneLiveNode {
     pub(crate) fn set_originated_session_observer(&mut self, observer: Option<Arc<dyn OriginatedSessionObserver>>) {
+        self.driver.mover.cancel_source_admissions(None);
         self.driver.originated_session_observer = observer;
     }
 
@@ -191,6 +192,16 @@ impl DataplaneLiveNode {
 
     pub(crate) fn readiness_notify(&self) -> Arc<tokio::sync::Notify> {
         self.crypto_worker.readiness_notify()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_crypto_submissions(&mut self) {
+        self.crypto_worker.hold_submissions();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_crypto_submissions(&mut self) {
+        self.crypto_worker.release_submissions();
     }
 
     pub(crate) fn has_deferred_raw_ingress(&self) -> bool {
