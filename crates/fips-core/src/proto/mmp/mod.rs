@@ -368,6 +368,13 @@ impl Debug for MmpSessionState {
 // Path MTU State (session-layer only)
 // ============================================================================
 
+/// Only the destination can confirm a larger packet fits the path.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PathMtuSignal {
+    Notification { mtu: u16, at: Instant },
+    RouterLimit(u16),
+}
+
 /// Path MTU tracking for a single session.
 ///
 /// Destination side: observes `path_mtu` from incoming SessionDatagram envelopes
@@ -496,17 +503,14 @@ impl PathMtuState {
             return false;
         }
         if reported_mtu < self.current_mtu {
-            // Decrease: immediate
-            self.current_mtu = reported_mtu;
-            self.consecutive_increase_count = 0;
-            self.first_increase_time = None;
+            self.decrease_to(reported_mtu);
             return true;
         }
 
         if reported_mtu > self.current_mtu {
             // Increase: track consecutive notifications
             if reported_mtu == self.pending_increase_mtu {
-                self.consecutive_increase_count += 1;
+                self.consecutive_increase_count = self.consecutive_increase_count.saturating_add(1);
             } else {
                 // Different value: reset sequence
                 self.pending_increase_mtu = reported_mtu;
@@ -521,6 +525,7 @@ impl PathMtuState {
                 let required = self.notification_interval * 2;
                 if now.duration_since(first_time) >= required {
                     self.current_mtu = reported_mtu;
+                    self.pending_increase_mtu = 0;
                     self.consecutive_increase_count = 0;
                     self.first_increase_time = None;
                     return true;
@@ -530,6 +535,26 @@ impl PathMtuState {
 
         // No change (equal or increase not yet confirmed)
         false
+    }
+
+    pub(crate) fn apply_signal(&mut self, signal: PathMtuSignal) -> bool {
+        match signal {
+            PathMtuSignal::Notification { mtu, at } => self.apply_notification(mtu, at),
+            PathMtuSignal::RouterLimit(mtu)
+                if (MIN_ACTIONABLE_PATH_MTU..self.current_mtu).contains(&mtu) =>
+            {
+                self.decrease_to(mtu);
+                true
+            }
+            PathMtuSignal::RouterLimit(_) => false,
+        }
+    }
+
+    fn decrease_to(&mut self, mtu: u16) {
+        self.current_mtu = mtu;
+        self.pending_increase_mtu = 0;
+        self.consecutive_increase_count = 0;
+        self.first_increase_time = None;
     }
 }
 
@@ -554,6 +579,29 @@ impl Debug for MmpPeerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn router_limits_can_only_lower_mtu_and_cannot_vote_on_recovery() {
+        let mut path = PathMtuState::new();
+        let start = Instant::now();
+        let higher = |secs| PathMtuSignal::Notification {
+            mtu: 1400,
+            at: start + Duration::from_secs(secs),
+        };
+        assert!(path.apply_signal(PathMtuSignal::RouterLimit(1280)));
+        assert!(!path.apply_signal(higher(0)));
+        for _ in 0..300 {
+            assert!(!path.apply_signal(PathMtuSignal::RouterLimit(1400)));
+        }
+        assert!(!path.apply_signal(higher(21)));
+        assert_eq!(path.current_mtu(), 1280);
+        assert!(path.apply_signal(PathMtuSignal::RouterLimit(1200)));
+        for _ in 0..300 {
+            assert!(!path.apply_signal(higher(22)));
+        }
+        assert!(path.apply_signal(higher(42)));
+        assert_eq!(path.current_mtu(), 1400);
+    }
 
     #[test]
     fn test_mode_default() {

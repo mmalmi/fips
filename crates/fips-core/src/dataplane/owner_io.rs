@@ -822,8 +822,7 @@ impl OwnerState {
 
     fn apply_fsp_path_mtu_signal(
         &mut self,
-        path_mtu: u16,
-        now: std::time::Instant,
+        signal: crate::proto::mmp::PathMtuSignal,
     ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return Err(DataplaneFspMmpSkip::UnknownOwner);
@@ -832,7 +831,7 @@ impl OwnerState {
             return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
         let old_mtu = mmp.path_mtu.current_mtu();
-        if mmp.path_mtu.apply_notification(path_mtu, now) {
+        if mmp.path_mtu.apply_signal(signal) {
             Ok(DataplaneFspPathMtuApplyResult::Changed(
                 DataplaneFspPathMtuChange {
                     old_mtu,

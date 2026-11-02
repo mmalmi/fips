@@ -684,7 +684,16 @@ impl Node {
                 // Parse coords from the cleartext section after the 12-byte header.
                 // inner starts after the 4-byte prefix, so we need 8 more bytes
                 // for the counter (header is 12 total = 4 prefix + 8 counter).
-                let coord_data = &datagram.payload[FSP_HEADER_SIZE..];
+                // A four-byte phase prefix can arrive without the counter or tag.
+                // Local hints are learned only when the session record authenticates.
+                if datagram.dest_addr == *self.node_addr()
+                    || prefix.is_unencrypted()
+                    || datagram.payload.len() < FSP_HEADER_SIZE + crate::noise::TAG_SIZE
+                {
+                    return;
+                }
+                let coord_data = &datagram.payload
+                    [FSP_HEADER_SIZE..datagram.payload.len() - crate::noise::TAG_SIZE];
                 match parse_encrypted_coords(coord_data) {
                     Ok((src_coords, dest_coords, _bytes_consumed)) => {
                         let cached_src = src_coords.is_some_and(|coords| {

@@ -436,13 +436,7 @@ impl Node {
 
         if self.max_peers > 0 && self.peers.len() >= self.max_peers {
             let is_known_active = self.peers.contains_key(&peer_node_addr);
-            let is_pending_identity = self.peers.connection_iter().any(|(_, conn)| {
-                conn.expected_identity()
-                    .map(|id| *id.node_addr() == peer_node_addr)
-                    .unwrap_or(false)
-            });
             if !is_known_active
-                && !is_pending_identity
                 && !self.can_receive_neighbor_rotation(&peer_node_addr, Self::now_ms())
             {
                 debug!(

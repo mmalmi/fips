@@ -43,9 +43,10 @@ fn receipt_only_control_guard_rejects_mixed_controls_and_all_drop_classes() {
                     output(),
                     receipt.clone(),
                 )),
-            2 => turn
-                .fsp_coord_warmups
-                .push(DataplaneFspCoordWarmup::default()),
+            2 => turn.fsp_coord_warmups.push(DataplaneFspCoordWarmup {
+                source: address,
+                coords: crate::tree::TreeCoordinate::from_addrs(vec![address]).unwrap(),
+            }),
             3 => turn
                 .fsp_local_session_ingress
                 .push(DataplaneFspLocalSessionIngress::new(

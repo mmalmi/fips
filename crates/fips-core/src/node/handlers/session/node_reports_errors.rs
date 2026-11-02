@@ -219,8 +219,10 @@ impl Node {
         let peer_name = self.peer_display_name(src_addr);
         let change = match self.apply_dataplane_fsp_path_mtu_signal(
             src_addr,
-            notif.path_mtu,
-            std::time::Instant::now(),
+            crate::proto::mmp::PathMtuSignal::Notification {
+                mtu: notif.path_mtu,
+                at: std::time::Instant::now(),
+            },
         ) {
             Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(change)) => change,
             Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Unchanged) => return,
@@ -556,11 +558,9 @@ impl Node {
         }
         self.dataplane.clear_fsp_sent_wire_len(&msg.dest_addr);
 
-        // Apply to PathMtuState: immediate decrease via apply_notification()
         match self.apply_dataplane_fsp_path_mtu_signal(
             &msg.dest_addr,
-            msg.mtu,
-            std::time::Instant::now(),
+            crate::proto::mmp::PathMtuSignal::RouterLimit(msg.mtu),
         ) {
             Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(change)) => {
                 info!(

@@ -250,11 +250,10 @@ impl Dataplane {
     pub(crate) fn apply_fsp_path_mtu_signal(
         &mut self,
         owner: OwnerId,
-        path_mtu: u16,
-        now: std::time::Instant,
+        signal: crate::proto::mmp::PathMtuSignal,
     ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         self.owner_shard_mut(owner)
-            .apply_fsp_path_mtu_signal(owner, path_mtu, now)
+            .apply_fsp_path_mtu_signal(owner, signal)
     }
 
     pub(crate) fn min_fsp_rx_age_for_next_hop(

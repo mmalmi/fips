@@ -268,7 +268,13 @@
     }
 
     #[tokio::test]
-    async fn live_node_session_ingress_reports_fsp_coord_warmup_before_fsp_delivery() {
+    async fn local_coordinate_hints_require_session_authentication() {
+        for authentic in [false, true] {
+            check_coordinate_hints(authentic).await;
+        }
+    }
+
+    async fn check_coordinate_hints(authentic: bool) {
         let local_addr = NodeAddr::from_bytes([0xc1; 16]);
         let source_identity = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source_identity.pubkey_full());
@@ -305,7 +311,7 @@
             198,
             crate::node::session_wire::FSP_FLAG_CP,
             &fsp_inner,
-            fsp_key,
+            if authentic { fsp_key } else { fsp_key ^ 1 },
             &coords_prefix,
         );
         let datagram = crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_wire)
@@ -352,6 +358,11 @@
 
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
+        if !authentic {
+            assert!(turn.fsp_coord_warmups().is_empty());
+            assert_eq!(turn.fsp_session_ingress_count(), 0);
+            return;
+        }
         assert_eq!(turn.fsp_coord_warmups().len(), 1);
         assert!(turn.has_node_control_ingress());
         let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
@@ -359,7 +370,7 @@
             .clone()
             .apply_to(&mut coord_cache, &root_addr, 10);
         assert_eq!(coord_cache.get(&source_addr, 10), Some(&source_coords));
-        assert_eq!(coord_cache.get(&local_addr, 10), Some(&local_coords));
+        assert!(coord_cache.get(&local_addr, 10).is_none());
         assert_eq!(turn.fsp_session_ingress_count(), 1);
         assert!(turn.fsp_local_session_ingress().is_empty());
         assert!(turn.fmp_link_ingress().is_empty());
@@ -378,21 +389,14 @@
         let current_root = NodeAddr::from_bytes([0xd0; 16]);
         let foreign_root = NodeAddr::from_bytes([0xd1; 16]);
         let source_addr = NodeAddr::from_bytes([0xd2; 16]);
-        let local_addr = NodeAddr::from_bytes([0xd3; 16]);
         let other_addr = NodeAddr::from_bytes([0xd4; 16]);
-        let foreign = crate::tree::TreeCoordinate::from_addrs(vec![source_addr, foreign_root])
-            .unwrap();
-        let mismatched = crate::tree::TreeCoordinate::from_addrs(vec![other_addr, current_root])
-            .unwrap();
-        let warmup = DataplaneFspCoordWarmup::from_parsed(
-            source_addr,
-            local_addr,
-            Some(foreign),
-            Some(mismatched),
-        );
         let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
-
-        warmup.apply_to(&mut coord_cache, &current_root, 10);
+        for path in [vec![source_addr, foreign_root], vec![other_addr, current_root]] {
+            DataplaneFspCoordWarmup {
+                source: source_addr,
+                coords: crate::tree::TreeCoordinate::from_addrs(path).unwrap(),
+            }.apply_to(&mut coord_cache, &current_root, 10);
+        }
 
         assert!(coord_cache.is_empty());
     }

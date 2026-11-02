@@ -188,41 +188,21 @@ impl DataplaneFmpLinkIngress {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DataplaneFspCoordWarmup {
-    source: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
-    local: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
+    source: NodeAddr,
+    coords: crate::tree::TreeCoordinate,
 }
 
 impl DataplaneFspCoordWarmup {
-    fn from_parsed(
-        source_addr: NodeAddr,
-        local_addr: NodeAddr,
-        source_coords: Option<crate::tree::TreeCoordinate>,
-        local_coords: Option<crate::tree::TreeCoordinate>,
-    ) -> Self {
-        Self {
-            source: source_coords.map(|coords| (source_addr, coords)),
-            local: local_coords.map(|coords| (local_addr, coords)),
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.source.is_none() && self.local.is_none()
-    }
-
     pub(crate) fn apply_to(
         self,
         coord_cache: &mut crate::cache::CoordCache,
         current_root: &NodeAddr,
         now_ms: u64,
     ) {
-        if let Some((addr, coords)) = self.source {
-            let _ = coord_cache.insert_current_root_hint(addr, coords, current_root, now_ms);
-        }
-        if let Some((addr, coords)) = self.local {
-            let _ = coord_cache.insert_current_root_hint(addr, coords, current_root, now_ms);
-        }
+        let _ =
+            coord_cache.insert_current_root_hint(self.source, self.coords, current_root, now_ms);
     }
 }
 
@@ -572,6 +552,7 @@ pub(crate) enum DataplaneFspAuthenticatedIngressRun {
 
 #[derive(Debug, Default)]
 pub(crate) struct DataplaneFspAuthenticatedIngress {
+    coord_warmups: Vec<DataplaneFspCoordWarmup>,
     runs: Vec<DataplaneFspAuthenticatedIngressRun>,
     endpoint_data_batches: Vec<DataplaneEndpointDataBatch>,
     endpoint_data_packet_count: usize,
@@ -584,6 +565,7 @@ impl DataplaneFspAuthenticatedIngress {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.coord_warmups.clear();
         self.runs.clear();
         self.endpoint_data_batches.clear();
         self.endpoint_data_packet_count = 0;

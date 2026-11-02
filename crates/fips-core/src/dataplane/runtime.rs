@@ -49,7 +49,6 @@ pub(crate) struct DataplaneTurnDriver {
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<DataplaneFmpIngressReceipt>,
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
-    fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
     fsp_authenticated_ingress: DataplaneFspAuthenticatedIngress,
 }
@@ -148,7 +147,6 @@ impl DataplaneTurnDriver {
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
-            fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_authenticated_ingress: DataplaneFspAuthenticatedIngress::default(),
         }
@@ -300,10 +298,9 @@ impl DataplaneTurnDriver {
     pub(crate) fn apply_fsp_path_mtu_signal(
         &mut self,
         owner: OwnerId,
-        path_mtu: u16,
-        now: std::time::Instant,
+        signal: crate::proto::mmp::PathMtuSignal,
     ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
-        self.mover.apply_fsp_path_mtu_signal(owner, path_mtu, now)
+        self.mover.apply_fsp_path_mtu_signal(owner, signal)
     }
 
     pub(crate) fn min_fsp_rx_age_for_next_hop(
@@ -389,10 +386,11 @@ impl DataplaneTurnDriver {
             let turn = self.send_collected_outputs(summary, &mut sink);
             DataplaneLiveNodeTurn::from_runtime_turn(&turn)
         };
+        report.fsp_coord_warmups =
+            std::mem::take(&mut self.fsp_authenticated_ingress.coord_warmups);
         self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
         report.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
         report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
-        report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
         report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();

@@ -375,6 +375,33 @@ impl<'a> DataplaneRetiredOutputSink<'a> {
         self.outbound_packets.push(packet);
     }
 
+    fn collect_authenticated_coords(&mut self, output: &PacketOutput) {
+        if output.wire_flags & crate::node::session_wire::FSP_FLAG_CP == 0 {
+            return;
+        }
+        let OutputTarget::SessionPayload { local_addr } = output.target() else {
+            return;
+        };
+        let source = output.owner().node_addr();
+        if source == local_addr || output.owner().protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        // Coordinates are cleartext route hints. Parse only the prefix of an
+        // opened, replay-accepted record and keep the verified-cache precedence.
+        let Some(prefix) = output
+            .payload()
+            .get(FSP_HEADER_SIZE..usize::from(output.opened_payload_offset))
+        else {
+            return;
+        };
+        if let Ok((Some(coords), _, _)) = crate::node::session_wire::parse_encrypted_coords(prefix)
+        {
+            self.fsp_authenticated_ingress
+                .coord_warmups
+                .push(DataplaneFspCoordWarmup { source, coords });
+        }
+    }
+
     pub(crate) fn push_endpoint_data_batch(
         &mut self,
         ingress: DataplaneFspEndpointDataIngress,

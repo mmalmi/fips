@@ -724,7 +724,13 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         Some(1400)
     );
     assert_eq!(
-        mover.apply_fsp_path_mtu_signal(owner, 1280, std::time::Instant::now()),
+        mover.apply_fsp_path_mtu_signal(
+            owner,
+            crate::proto::mmp::PathMtuSignal::Notification {
+                mtu: 1280,
+                at: std::time::Instant::now()
+            }
+        ),
         Ok(DataplaneFspPathMtuApplyResult::Changed(
             DataplaneFspPathMtuChange {
                 old_mtu: 1400,
@@ -737,7 +743,13 @@ fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         Some(1280)
     );
     assert_eq!(
-        mover.apply_fsp_path_mtu_signal(owner, 1400, std::time::Instant::now()),
+        mover.apply_fsp_path_mtu_signal(
+            owner,
+            crate::proto::mmp::PathMtuSignal::Notification {
+                mtu: 1400,
+                at: std::time::Instant::now()
+            }
+        ),
         Ok(DataplaneFspPathMtuApplyResult::Unchanged)
     );
 }

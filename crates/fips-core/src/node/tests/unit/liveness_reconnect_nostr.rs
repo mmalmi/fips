@@ -308,6 +308,12 @@ async fn pump_one_msg1_into_node(
 
 #[tokio::test]
 async fn handle_msg1_silent_drops_at_cap_for_new_peer() {
+    for crossed_dial in [false, true] {
+        check_new_peer_at_cap(crossed_dial).await;
+    }
+}
+
+async fn check_new_peer_at_cap(crossed_dial: bool) {
     use crate::config::UdpConfig;
     use tokio::time::{Duration, timeout};
 
@@ -336,6 +342,15 @@ async fn handle_msg1_silent_drops_at_cap_for_new_peer() {
     let before_peers = node.peer_count();
     let before_pending = node.msg1_rate_limiter.pending_count();
     let sender = Identity::generate();
+    let outbound_link = LinkId::new(300);
+    if crossed_dial {
+        node.add_connection(PeerConnection::outbound(
+            outbound_link,
+            PeerIdentity::from_pubkey_full(sender.pubkey_full()),
+            0,
+        ))
+        .unwrap();
+    }
     let sender_node_addr = craft_and_send_msg1(&node, &sender, &socket_a, addr_b, 1000).await;
 
     assert!(!node.peers.contains_key(&sender_node_addr));
@@ -348,6 +363,7 @@ async fn handle_msg1_silent_drops_at_cap_for_new_peer() {
     assert!(!node.peers.contains_key(&sender_node_addr));
     assert_eq!(node.msg1_rate_limiter.pending_count(), before_pending);
 
+    assert_eq!(node.peers.contains_connection(&outbound_link), crossed_dial);
     let mut buf = [0u8; 2048];
     let recv = timeout(Duration::from_millis(300), socket_a.recv_from(&mut buf)).await;
     let received_bytes = recv.ok().and_then(|inner| inner.ok()).map(|(n, _)| n);

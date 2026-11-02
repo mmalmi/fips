@@ -203,12 +203,11 @@ impl DataplaneOwnerShard {
     fn apply_fsp_path_mtu_signal(
         &mut self,
         owner: OwnerId,
-        path_mtu: u16,
-        now: std::time::Instant,
+        signal: crate::proto::mmp::PathMtuSignal,
     ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         self.owner_mut(owner)
             .ok_or(DataplaneFspMmpSkip::UnknownOwner)?
-            .apply_fsp_path_mtu_signal(path_mtu, now)
+            .apply_fsp_path_mtu_signal(signal)
     }
 
     fn min_fsp_rx_age_for_next_hop(&self, next_hop: &NodeAddr, now_ms: u64) -> Option<u64> {

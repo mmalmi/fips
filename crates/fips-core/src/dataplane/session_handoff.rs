@@ -9,10 +9,7 @@ enum DataplaneSessionHandoffError {
 // avoid allocating on every routed session handoff.
 #[allow(clippy::large_enum_variant)]
 enum DataplaneSessionIngressHandoff {
-    Raw {
-        raw: DataplaneRawIngress,
-        coord_warmup: DataplaneFspCoordWarmup,
-    },
+    Raw(DataplaneRawIngress),
     Local(DataplaneFspLocalSessionIngress),
     Rejected {
         output: PacketOutput,
@@ -63,7 +60,7 @@ fn dataplane_session_ingress_from_output(
     let transport_id = source_path.transport_id;
     let remote_addr = source_path.remote_addr.clone();
 
-    let handoff_facts = {
+    let (source_addr, path_mtu, local_delivery) = {
         let Some(link_payload) = output.opened_payload() else {
             return DataplaneSessionIngressHandoff::rejected(
                 output,
@@ -112,24 +109,11 @@ fn dataplane_session_ingress_from_output(
                 DataplaneSessionHandoffError::InvalidPacket,
             );
         };
-        let coord_warmup = dataplane_fsp_coord_warmup(
+        (
             datagram.src_addr,
-            local_addr,
-            datagram.payload,
-            &prefix,
-        );
-        coord_warmup.map(|coord_warmup| {
-            (
-                datagram.src_addr,
-                datagram.path_mtu,
-                prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted(),
-                coord_warmup,
-            )
-        })
-    };
-    let (source_addr, path_mtu, local_delivery, coord_warmup) = match handoff_facts {
-        Ok(facts) => facts,
-        Err(error) => return DataplaneSessionIngressHandoff::rejected(output, error),
+            datagram.path_mtu,
+            prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted(),
+        )
     };
 
     let ce_flag = fmp_header.flags() & crate::node::wire::FLAG_CE != 0;
@@ -158,45 +142,16 @@ fn dataplane_session_ingress_from_output(
         );
     }
 
-    DataplaneSessionIngressHandoff::Raw {
-        raw: DataplaneRawIngress {
-            protocol: PacketProtocol::Fsp,
-            transport_id,
-            remote_addr,
-            path,
-            fsp_source: Some(source_addr),
-            previous_hop: Some(previous_hop),
-            ce_flag,
-            path_mtu,
-            activity_tick,
-            payload,
-        },
-        coord_warmup,
-    }
-}
-
-fn dataplane_fsp_coord_warmup(
-    source_addr: NodeAddr,
-    local_addr: NodeAddr,
-    payload: &[u8],
-    prefix: &crate::node::session_wire::FspCommonPrefix,
-) -> Result<DataplaneFspCoordWarmup, DataplaneSessionHandoffError> {
-    if prefix.phase != FSP_PHASE_ESTABLISHED
-        || prefix.is_unencrypted()
-        || prefix.flags & crate::node::session_wire::FSP_FLAG_CP == 0
-    {
-        return Ok(DataplaneFspCoordWarmup::default());
-    }
-    if payload.len() < FSP_HEADER_SIZE {
-        return Err(DataplaneSessionHandoffError::InvalidPacket);
-    }
-    let (source_coords, local_coords, _coords_len) =
-        crate::node::session_wire::parse_encrypted_coords(&payload[FSP_HEADER_SIZE..])
-            .map_err(|_| DataplaneSessionHandoffError::InvalidPacket)?;
-    Ok(DataplaneFspCoordWarmup::from_parsed(
-        source_addr,
-        local_addr,
-        source_coords,
-        local_coords,
-    ))
+    DataplaneSessionIngressHandoff::Raw(DataplaneRawIngress {
+        protocol: PacketProtocol::Fsp,
+        transport_id,
+        remote_addr,
+        path,
+        fsp_source: Some(source_addr),
+        previous_hop: Some(previous_hop),
+        ce_flag,
+        path_mtu,
+        activity_tick,
+        payload,
+    })
 }

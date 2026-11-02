@@ -61,6 +61,9 @@ impl Node {
         coords: crate::tree::TreeCoordinate,
         now_ms: u64,
     ) -> bool {
+        if node_addr == *self.node_addr() {
+            return false;
+        }
         let current_root = *self.tree_state.my_coords().root_id();
         self.coord_cache
             .insert_current_root_hint(node_addr, coords, &current_root, now_ms)

@@ -316,15 +316,14 @@ impl Node {
     pub(in crate::node) fn apply_dataplane_fsp_path_mtu_signal(
         &mut self,
         node_addr: &NodeAddr,
-        path_mtu: u16,
-        now: std::time::Instant,
+        signal: crate::proto::mmp::PathMtuSignal,
     ) -> Result<
         crate::dataplane::DataplaneFspPathMtuApplyResult,
         crate::dataplane::DataplaneFspMmpSkip,
     > {
         let result = self
             .dataplane
-            .apply_fsp_path_mtu_signal(*node_addr, path_mtu, now)?;
+            .apply_fsp_path_mtu_signal(*node_addr, signal)?;
         if matches!(
             result,
             crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(_)

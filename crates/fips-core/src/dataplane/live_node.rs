@@ -575,11 +575,10 @@ impl DataplaneLiveNode {
     pub(crate) fn apply_fsp_path_mtu_signal(
         &mut self,
         dest_addr: NodeAddr,
-        path_mtu: u16,
-        now: std::time::Instant,
+        signal: crate::proto::mmp::PathMtuSignal,
     ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         self.driver
-            .apply_fsp_path_mtu_signal(OwnerId::fsp_node(dest_addr), path_mtu, now)
+            .apply_fsp_path_mtu_signal(OwnerId::fsp_node(dest_addr), signal)
     }
 
     pub(crate) fn min_fsp_rx_age_for_next_hop(

@@ -131,6 +131,7 @@ impl OwnerState {
                 unreachable!("open FSP session payload slot contains only opened outputs");
             };
             self.record_authenticated_path(&output);
+            retired.collect_authenticated_coords(&output);
             self.authenticated_counter_highest = self
                 .authenticated_counter_highest
                 .max(completion.reservation.counter);
@@ -192,6 +193,7 @@ impl OwnerState {
                         .is_some_and(|(epoch, _)| epoch == DataplaneReceiveEpoch::Current);
                 if !from_draining {
                     self.record_authenticated_path(&output);
+                    retired.collect_authenticated_coords(&output);
                     self.authenticated_counter_highest = self
                         .authenticated_counter_highest
                         .max(completion.reservation.counter);

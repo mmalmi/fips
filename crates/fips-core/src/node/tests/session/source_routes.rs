@@ -376,7 +376,13 @@ fn metadata_refresh_preserves_an_authenticated_reply_carrier() {
         "new coordinates must not displace the authenticated carrier of replies"
     );
     assert!(matches!(
-        node.apply_dataplane_fsp_path_mtu_signal(&dest, 1000, std::time::Instant::now()),
+        node.apply_dataplane_fsp_path_mtu_signal(
+            &dest,
+            crate::proto::mmp::PathMtuSignal::Notification {
+                mtu: 1000,
+                at: std::time::Instant::now()
+            }
+        ),
         Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(_))
     ));
     assert_eq!(

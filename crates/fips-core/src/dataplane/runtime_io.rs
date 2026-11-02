@@ -274,7 +274,6 @@ impl DataplaneTurnDriver {
         self.output_drops.clear();
         self.fmp_ingress_receipts.clear();
         self.fmp_link_ingress.clear();
-        self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
         self.fsp_authenticated_ingress.clear();
     }
@@ -577,12 +576,9 @@ impl DataplaneTurnDriver {
                 OutputTarget::SessionIngress { local_addr } => {
                     let receipt = DataplaneFmpIngressReceipt::from_output(&output);
                     match dataplane_session_ingress_from_output(output, local_addr) {
-                        DataplaneSessionIngressHandoff::Raw { raw, coord_warmup } => {
+                        DataplaneSessionIngressHandoff::Raw(raw) => {
                             if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
-                            }
-                            if !coord_warmup.is_empty() {
-                                self.fsp_coord_warmups.push(coord_warmup);
                             }
                             if let Some(socket_packet) = Self::raw_ingress_socket_packet(
                                 raw,
