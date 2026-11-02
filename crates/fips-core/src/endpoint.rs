@@ -937,30 +937,6 @@ impl FipsEndpoint {
         self.delivered_packets.lock().await.recv().await
     }
 
-    /// Verify that an attached service owns both hooks on this bound endpoint.
-    pub fn uses_forwarding_hooks(
-        &self,
-        policy: &Arc<dyn crate::node::ForwardingPolicy>,
-        observer: &Arc<dyn crate::node::OriginatedSessionObserver>,
-    ) -> bool {
-        self.forwarding_policy
-            .as_ref()
-            .is_some_and(|p| p.ptr_eq(&Arc::downgrade(policy)))
-            && self
-                .originated_observer
-                .as_ref()
-                .is_some_and(|o| o.ptr_eq(&Arc::downgrade(observer)))
-    }
-
-    /// True once the node task and its packet callbacks have stopped.
-    pub async fn is_stopped(&self) -> bool {
-        self.task
-            .lock()
-            .await
-            .as_ref()
-            .is_none_or(|task| task.is_finished())
-    }
-
     /// Shut down the endpoint and wait for the node task to stop.
     pub async fn shutdown(&self) -> Result<(), FipsEndpointError> {
         let deadline = tokio::time::Instant::now() + ENDPOINT_OPERATION_TIMEOUT;
