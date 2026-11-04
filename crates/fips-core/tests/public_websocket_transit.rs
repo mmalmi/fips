@@ -722,3 +722,6 @@ async fn persistent_two_seed_websocket_transit_survives_client_churn() {
     first_shutdown.expect("first seed shutdown");
     second_shutdown.expect("second seed shutdown");
 }
+
+#[path = "public_websocket_transit/restart_fallback.rs"]
+mod restart_fallback;

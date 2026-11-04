@@ -1,6 +1,34 @@
 use super::*;
 
 impl Node {
+    pub(super) fn epoch_restart_dampened(&self, peer: &NodeAddr) -> bool {
+        self.restart_dampener.get(peer).is_some_and(|when| {
+            when.elapsed() < Duration::from_secs(EPOCH_RESTART_MIN_INTERVAL_SECS)
+        })
+    }
+
+    pub(super) fn retire_peer_for_epoch_restart(
+        &mut self,
+        peer: NodeAddr,
+        new_epoch: Option<[u8; 8]>,
+        now_ms: u64,
+    ) {
+        // Keep the recovery address and any routed FSP already authenticated
+        // to the restarted process. Remove all indices owned by the old FMP.
+        let preserve_end_to_end = self
+            .sessions
+            .get(&peer)
+            .is_some_and(|session| session.established_remote_epoch_matches(new_epoch));
+        info!(peer = %self.peer_display_name(&peer), preserve_end_to_end,
+            "Peer restart detected (epoch mismatch), replacing stale direct peering");
+        self.schedule_reconnect(peer, now_ms);
+        self.remove_active_peer_inner(&peer, preserve_end_to_end);
+        let cutoff = Duration::from_secs(EPOCH_RESTART_MIN_INTERVAL_SECS);
+        self.restart_dampener
+            .retain(|_, when| when.elapsed() < cutoff);
+        self.restart_dampener.insert(peer, Instant::now());
+    }
+
     pub(in crate::node) fn same_epoch_msg1_is_direct_path_recovery(
         &mut self,
         peer_node_addr: &NodeAddr,

@@ -17,6 +17,8 @@ mod capacity_per_peer;
 #[path = "candidates/initial_fallback.rs"]
 mod initial_fallback;
 
+mod restarted_websocket;
+
 struct Candidate {
     link: LinkId,
     index: SessionIndex,

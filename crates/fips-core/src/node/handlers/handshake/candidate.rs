@@ -258,10 +258,14 @@ impl Node {
             return false;
         };
         let outbound = conn.is_outbound();
-        if self
-            .peers
-            .get(identity.node_addr())
-            .is_some_and(|peer| peer.remote_epoch() != conn.remote_epoch())
+        let owner = self.peers.get(identity.node_addr());
+        let stale_owner = if conn.awaits_epoch_restart() {
+            !owner.is_some_and(|peer| conn.targets_refresh_owner(peer))
+                || self.epoch_restart_dampened(identity.node_addr())
+        } else {
+            owner.is_some_and(|peer| peer.remote_epoch() != conn.remote_epoch())
+        };
+        if stale_owner
             || conn.handshake_confirmation().is_some_and(|first| {
                 self.packet_predates_carrier_rebind(first.transport_id, first.timestamp_ms)
             })
@@ -388,6 +392,21 @@ impl Node {
         let rotation = self
             .prepare_neighbor_rotation_promotion(link_id, &peer_identity)
             .await;
+        let connection = self.peers.get_connection(&link_id)?;
+        if connection.awaits_epoch_restart() {
+            let peer = peer_identity.node_addr();
+            if !confirmed
+                || !self
+                    .peers
+                    .get(peer)
+                    .is_some_and(|owner| connection.confirms_refresh_of(owner))
+                || self.epoch_restart_dampened(peer)
+            {
+                self.cleanup_stale_connection(link_id, Self::now_ms()).await;
+                return None;
+            }
+            self.retire_peer_for_epoch_restart(*peer, connection.remote_epoch(), Self::now_ms());
+        }
         let (node_addr, loser_link_id) = match self.promote_connection_with_rotation(
             link_id,
             peer_identity,

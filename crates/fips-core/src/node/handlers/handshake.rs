@@ -472,12 +472,7 @@ impl Node {
                     // captured msg1 stays valid indefinitely. It must not be
                     // allowed to destroy a peering that is still receiving
                     // authenticated traffic, nor repeatedly churn one peer.
-                    let dampened =
-                        self.restart_dampener
-                            .get(&peer_node_addr)
-                            .is_some_and(|accepted_at| {
-                                accepted_at.elapsed().as_secs() < EPOCH_RESTART_MIN_INTERVAL_SECS
-                            });
+                    let dampened = self.epoch_restart_dampened(&peer_node_addr);
                     let carrier_is_open = existing_peer
                         .transport_id()
                         .zip(existing_peer.current_addr())
@@ -491,7 +486,19 @@ impl Node {
                         });
                     let peering_is_live =
                         carrier_is_open && peering_idle_ms < EPOCH_RESTART_MIN_INTERVAL_SECS * 1000;
-                    if peering_is_live || dampened {
+                    let websocket_over_udp = existing_peer.has_session()
+                        && existing_peer.our_index().is_some()
+                        && matches!(
+                            existing_peer
+                                .transport_id()
+                                .and_then(|id| self.transports.get(&id)),
+                            Some(crate::transport::TransportHandle::Udp(_))
+                        )
+                        && matches!(
+                            self.transports.get(&packet.transport_id),
+                            Some(crate::transport::TransportHandle::WebSocket(_))
+                        );
+                    if dampened || (peering_is_live && !websocket_over_udp) {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
                             idle_ms = peering_idle_ms,
@@ -502,28 +509,13 @@ impl Node {
                         return;
                     }
 
-                    // Epoch mismatch against a silent peer: accept a genuine
-                    // restart. Schedule before removal so the fork retains
-                    // its authenticated UDP recovery address.
-                    // Routed FSP recovery may already have authenticated this
-                    // new process while the obsolete direct FMP was retained.
-                    // Removing that newer session would reset only our K bit.
-                    let preserve_end_to_end = self
-                        .sessions
-                        .get(&peer_node_addr)
-                        .is_some_and(|session| session.established_remote_epoch_matches(new_epoch));
-                    info!(
-                        peer = %self.peer_display_name(&peer_node_addr),
-                        preserve_end_to_end,
-                        "Peer restart detected (epoch mismatch), replacing stale direct peering"
-                    );
-                    self.schedule_reconnect(peer_node_addr, now_ms);
-                    self.remove_active_peer_inner(&peer_node_addr, preserve_end_to_end);
-                    let cutoff = Duration::from_secs(EPOCH_RESTART_MIN_INTERVAL_SECS);
-                    self.restart_dampener
-                        .retain(|_, accepted_at| accepted_at.elapsed() < cutoff);
-                    self.restart_dampener.insert(peer_node_addr, Instant::now());
-                    // Fall through to process as new connection
+                    if websocket_over_udp {
+                        // A sealed Msg1 can be replayed. Advertise only a bounded
+                        // candidate and keep the exact UDP owner until fresh proof.
+                        conn.bind_refresh_owner(existing_peer);
+                    } else {
+                        self.retire_peer_for_epoch_restart(peer_node_addr, new_epoch, now_ms);
+                    }
                 }
                 _ => {
                     // Same epoch (or no epoch stored).
