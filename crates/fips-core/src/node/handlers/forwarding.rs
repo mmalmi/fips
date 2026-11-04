@@ -110,6 +110,7 @@ impl Node {
                         | LinkMessageType::ReceiverReport
                         | LinkMessageType::ClientOnly
                         | LinkMessageType::ClientSupport
+                        | LinkMessageType::LocalUdpListeners
                         | LinkMessageType::TreeAnnounce
                 )
             ) && !self.authenticated_fmp_uses_current_epoch(fmp)

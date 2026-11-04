@@ -48,10 +48,13 @@ impl Node {
     /// The originator does not record the request ID in `recent_requests`;
     /// `pending_lookups` correlates its responses instead.
     pub(in crate::node) async fn initiate_lookup(&mut self, target: &NodeAddr, ttl: u8) -> usize {
+        if self.config.node.peer_admission.denies_address(target) {
+            return 0;
+        }
         self.stats_mut().discovery.req_initiated += 1;
 
         let origin = *self.node_addr();
-        let origin_coords = self.tree_state().my_coords().clone();
+        let origin_coords = self.wire_coordinates(self.tree_state().my_coords().clone());
         let request = LookupRequest::generate(*target, origin, origin_coords, ttl, 0);
 
         let candidates = self.lookup_peer_candidates(target);

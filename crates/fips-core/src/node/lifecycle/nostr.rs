@@ -499,7 +499,7 @@ impl Node {
         // not to turn every ambient relay advert into an outbound connection.
         // Keep scanning adverts so configured-peer retries can be expedited,
         // while leaving ambient peers to dial the advertised listener URL.
-        let client_has_uplink = self.config.node.leaf_only
+        let client_has_uplink = self.config.is_leaf_only()
             && self
                 .peers
                 .values()

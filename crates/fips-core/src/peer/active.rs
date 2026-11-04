@@ -120,6 +120,8 @@ pub struct ActivePeer {
 
     /// Whether this authenticated peer understands ClientOnly.
     pub(crate) client_only_supported: bool,
+    /// Accepting UDP listeners advertised by this authenticated same-host peer.
+    pub(crate) local_udp_listeners: Vec<std::net::SocketAddr>,
     /// A completed capability send after this peer announced its current tree.
     pub(crate) client_support_sent: bool,
     pub(crate) client_only: bool,
@@ -257,6 +259,7 @@ impl ActivePeer {
             last_tree_announce_sent_ms: 0,
             pending_tree_announce: false,
             client_only_supported: false,
+            local_udp_listeners: Vec::new(),
             client_support_sent: false,
             client_only: false,
             routing_role_sequence: None,
@@ -342,6 +345,7 @@ impl ActivePeer {
             last_tree_announce_sent_ms: 0,
             pending_tree_announce: false,
             client_only_supported: false,
+            local_udp_listeners: Vec::new(),
             client_support_sent: false,
             client_only: false,
             routing_role_sequence: None,

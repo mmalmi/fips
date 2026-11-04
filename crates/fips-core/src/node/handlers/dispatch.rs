@@ -70,6 +70,7 @@ impl Node {
             0x53 => {
                 self.handle_client_support(&source_addr, payload).await;
             }
+            0x54 => self.handle_local_udp_listeners(&source_addr, payload),
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
             }
@@ -83,7 +84,7 @@ impl Node {
         if let Some(peer) = self.peers.get_mut(from)
             && !peer.client_only_supported
         {
-            let reply = !self.config.node.leaf_only && !peer.client_only;
+            let reply = !self.config.is_leaf_only() && !peer.client_only;
             peer.client_only_supported = true;
             self.refresh_client_role();
             self.mark_tree_announce_pending(from);

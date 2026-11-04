@@ -54,6 +54,16 @@ impl Node {
         peer_addr: &NodeAddr,
         filters: &OutgoingBloomFilters<'_>,
     ) -> Result<(), NodeError> {
+        if self.config.node.strict_client_only {
+            // Drain pending maintenance without emitting any filter. Recording
+            // only completion here avoids an always-ready retry deadline.
+            self.bloom_state
+                .record_update_sent(*peer_addr, Self::now_ms());
+            if let Some(peer) = self.peers.get_mut(peer_addr) {
+                peer.clear_filter_update_needed();
+            }
+            return Ok(());
+        }
         let now_ms = Self::now_ms();
 
         // Check debounce

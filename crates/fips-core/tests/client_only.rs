@@ -63,7 +63,12 @@ async fn query(node: &TestEndpoint, command: &str) -> serde_json::Value {
     response["data"].clone()
 }
 
-async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<TestEndpoint> {
+async fn endpoints(
+    count: usize,
+    client: bool,
+    reply_learned: bool,
+    strict: bool,
+) -> Vec<TestEndpoint> {
     // Force the client to have the smallest address: it must still follow a
     // router's coordinate root without ever becoming the mesh root itself.
     let mut identities: Vec<_> = (0..count).map(|_| Identity::generate()).collect();
@@ -73,6 +78,7 @@ async fn endpoints(count: usize, client: bool, reply_learned: bool) -> Vec<TestE
         let mut config = Config::new();
         config.node.identity.nsec = Some(encode_nsec(&identity.keypair().secret_key()));
         config.node.leaf_only = client && index == 0;
+        config.node.strict_client_only = strict && index == 0;
         if reply_learned {
             config.node.routing.mode = fips_core::config::RoutingMode::ReplyLearned;
         }
@@ -233,19 +239,19 @@ async fn delivered(source: &FipsEndpoint, dest: &FipsEndpoint, payload: &[u8]) -
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_only_remains_reachable_through_each_upstream_and_after_rebind() {
-    reachable(false, false).await;
-    reachable(true, false).await;
+    reachable(false, false, false).await;
+    reachable(true, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn negotiated_client_remains_reachable_through_each_upstream_and_after_rebind() {
-    reachable(false, true).await;
-    reachable(true, true).await;
+    reachable(false, true, false).await;
+    reachable(true, true, false).await;
 }
 
-async fn reachable(reply_learned: bool, wait_for_client: bool) {
+async fn reachable(reply_learned: bool, wait_for_client: bool, strict: bool) {
     for upstreams in [vec![1], vec![2], vec![1, 2]] {
-        let nodes = endpoints(4, true, reply_learned).await;
+        let nodes = endpoints(4, true, reply_learned, strict).await;
         let mut edges = vec![(1, 2), (2, 3)];
         edges.extend(upstreams.iter().map(|upstream| (0, *upstream)));
         connect(&nodes, &edges, true, wait_for_client).await;
@@ -277,7 +283,7 @@ async fn reachable(reply_learned: bool, wait_for_client: bool) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_only_cannot_bridge_unrelated_sessions_but_router_can() {
     for client in [false, true] {
-        let nodes = endpoints(3, client, true).await;
+        let nodes = endpoints(3, client, true, false).await;
         connect(&nodes, &[(1, 0), (0, 2)], client, client).await;
         let own = delivered(&nodes[0], &nodes[1], b"client's own session").await;
         let transit = delivered(&nodes[1], &nodes[2], b"unrelated transit").await;
@@ -289,5 +295,31 @@ async fn client_only_cannot_bridge_unrelated_sessions_but_router_can() {
             transit, !client,
             "only a router may join the two components"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_client_remains_reachable_through_modern_upstreams_and_after_rebind() {
+    reachable(false, true, true).await;
+    reachable(true, true, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_revocation_preserves_an_unrelated_live_provider() {
+    let nodes = endpoints(3, true, true, true).await;
+    connect(&nodes, &[(0, 1), (0, 2)], true, true).await;
+    assert!(delivered(&nodes[0], &nodes[1], b"before revocation").await);
+    assert!(delivered(&nodes[0], &nodes[2], b"other provider before").await);
+    nodes[0]
+        .update_peer_admission(fips_core::config::PeerAdmissionConfig {
+            configured_only: false,
+            denied_npubs: vec![nodes[1].npub().to_string()],
+        })
+        .await
+        .unwrap();
+    assert!(delivered(&nodes[0], &nodes[2], b"other provider after").await);
+    assert!(!delivered(&nodes[0], &nodes[1], b"revoked destination").await);
+    for node in &nodes {
+        node.shutdown().await.unwrap();
     }
 }

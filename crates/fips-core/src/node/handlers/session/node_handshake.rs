@@ -1,7 +1,11 @@
 impl Node {
     #[cfg(feature = "webrtc-transport")]
     async fn retry_webrtc_after_session_restart(&self, peer: &NodeAddr) {
-        let Some(identity) = self.sessions.get(peer).map(|session| *session.remote_pubkey()) else {
+        let Some(identity) = self
+            .sessions
+            .get(peer)
+            .map(|session| *session.remote_pubkey())
+        else {
             return;
         };
         for transport in self.transports.values() {
@@ -221,10 +225,11 @@ impl Node {
                 };
 
                 // Build and send SessionAck
-                let our_coords = self.tree_state.my_coords().clone();
-                let ack = SessionAck::new(our_coords, setup.src_coords.clone())
-                    .with_direct_fsp_transport()
-                    .with_handshake(msg2);
+                let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
+                let ack =
+                    SessionAck::new(our_coords, self.wire_coordinates(setup.src_coords.clone()))
+                        .with_direct_fsp_transport()
+                        .with_handshake(msg2);
                 let ack_payload = ack.encode();
                 let my_addr = *self.node_addr();
                 let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
@@ -286,8 +291,8 @@ impl Node {
         };
 
         // Build and send SessionAck (include initiator's coords for return-path warming)
-        let our_coords = self.tree_state.my_coords().clone();
-        let ack = SessionAck::new(our_coords, setup.src_coords.clone())
+        let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
+        let ack = SessionAck::new(our_coords, self.wire_coordinates(setup.src_coords.clone()))
             .with_direct_fsp_transport()
             .with_handshake(msg2);
         let ack_payload = ack.encode();

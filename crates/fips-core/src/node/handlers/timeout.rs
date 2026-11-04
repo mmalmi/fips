@@ -494,8 +494,9 @@ impl Node {
                 // Coordinates describe the current route, not the Noise
                 // generation. A root withdrawal must not keep advertising
                 // an obsolete return path in every retry of the same msg1.
-                setup.src_coords = self.tree_state.my_coords().clone();
-                setup.dest_coords = self.get_dest_coords(&candidate.dest_addr);
+                setup.src_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
+                setup.dest_coords =
+                    self.wire_coordinates(self.get_dest_coords(&candidate.dest_addr));
                 datagram.payload = setup.encode();
             }
             let sent = match self.send_session_datagram(&mut datagram).await {

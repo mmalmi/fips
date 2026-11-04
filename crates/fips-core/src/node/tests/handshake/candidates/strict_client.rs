@@ -1,6 +1,9 @@
 use super::*;
 use crate::protocol::{LinkMessageType, TreeAnnounce};
 
+mod coordinates;
+mod listeners;
+
 async fn node(strict: bool) -> TestNode {
     let mut node = make_test_node().await;
     // Deserialize the opt-in as an application does. The pre-fix library

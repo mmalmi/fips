@@ -15,6 +15,20 @@ use tracing::{debug, info, trace, warn};
 mod deadlines;
 
 impl Node {
+    /// Strict clients retain ancestry for local routing decisions, but expose
+    /// only the endpoint named by a coordinate on the wire. Apply this to
+    /// lookup, handshake, retry/rekey and established-session coordinate hints.
+    pub(in crate::node) fn wire_coordinates(
+        &self,
+        coordinates: crate::tree::TreeCoordinate,
+    ) -> crate::tree::TreeCoordinate {
+        if self.config.node.strict_client_only {
+            crate::tree::TreeCoordinate::root(*coordinates.node_addrs().next().unwrap())
+        } else {
+            coordinates
+        }
+    }
+
     pub(in crate::node) fn invalidate_tree_coordinates(&mut self) {
         debug!(target: "fips_core::route_recovery",
             node = %self.node_addr(), root = %self.tree_state.root(),
@@ -112,12 +126,13 @@ impl Node {
     /// advertise a client dependent. Preserve router behavior until every live
     /// neighbor supports the explicit role; never strand older-only networks.
     pub(in crate::node) fn refresh_client_role(&mut self) {
-        let client = self.config.node.leaf_only
-            && self
-                .peers
-                .values()
-                .filter(|peer| peer.can_send())
-                .all(|peer| peer.client_only_supported);
+        let client = self.config.node.strict_client_only
+            || (self.config.node.leaf_only
+                && self
+                    .peers
+                    .values()
+                    .filter(|peer| peer.can_send())
+                    .all(|peer| peer.client_only_supported));
         if client == self.is_leaf_only {
             return;
         }
@@ -179,7 +194,10 @@ impl Node {
             return Ok(());
         }
 
-        if self.config.node.leaf_only && !peer.client_only_supported && !peer.client_support_sent {
+        if self.config.is_leaf_only()
+            && !peer.client_only_supported
+            && (!peer.client_support_sent || self.config.node.strict_client_only)
+        {
             let upstream_announced = self.tree_state.peer_coords(peer_addr).is_some();
             // Give a capable neighbor the first announcement interval to
             // reply before advertising a temporary router/root role. Older
@@ -262,6 +280,7 @@ impl Node {
             }
         }
 
+        self.send_local_udp_listeners(peer_addr).await?;
         trace!(peer = %self.peer_display_name(peer_addr), "Sent TreeAnnounce");
         Ok(())
     }

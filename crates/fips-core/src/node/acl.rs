@@ -528,6 +528,94 @@ impl PeerAclReloader {
 }
 
 impl Node {
+    pub(in crate::node) fn application_admits_peer(&self, identity: &PeerIdentity) -> bool {
+        let policy = &self.config.node.peer_admission;
+        !policy.denies(identity)
+            && (!policy.configured_only || self.is_configured_peer_identity(identity))
+    }
+
+    pub(in crate::node) async fn update_peer_admission(
+        &mut self,
+        policy: crate::config::PeerAdmissionConfig,
+    ) -> Result<(), NodeError> {
+        policy.validate()?;
+        self.config.node.peer_admission = policy;
+        self.retire_disallowed_application_peers().await;
+        Ok(())
+    }
+
+    pub(in crate::node) async fn retire_disallowed_application_peers(&mut self) {
+        if !self.config.node.peer_admission.configured_only
+            && self.config.node.peer_admission.denied_npubs.is_empty()
+        {
+            return;
+        }
+        let active = self
+            .peers
+            .values()
+            .filter(|peer| !self.application_admits_peer(peer.identity()))
+            .map(|peer| *peer.node_addr())
+            .collect::<Vec<_>>();
+        // Revoke dataplane owners and routes before any physical close can
+        // yield. Later handshake/preparation completions recheck this policy.
+        for addr in active {
+            self.remove_active_peer(&addr);
+        }
+        let denied = self
+            .config
+            .node
+            .peer_admission
+            .denied_npubs
+            .iter()
+            .map(|npub| {
+                *PeerIdentity::from_npub(npub)
+                    .expect("validated admission policy")
+                    .node_addr()
+            })
+            .collect::<Vec<_>>();
+        for addr in denied {
+            self.remove_dataplane_fsp_owner(&addr);
+            self.sessions.remove(&addr);
+            self.pending_session_traffic.remove_destination(&addr);
+            self.pending_lookups.remove(&addr);
+        }
+        let preparing = self
+            .pending_connects
+            .iter()
+            .filter(|pending| !self.application_admits_peer(&pending.peer_identity))
+            .map(|pending| pending.link_id)
+            .collect::<Vec<_>>();
+        let handshakes = self
+            .peers
+            .connection_values()
+            .filter(|connection| {
+                connection
+                    .expected_identity()
+                    .is_some_and(|identity| !self.application_admits_peer(identity))
+            })
+            .map(|connection| connection.link_id())
+            .collect::<Vec<_>>();
+        let retries = self
+            .retry_pending
+            .iter()
+            .filter(|(_, state)| {
+                PeerIdentity::from_npub(&state.peer_config.npub)
+                    .is_ok_and(|identity| !self.application_admits_peer(&identity))
+            })
+            .map(|(addr, _)| *addr)
+            .collect::<Vec<_>>();
+        for addr in retries {
+            self.retry_pending.remove(&addr);
+            self.forget_neighbor_reconnection(&addr);
+        }
+        for link in preparing {
+            self.retire_connection_preparation(link).await;
+        }
+        for link in handshakes {
+            self.retire_connection_candidate(link, None).await;
+        }
+    }
+
     pub(in crate::node) fn enforces_configured_only_peer_admission(&self) -> bool {
         self.config.node.discovery.nostr.enabled
             && self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::ConfiguredOnly
@@ -626,6 +714,11 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> Result<(), NodeError> {
+        if !self.application_admits_peer(peer_identity) {
+            return Err(NodeError::AccessDenied(
+                "peer rejected by application admission policy".into(),
+            ));
+        }
         let local_rendezvous = self.is_local_rendezvous_path(transport_id, remote_addr);
         let handshake_is_initiator = !matches!(context, PeerAclContext::InboundHandshake);
         let operator_routing_adjacency =
@@ -702,3 +795,6 @@ impl Node {
 #[cfg(test)]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod application_tests;

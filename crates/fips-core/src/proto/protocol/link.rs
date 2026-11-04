@@ -107,6 +107,9 @@ pub enum LinkMessageType {
     ClientOnly = 0x52,
     /// Support for ClientOnly, without declaring the sender a client. No payload.
     ClientSupport = 0x53,
+    /// Same-host accepting UDP listeners: count u8, followed by u16 LE ports.
+    /// Hosts are derived from the authenticated loopback carrier, never supplied.
+    LocalUdpListeners = 0x54,
 }
 
 impl LinkMessageType {
@@ -124,6 +127,7 @@ impl LinkMessageType {
             0x51 => Some(LinkMessageType::Heartbeat),
             0x52 => Some(LinkMessageType::ClientOnly),
             0x53 => Some(LinkMessageType::ClientSupport),
+            0x54 => Some(LinkMessageType::LocalUdpListeners),
             _ => None,
         }
     }
@@ -148,6 +152,7 @@ impl fmt::Display for LinkMessageType {
             LinkMessageType::Heartbeat => "Heartbeat",
             LinkMessageType::ClientOnly => "ClientOnly",
             LinkMessageType::ClientSupport => "ClientSupport",
+            LinkMessageType::LocalUdpListeners => "LocalUdpListeners",
         };
         write!(f, "{}", name)
     }

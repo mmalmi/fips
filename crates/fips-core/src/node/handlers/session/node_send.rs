@@ -9,6 +9,9 @@ impl Node {
     /// Existing entries are always admitted so duplicate handshakes, live
     /// sessions, and rekeys continue to make progress at the limit.
     pub(in crate::node) fn admit_new_session(&mut self, addr: &NodeAddr) -> bool {
+        if self.config.node.peer_admission.denies_address(addr) {
+            return false;
+        }
         let max_sessions = self.config.node.limits.max_sessions;
         if max_sessions == 0 || self.sessions.contains_key(addr) {
             return true;
@@ -57,6 +60,11 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: PublicKey,
     ) -> Result<(), NodeError> {
+        if self.config.node.peer_admission.denies_address(&dest_addr) {
+            return Err(NodeError::AccessDenied(
+                "session destination denied by application policy".into(),
+            ));
+        }
         if self.sessions.should_skip_session_initiation(&dest_addr) {
             return Ok(());
         }
@@ -78,8 +86,8 @@ impl Node {
             })?;
 
         // Build SessionSetup with coordinates
-        let our_coords = self.tree_state.my_coords().clone();
-        let dest_coords = self.get_dest_coords(&dest_addr);
+        let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
+        let dest_coords = self.wire_coordinates(self.get_dest_coords(&dest_addr));
         let setup = SessionSetup::new(our_coords, dest_coords)
             .with_flags(SessionFlags::new().with_direct_fsp_transport())
             .with_handshake(msg1);
@@ -121,12 +129,8 @@ impl Node {
         batch: NodeEndpointDataBatch,
     ) {
         let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
-        self.queue_dataplane_unrouted_endpoint_batch(
-            remote,
-            payloads,
-            enqueued_at_ms,
-        )
-        .await;
+        self.queue_dataplane_unrouted_endpoint_batch(remote, payloads, enqueued_at_ms)
+            .await;
     }
 
     pub(in crate::node) async fn handle_endpoint_control(
@@ -155,10 +159,9 @@ impl Node {
                 previous_hop,
                 response_tx,
             } => {
-                if !self.register_endpoint_identity(
-                    *destination.node_addr(),
-                    destination.pubkey_full(),
-                ) {
+                if !self
+                    .register_endpoint_identity(*destination.node_addr(), destination.pubkey_full())
+                {
                     let _ = response_tx.send(None);
                     return None;
                 }
@@ -179,6 +182,13 @@ impl Node {
             }
             NodeEndpointControlCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::UpdatePeerAdmission {
+                policy,
+                response_tx,
+            } => {
+                let result = self.update_peer_admission(policy).await;
                 let _ = response_tx.send(result);
             }
             NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx } => {
@@ -223,7 +233,7 @@ impl Node {
             }
             NodeEndpointControlCommand::RoutingStatus { response_tx } => {
                 let mut status = crate::endpoint::FipsEndpointRoutingStatus {
-                    client_only_requested: self.config.node.leaf_only,
+                    client_only_requested: self.config.is_leaf_only(),
                     client_only: self.is_leaf_only(),
                     connected_peers: 0,
                     peers_without_client_support: 0,
@@ -254,7 +264,9 @@ impl Node {
                         let peers = self
                             .peers()
                             .map(|peer| {
-                                nostr::PublicKey::from_byte_array(peer.identity().pubkey().serialize())
+                                nostr::PublicKey::from_byte_array(
+                                    peer.identity().pubkey().serialize(),
+                                )
                             })
                             .chain(pending_peers.iter().filter_map(|(_, retry)| {
                                 nostr::PublicKey::parse(&retry.peer_config.npub).ok()
@@ -401,20 +413,10 @@ impl Node {
                 let _ = response_tx.send(endpoints);
             }
             NodeEndpointControlCommand::BoundUdpListenAddrs { response_tx } => {
-                let mut addrs = self
-                    .transports
-                    .iter()
-                    .filter(|(id, handle)| {
-                        !self.is_local_rendezvous_transport(id)
-                            && handle.is_operational()
-                            && handle.transport_type().name == "udp"
-                            && handle.accept_connections()
-                    })
-                    .filter_map(|(_, handle)| handle.local_addr())
-                    .collect::<Vec<_>>();
-                addrs.sort_unstable();
-                addrs.dedup();
-                let _ = response_tx.send(addrs);
+                let _ = response_tx.send(self.bound_udp_listener_snapshot());
+            }
+            NodeEndpointControlCommand::AuthenticatedLocalUdpListenAddrs { peer, response_tx } => {
+                let _ = response_tx.send(self.authenticated_local_udp_listeners(peer.node_addr()));
             }
             NodeEndpointControlCommand::LocalNostrDiscoveryAdvertEvent { response_tx } => {
                 let result = if let Some(discovery) = self.nostr_discovery_handle() {
@@ -464,5 +466,4 @@ impl Node {
         }
         None
     }
-
 }

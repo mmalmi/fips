@@ -729,6 +729,17 @@ pub struct NodeConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub leaf_only: bool,
 
+    /// Require client-only routing even with legacy neighbors. Never publish
+    /// tree ancestry or Bloom filters. This implies `leaf_only` without its
+    /// compatibility fallback.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_client_only: bool,
+
+    /// Application admission policy, enforced on every transport independently
+    /// of discovery. Explicit denials take precedence over configured peers.
+    #[serde(default)]
+    pub peer_admission: super::PeerAdmissionConfig,
+
     /// RX loop maintenance tick period in seconds (`node.tick_interval_secs`).
     #[serde(default = "NodeConfig::default_tick_interval_secs")]
     pub tick_interval_secs: u64,
@@ -838,6 +849,8 @@ impl Default for NodeConfig {
         Self {
             identity: IdentityConfig::default(),
             leaf_only: false,
+            strict_client_only: false,
+            peer_admission: super::PeerAdmissionConfig::default(),
             tick_interval_secs: 1,
             base_rtt_ms: 100,
             heartbeat_interval_secs: 10,

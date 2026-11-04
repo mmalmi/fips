@@ -345,6 +345,24 @@ impl FipsEndpoint {
         .await
     }
 
+    /// Accepting UDP listeners advertised by an authenticated same-host peer.
+    /// These hints require a supporting peer and are cleared on its restart or
+    /// removal. The IP is derived from the current loopback link. Dial using
+    /// the supplied identity, because a closed port may be reused by a process
+    /// with a different identity.
+    pub async fn authenticated_local_udp_listen_addrs(
+        &self,
+        peer: PeerIdentity,
+    ) -> Result<Vec<std::net::SocketAddr>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "authenticated local UDP listeners",
+            NodeEndpointControlCommand::AuthenticatedLocalUdpListenAddrs { peer, response_tx },
+            response_rx,
+        )
+        .await
+    }
+
     /// Send application-owned endpoint payloads to one resolved peer.
     ///
     /// This is the canonical endpoint-data send path for applications that
@@ -769,6 +787,8 @@ impl FipsEndpoint {
     /// retry queue but stay connected if they currently are — the regular
     /// liveness timeout reaps idle sessions. Existing entries get their
     /// `addresses` field refreshed so the next retry sees the latest hints.
+    /// With application `peer_admission.configured_only`, removal also revokes
+    /// active and pending neighbors before this method completes.
     ///
     /// Pass an empty `addresses` vector for a peer if you want fips to
     /// resolve them entirely from the Nostr advert at dial time.
@@ -788,6 +808,28 @@ impl FipsEndpoint {
             Ok(outcome) => Ok(UpdatePeersOutcome::from(outcome)),
             Err(error) => Err(FipsEndpointError::Node(error)),
         }
+    }
+
+    /// Replace application neighbor admission on every carrier. Completion is
+    /// a revocation barrier: forbidden active neighbors and their routes,
+    /// known pending handshakes, preparations and retries have been retired.
+    /// Unknown inbound identities must pass the new policy when authenticated.
+    /// Invalid policies leave the prior policy in force.
+    pub async fn update_peer_admission(
+        &self,
+        policy: crate::config::PeerAdmissionConfig,
+    ) -> Result<(), FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "peer admission update",
+            NodeEndpointControlCommand::UpdatePeerAdmission {
+                policy,
+                response_tx,
+            },
+            response_rx,
+        )
+        .await?
+        .map_err(FipsEndpointError::Node)
     }
 
     /// Force immediate direct-path refresh attempts for configured peers.

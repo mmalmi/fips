@@ -313,8 +313,8 @@ impl Node {
     }
 
     fn dataplane_fsp_coords_prefix_for_dest(&self, node_addr: &NodeAddr) -> Vec<u8> {
-        let src = self.tree_state.my_coords().clone();
-        let dst = self.get_dest_coords(node_addr);
+        let src = self.wire_coordinates(self.tree_state.my_coords().clone());
+        let dst = self.wire_coordinates(self.get_dest_coords(node_addr));
         let mut prefix = Vec::with_capacity(
             crate::protocol::coords_wire_size(&src) + crate::protocol::coords_wire_size(&dst),
         );
@@ -351,9 +351,7 @@ impl Node {
         // SessionAck can race direct-link promotion and return through a
         // transit peer; pinning that transient ingress would leave payload on
         // the routed branch after the direct carrier is already usable.
-        let selected_next_hop = self
-            .find_next_hop(node_addr)
-            .map(|peer| *peer.node_addr());
+        let selected_next_hop = self.find_next_hop(node_addr).map(|peer| *peer.node_addr());
         let selected_direct = (selected_next_hop == Some(*node_addr)).then_some(*node_addr);
 
         // A supplied handshake or established reply carrier remains preferred
@@ -377,8 +375,7 @@ impl Node {
         } else {
             selected_direct.or(proven_next_hop).or(selected_next_hop)
         };
-        let Some(next_hop) = next
-        else {
+        let Some(next_hop) = next else {
             return DataplaneFspOwnerRouteUpdate {
                 routes,
                 wrap: None,

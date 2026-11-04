@@ -24,6 +24,7 @@ mod identity;
 mod neighbor_rotation;
 mod node;
 mod peer;
+mod peer_admission;
 mod transport;
 mod webrtc_budget;
 
@@ -47,6 +48,7 @@ pub use node::{
     SessionMmpConfig, TreeConfig,
 };
 pub use peer::{ConnectPolicy, PeerAddress, PeerAddressProvenance, PeerConfig};
+pub use peer_admission::PeerAdmissionConfig;
 #[cfg(feature = "sim-transport")]
 pub use transport::SimTransportConfig;
 pub use transport::{
@@ -574,7 +576,7 @@ impl Config {
 
     /// Check if leaf-only mode is configured.
     pub fn is_leaf_only(&self) -> bool {
-        self.node.leaf_only
+        self.node.leaf_only || self.node.strict_client_only
     }
 
     /// Get the configured peers.
@@ -589,6 +591,7 @@ impl Config {
 
     /// Validate cross-field configuration invariants.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.node.peer_admission.validate()?;
         if let Some(rotation) = &self.node.neighbor_rotation
             && (rotation.idle_secs == 0 || rotation.interval_secs == 0)
         {

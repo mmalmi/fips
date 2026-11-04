@@ -284,6 +284,10 @@ pub(crate) enum NodeEndpointControlCommand {
     BoundUdpListenAddrs {
         response_tx: tokio::sync::oneshot::Sender<Vec<std::net::SocketAddr>>,
     },
+    AuthenticatedLocalUdpListenAddrs {
+        peer: crate::PeerIdentity,
+        response_tx: tokio::sync::oneshot::Sender<Vec<std::net::SocketAddr>>,
+    },
     LocalNostrDiscoveryAdvertEvent {
         response_tx: tokio::sync::oneshot::Sender<Result<Option<nostr::Event>, NodeError>>,
     },
@@ -297,6 +301,10 @@ pub(crate) enum NodeEndpointControlCommand {
     UpdatePeers {
         peers: Vec<crate::config::PeerConfig>,
         response_tx: tokio::sync::oneshot::Sender<Result<UpdatePeersOutcome, NodeError>>,
+    },
+    UpdatePeerAdmission {
+        policy: crate::config::PeerAdmissionConfig,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
     RefreshPeerPaths {
         npubs: Vec<String>,

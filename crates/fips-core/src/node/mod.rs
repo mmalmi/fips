@@ -20,6 +20,7 @@ mod identity_cache;
 mod io_impl;
 mod lifecycle;
 mod link_registry;
+mod local_listeners;
 mod local_rendezvous;
 mod neighbor_rotation;
 pub(crate) mod originated_observer;

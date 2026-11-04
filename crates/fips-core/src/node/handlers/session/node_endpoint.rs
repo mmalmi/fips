@@ -25,6 +25,11 @@ impl Node {
         payloads: Vec<EndpointDataPayload>,
         enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
+        if self.config.node.peer_admission.denies_address(&dest_addr) {
+            return Err(NodeError::AccessDenied(
+                "endpoint destination denied by application policy".into(),
+            ));
+        }
         if payloads.is_empty() {
             return Ok(());
         }

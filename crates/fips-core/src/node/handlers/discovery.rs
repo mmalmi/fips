@@ -557,7 +557,7 @@ impl Node {
 
     /// Generate and send a LookupResponse when we are the target.
     async fn send_lookup_response(&mut self, request: &LookupRequest) {
-        let our_coords = self.tree_state().my_coords().clone();
+        let our_coords = self.wire_coordinates(self.tree_state().my_coords().clone());
 
         debug!(target: "fips_core::route_recovery",
             node = %self.node_addr(), origin = %request.origin, request_id = request.request_id,

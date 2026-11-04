@@ -135,6 +135,7 @@ impl Node {
             .filter_map(|addr| new_by_addr.get(addr).cloned())
             .collect();
         self.configured_peers = ConfiguredPeerLookup::from_config(&self.config);
+        self.retire_disallowed_application_peers().await;
         self.mark_dataplane_direct_fsp_sources_dirty();
 
         let aliases = crate::upper::hosts::HostMap::from_peer_configs(self.config.peers());
