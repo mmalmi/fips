@@ -328,7 +328,7 @@ impl Node {
                         .local_rendezvous
                         .listener_roster
                         .as_ref()
-                        .is_some_and(|(epoch, old, _)| *epoch == anchor_epoch && *old > revision)
+                        .is_some_and(|(epoch, old, _)| *epoch == anchor_epoch && *old >= revision)
                 {
                     return false;
                 }
@@ -448,6 +448,9 @@ impl Node {
         before != self.local_rendezvous.providers.len()
     }
 }
+
+#[cfg(test)]
+mod listener_tests;
 
 #[cfg(test)]
 mod tests {

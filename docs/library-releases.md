@@ -8,13 +8,20 @@ between those commits before reusing its test evidence.
 
 ## Environment and scope
 
-The current qualification uses an Apple Silicon macOS host, preinstalled Rust
-and Cargo 1.95.0, Python 3.13 or newer, Git, and the Apple command-line linker/SDK.
-The compiler target is `aarch64-apple-darwin`, core library tests use default
-features (no optional WebRTC), and compilation uses two jobs with incremental
+The .118 qualification uses native Linux `x86_64-unknown-linux-gnu`, preinstalled
+Rust and Cargo 1.93.1, and the host linker/system libraries. The exact compiler
+commit is pinned in `scripts/release/inputs.json`. Core library tests use default
+features (no optional WebRTC); compilation uses two jobs with incremental
 compilation and dev/test debug information disabled. Reuse an agreed compatible
-Cargo target directory with one writer. The repository's default toolchain may
-differ; the release override is recorded in `scripts/release/inputs.json`.
+Cargo target directory with one writer, stage and hash test executables, then
+release that writer before running fixtures. Provide a task-owned `TMPDIR` on
+the admitted filesystem when the host temporary mount is constrained.
+
+Source publication and no-build package creation use the existing Apple Silicon
+macOS publisher with preinstalled Rust/Cargo 1.95.0, Python 3.13 or newer and Git.
+The packaging override and separate native qualification pins are recorded in
+`scripts/release/inputs.json`. This does not claim identical native binaries
+across the two toolchains or targets.
 
 No container or privileged dependency installer is required. Toolchains, SDKs,
 system libraries, and signing credentials must already be available. Network
@@ -31,10 +38,27 @@ never replace them with a checksum obtained alongside a mutable download.
 Run focused tests for the actual change using a locked install, for example:
 
 ```sh
-RUSTUP_TOOLCHAIN=1.95.0 CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
+CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
 cargo test --locked --offline -p nvpn-fips-core --lib --no-run
 ```
+
+Verify `rustc --version --verbose` against the qualification pins before this
+command. For strict clients, verify both all-current and published .117
+`reply_learned` transit paths, including first contact, both directions and
+transport rebind. The process fixture `reply_learned_compat_router.rs` uses only
+the .117 public API and can be compiled unchanged against the published source;
+pass its separately hashed executable in `FIPS_COMPAT_ROUTER_BIN` when running
+the ignored `strict_client_mixed_117_reply_learned_and_tree_controls` test.
+
+`strict_client_only` selects reply-learned routing locally and never falls back
+to publishing ancestry or Bloom filters. Multi-hop deployment requires
+reply-learned transit and compatible remote endpoints. Preserve ordinary Tree
+foreign-root tests and the explicit Tree-only failure control. Before consumer
+rollout, verify deployed router modes; client opt-in does not alter remote
+configuration. The local accepting-listener API additionally requires upgraded
+providers and any roster anchor. It never substitutes observed source ports for
+accepting listener hints.
 
 Run the selected tests from the resulting executable and retain complete logs,
 exit status, source hashes, and benchmark limitations. Allocation benchmarks in
