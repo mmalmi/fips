@@ -153,7 +153,10 @@ async fn exchange(
     loop {
         let mut packets = Vec::new();
         receiver
-            .recv_batch_into(&mut packets, 8)
+            // A reply and the next request can already be queued together.
+            // Return only the packet consumed by this exchange; leave the
+            // next step in the receiver instead of dropping a batch tail.
+            .recv_batch_into(&mut packets, 1)
             .await
             .ok_or("service closed")?;
         for packet in packets {
