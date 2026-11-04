@@ -83,6 +83,9 @@ It cold-clones the existing public repository, adds only the candidate commit's
 `haps-source/FULL_COMMIT` tag from a checksum-bound bundle, and preserves all
 existing public refs and HEAD. The bundle must contain only that intended public
 history, not private branches or local Git configuration.
+It packs exactly those public ref closures into one pack/index pair. This avoids
+copying loose-object fanout into directory B-trees and keeps the metadata repair
+on its qualified direct-directory path.
 
 The pinned helper's streamed pack upload omits pack/index entry lengths. The
 producer corrects only measured lengths and their directory ancestors using

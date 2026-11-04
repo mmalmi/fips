@@ -67,24 +67,29 @@ def guard():
     assert time.monotonic() - START < PLAN["seconds"] and not INTERRUPTED
 
 
-def run(label, args, env, timeout=600):
+def run(label, args, env, timeout=600, input_text=None, binary_output=None):
     guard()
-    output = OUT / (MODE + "-" + label + ".out")
+    output = Path(binary_output) if binary_output else OUT / (MODE + "-" + label + ".out")
     errors = OUT / (MODE + "-" + label + ".log")
     began = time.monotonic()
     with output.open("xb") as stdout, errors.open("xb") as stderr:
         child = subprocess.Popen(args, env=env, stdout=stdout, stderr=stderr,
+                                 stdin=subprocess.PIPE if input_text is not None else None,
                                  start_new_session=True)
         CHILDREN.append(child)
+        if input_text is not None:
+            child.stdin.write(input_text.encode())
+            child.stdin.close()
         while child.poll() is None:
             guard()
             assert time.monotonic() - began < timeout, label + " deadline"
-            assert output.stat().st_size + errors.stat().st_size < 16 * 1024**2
+            assert errors.stat().st_size < 16 * 1024**2
+            assert output.stat().st_size < (256 if binary_output else 16) * 1024**2
             time.sleep(.2)
         code = child.wait()
     STEPS.append({"phase": label, "exit": code, "seconds": time.monotonic() - began})
     assert code == 0, label + " failed; inspect retained logs"
-    return output.read_text()
+    return '' if binary_output else output.read_text()
 
 
 def environment(name, writable=False, relay=None):
@@ -223,7 +228,22 @@ try:
         tree = WORK / "source-tree"
         bare = tree / ".git"
         bare.mkdir(parents=True)
-        shutil.copytree(repo / "objects", bare / "objects", copy_function=os.link)
+        # Normalize the public closure into one pack. Copying a clone's loose
+        # fanout can create a directory B-tree in the uploaded metadata, while
+        # the qualified size repair deliberately handles direct directories.
+        # Only these explicit public tips are input; no local private refs or
+        # repository configuration are copied into the source tree.
+        (bare / 'objects/pack').mkdir(parents=True)
+        packed = WORK / 'public-closure.pack'
+        tips = '\n'.join(sorted(set(expected['refs'].values()))) + '\n'
+        run('pack-public-closure', git(repo, '-c', 'pack.threads=1', '-c',
+            'pack.windowMemory=32m', '-c', 'pack.deltaCacheSize=16m', 'pack-objects',
+            '--revs', '--stdout'), env, 600, input_text=tips, binary_output=packed)
+        pack_id = run('index-public-closure', git(repo, 'index-pack', '--threads=1',
+                      str(packed)), env, 120).strip()
+        assert re.fullmatch('[0-9a-f]{40}', pack_id)
+        for extension in ('pack', 'idx'):
+            packed.with_suffix('.' + extension).rename(bare / 'objects/pack' / ('pack-' + pack_id + '.' + extension))
         (bare / "HEAD").write_text("ref: " + expected["head"] + "\n")
         for ref, oid in expected["refs"].items():
             path = bare / ref
