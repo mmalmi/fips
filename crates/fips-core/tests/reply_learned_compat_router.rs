@@ -2,6 +2,8 @@
 //! Compile this unchanged file with either core revision for mixed-version tests.
 use fips_core::{Config, FipsEndpoint};
 
+mod external_seed_probe;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compat_router_process() {
     let Some(path) = std::env::var_os("FIPS_COMPAT_ROUTER_CONFIG") else {
