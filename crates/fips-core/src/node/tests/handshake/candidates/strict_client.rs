@@ -4,6 +4,24 @@ use crate::protocol::{LinkMessageType, TreeAnnounce};
 mod coordinates;
 mod listeners;
 
+#[test]
+fn strict_client_selects_reply_learned_without_changing_ordinary_defaults() {
+    let mut config = crate::Config::new();
+    config.node.system_files_enabled = false;
+    let ordinary = Node::new(config.clone()).unwrap();
+    assert_eq!(
+        ordinary.config.node.routing.mode,
+        crate::config::RoutingMode::Tree
+    );
+    config.node.strict_client_only = true;
+    let strict = Node::new(config).unwrap();
+    assert_eq!(
+        strict.config.node.routing.mode,
+        crate::config::RoutingMode::ReplyLearned
+    );
+    assert!(strict.is_leaf_only);
+}
+
 async fn node(strict: bool) -> TestNode {
     let mut node = make_test_node().await;
     // Deserialize the opt-in as an application does. The pre-fix library

@@ -18,6 +18,98 @@ impl LocalRendezvous {
 }
 
 impl Node {
+    fn local_roster_listeners(&self) -> Vec<crate::discovery::local_udp::LocalListenerProvider> {
+        self.local_roster_providers()
+            .into_iter()
+            .filter_map(|provider| {
+                let identity = XOnlyPublicKey::from_slice(&provider.pubkey)
+                    .ok()
+                    .map(PeerIdentity::from_pubkey)?;
+                let ports = if identity.node_addr() == self.node_addr() {
+                    self.bound_udp_listener_snapshot()
+                        .into_iter()
+                        .filter(|address| {
+                            address.is_ipv4()
+                                && (address.ip().is_unspecified()
+                                    || address.ip() == self.local_rendezvous.fixed_addr.ip())
+                        })
+                        .map(|address| address.port())
+                        .take(16)
+                        .collect()
+                } else {
+                    let peer = self.peers.get(identity.node_addr())?;
+                    if !peer.local_udp_listeners_received
+                        || peer.remote_epoch() != Some(provider.process_epoch)
+                    {
+                        return None;
+                    }
+                    peer.local_udp_listeners
+                        .iter()
+                        .map(|address| address.port())
+                        .collect()
+                };
+                Some(crate::discovery::local_udp::LocalListenerProvider {
+                    pubkey: provider.pubkey,
+                    process_epoch: provider.process_epoch,
+                    ports,
+                })
+            })
+            .collect()
+    }
+
+    pub(in crate::node) fn local_udp_listener_state_changed(&mut self) {
+        if self.local_rendezvous.role == Some(LocalRendezvousRole::Anchor) {
+            self.local_rendezvous.roster_revision =
+                self.local_rendezvous.roster_revision.saturating_add(1);
+            self.local_rendezvous.roster_dirty = true;
+        }
+        self.local_rendezvous.directory.notify_listener_change();
+    }
+
+    pub(in crate::node) fn rostered_local_udp_listeners(
+        &self,
+        addr: &NodeAddr,
+    ) -> (Vec<SocketAddr>, bool) {
+        let adverts = self.local_rendezvous.directory.snapshot();
+        let Some(provider) = adverts.iter().find(|provider| {
+            PeerIdentity::from_npub(&provider.npub)
+                .is_ok_and(|identity| identity.node_addr() == addr)
+        }) else {
+            return (Vec::new(), false);
+        };
+        let Some(anchor) = self.local_rendezvous.anchor_peer else {
+            return (Vec::new(), false);
+        };
+        if !self.authenticated_local_peer(anchor.identity.node_addr()) {
+            return (Vec::new(), false);
+        }
+        let Some((epoch, revision, listeners)) = &self.local_rendezvous.listener_roster else {
+            return (Vec::new(), true);
+        };
+        if self.local_rendezvous.accepted_roster != Some((*epoch, *revision))
+            || *epoch != anchor.startup_epoch
+        {
+            return (Vec::new(), true);
+        }
+        let Some(listener) = listeners.iter().find(|listener| {
+            listener.process_epoch == provider.startup_epoch
+                && XOnlyPublicKey::from_slice(&listener.pubkey)
+                    .ok()
+                    .map(PeerIdentity::from_pubkey)
+                    .is_some_and(|identity| identity.node_addr() == addr)
+        }) else {
+            return (Vec::new(), true);
+        };
+        (
+            listener
+                .ports
+                .iter()
+                .map(|port| SocketAddr::new(self.local_rendezvous.fixed_addr.ip(), *port))
+                .collect(),
+            false,
+        )
+    }
+
     pub(crate) fn local_capability_directory(&self) -> LocalCapabilityDirectory {
         self.local_rendezvous.directory.clone()
     }
@@ -181,6 +273,11 @@ impl Node {
             revision: self.local_rendezvous.roster_revision,
             providers: self.local_roster_providers(),
         };
+        let listeners = LocalCapabilityMessage::ListenerRoster {
+            anchor_epoch: self.startup_epoch,
+            revision: self.local_rendezvous.roster_revision,
+            providers: self.local_roster_listeners(),
+        };
         let peers = self
             .peers
             .values()
@@ -189,6 +286,8 @@ impl Node {
             .collect::<Vec<_>>();
         for peer in peers {
             self.send_local_capability_message(peer, message.clone())
+                .await;
+            self.send_local_capability_message(peer, listeners.clone())
                 .await;
         }
         self.local_rendezvous.last_capability_sync_ms = Self::now_ms();
@@ -208,6 +307,35 @@ impl Node {
             return false;
         };
         match message {
+            LocalCapabilityMessage::ListenerRoster {
+                anchor_epoch,
+                revision,
+                providers,
+            } if self.local_rendezvous.role == Some(LocalRendezvousRole::Client) => {
+                let Some(anchor) = self.local_rendezvous.anchor_peer else {
+                    return false;
+                };
+                if anchor.identity.node_addr() != source_addr
+                    || anchor.startup_epoch != anchor_epoch
+                {
+                    return false;
+                }
+                if self
+                    .local_rendezvous
+                    .accepted_roster
+                    .is_some_and(|(epoch, old)| epoch == anchor_epoch && old > revision)
+                    || self
+                        .local_rendezvous
+                        .listener_roster
+                        .as_ref()
+                        .is_some_and(|(epoch, old, _)| *epoch == anchor_epoch && *old > revision)
+                {
+                    return false;
+                }
+                self.local_rendezvous.listener_roster = Some((anchor_epoch, revision, providers));
+                self.local_rendezvous.directory.notify_listener_change();
+                false
+            }
             LocalCapabilityMessage::Announce {
                 process_epoch,
                 revision,

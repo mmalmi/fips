@@ -173,9 +173,17 @@ impl LocalInstanceAdvertisement {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LocalCapabilityDirectory {
     providers: Arc<RwLock<BTreeMap<String, LocalInstanceAdvertisement>>>,
+    listener_changes: Arc<tokio::sync::Notify>,
 }
 
 impl LocalCapabilityDirectory {
+    pub(crate) fn listener_change(&self) -> tokio::sync::futures::OwnedNotified {
+        self.listener_changes.clone().notified_owned()
+    }
+
+    pub(crate) fn notify_listener_change(&self) {
+        self.listener_changes.notify_waiters();
+    }
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -192,6 +200,7 @@ impl LocalCapabilityDirectory {
             replacement.insert(provider.npub.clone(), provider);
         }
         *self.write() = replacement;
+        self.notify_listener_change();
     }
 
     /// Insert or replace one authenticated process incarnation.
@@ -199,7 +208,9 @@ impl LocalCapabilityDirectory {
         &self,
         provider: LocalInstanceAdvertisement,
     ) -> Option<LocalInstanceAdvertisement> {
-        self.write().insert(provider.npub.clone(), provider)
+        let previous = self.write().insert(provider.npub.clone(), provider);
+        self.notify_listener_change();
+        previous
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, BTreeMap<String, LocalInstanceAdvertisement>> {

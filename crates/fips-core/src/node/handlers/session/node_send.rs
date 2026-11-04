@@ -416,7 +416,7 @@ impl Node {
                 let _ = response_tx.send(self.bound_udp_listener_snapshot());
             }
             NodeEndpointControlCommand::AuthenticatedLocalUdpListenAddrs { peer, response_tx } => {
-                let _ = response_tx.send(self.authenticated_local_udp_listeners(peer.node_addr()));
+                let _ = response_tx.send(self.local_udp_listener_snapshot(peer.node_addr()));
             }
             NodeEndpointControlCommand::LocalNostrDiscoveryAdvertEvent { response_tx } => {
                 let result = if let Some(discovery) = self.nostr_discovery_handle() {

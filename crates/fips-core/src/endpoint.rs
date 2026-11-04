@@ -345,22 +345,44 @@ impl FipsEndpoint {
         .await
     }
 
-    /// Accepting UDP listeners advertised by an authenticated same-host peer.
+    /// Accepting UDP listeners advertised by an authenticated same-host peer,
+    /// directly or through the authenticated local rendezvous roster.
     /// These hints require a supporting peer and are cleared on its restart or
     /// removal. The IP is derived from the current loopback link. Dial using
     /// the supplied identity, because a closed port may be reused by a process
-    /// with a different identity.
+    /// with a different identity. For known local peers whose listener metadata
+    /// is still arriving, waits at most two seconds for the matching incarnation.
+    /// Nonlocal identities return an empty result immediately.
     pub async fn authenticated_local_udp_listen_addrs(
         &self,
         peer: PeerIdentity,
     ) -> Result<Vec<std::net::SocketAddr>, FipsEndpointError> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.control(
-            "authenticated local UDP listeners",
-            NodeEndpointControlCommand::AuthenticatedLocalUdpListenAddrs { peer, response_tx },
-            response_rx,
-        )
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                // Register before querying so a roster or link announcement
+                // between the snapshot and await cannot lose its wakeup.
+                let changed = self.local_capability_directory.listener_change();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let (response_tx, response_rx) = oneshot::channel();
+                let (addresses, pending) = self
+                    .control(
+                        "authenticated local UDP listeners",
+                        NodeEndpointControlCommand::AuthenticatedLocalUdpListenAddrs {
+                            peer,
+                            response_tx,
+                        },
+                        response_rx,
+                    )
+                    .await?;
+                if !pending {
+                    return Ok(addresses);
+                }
+                changed.await;
+            }
+        })
         .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
     }
 
     /// Send application-owned endpoint payloads to one resolved peer.

@@ -108,6 +108,11 @@ pub(super) struct LocalRendezvous {
     roster_revision: u64,
     roster_dirty: bool,
     accepted_roster: Option<([u8; 8], u64)>,
+    listener_roster: Option<(
+        [u8; 8],
+        u64,
+        Vec<crate::discovery::local_udp::LocalListenerProvider>,
+    )>,
     directory: LocalCapabilityDirectory,
 }
 
@@ -142,6 +147,7 @@ impl LocalRendezvous {
             roster_revision: 1,
             roster_dirty: true,
             accepted_roster: None,
+            listener_roster: None,
             directory,
         }
     }
@@ -238,6 +244,7 @@ impl Node {
         self.local_rendezvous.providers.clear();
         self.local_rendezvous.roster_dirty = true;
         self.local_rendezvous.accepted_roster = None;
+        self.local_rendezvous.listener_roster = None;
         self.local_rendezvous.last_capability_sync_ms = 0;
         self.local_rendezvous.authenticated_sync_pending = false;
         self.local_rendezvous.schedule_retry(Self::now_ms());

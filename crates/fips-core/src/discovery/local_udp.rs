@@ -20,6 +20,7 @@ pub const LOCAL_CAPABILITY_MAX_MESSAGE_BYTES: usize =
 
 const CAPABILITY_ANNOUNCE: u8 = 1;
 const CAPABILITY_ROSTER: u8 = 2;
+const LISTENER_ROSTER: u8 = 3;
 
 /// Minimal physical-adjacency discovery prelude used to obtain an untrusted IK
 /// responder-key hint. Dedicated local rendezvous and URL-only WebSocket seeds
@@ -79,8 +80,23 @@ pub struct LocalCapabilityProvider {
     pub capabilities: Vec<LocalInstanceCapability>,
 }
 
+/// Accepting UDP ports learned from one authenticated same-host incarnation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalListenerProvider {
+    pub pubkey: [u8; 32],
+    pub process_epoch: [u8; 8],
+    pub ports: Vec<u16>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalCapabilityMessage {
+    /// Optional companion to the ordinary roster, with the same epoch/revision.
+    /// Older peers ignore this kind and continue receiving the original roster.
+    ListenerRoster {
+        anchor_epoch: [u8; 8],
+        revision: u64,
+        providers: Vec<LocalListenerProvider>,
+    },
     Announce {
         process_epoch: [u8; 8],
         revision: u64,
@@ -97,6 +113,29 @@ impl LocalCapabilityMessage {
     pub fn encode(&self) -> Result<Vec<u8>, LocalCapabilityCodecError> {
         let mut wire = vec![LOCAL_CAPABILITY_WIRE_VERSION];
         match self {
+            Self::ListenerRoster {
+                anchor_epoch,
+                revision,
+                providers,
+            } => {
+                check_count(providers.len(), LOCAL_CAPABILITY_MAX_PROVIDERS)?;
+                wire.push(LISTENER_ROSTER);
+                wire.extend_from_slice(anchor_epoch);
+                wire.extend_from_slice(&revision.to_be_bytes());
+                wire.push(providers.len() as u8);
+                for provider in providers {
+                    check_count(provider.ports.len(), 16)?;
+                    wire.extend_from_slice(&provider.pubkey);
+                    wire.extend_from_slice(&provider.process_epoch);
+                    wire.push(provider.ports.len() as u8);
+                    for port in &provider.ports {
+                        if *port == 0 {
+                            return Err(LocalCapabilityCodecError::Malformed);
+                        }
+                        wire.extend_from_slice(&port.to_be_bytes());
+                    }
+                }
+            }
             Self::Announce {
                 process_epoch,
                 revision,
@@ -141,6 +180,37 @@ impl LocalCapabilityMessage {
         }
         let kind = input.byte()?;
         let message = match kind {
+            LISTENER_ROSTER => {
+                let anchor_epoch = input.array()?;
+                let revision = u64::from_be_bytes(input.array()?);
+                let count = usize::from(input.byte()?);
+                check_count(count, LOCAL_CAPABILITY_MAX_PROVIDERS)?;
+                let mut providers = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let pubkey = input.array()?;
+                    let process_epoch = input.array()?;
+                    let count = usize::from(input.byte()?);
+                    check_count(count, 16)?;
+                    let mut ports = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        let port = u16::from_be_bytes(input.array()?);
+                        if port == 0 {
+                            return Err(LocalCapabilityCodecError::Malformed);
+                        }
+                        ports.push(port);
+                    }
+                    providers.push(LocalListenerProvider {
+                        pubkey,
+                        process_epoch,
+                        ports,
+                    });
+                }
+                Self::ListenerRoster {
+                    anchor_epoch,
+                    revision,
+                    providers,
+                }
+            }
             CAPABILITY_ANNOUNCE => {
                 let process_epoch = input.array()?;
                 let revision = u64::from_be_bytes(input.array()?);
@@ -325,6 +395,15 @@ mod tests {
 
     #[test]
     fn capability_messages_roundtrip() {
+        roundtrip(LocalCapabilityMessage::ListenerRoster {
+            anchor_epoch: EPOCH,
+            revision: 3,
+            providers: vec![LocalListenerProvider {
+                pubkey: KEY,
+                process_epoch: [9; 8],
+                ports: vec![12345, 54321],
+            }],
+        });
         roundtrip(LocalCapabilityMessage::Announce {
             process_epoch: EPOCH,
             revision: 9,
@@ -385,6 +464,35 @@ mod tests {
             capabilities: vec![LocalInstanceCapability::role("x"); LOCAL_CAPABILITY_MAX_COUNT + 1],
         };
         assert!(many.encode().is_err());
+    }
+
+    #[test]
+    fn listener_roster_rejects_truncation_zero_ports_and_unbounded_counts() {
+        let message = LocalCapabilityMessage::ListenerRoster {
+            anchor_epoch: EPOCH,
+            revision: 3,
+            providers: vec![LocalListenerProvider {
+                pubkey: KEY,
+                process_epoch: [9; 8],
+                ports: vec![12345],
+            }],
+        };
+        let wire = message.encode().unwrap();
+        for end in 0..wire.len() {
+            assert!(LocalCapabilityMessage::decode(&wire[..end]).is_err());
+        }
+        for (offset, value) in [(18, 33), (59, 17)] {
+            let mut invalid = wire.clone();
+            invalid[offset] = value;
+            assert!(LocalCapabilityMessage::decode(&invalid).is_err());
+        }
+        let mut invalid = wire.clone();
+        invalid[60] = 0;
+        invalid[61] = 0;
+        assert!(LocalCapabilityMessage::decode(&invalid).is_err());
+        let mut invalid = wire;
+        invalid.push(0);
+        assert!(LocalCapabilityMessage::decode(&invalid).is_err());
     }
 
     #[test]

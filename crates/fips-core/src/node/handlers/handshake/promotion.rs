@@ -552,6 +552,7 @@ impl Node {
             active.clear_filter();
             active.client_only_supported = false;
             active.local_udp_listeners.clear();
+            active.local_udp_listeners_received = false;
             active.client_support_sent = false;
             active.client_only = false;
             active.routing_role_sequence = None;

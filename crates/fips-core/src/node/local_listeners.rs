@@ -31,17 +31,26 @@ impl Node {
         remote.ip().is_loopback().then_some(remote.ip())
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn authenticated_local_udp_listeners(
         &self,
         addr: &NodeAddr,
     ) -> Vec<SocketAddr> {
+        self.local_udp_listener_snapshot(addr).0
+    }
+
+    pub(in crate::node) fn local_udp_listener_snapshot(
+        &self,
+        addr: &NodeAddr,
+    ) -> (Vec<SocketAddr>, bool) {
         if self.authenticated_loopback_ip(addr).is_none() {
-            return Vec::new();
+            return self.rostered_local_udp_listeners(addr);
         }
-        self.peers
-            .get(addr)
-            .map(|peer| peer.local_udp_listeners.clone())
-            .unwrap_or_default()
+        let peer = self.peers.get(addr).unwrap();
+        (
+            peer.local_udp_listeners.clone(),
+            !peer.local_udp_listeners_received,
+        )
     }
 
     pub(in crate::node) async fn send_local_udp_listeners(
@@ -98,6 +107,12 @@ impl Node {
         }
         addrs.sort_unstable();
         addrs.dedup();
-        self.peers.get_mut(addr).unwrap().local_udp_listeners = addrs;
+        let peer = self.peers.get_mut(addr).unwrap();
+        let changed = !peer.local_udp_listeners_received || peer.local_udp_listeners != addrs;
+        peer.local_udp_listeners = addrs;
+        peer.local_udp_listeners_received = true;
+        if changed {
+            self.local_udp_listener_state_changed();
+        }
     }
 }

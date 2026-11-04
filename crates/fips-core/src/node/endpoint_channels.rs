@@ -286,7 +286,7 @@ pub(crate) enum NodeEndpointControlCommand {
     },
     AuthenticatedLocalUdpListenAddrs {
         peer: crate::PeerIdentity,
-        response_tx: tokio::sync::oneshot::Sender<Vec<std::net::SocketAddr>>,
+        response_tx: tokio::sync::oneshot::Sender<(Vec<std::net::SocketAddr>, bool)>,
     },
     LocalNostrDiscoveryAdvertEvent {
         response_tx: tokio::sync::oneshot::Sender<Result<Option<nostr::Event>, NodeError>>,

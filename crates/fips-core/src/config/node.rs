@@ -731,7 +731,9 @@ pub struct NodeConfig {
 
     /// Require client-only routing even with legacy neighbors. Never publish
     /// tree ancestry or Bloom filters. This implies `leaf_only` without its
-    /// compatibility fallback.
+    /// compatibility fallback, and selects `reply_learned` for this endpoint.
+    /// Multi-hop delivery requires reply-learned transit routers and a compatible
+    /// remote endpoint; tree-only paths fail closed without exporting ancestry.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict_client_only: bool,
 

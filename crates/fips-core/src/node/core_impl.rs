@@ -60,8 +60,14 @@ impl Node {
     }
 
     /// Create a new node from configuration.
-    pub fn new(config: Config) -> Result<Self, NodeError> {
+    pub fn new(mut config: Config) -> Result<Self, NodeError> {
         config.validate()?;
+        // Strict clients deliberately omit usable tree ancestry. Their own
+        // sessions therefore use the existing authenticated reply-path mode.
+        // Transit routers still require an explicit ReplyLearned deployment.
+        if config.node.strict_client_only {
+            config.node.routing.mode = RoutingMode::ReplyLearned;
+        }
         let identity = config.create_identity()?;
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();

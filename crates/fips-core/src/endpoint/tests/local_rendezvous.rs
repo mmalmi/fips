@@ -18,6 +18,8 @@ const LOCAL_PROVIDER_READY: &str = "FIPS_LOCAL_PROVIDER_READY";
 const LOCAL_PROVIDER_STOP: &str = "FIPS_LOCAL_PROVIDER_STOP";
 const LOCAL_CAPABILITY_REPLAY_CHILD: &str = "FIPS_LOCAL_CAPABILITY_REPLAY_CHILD";
 
+mod accepting_listeners;
+
 fn reserve_rendezvous_addr() -> SocketAddrV4 {
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve loopback UDP port");
     let SocketAddr::V4(addr) = socket.local_addr().expect("reserved loopback UDP address") else {

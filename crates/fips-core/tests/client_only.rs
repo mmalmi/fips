@@ -3,6 +3,8 @@ use fips_core::{Config, FipsEndpoint, Identity, PeerIdentity, UdpConfig, encode_
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod strict_compat;
+
 #[derive(Debug, Default)]
 struct InitialHandshakes(Mutex<Vec<(fips_core::NodeAddr, Vec<u8>)>>);
 
@@ -299,9 +301,20 @@ async fn client_only_cannot_bridge_unrelated_sessions_but_router_can() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn strict_client_remains_reachable_through_modern_upstreams_and_after_rebind() {
-    reachable(false, true, true).await;
+async fn strict_client_remains_reachable_through_reply_learned_upstreams_and_after_rebind() {
     reachable(true, true, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_singleton_does_not_bypass_ordinary_tree_foreign_root_gate() {
+    let nodes = endpoints(4, true, false, true).await;
+    connect(&nodes, &[(0, 1), (1, 2), (2, 3)], true, true).await;
+    assert!(!delivered(&nodes[3], &nodes[0], b"unsupported tree path").await);
+    assert!(nodes[3].handshakes.0.lock().unwrap().is_empty());
+    assert!(nodes[0].routing_status().await.unwrap().client_only);
+    for node in &nodes {
+        node.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
