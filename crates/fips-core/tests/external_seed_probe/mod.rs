@@ -12,6 +12,64 @@ use std::{
 type ProbeResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PORT: u16 = 44_011;
 
+#[test]
+fn prepare_external_probe_inputs() {
+    let Some(path) = std::env::var_os("FIPS_EXTERNAL_PROBE_SEEDS") else {
+        return;
+    };
+    let directory = PathBuf::from(std::env::var_os("FIPS_EXTERNAL_PROBE_DIRECTORY").unwrap());
+    let seeds: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(seeds.len(), 2);
+    let mut public = Vec::new();
+    for (role, seed) in ["a", "b"].into_iter().zip(seeds) {
+        let identity = fips_core::Identity::generate();
+        let seed_npub = seed["npub"].as_str().unwrap();
+        PeerIdentity::from_npub(seed_npub).unwrap();
+        let mut config = Config::new();
+        config.node.identity.nsec = Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
+        config.node.routing.mode = fips_core::config::RoutingMode::ReplyLearned;
+        config.node.system_files_enabled = false;
+        config.node.control.enabled = false;
+        config.node.discovery.local.enabled = false;
+        config.node.discovery.lan.enabled = false;
+        config.node.discovery.nostr.enabled = false;
+        config.transports.udp =
+            fips_core::config::TransportInstances::Single(fips_core::UdpConfig {
+                bind_addr: Some("0.0.0.0:0".into()),
+                accept_connections: Some(true),
+                ..Default::default()
+            });
+        config.peers = vec![fips_core::config::PeerConfig::new(
+            seed_npub,
+            "udp",
+            seed["address"].as_str().unwrap(),
+        )];
+        let mut value = serde_json::to_value(config).unwrap();
+        value["node"]["strict_client_only"] = true.into();
+        value["node"]["peer_admission"] =
+            serde_json::json!({"configured_only":true,"denied_npubs":[]});
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(directory.join(format!("{role}.config.json")))
+            .unwrap();
+        serde_json::to_writer(&mut file, &value).unwrap();
+        public.push(serde_json::json!({"role":role,"npub":identity.npub()}));
+    }
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(directory.join("identities.json"))
+        .unwrap();
+    serde_json::to_writer(file, &public).unwrap();
+}
+
 struct Events {
     file: std::fs::File,
     started: Instant,
