@@ -14,6 +14,29 @@ const PORT: u16 = 44_011;
 
 #[test]
 fn prepare_external_probe_inputs() {
+    prepare_inputs(false);
+}
+
+#[test]
+fn prepare_external_wss_probe_inputs() {
+    prepare_inputs(true);
+}
+
+fn check_websocket_url(address: &str) {
+    if std::env::var("FIPS_EXTERNAL_PROBE_LOOPBACK_CONTROL").as_deref() == Ok("1") {
+        let socket: std::net::SocketAddr = address
+            .strip_prefix("ws://")
+            .and_then(|value| value.strip_suffix("/fips"))
+            .expect("private control requires a loopback WS URL")
+            .parse()
+            .unwrap();
+        assert!(socket.ip().is_loopback());
+    } else {
+        assert!(address.starts_with("wss://"), "public probe requires TLS");
+    }
+}
+
+fn prepare_inputs(websocket: bool) {
     let Some(path) = std::env::var_os("FIPS_EXTERNAL_PROBE_SEEDS") else {
         return;
     };
@@ -34,16 +57,27 @@ fn prepare_external_probe_inputs() {
         config.node.discovery.local.enabled = false;
         config.node.discovery.lan.enabled = false;
         config.node.discovery.nostr.enabled = false;
-        config.transports.udp =
-            fips_core::config::TransportInstances::Single(fips_core::UdpConfig {
-                bind_addr: Some("0.0.0.0:0".into()),
-                accept_connections: Some(true),
-                ..Default::default()
-            });
+        config.transports = Default::default();
+        let address = seed["address"].as_str().unwrap();
+        if websocket {
+            check_websocket_url(address);
+            config.transports.websocket =
+                fips_core::config::TransportInstances::Single(fips_core::config::WebSocketConfig {
+                    seed_urls: vec![address.to_string()],
+                    ..Default::default()
+                });
+        } else {
+            config.transports.udp =
+                fips_core::config::TransportInstances::Single(fips_core::UdpConfig {
+                    bind_addr: Some("0.0.0.0:0".into()),
+                    accept_connections: Some(true),
+                    ..Default::default()
+                });
+        }
         config.peers = vec![fips_core::config::PeerConfig::new(
             seed_npub,
-            "udp",
-            seed["address"].as_str().unwrap(),
+            if websocket { "websocket" } else { "udp" },
+            address,
         )];
         let mut value = serde_json::to_value(config).unwrap();
         value["node"]["strict_client_only"] = true.into();
@@ -142,6 +176,15 @@ async fn exchange(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_seed_strict_probe() {
+    run_probe(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn external_seed_strict_wss_probe() {
+    run_probe(true).await;
+}
+
+async fn run_probe(websocket: bool) {
     let Some(config_path) = std::env::var_os("FIPS_EXTERNAL_PROBE_CONFIG") else {
         return;
     };
@@ -167,7 +210,25 @@ async fn external_seed_strict_probe() {
     );
     assert_eq!(config.peers.len(), 1);
     assert_eq!(config.peers[0].addresses.len(), 1);
-    assert_eq!(config.peers[0].addresses[0].transport, "udp");
+    let transport = if websocket { "websocket" } else { "udp" };
+    assert_eq!(config.peers[0].addresses[0].transport, transport);
+    if websocket {
+        assert_eq!(
+            config.transports.instance_counts().collect::<Vec<_>>(),
+            vec![("websocket", 1)]
+        );
+        let fips_core::config::TransportInstances::Single(ws) = &config.transports.websocket else {
+            panic!("one WebSocket transport required");
+        };
+        assert!(ws.bind_addr.is_none());
+        assert_eq!(
+            ws.tls_verification(),
+            fips_core::config::WebSocketTlsVerification::WebPki
+        );
+        let address = &config.peers[0].addresses[0].addr;
+        assert_eq!(ws.seed_urls, vec![address.clone()]);
+        check_websocket_url(address);
+    }
     assert_ne!(config.peers[0].npub, remote.npub());
     let seed = config.peers[0].npub.clone();
     let mut events = Events {
@@ -185,68 +246,98 @@ async fn external_seed_strict_probe() {
         .bind()
         .await
         .unwrap();
-    let work = async {
-        let receiver = endpoint.register_service_receiver(PORT).await?;
-        loop {
-            let peers = endpoint.peers().await?;
-            if peers.iter().any(|p| p.connected && p.npub == seed) {
-                break;
+    let work =
+        async {
+            let receiver = endpoint.register_service_receiver(PORT).await?;
+            let initial_peer = loop {
+                let peers = endpoint.peers().await?;
+                if let Some(peer) = peers.into_iter().find(|p| p.connected && p.npub == seed) {
+                    if peer.transport_type.as_deref() != Some(transport) {
+                        return Err("seed authenticated over an unexpected carrier".into());
+                    }
+                    break peer;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+            if !endpoint.routing_status().await?.client_only {
+                return Err("strict role inactive".into());
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        if !endpoint.routing_status().await?.client_only {
-            return Err("strict role inactive".into());
-        }
-        events.record(
-            "seed_authenticated",
-            serde_json::json!({"strict_client":true}),
-        )?;
-        std::fs::write(directory.join(format!("{role}.ready")), endpoint.npub())?;
-        wait_file(directory.join(format!("{other}.ready"))).await;
-        for step in 0..4 {
-            if step == 2 {
-                if role == "a" {
-                    let before = endpoint.bound_udp_listen_addrs().await?;
-                    if before.len() != 1 {
-                        return Err("probe requires one observable UDP listener".into());
-                    }
-                    endpoint.rebind_network_transports(None).await?;
-                    let after = endpoint.bound_udp_listen_addrs().await?;
-                    if after.len() != 1 || before[0].port() == after[0].port() {
-                        return Err("client UDP port did not change".into());
-                    }
-                    events.record(
+            events.record(
+                "seed_authenticated",
+                serde_json::json!({"strict_client":true,"seed_npub":initial_peer.npub,
+                "transport":initial_peer.transport_type,"link_id":initial_peer.link_id}),
+            )?;
+            std::fs::write(directory.join(format!("{role}.ready")), endpoint.npub())?;
+            wait_file(directory.join(format!("{other}.ready"))).await;
+            for step in 0..4 {
+                if step == 2 {
+                    if role == "a" {
+                        if websocket {
+                            if !endpoint.bound_udp_listen_addrs().await?.is_empty() {
+                                return Err("UDP carrier present in WebSocket-only probe".into());
+                            }
+                            if endpoint.rebind_network_transports(None).await? != 1 {
+                                return Err("expected exactly one WebSocket carrier rebind".into());
+                            }
+                            let after = loop {
+                                let peers = endpoint.peers().await?;
+                                if let Some(peer) = peers.into_iter().find(|p| {
+                                    p.connected
+                                        && p.npub == seed
+                                        && p.transport_type.as_deref() == Some("websocket")
+                                        && p.link_id != initial_peer.link_id
+                                }) {
+                                    break peer;
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            };
+                            events.record("wss_reauthenticated", serde_json::json!({
+                            "seed_npub":after.npub,"transport":after.transport_type,
+                            "before_link_id":initial_peer.link_id,"after_link_id":after.link_id
+                        }))?;
+                        } else {
+                            let before = endpoint.bound_udp_listen_addrs().await?;
+                            if before.len() != 1 {
+                                return Err("probe requires one observable UDP listener".into());
+                            }
+                            endpoint.rebind_network_transports(None).await?;
+                            let after = endpoint.bound_udp_listen_addrs().await?;
+                            if after.len() != 1 || before[0].port() == after[0].port() {
+                                return Err("client UDP port did not change".into());
+                            }
+                            events.record(
                         "rebound",
                         serde_json::json!({"before":before[0].port(),"after":after[0].port()}),
                     )?;
-                    std::fs::write(directory.join("a.rebound"), b"ready")?;
-                } else {
-                    wait_file(directory.join("a.rebound")).await;
+                        }
+                        std::fs::write(directory.join("a.rebound"), b"ready")?;
+                    } else {
+                        wait_file(directory.join("a.rebound")).await;
+                    }
+                }
+                exchange(
+                    &endpoint,
+                    &receiver,
+                    remote,
+                    (step % 2 == 0) == (role == "a"),
+                    step,
+                    &mut events,
+                )
+                .await?;
+                if !endpoint.routing_status().await?.client_only {
+                    return Err("strict role changed".into());
+                }
+                if endpoint
+                    .peers()
+                    .await?
+                    .iter()
+                    .any(|p| p.connected && p.npub != seed)
+                {
+                    return Err("unconfigured direct or fallback adjacency".into());
                 }
             }
-            exchange(
-                &endpoint,
-                &receiver,
-                remote,
-                (step % 2 == 0) == (role == "a"),
-                step,
-                &mut events,
-            )
-            .await?;
-            if !endpoint.routing_status().await?.client_only {
-                return Err("strict role changed".into());
-            }
-            if endpoint
-                .peers()
-                .await?
-                .iter()
-                .any(|p| p.connected && p.npub != seed)
-            {
-                return Err("unconfigured direct or fallback adjacency".into());
-            }
-        }
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    };
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        };
     let result = tokio::time::timeout(Duration::from_secs(90), work).await;
     let failure = match &result {
         Ok(Ok(())) => None,
