@@ -19,6 +19,8 @@ mod initial_fallback;
 
 mod restarted_websocket;
 
+mod strict_client;
+
 struct Candidate {
     link: LinkId,
     index: SessionIndex,
