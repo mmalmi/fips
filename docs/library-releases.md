@@ -17,11 +17,13 @@ Cargo target directory with one writer, stage and hash test executables, then
 release that writer before running fixtures. Provide a task-owned `TMPDIR` on
 the admitted filesystem when the host temporary mount is constrained.
 
-Source publication and no-build package creation use the existing Apple Silicon
-macOS publisher with preinstalled Rust/Cargo 1.95.0, Python 3.13 or newer and Git.
-The packaging override and separate native qualification pins are recorded in
-`scripts/release/inputs.json`. This does not claim identical native binaries
-across the two toolchains or targets.
+The split .118 procedure prepares source and no-build packages on Linux with
+preinstalled Rust/Cargo 1.93.1, Python 3.11 or newer, Git and Node.js 22. It keeps
+identity signing and registry credentials on the established Apple Silicon
+publisher. The publisher uses Python 3.13 or newer and Git, without Cargo,
+compilation, packaging, or source cloning. The earlier combined scripts retain
+their Rust/Cargo 1.95.0 pin and original resource requirements; they are not a
+smaller fallback job. Pins are recorded in `scripts/release/inputs.json`.
 
 No container or privileged dependency installer is required. Toolchains, SDKs,
 system libraries, and signing credentials must already be available. Network
@@ -65,40 +67,81 @@ exit status, source hashes, and benchmark limitations. Allocation benchmarks in
 the unit tests are ignored by default and require an explicit test filter and
 `--ignored`. Their debug timings do not establish application CPU acceptance.
 
-Prepare a private output directory containing `preparation.json`. It binds
-`root`, full `head` and `tested_head` commits, `version`, a serialized `target`
-cache, explicit public `source_url`, and the admitted resource bounds:
-`initial_min_bytes`, `floor_bytes`, `max_global_loss_bytes`, `source_seconds`,
-`source_phase_seconds`, and `package_seconds`. Keep machine paths and operational
-receipts outside published source and packages.
+Keep machine paths, identities, lease state and operational receipts in private
+plans outside published source and packages. Bind the clean full release commit
+and tested implementation commit, explicit existing public repository, helper
+directory, inputs file, task-owned work/output paths, and separately admitted
+entry/floor/growth/deadline bounds. Do not lower the earlier combined jobs'
+reserves to fit a smaller operation.
 
 ```sh
-python3 scripts/release/source-gate.py OUTPUT_DIR VERIFIED_HELPER_DIRECTORY
+python3 scripts/release/packed-source.py PRIVATE_SOURCE_PLAN prepare
 ```
 
-This verifies the helper before invoking it, checks that the explicit source
-destination and the authenticated `self` alias identify the same existing
-repository, publishes `haps-source/FULL_COMMIT`, and reads it back. The readback
-uses fresh configuration and data directories, no publisher cache or local
-daemon, and no Git alternates. It requires a non-shallow repository and every
-reachable Git object. A source-gate failure blocks package publication. Failed
-readbacks are retained for inspection; successful temporary readbacks are removed
-after their process groups have closed.
+Run the producer under a one-CPU, 1 GiB, no-swap Linux process-group supervisor.
+It cold-clones the existing public repository, adds only the candidate commit's
+`haps-source/FULL_COMMIT` tag from a checksum-bound bundle, and preserves all
+existing public refs and HEAD. The bundle must contain only that intended public
+history, not private branches or local Git configuration.
+
+The pinned helper's streamed pack upload omits pack/index entry lengths. The
+producer corrects only measured lengths and their directory ancestors using
+the pinned published Hashtree codec. It requires byte-identical decode/encode
+and CHK round trips for every original node, unchanged object CIDs, and remote
+readback of every corrected ciphertext node. Never sign the intermediate root.
+
+A disposable identity and loopback-only relay then exercise the actual pinned
+Git helper against the corrected immutable contents. This requires a full,
+non-shallow, no-alternates clone and exact public ref/object closure; a successful
+`htree get` alone is insufficient. No real publisher identity is used here.
+
+Transfer the preparation receipt over the authenticated host channel and bind
+its SHA-256 in the signing plan. Run `sign-prepared-source.py` only inside
+`guard-small-publish.py` and the existing atomic publisher host lease. It checks
+the pinned helper, existing publisher identity and unchanged public root before
+signing; it performs no source upload or Git clone. An attempted or ambiguous
+sign must be reconciled before another attempt. Then verify from Linux:
+
+```sh
+python3 scripts/release/packed-source.py PRIVATE_SOURCE_PLAN verify-signed
+```
+
+This independently resolves the signed public route and cold-clones it using
+fresh configuration/data directories, without publisher caches or a local
+daemon. It verifies the exact corrected root, full history, refs, and every
+reachable object. Source verification failure blocks registry publication.
 
 ## Package publication
 
 ```sh
-python3 scripts/release/package-one.py OUTPUT_DIR nvpn-fips-core
-python3 scripts/release/package-one.py OUTPUT_DIR nvpn-fips-endpoint
+python3 scripts/release/prepare-package.py PRIVATE_PACKAGE_PLAN
 ```
 
-Each step requires the successful source receipt for the exact release commit.
-It uses `cargo package` and `cargo publish` with `--locked --no-verify`: compilation
-has already been qualified separately. It rejects dirty source and existing
-versions, checks package VCS provenance, compares included source files with the
-checkout, and checks endpoint's exact core pin. No unrelated dependency update
-is part of a version bump. Generated package lockfiles and normalized manifests
-are retained for inspection.
+Use the same one-CPU, 1 GiB, no-swap Linux supervisor. The credentialless producer
+uses pinned `cargo package --locked --no-verify`, a clean exact Git checkout and
+an isolated Cargo home without credentials. Compilation is qualified separately.
+It records the exact command/toolchain/producer hash and full archive file set,
+including generated normalized manifests and lockfiles. Transfer the archive
+and receipt through the authenticated channel and bind both hashes in the
+publisher plan. Publish core first, then prepare/publish endpoint with its exact
+core version available; repeat for dependent libraries in dependency order.
+
+On the established publisher, run `upload-prepared.py PRIVATE_UPLOAD_PLAN check`
+and then `publish` through the reviewed small-operation guard and existing atomic
+host lease. The upload step runs no Cargo, compiler, package creation or clone.
+It verifies archive expansion/entry bounds, the complete producer-bound file
+set, clean local source, VCS commit/path, included source bytes/executable bits,
+normalized manifest metadata, exact dependencies, and the signed public source
+receipt. It rejects existing registry versions and prior upload attempts.
+
+Only `publish` reads the existing registry credential and sends the official
+Cargo registry upload request. Credential-bearing requests cannot redirect;
+post-credential errors are sanitized. Optimized Python is rejected before any
+operation because verification assertions must execute. The guard and outer
+lease independently own resource/deadline enforcement and child closure. Run
+`test-guard-failures.py` on an admitted host to exercise broken/stuck process
+enumeration with a live substitute child. No unrelated dependency update is
+part of a version bump.
 
 After publication, the script checks the registry checksum and downloads the
 package for an exact byte comparison. An uncertain publish result must be

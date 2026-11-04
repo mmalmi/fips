@@ -8,12 +8,38 @@
     "version": "0.2.150",
     "platform": "aarch64-apple-darwin",
     "sha256": "d60f75bc324e128b20b0bd1a1ba76b87c3161cbbb45cb656c79712bd9ee22ec4",
+    "htree_sha256": "6adb9c920dffc0ae39a94c86730555ef9ed781e9a7cfdea2c955eb3036c929ea",
     "archive_sha256": "ea575ecfb06d5dc461010fd577a6d3a7397f0bd82dc64fdddf0261d0a11706ad"
   },
   "linux_git_remote_htree": {
     "version": "0.2.150",
     "platform": "x86_64-unknown-linux-musl",
     "sha256": "ab3177515c89b59c82dd433b43361314a7b6e31c6f493469309257c8019ec21c",
+    "htree_sha256": "fb74a19d54c45e12df39b5e79144000963d16959253ef4b071894cc0758f4e13",
     "archive_sha256": "d309f938ead838fabaf1c072c89d9b844bfdfb7d3a3549f90804109a26f536de"
-  }
+  },
+  "source_sdk": [
+    {
+      "name": "@hashtree/core",
+      "version": "0.3.2",
+      "url": "https://registry.npmjs.org/@hashtree/core/-/core-0.3.2.tgz",
+      "integrity": "sha512-18PlSxaHsY5ulW4xu68NwhBnzoP2gaygcPYJ5Uwyhlw5CtXzNx/G4CT41T+eYR4hAvq9KPGswEx1D2rLSSXNRQ==",
+      "archiveSha256": "ef8a4a7b8b652511776a9f8ba2a140d37c76d28566feb001655a92ac99731a9a"
+    },
+    {
+      "name": "@msgpack/msgpack",
+      "version": "3.1.2",
+      "url": "https://registry.npmjs.org/@msgpack/msgpack/-/msgpack-3.1.2.tgz",
+      "integrity": "sha512-JEW4DEtBzfe8HvUYecLU9e6+XJnKDlUAIve8FvPzF3Kzs6Xo/KuZkZJsDH0wJXl/qEZbeeE7edxDNY3kMs39hQ==",
+      "archiveSha256": "1b3108884ea9f9840b614f4568fb2337fc250a4f7ac0f683578a6db009863d15"
+    },
+    {
+      "name": "ws",
+      "version": "8.21.1",
+      "url": "https://registry.npmjs.org/ws/-/ws-8.21.1.tgz",
+      "integrity": "sha512-+0NTnW77fFN/DjQi6k/Sq/Yvk4Sgajw7urW8V+asjXnRgDs9gyGkdb7EzgfhA4goXsRIZKE28fzIXBHEzhuiWw==",
+      "archiveSha256": "bb0f7e58ba1f64746672734d36175fe185f226491e336abc0743e2a8f4472ec1"
+    }
+  ],
+  "remote_packaging_toolchain": "1.93.1"
 }

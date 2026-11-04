@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.118] - 2026-11-05
+
+### Added
+
+- Add opt-in strict client routing that withholds ancestry and Bloom updates,
+  uses reply-learned routing, and fails closed when a neighbor cannot support
+  the role. Ordinary endpoint defaults remain unchanged.
+- Add application-controlled peer admission with an asynchronous completion
+  barrier that retires denied active and pending connections and sessions.
+- Expose authenticated local UDP accepting-listener hints, including versioned
+  local-anchor rosters and a bounded wait for first-read metadata. Outbound-only
+  source ports are never advertised as accepting listeners.
+
+### Verification
+
+- Qualify strict first contact and bidirectional transport recovery through
+  published 0.4.117 reply-learned routers, with unchanged foreign-root controls.
+- Add opt-in UDP and WebSocket operator probes whose destinations and disposable
+  identities are supplied at runtime. Ordinary test execution sends no public
+  probe traffic.
+- Split credentialless source/package preparation from publisher signing and
+  registry upload, retaining full public-history and exact package-byte gates.
+
 ## [0.4.110] - 2026-10-26
 
 ### Security
