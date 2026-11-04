@@ -93,10 +93,10 @@ async fn accepting_listener_first_read_works_for_every_anchor_start_order() {
             .await
             .unwrap();
         let request = receive_service_datagram(&service, b"first GET").await;
-        assert_eq!(
-            request.source_peer,
-            PeerIdentity::from_npub(reader.npub()).unwrap()
-        );
+        // npub is the authenticated x-only identity. Full secp256k1 public
+        // keys can carry either parity for that same protocol identity.
+        assert_eq!(request.source_peer.npub(), reader.npub());
+        assert_eq!(request.source_peer.node_addr(), reader.node_addr());
         provider
             .send_datagram(
                 request.source_peer,
