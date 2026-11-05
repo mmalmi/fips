@@ -209,8 +209,11 @@ impl Node {
             && peer_coords.map_or(from < self.tree_state.root(), |coords| {
                 coords.root_id() < self.tree_state.root()
             });
-        // Later measured reports still repair missing or disagreeing state.
-        if !defer_initial_better_root
+        // Clients intentionally omit ancestry. Repairing it after each report
+        // would send another announcement that elicits another report.
+        // Ordinary routers still repair missing or disagreeing state.
+        if !self.peers.get(from).is_some_and(|peer| peer.client_only)
+            && !defer_initial_better_root
             && peer_coords.is_none_or(|coords| coords.root_id() != self.tree_state.root())
         {
             self.mark_tree_announce_pending(from);
