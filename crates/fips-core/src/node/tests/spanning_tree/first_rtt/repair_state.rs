@@ -137,3 +137,69 @@ async fn unmeasured_better_root_does_not_rearm_obsolete_declaration() {
     assert!(node.dataplane_fmp_has_srtt(&peer));
     assert_eq!(node.tree_state().root(), &peer);
 }
+
+async fn declare_client(node: &mut Node, peer: NodeAddr) {
+    node.dispatch_link_message(crate::node::AuthenticatedLinkMessage {
+        source_peer: *node.get_peer(&peer).unwrap().identity(),
+        msg_type: crate::protocol::LinkMessageType::ClientOnly.to_byte(),
+        payload: &0u64.to_le_bytes(),
+        ce_flag: false,
+    })
+    .await;
+    assert!(node.get_peer(&peer).unwrap().client_only);
+    assert!(node.tree_state().peer_coords(&peer).is_none());
+}
+
+#[tokio::test]
+async fn client_only_receiver_reports_do_not_repair_intentionally_absent_ancestry() {
+    for smaller in [true, false] {
+        let (mut node, peer) = fixture(smaller);
+        declare_client(&mut node, peer).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        for (counter, echo, measured) in [(1, 0, false), (2, 1, true), (3, 1, true)] {
+            node.handle_receiver_report(&peer, &report(counter, echo)[1..])
+                .await;
+            assert_eq!(node.dataplane_fmp_has_srtt(&peer), measured);
+            assert!(
+                !node.get_peer(&peer).unwrap().has_pending_tree_announce(),
+                "client-only report {counter} must not repair intentionally absent ancestry"
+            );
+        }
+
+        // A report must not cancel an independently scheduled periodic update.
+        node.mark_tree_announce_pending(&peer);
+        node.handle_receiver_report(&peer, &report(4, 1)[1..]).await;
+        assert!(node.get_peer(&peer).unwrap().has_pending_tree_announce());
+    }
+}
+
+#[tokio::test]
+async fn receiver_reports_resume_root_repair_after_client_becomes_router() {
+    let mut identities = [Identity::generate(), Identity::generate()];
+    identities.sort_by_key(|identity| *identity.node_addr());
+    let [local, remote] = identities;
+    let mut node = Node::with_identity(local, Config::new()).unwrap();
+    let peer = connect_peer(&mut node, &remote, LinkId::new(1));
+    declare_client(&mut node, peer).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    node.handle_receiver_report(&peer, &report(1, 1)[1..]).await;
+    assert!(node.dataplane_fmp_has_srtt(&peer));
+    assert!(!node.get_peer(&peer).unwrap().has_pending_tree_announce());
+
+    // The signed declaration's newer sequence restores the ordinary router role.
+    announce_root(&mut node, &remote).await;
+    assert!(!node.get_peer(&peer).unwrap().client_only);
+    assert_ne!(
+        node.tree_state().peer_coords(&peer).unwrap().root_id(),
+        node.tree_state().root()
+    );
+    node.peers
+        .get_mut(&peer)
+        .unwrap()
+        .record_tree_announce_sent(Node::now_ms());
+    node.handle_receiver_report(&peer, &report(2, 1)[1..]).await;
+    assert!(
+        node.get_peer(&peer).unwrap().has_pending_tree_announce(),
+        "a measured router with a disagreeing root still needs repair"
+    );
+}
