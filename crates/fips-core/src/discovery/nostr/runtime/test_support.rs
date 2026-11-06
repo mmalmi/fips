@@ -27,7 +27,15 @@ impl NostrDiscovery {
 
     #[cfg(test)]
     pub(crate) fn new_for_test_with_identity(identity: &crate::Identity) -> Self {
-        let mut discovery = Self::new_for_test();
+        Self::new_for_test_with_identity_and_config(identity, NostrDiscoveryConfig::default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_identity_and_config(
+        identity: &crate::Identity,
+        config: NostrDiscoveryConfig,
+    ) -> Self {
+        let mut discovery = Self::new_for_test_with_config(config);
         let keys = nostr::Keys::parse(&hex::encode(identity.keypair().secret_bytes()))
             .expect("test identity key");
         discovery.client = Client::builder()

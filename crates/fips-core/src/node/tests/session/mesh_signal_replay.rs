@@ -146,7 +146,7 @@ async fn exercise(nodes: &mut [TestNode]) {
     }
 }
 
-async fn native_turn(node: &mut TestNode) -> DataplaneLiveNodeTurn {
+pub(super) async fn native_turn(node: &mut TestNode) -> DataplaneLiveNodeTurn {
     let mut endpoint_rx = node.node.endpoint_data_rx.take().unwrap();
     let mut tun_rx = node.node.tun_outbound_rx.take().unwrap();
     let (_fast_tx, mut fast_rx) = tokio::sync::mpsc::channel(1);
