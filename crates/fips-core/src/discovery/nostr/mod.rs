@@ -5,11 +5,13 @@ mod signal;
 mod stun;
 mod traversal;
 mod types;
+mod unsupported;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use signal::FRESHNESS_SKEW_TOLERANCE_MS;
+pub(crate) use unsupported::unsupported_mesh_traversal_answer;
 
 pub use runtime::NostrDiscovery;
 pub use types::{

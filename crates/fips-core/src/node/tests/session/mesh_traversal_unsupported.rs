@@ -58,6 +58,9 @@ async fn answers_for(nodes: &mut [TestNode], duration: Duration) -> Vec<Traversa
     while tokio::time::Instant::now() < deadline {
         for node in &mut nodes[1..] {
             process_node_packets(&mut node.node, &mut node.packet_rx).await;
+            node.node
+                .poll_nostr_discovery_event_turn(Duration::from_millis(20))
+                .await;
         }
         let mut turn = super::mesh_signal_replay::native_turn(&mut nodes[0]).await;
         assert!(turn.raw_ingress_drops().is_empty());
@@ -173,6 +176,28 @@ fn unsupported_mesh_offer_rejects_only_authorized_valid_encrypted_requests() {
                 assert!(answer.reflexive_address.is_none() && answer.local_addresses.is_empty());
                 assert!(answer.stun_server.is_none() && answer.punch.is_none());
             }
+            // A present runtime still handles ordinary negotiation. Here it
+            // has no addresses and must produce its ordinary rejection.
+            let capable = Arc::new(NostrDiscovery::new_for_test_with_identity_and_config(
+                nodes[2].node.identity(),
+                NostrDiscoveryConfig {
+                    stun_servers: Vec::new(),
+                    advert_relays: Vec::new(),
+                    share_local_candidates: false,
+                    ..Default::default()
+                },
+            ));
+            nodes[2].node.nostr_discovery = Some(capable.clone());
+            let mut fresh = valid.clone();
+            fresh.session_id = "capable-runtime-session".into();
+            fresh.nonce = "capable-runtime-nonce".into();
+            send_offer(&mut nodes, peers[2], &serde_json::to_vec(&fresh).unwrap()).await;
+            let replies = answers_for(&mut nodes, Duration::from_millis(200)).await;
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0].reason.as_deref(), Some("no-usable-addresses"));
+            assert_eq!(capable.received_mesh_offer_count_for_test(), 1);
+            capable.shutdown().await.unwrap();
+            nodes[2].node.nostr_discovery = None;
             send_endpoint_data_via_dataplane(
                 &mut nodes[2].node,
                 peers[0],
@@ -195,6 +220,11 @@ fn unsupported_mesh_offer_rejects_only_authorized_valid_encrypted_requests() {
         })
         .catch_unwind()
         .await;
+        for node in &mut nodes {
+            if let Some(discovery) = node.node.nostr_discovery.take() {
+                discovery.shutdown().await.unwrap();
+            }
+        }
         cleanup_nodes(&mut nodes).await;
         if let Err(panic) = result {
             std::panic::resume_unwind(panic);

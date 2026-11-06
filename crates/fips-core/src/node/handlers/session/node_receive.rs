@@ -644,13 +644,6 @@ impl Node {
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
-        let Some(bootstrap) = self.nostr_discovery.clone() else {
-            trace!(
-                src = %self.peer_display_name(src_addr),
-                "Ignoring mesh traversal offer without Nostr discovery runtime"
-            );
-            return;
-        };
         if self.configured_peer(src_addr).is_none()
             && !(self.peers.contains_key(src_addr) && self.dataplane_has_fsp_owner(src_addr))
         {
@@ -665,6 +658,27 @@ impl Node {
                 src = %self.peer_display_name(src_addr),
                 "Ignoring mesh traversal offer without known sender npub"
             );
+            return;
+        };
+        let Some(bootstrap) = self.nostr_discovery.clone() else {
+            if let Some(answer) = crate::discovery::nostr::unsupported_mesh_traversal_answer(
+                body,
+                Self::now_ms(),
+                self.config
+                    .node
+                    .discovery
+                    .nostr
+                    .signal_ttl_secs
+                    .saturating_mul(1000),
+                &sender_npub,
+                &self.identity.npub(),
+            ) {
+                self.send_nostr_mesh_signal(crate::discovery::nostr::MeshTraversalSignal::Answer {
+                    peer_npub: sender_npub,
+                    answer,
+                })
+                .await;
+            }
             return;
         };
         let offer = match serde_json::from_slice::<TraversalOffer>(body) {
