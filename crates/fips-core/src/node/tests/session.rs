@@ -28,6 +28,8 @@ mod handshake_retention;
 mod handshake_timeout;
 mod idle_control;
 mod mesh_signal_replay;
+#[cfg(unix)]
+mod mesh_traversal_interop;
 mod mesh_traversal_unsupported;
 mod mtu_exceeded;
 mod mtu_notification;
