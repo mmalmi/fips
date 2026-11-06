@@ -235,6 +235,13 @@ fn unsupported_mesh_default_attempts_stop_repeating_and_reach_existing_cooldown(
             let mut receiver = nodes[2].node.attach_endpoint_data_io(8).unwrap();
             let peer_config = authorize(&mut nodes[0].node, peers[2]);
             authorize(&mut nodes[2].node, peers[0]);
+            // Seed retry state through the ordinary cold-start failure path,
+            // before a routed application session exists. A manual request
+            // made only after warming does not create that startup state.
+            let error = nodes[0].node.initiate_peer_connection(&peer_config).await
+                .expect_err("discovery has not started yet");
+            nodes[0].node.schedule_retry_after_error(*peers[2].node_addr(), Node::now_ms(), &error);
+            assert!(nodes[0].node.retry_pending.contains_key(peers[2].node_addr()));
             send_endpoint_data_via_dataplane(&mut nodes[0].node, peers[2], b"before-attempts".to_vec()).await.unwrap();
             let _ = recv_endpoint_event_while_draining(&mut nodes, &mut receiver.event_rx, Duration::from_secs(5), "routed application before attempts").await;
             drain_to_quiescence(&mut nodes).await;
