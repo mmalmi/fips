@@ -1,5 +1,6 @@
 //! A routed, authenticated peer may support application traffic without NAT discovery.
 use super::*;
+use crate::SessionMessageType;
 use crate::config::{NostrDiscoveryConfig, NostrPeerfindingSource, PeerConfig};
 use crate::discovery::nostr::{
     BootstrapEvent, MeshTraversalSignal, NostrDiscovery, TraversalAnswer, TraversalOffer,
