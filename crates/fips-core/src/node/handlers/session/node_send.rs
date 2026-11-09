@@ -88,9 +88,7 @@ impl Node {
         // Build SessionSetup with coordinates
         let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
         let dest_coords = self.wire_coordinates(self.get_dest_coords(&dest_addr));
-        let setup = SessionSetup::new(our_coords, dest_coords)
-            .with_flags(SessionFlags::new().with_direct_fsp_transport())
-            .with_handshake(msg1);
+        let setup = SessionSetup::new(our_coords, dest_coords).with_handshake(msg1);
         let setup_payload = setup.encode();
 
         // Wrap in SessionDatagram

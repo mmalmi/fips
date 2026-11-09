@@ -21,8 +21,7 @@ use crate::noise::{
 };
 use crate::protocol::{
     CoordsRequired, MtuExceeded, PathBroken, PathMtuNotification, SessionAck, SessionDatagram,
-    SessionFlags, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
-    SessionSetup,
+    SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport, SessionSetup,
 };
 use crate::transport::PacketBuffer;
 #[cfg(feature = "webrtc-transport")]
@@ -377,8 +376,7 @@ impl AuthenticatedSessionDispatch {
         if destination_port == crate::discovery::local_udp::LOCAL_CAPABILITY_FSP_PORT {
             return false;
         }
-        #[cfg(feature = "webrtc-transport")]
-        if destination_port == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT {
+        if destination_port == SESSION_CAPABILITY_PORT {
             return false;
         }
         true
@@ -455,12 +453,19 @@ impl AuthenticatedSessionDispatch {
                             Box::pin(node.broadcast_local_roster()).await;
                         }
                     }
-                    #[cfg(feature = "webrtc-transport")]
-                    port if port
-                        == crate::transport::link_negotiation::LINK_NEGOTIATION_SERVICE_PORT =>
-                    {
+                    SESSION_CAPABILITY_PORT => {
                         let payload = &self.body()[FSP_PORT_HEADER_SIZE..];
-                        node.handle_link_negotiation_service(&source_addr, payload);
+                        if SessionCapabilities::has_magic(payload) {
+                            Box::pin(node.handle_session_capabilities(
+                                &source_addr,
+                                src_port,
+                                payload,
+                            ))
+                            .await;
+                        } else {
+                            #[cfg(feature = "webrtc-transport")]
+                            node.handle_link_negotiation_service(&source_addr, payload);
+                        }
                     }
                     FSP_PORT_IPV6_SHIM => {
                         use crate::FipsAddress;

@@ -9,7 +9,7 @@ use crate::NodeAddr;
 use crate::node::Node;
 use crate::node::wire::build_msg1;
 use crate::noise::HandshakeState;
-use crate::protocol::{SessionDatagram, SessionFlags, SessionSetup};
+use crate::protocol::{SessionDatagram, SessionSetup};
 use secp256k1::PublicKey;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
@@ -957,9 +957,7 @@ impl Node {
         // Build SessionSetup with coordinates
         let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
         let dest_coords = self.wire_coordinates(self.get_dest_coords(dest_addr));
-        let setup = SessionSetup::new(our_coords, dest_coords)
-            .with_flags(SessionFlags::new().with_direct_fsp_transport())
-            .with_handshake(msg1);
+        let setup = SessionSetup::new(our_coords, dest_coords).with_handshake(msg1);
         let setup_payload = setup.encode();
 
         // Send through the mesh

@@ -71,7 +71,9 @@ impl Node {
         if !self.admit_new_session(src_addr) {
             return;
         }
-        self.cache_current_root_coords(*src_addr, setup.src_coords.clone(), Self::now_ms());
+        // The source identity in msg1 is still only a claim. Keep its
+        // coordinates in the exact retained Ack for this handshake; promote
+        // them to the shared cache only when msg3 authenticates that identity.
 
         // K is one bit, so a pending epoch cannot coexist with both current and
         // previous. Drop this attempt and let msg1 retransmission retry after drain.
@@ -228,7 +230,6 @@ impl Node {
                 let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
                 let ack =
                     SessionAck::new(our_coords, self.wire_coordinates(setup.src_coords.clone()))
-                        .with_direct_fsp_transport()
                         .with_handshake(msg2);
                 let ack_payload = ack.encode();
                 let my_addr = *self.node_addr();
@@ -293,7 +294,6 @@ impl Node {
         // Build and send SessionAck (include initiator's coords for return-path warming)
         let our_coords = self.wire_coordinates(self.tree_state.my_coords().clone());
         let ack = SessionAck::new(our_coords, self.wire_coordinates(setup.src_coords.clone()))
-            .with_direct_fsp_transport()
             .with_handshake(msg2);
         let ack_payload = ack.encode();
         let my_addr = *self.node_addr();
@@ -370,7 +370,6 @@ impl Node {
             );
             return;
         }
-        self.cache_current_root_coords(*src_addr, ack.src_coords.clone(), Self::now_ms());
 
         // Remove the entry to take ownership of the handshake state
         let mut entry = match self.sessions.remove(src_addr) {
@@ -402,8 +401,13 @@ impl Node {
                 self.sessions.insert(*src_addr, entry);
                 return;
             }
+            self.cache_current_root_coords(*src_addr, ack.src_coords.clone(), Self::now_ms());
             self.pin_handshake_reverse_route(*src_addr, *previous_hop_addr);
-            entry.set_remote_supports_direct_fsp_transport(remote_supports_direct_fsp_transport);
+            // A same-process rekey preserves authenticated extension support.
+            // Zero body flags are the standard wire format, not a revocation.
+            if remote_supports_direct_fsp_transport {
+                entry.set_remote_supports_direct_fsp_transport(true);
+            }
 
             // Generate XK msg3
             let msg3 = match handshake.write_xk_message_3() {
@@ -439,6 +443,7 @@ impl Node {
             let now_ms = Self::now_ms();
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
             if remote_restarted {
+                entry.set_remote_supports_direct_fsp_transport(false);
                 entry.establish(session, now_ms);
                 entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
                 self.sessions.insert(*src_addr, entry);
@@ -486,6 +491,7 @@ impl Node {
                 return;
             }
             if remote_restarted {
+                self.send_session_capabilities(src_addr, true).await;
                 self.flush_pending_packets(src_addr).await;
                 #[cfg(feature = "webrtc-transport")]
                 self.retry_webrtc_after_session_restart(src_addr).await;
@@ -555,6 +561,7 @@ impl Node {
             self.sessions.insert(*src_addr, entry);
             return;
         }
+        self.cache_current_root_coords(*src_addr, ack.src_coords.clone(), Self::now_ms());
         // The dataplane local-delivery fast path reaches this handler without
         // passing through forwarding's SessionAck preparation. Pin the hop
         // only after Noise authenticates msg2 so later errors from another
@@ -612,6 +619,8 @@ impl Node {
             debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send SessionMsg3");
             return;
         }
+
+        self.send_session_capabilities(src_addr, true).await;
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;
@@ -701,6 +710,10 @@ impl Node {
             }
             let remote_restarted = entry.remote_epoch_changed(handshake.remote_epoch());
 
+            if let Some(coords) = retained_setup_coordinates(&entry) {
+                self.cache_current_root_coords(*src_addr, coords, Self::now_ms());
+            }
+
             // Complete the handshake → store as pending new session
             let session = match handshake.into_session() {
                 Ok(s) => s,
@@ -713,6 +726,7 @@ impl Node {
             };
 
             if remote_restarted {
+                entry.set_remote_supports_direct_fsp_transport(false);
                 entry.establish(session, Self::now_ms());
                 self.sessions.insert(*src_addr, entry);
                 self.learn_reverse_route(*src_addr, *previous_hop_addr);
@@ -721,6 +735,7 @@ impl Node {
                     Some(*previous_hop_addr),
                     self.config.node.session.coords_warmup_packets,
                 );
+                self.send_session_capabilities(src_addr, true).await;
                 self.flush_pending_packets(src_addr).await;
                 #[cfg(feature = "webrtc-transport")]
                 self.retry_webrtc_after_session_restart(src_addr).await;
@@ -801,6 +816,10 @@ impl Node {
             return;
         }
 
+        if let Some(coords) = retained_setup_coordinates(&entry) {
+            self.cache_current_root_coords(*src_addr, coords, Self::now_ms());
+        }
+
         // Complete the handshake
         let session = match handshake.into_session() {
             Ok(s) => s,
@@ -832,9 +851,23 @@ impl Node {
             self.config.node.session.coords_warmup_packets,
         );
 
+        self.send_session_capabilities(src_addr, true).await;
+
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;
 
         info!(src = %self.peer_display_name(src_addr), "Session established (responder, XK)");
     }
+}
+
+/// Read only the setup coordinates retained with this responder handshake.
+/// Callers must authenticate msg3 and its claimed source before caching them.
+fn retained_setup_coordinates(entry: &SessionEntry) -> Option<crate::TreeCoordinate> {
+    let ack = entry.handshake_payload()?;
+    if FspCommonPrefix::parse(ack)?.phase != FSP_PHASE_MSG2 {
+        return None;
+    }
+    SessionAck::decode(ack.get(FSP_COMMON_PREFIX_SIZE..)?)
+        .ok()
+        .map(|ack| ack.dest_coords)
 }

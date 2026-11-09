@@ -28,6 +28,16 @@ async fn test_session_direct_peer_handshake() {
             .unwrap()
             .is_initiating()
     );
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .unwrap()[4],
+        0,
+        "initial SessionSetup body flags must be upstream-compatible"
+    );
 
     // Process packets: SessionSetup arrives at Node 1
     let count = wait_process_packets_for_node(&mut nodes, 1).await;
@@ -42,6 +52,16 @@ async fn test_session_direct_peer_handshake() {
             .unwrap()
             .is_awaiting_msg3()
     );
+    assert_eq!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .handshake_payload()
+            .unwrap()[4],
+        0,
+        "initial SessionAck body flags must be upstream-compatible"
+    );
 
     // Process packets: SessionAck arrives at Node 0, Node 0 sends SessionMsg3
     let count = wait_process_packets_for_node(&mut nodes, 0).await;
@@ -54,6 +74,14 @@ async fn test_session_direct_peer_handshake() {
             .get_session(&node1_addr)
             .unwrap()
             .is_established()
+    );
+    assert!(
+        !nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .remote_supports_direct_fsp_transport(),
+        "standard handshake alone cannot enable a fork extension"
     );
 
     // Process packets: SessionMsg3 arrives at Node 1
@@ -68,6 +96,7 @@ async fn test_session_direct_peer_handshake() {
             .unwrap()
             .is_established()
     );
+    drain_to_quiescence(&mut nodes).await;
     assert!(
         nodes[0]
             .node
@@ -90,6 +119,39 @@ async fn test_session_direct_peer_handshake() {
             .expect("node 0 FSP owner")
             .is_some(),
         "negotiated current peers should use direct FSP transport"
+    );
+
+    nodes[0].node.config.node.rekey.enabled = true;
+    assert!(nodes[0].node.initiate_session_rekey(&node1_addr).await);
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .unwrap()[4],
+        0,
+        "rekey SessionSetup body flags must remain zero after extension negotiation"
+    );
+    wait_process_packets_for_node(&mut nodes, 1).await;
+    assert_eq!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .handshake_payload()
+            .unwrap()[4],
+        0,
+        "rekey SessionAck body flags must remain zero after extension negotiation"
+    );
+    wait_process_packets_for_node(&mut nodes, 0).await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .remote_supports_direct_fsp_transport(),
+        "a standard same-process rekey must preserve negotiated extensions"
     );
     assert!(
         nodes[1]

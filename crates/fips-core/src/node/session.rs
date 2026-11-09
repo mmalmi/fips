@@ -12,6 +12,8 @@ use rand::RngExt;
 use ring::aead::LessSafeKey;
 use secp256k1::PublicKey;
 
+pub(crate) mod capabilities;
+
 fn draw_rekey_jitter() -> i64 {
     rand::rng().random_range(-REKEY_JITTER_SECS..=REKEY_JITTER_SECS)
 }
@@ -73,9 +75,10 @@ pub(crate) struct SessionEntry {
     session_start_ms: u64,
     /// Whether this node initiated the Noise handshake.
     is_initiator: bool,
-    /// Whether the remote endpoint advertised support for carrying FSP
-    /// records directly on a physical transport. False preserves the FMP
-    /// carrier used by upstream FIPS 0.4.1 and older peers.
+    /// Whether the remote endpoint positively advertised direct FSP support.
+    /// New peers negotiate through authenticated standard service datagrams;
+    /// a legacy handshake advertisement is retained for older fork peers.
+    /// False preserves the standard FMP carrier used by upstream FIPS.
     remote_supports_direct_fsp_transport: bool,
     // === Handshake Resend ===
     /// Encoded session-layer payload for resend (SessionSetup or SessionAck).

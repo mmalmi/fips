@@ -49,21 +49,17 @@
             1_000,
             250,
         );
-        let mut forged_msg2 = genuine_msg2;
+        let mut forged_msg2 = genuine_msg2.clone();
         forged_msg2[XK_HANDSHAKE_MSG2_SIZE - 1] ^= 0x80;
-        let ack = SessionAck::new(
-            node.tree_state.my_coords().clone(),
-            node.tree_state.my_coords().clone(),
-        )
-        .with_handshake(forged_msg2)
-        .encode();
+        let stated_coords =
+            crate::TreeCoordinate::from_addrs(vec![peer_addr, *node.tree_state.root()]).unwrap();
+        let ack = SessionAck::new(stated_coords.clone(), node.tree_state.my_coords().clone())
+            .with_direct_fsp_transport()
+            .with_handshake(forged_msg2)
+            .encode();
 
-        node.handle_session_ack(
-            &peer_addr,
-            &peer_addr,
-            &ack[FSP_COMMON_PREFIX_SIZE..],
-        )
-        .await;
+        node.handle_session_ack(&peer_addr, &peer_addr, &ack[FSP_COMMON_PREFIX_SIZE..])
+            .await;
 
         let entry = node
             .sessions
@@ -73,6 +69,80 @@
         assert_eq!(entry.created_at(), 1_000);
         assert_eq!(entry.handshake_payload(), Some([0x11, 0x22].as_slice()));
         assert_eq!(entry.next_resend_at_ms(), 1_250);
+        assert!(
+            !entry.remote_supports_direct_fsp_transport(),
+            "an invalid msg2 cannot negotiate legacy extensions"
+        );
+        assert!(
+            node.coord_cache.get(&peer_addr, Node::now_ms()).is_none(),
+            "an invalid msg2 cannot cache its claimed coordinates"
+        );
+
+        let genuine_ack = SessionAck::new(stated_coords.clone(), node.tree_state.my_coords().clone())
+            .with_direct_fsp_transport()
+            .with_handshake(genuine_msg2)
+            .encode();
+        node.handle_session_ack(
+            &peer_addr,
+            &peer_addr,
+            &genuine_ack[FSP_COMMON_PREFIX_SIZE..],
+        )
+        .await;
+        assert!(node.sessions.get(&peer_addr).unwrap().is_established());
+        assert!(
+            node.sessions
+                .get(&peer_addr)
+                .unwrap()
+                .remote_supports_direct_fsp_transport(),
+            "authenticated legacy peers still advertise direct FSP"
+        );
+        assert_eq!(
+            node.coord_cache.get(&peer_addr, Node::now_ms()),
+            Some(&stated_coords)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_setup_coordinates_wait_for_authenticated_msg3() {
+        for valid_finish in [false, true] {
+            let local = Identity::generate();
+            let peer = Identity::generate();
+            let peer_addr = *peer.node_addr();
+            let mut node = Node::with_identity(local, crate::config::Config::new()).unwrap();
+            let stated_coords =
+                crate::TreeCoordinate::from_addrs(vec![peer_addr, *node.tree_state.root()]).unwrap();
+            let mut initiator =
+                HandshakeState::new_xk_initiator(peer.keypair(), node.identity.pubkey_full());
+            initiator.set_local_epoch([2; 8]);
+            let setup = SessionSetup::new(stated_coords.clone(), node.tree_state.my_coords().clone())
+                .with_handshake(initiator.write_xk_message_1().unwrap())
+                .encode();
+            node.handle_session_setup(&peer_addr, &peer_addr, &setup[FSP_COMMON_PREFIX_SIZE..])
+                .await;
+            assert!(
+                node.coord_cache.get(&peer_addr, Node::now_ms()).is_none(),
+                "msg1 has not authenticated the source identity"
+            );
+            let ack = node
+                .sessions
+                .get(&peer_addr)
+                .unwrap()
+                .handshake_payload()
+                .unwrap();
+            let ack = SessionAck::decode(&ack[FSP_COMMON_PREFIX_SIZE..]).unwrap();
+            initiator.read_xk_message_2(&ack.handshake_payload).unwrap();
+            let mut msg3 = initiator.write_xk_message_3().unwrap();
+            if !valid_finish {
+                msg3[XK_HANDSHAKE_MSG3_SIZE - 1] ^= 0x80;
+            }
+            let msg3 = SessionMsg3::new(msg3).encode();
+            node.handle_session_msg3(&peer_addr, &peer_addr, &msg3[FSP_COMMON_PREFIX_SIZE..])
+                .await;
+            assert_eq!(
+                node.coord_cache.get(&peer_addr, Node::now_ms()),
+                valid_finish.then_some(&stated_coords)
+            );
+        }
     }
 
     #[tokio::test]
