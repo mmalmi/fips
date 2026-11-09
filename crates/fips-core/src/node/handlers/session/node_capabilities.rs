@@ -42,6 +42,9 @@ impl Node {
         {
             return;
         }
+        // The authenticated record proves possession of this epoch's keys,
+        // independently of whether it carries application or route evidence.
+        clear_dataplane_confirmed_retransmits_for(self, source_addr);
         // Send the first response using the standard carrier before enabling
         // the optimization. Response messages never elicit another response.
         if capabilities.request {
@@ -51,7 +54,11 @@ impl Node {
             if let Some(entry) = self.sessions.get_mut(source_addr) {
                 entry.set_remote_supports_direct_fsp_transport(true);
             }
-            self.refresh_dataplane_fsp_owner_routes(source_addr);
+            // The capability changes framing, not path preference. A routed
+            // session will use it if a later routing decision selects direct.
+            if self.dataplane.fsp_owner_next_hop(source_addr) == Some(*source_addr) {
+                self.refresh_dataplane_fsp_owner_routes_retaining_current(source_addr);
+            }
         }
     }
 }

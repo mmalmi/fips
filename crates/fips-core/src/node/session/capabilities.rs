@@ -36,6 +36,15 @@ impl SessionCapabilities {
         bytes.starts_with(MAGIC)
     }
 
+    /// Recognize only this extension's standard DataPacket service body.
+    /// Existing JSON negotiation and local discovery retain their semantics.
+    pub(crate) fn is_service_datagram(body: &[u8]) -> bool {
+        body.len() == 16
+            && body[..2] == SESSION_CAPABILITY_PORT.to_le_bytes()
+            && body[2..4] == SESSION_CAPABILITY_PORT.to_le_bytes()
+            && Self::decode(&body[4..]).is_some()
+    }
+
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != 12 || !Self::has_magic(bytes) || bytes[8] != VERSION {
             return None;
@@ -92,5 +101,28 @@ mod tests {
             assert!(SessionCapabilities::decode(&bytes).is_none());
         }
         assert!(!SessionCapabilities::has_magic(br#"{"version":1}"#));
+    }
+
+    #[test]
+    fn capability_datagram_classification_preserves_other_service_semantics() {
+        let mut body = [0; 16];
+        body[..2].copy_from_slice(&SESSION_CAPABILITY_PORT.to_le_bytes());
+        body[2..4].copy_from_slice(&SESSION_CAPABILITY_PORT.to_le_bytes());
+        body[4..].copy_from_slice(&SessionCapabilities::local(true).encode());
+        assert!(SessionCapabilities::is_service_datagram(&body));
+        for (offset, value) in [(0, 2), (2, 2), (4, b'X'), (12, 2), (13, 3)] {
+            let mut changed = body;
+            changed[offset] = value;
+            assert!(!SessionCapabilities::is_service_datagram(&changed));
+        }
+        assert!(!SessionCapabilities::is_service_datagram(&body[..15]));
+        let mut json = body[..4].to_vec();
+        json.extend_from_slice(br#"{"version":1}"#);
+        assert!(!SessionCapabilities::is_service_datagram(&json));
+        body[15] = 0x80;
+        assert!(
+            SessionCapabilities::is_service_datagram(&body),
+            "unknown feature bits remain a valid control envelope"
+        );
     }
 }

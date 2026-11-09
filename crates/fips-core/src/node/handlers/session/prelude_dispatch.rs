@@ -123,8 +123,7 @@ impl AuthenticatedSessionMessage {
     }
 
     pub(in crate::node) fn is_application_data(&self) -> bool {
-        self.msg_type == SessionMessageType::DataPacket.to_byte()
-            || self.msg_type == SessionMessageType::EndpointData.to_byte()
+        crate::dataplane::dataplane_fsp_message_is_application_data(self.msg_type, self.body())
     }
 
     fn proves_reply_path(&self) -> bool {

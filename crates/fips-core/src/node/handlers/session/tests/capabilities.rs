@@ -69,4 +69,9 @@ fn capability_service_is_internal_without_optional_webrtc() {
         !dispatch.is_service_data_packet(),
         "capabilities must not leak to application service listeners"
     );
+    assert!(!dispatch.message.is_application_data());
+    assert!(
+        dispatch.receive_completion().is_none(),
+        "negotiation must not prove an application reply route"
+    );
 }

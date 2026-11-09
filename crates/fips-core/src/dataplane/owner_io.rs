@@ -266,6 +266,7 @@ impl OwnerState {
             previous_hop,
             msg_type,
             body_len,
+            application_data,
             sync,
             activity_tick,
             now,
@@ -293,7 +294,7 @@ impl OwnerState {
         if let Some(tick) = activity_tick {
             note_activity(&mut self.last_authenticated_rx_activity, tick);
         }
-        if dataplane_fsp_message_is_application_data(msg_type) {
+        if application_data {
             if let Some(tick) = activity_tick
                 && note_activity(&mut self.last_rx_data_activity, tick)
             {

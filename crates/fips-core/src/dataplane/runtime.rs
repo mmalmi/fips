@@ -339,15 +339,19 @@ impl DataplaneTurnDriver {
             .receive_sync
             .plaintext_len
             .saturating_sub(FSP_INNER_HEADER_SIZE);
-        self.record_authenticated_fsp_session(DataplaneAuthenticatedFspSession::new(
-            ingress.source_addr,
-            ingress.previous_hop_addr,
-            ingress.msg_type,
-            body_len,
-            ingress.receive_sync,
-            ingress.activity_tick,
-            std::time::Instant::now(),
-        ))
+        let body = &ingress.plaintext.as_slice()[FSP_INNER_HEADER_SIZE..];
+        self.record_authenticated_fsp_session(
+            DataplaneAuthenticatedFspSession::new(
+                ingress.source_addr,
+                ingress.previous_hop_addr,
+                ingress.msg_type,
+                body_len,
+                ingress.receive_sync,
+                ingress.activity_tick,
+                std::time::Instant::now(),
+            )
+            .with_payload(body),
+        )
         .unwrap_or(false)
     }
 

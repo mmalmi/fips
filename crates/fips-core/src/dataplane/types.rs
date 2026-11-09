@@ -56,9 +56,17 @@ impl PacketClass {
     }
 }
 
-pub(crate) fn dataplane_fsp_message_is_application_data(msg_type: u8) -> bool {
-    msg_type == crate::protocol::SessionMessageType::DataPacket.to_byte()
-        || msg_type == crate::protocol::SessionMessageType::EndpointData.to_byte()
+pub(crate) fn dataplane_fsp_message_is_application_data(msg_type: u8, body: &[u8]) -> bool {
+    if msg_type == crate::protocol::SessionMessageType::EndpointData.to_byte() {
+        return true;
+    }
+    if msg_type != crate::protocol::SessionMessageType::DataPacket.to_byte() {
+        return false;
+    }
+    // Optional capability exchange must not create application demand, select
+    // a data path, or supply delivery evidence for one. Keep all other service
+    // datagrams, including existing JSON negotiation, unchanged.
+    !crate::node::session::capabilities::SessionCapabilities::is_service_datagram(body)
 }
 
 fn dataplane_fsp_message_elicits_report(msg_type: u8) -> bool {
@@ -143,6 +151,7 @@ pub(crate) struct DataplaneAuthenticatedFspSession {
     pub(crate) previous_hop: NodeAddr,
     pub(crate) msg_type: u8,
     pub(crate) body_len: usize,
+    application_data: bool,
     pub(crate) sync: FspReceiveSync,
     pub(crate) activity_tick: Option<ActivityTick>,
     pub(crate) now: std::time::Instant,
@@ -163,10 +172,18 @@ impl DataplaneAuthenticatedFspSession {
             previous_hop,
             msg_type,
             body_len,
+            application_data: dataplane_fsp_message_is_application_data(msg_type, &[]),
             sync,
             activity_tick,
             now,
         }
+    }
+
+    /// Real port-multiplexed ingress must classify the authenticated body.
+    /// Observations without a body retain the message-type-only classification.
+    pub(crate) fn with_payload(mut self, body: &[u8]) -> Self {
+        self.application_data = dataplane_fsp_message_is_application_data(self.msg_type, body);
+        self
     }
 }
 
@@ -450,7 +467,7 @@ impl OutboundPacket {
         }
         match self.payload_transform {
             OutboundPayloadTransform::FspInnerHeader { msg_type, .. } => {
-                dataplane_fsp_message_is_application_data(msg_type)
+                dataplane_fsp_message_is_application_data(msg_type, self.payload.as_slice())
                     .then_some(self.payload.len())
             }
             OutboundPayloadTransform::None => None,

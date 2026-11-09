@@ -133,6 +133,20 @@ async fn restarted_initiator_reestablishes_with_surviving_responder(hold_setup: 
         .initiate_session(survivor_addr, survivor_identity.pubkey_full())
         .await
         .expect("initial session should start");
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &restarted_addr,
+        "capture the responder's initial SessionAck",
+        |entry| entry.is_awaiting_msg3(),
+    )
+    .await;
+    let retained_ack = nodes[1]
+        .node
+        .get_session(&restarted_addr)
+        .and_then(|session| session.handshake_payload())
+        .expect("responder must retain its real initial SessionAck")
+        .to_vec();
     wait_for_session_established(
         &mut nodes,
         0,
@@ -149,6 +163,17 @@ async fn restarted_initiator_reestablishes_with_surviving_responder(hold_setup: 
         "survivor initial session",
     )
     .await;
+    drain_to_quiescence(&mut nodes).await;
+
+    // Authenticated capability traffic now normally retires this reply. Keep
+    // the original regression's retained-Ack scenario explicit, as when the
+    // responder has not received epoch confirmation, without arming a timer.
+    nodes[1]
+        .node
+        .sessions
+        .get_mut(&restarted_addr)
+        .unwrap()
+        .set_handshake_payload(retained_ack, 0);
 
     let survivor_session = nodes[1].node.get_session(&restarted_addr).unwrap();
     assert!(!survivor_session.is_initiator());
