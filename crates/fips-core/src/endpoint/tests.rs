@@ -1,4 +1,7 @@
 use super::*;
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod upstream;
 use crate::node::{
     EndpointDataDelivery, EndpointDataPayload, NodeEndpointDataBatch, NodeEndpointPeer,
 };
