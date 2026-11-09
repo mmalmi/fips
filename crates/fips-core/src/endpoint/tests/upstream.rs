@@ -18,21 +18,29 @@ impl Drop for Process {
 #[tokio::test]
 #[ignore = "requires FIPS_UPSTREAM_BIN, FIPS_UPSTREAM_ECHO and FIPS_INTEROP_LOG_DIR"]
 async fn upstream_udp_service_round_trip() {
-    run_interop(false, false).await;
+    run_interop(false, false, false).await;
 }
 
 #[tokio::test]
 #[ignore = "requires pinned upstream daemon, echo, client and retained logs"]
 async fn upstream_initiates_and_rekeys_with_multipath_enabled() {
-    run_interop(true, true).await;
+    run_interop(true, true, false).await;
 }
 
-async fn run_interop(upstream_initiates: bool, multipath: bool) {
-    let daemon = std::env::var_os("FIPS_UPSTREAM_BIN").expect("upstream daemon path");
+#[tokio::test]
+#[ignore = "requires pinned upstream daemon, echo and retained logs"]
+async fn upstream_routes_service_datagrams_and_rekey() {
+    run_interop(false, false, true).await;
+}
+
+async fn run_interop(upstream_initiates: bool, multipath: bool, routed: bool) {
+    let daemon_path = std::env::var_os("FIPS_UPSTREAM_BIN").expect("upstream daemon path");
     let echo = std::env::var_os("FIPS_UPSTREAM_ECHO").expect("upstream native echo path");
     let logs =
         PathBuf::from(std::env::var_os("FIPS_INTEROP_LOG_DIR").expect("retained log directory"))
-            .join(if upstream_initiates {
+            .join(if routed {
+                "upstream-transit"
+            } else if upstream_initiates {
                 "upstream-initiates"
             } else {
                 "fork-initiates"
@@ -55,7 +63,7 @@ async fn run_interop(upstream_initiates: bool, multipath: bool) {
     )).unwrap();
     let log = File::create(logs.join("upstream-daemon.log")).unwrap();
     let mut daemon = Process(
-        Command::new(daemon)
+        Command::new(&daemon_path)
             .arg("--config")
             .arg(&config_path)
             .env("RUST_LOG", "debug")
@@ -102,9 +110,50 @@ async fn run_interop(upstream_initiates: bool, multipath: bool) {
     })
     .await
     .expect("upstream service startup");
+    let mut router = None;
+    let (neighbor_npub, neighbor_address) = if routed {
+        let router_identity = crate::Identity::from_secret_str(&"22".repeat(32)).unwrap();
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let router_address = socket.local_addr().unwrap();
+        drop(socket);
+        let router_api = directory.path().join("router-api.sock");
+        let router_control = directory.path().join("router-control.sock");
+        let router_config = directory.path().join("router.yaml");
+        std::fs::write(&router_config, format!(
+            "node:\n  identity:\n    nsec: '{}'\n  control:\n    socket_path: '{}'\n  native_api:\n    enabled: true\n    socket_path: '{}'\n  rendezvous:\n    nostr:\n      enabled: false\n    lan:\n      enabled: false\ntun:\n  enabled: false\ndns:\n  enabled: false\ntransports:\n  udp:\n    bind_addr: '{}'\n    mtu: 1472\npeers:\n  - npub: '{}'\n    addresses:\n      - transport: udp\n        addr: '{}'\n",
+            "22".repeat(32), router_control.display(), router_api.display(),
+            router_address, identity.npub(), address,
+        )).unwrap();
+        let log = File::create(logs.join("upstream-router.log")).unwrap();
+        router = Some(Process(
+            Command::new(&daemon_path)
+                .arg("--config")
+                .arg(&router_config)
+                .env("RUST_LOG", "debug")
+                .stdin(Stdio::null())
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .unwrap(),
+        ));
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while !router_api.exists() {
+                assert!(
+                    router.as_mut().unwrap().0.try_wait().unwrap().is_none(),
+                    "upstream transit router exited; inspect retained log"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("upstream transit router startup");
+        (router_identity.npub(), router_address)
+    } else {
+        (identity.npub(), address)
+    };
     let config: Config = serde_yaml::from_str(&format!(
         "node:\n  rekey:\n    after_messages: {fork_trigger}\n  identity:\n    nsec: '{}'\n  discovery:\n    nostr:\n      enabled: false\n    local:\n      enabled: false\ntransports:\n  udp:\n    bind_addr: '127.0.0.1:0'\n    mtu: 1472\npeers:\n  - npub: '{}'\n    addresses:\n      - transport: udp\n        addr: '{}'\n",
-        "31".repeat(32), identity.npub(), address,
+        "31".repeat(32), neighbor_npub, neighbor_address,
     )).unwrap();
     let endpoint = FipsEndpoint::builder()
         .config(config)
@@ -119,7 +168,7 @@ async fn run_interop(upstream_initiates: bool, multipath: bool) {
             .await
             .unwrap()
             .iter()
-            .any(|p| p.npub == identity.npub() && p.connected)
+            .any(|p| p.npub == neighbor_npub && p.connected)
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -197,5 +246,17 @@ async fn run_interop(upstream_initiates: bool, multipath: bool) {
         upstream_log.contains(expected),
         "no completed session rekey: {expected}"
     );
+    if routed {
+        assert!(
+            !endpoint
+                .peers()
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| p.npub == identity.npub() && p.connected),
+            "the tested endpoint must remain behind the upstream transit router"
+        );
+    }
     endpoint.shutdown().await.unwrap();
+    drop(router);
 }
