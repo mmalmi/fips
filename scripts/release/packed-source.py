@@ -42,6 +42,7 @@ INITIAL = shutil.disk_usage(OUT).free
 assert INITIAL >= PLAN["entry_bytes"]
 START = time.monotonic()
 STEPS = []
+FSCK_CHECKS = []
 CHILDREN = []
 INTERRUPTED = False
 
@@ -138,6 +139,25 @@ def closure(repo, expected, label, env):
     return {"count": len(objects.splitlines()), "sha256": hashlib.sha256(objects.encode()).hexdigest()}
 
 
+def strict_fsck(repo, label, env):
+    output = OUT / (MODE + "-" + label + ".out")
+    errors = OUT / (MODE + "-" + label + ".log")
+    check = {"phase": label, "repository": repo.name,
+             "arguments": ["fsck", "--full", "--strict"], "passed": False,
+             "stdout": output.name, "stderr": errors.name}
+    FSCK_CHECKS.append(check)
+    try:
+        run(label, git(repo, *check["arguments"]), env, 120)
+        check["passed"] = True
+    finally:
+        # Only hash completed logs: a timed-out child is reaped by the outer
+        # cleanup, and its still-open streams are not stable evidence yet.
+        completed = next((step for step in reversed(STEPS) if step["phase"] == label), None)
+        if completed is not None:
+            check.update(exit=completed["exit"], seconds=completed["seconds"],
+                         stdout_sha256=digest(output), stderr_sha256=digest(errors))
+
+
 def install_pinned_sdk():
     total = 0
     for package in ALL_INPUTS['source_sdk']:
@@ -197,12 +217,14 @@ def verify_ordinary_reader(root, key, expected, original, env):
     run('ordinary-reader-clone', ['git', 'clone', '--mirror', '--no-local', '--',
                                   'htree://' + route, str(repo)], reader)
     assert closure(repo, expected, 'ordinary-reader-closure', reader) == original
+    strict_fsck(repo, 'ordinary-reader-fsck', reader)
     relay.terminate()
     relay.wait(timeout=5)
     relay_log.close()
 
 
-receipt = {"passed": False, "head": HEAD, "source_url": SOURCE, "steps": STEPS}
+receipt = {"passed": False, "head": HEAD, "source_url": SOURCE, "steps": STEPS,
+           "git_fsck": FSCK_CHECKS}
 try:
     cgroup = Path("/sys/fs/cgroup") / Path("/proc/self/cgroup").read_text().strip()[3:].lstrip("/")
     controls = {key: (cgroup / key).read_text().strip() for key in ("memory.max", "memory.swap.max", "cpu.max")}
@@ -269,6 +291,7 @@ try:
         run("clone-immutable", ["git", "clone", "--mirror", "--no-local", "--no-hardlinks",
                                 "--", str(downloaded), str(cold)], cold_env)
         assert closure(cold, expected, "cold-closure", cold_env) == original
+        strict_fsck(cold, "cold-fsck", cold_env)
         # `add` stores packed object bytes correctly but loses their entry
         # lengths. Repair only measured lengths and their directory ancestors,
         # using the pinned canonical codec; never sign the intermediate root.
@@ -302,6 +325,7 @@ try:
         repo = WORK / "signed.git"
         run("clone-signed", ["git", "clone", "--mirror", "--no-local", "--", SOURCE, str(repo)], env)
         assert closure(repo, previous["refs"], "signed-closure", env) == previous["closure"]
+        strict_fsck(repo, "signed-fsck", env)
         receipt.update(verified_objects=previous["closure"]["count"], nonshallow=True,
                        publisher_cache_or_daemon_used_for_readback=False,
                        all_existing_refs_preserved=True, signed_root_matches_immutable=True)
