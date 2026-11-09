@@ -136,6 +136,32 @@ fn native_js_unsupported_process() {
     });
 }
 
+fn application_source_matches(source: &PeerIdentity, configured: &PeerIdentity) -> bool {
+    // An npub binds the full 32-byte x-only key, not the cached full-key parity.
+    source.pubkey() == configured.pubkey()
+}
+
+#[test]
+fn application_source_binding_accepts_odd_parity_and_rejects_other_keys() {
+    let identity = crate::Identity::from_secret_str(&"72".repeat(32)).unwrap();
+    let authenticated = PeerIdentity::from_pubkey_full(identity.pubkey_full());
+    let configured = PeerIdentity::from_npub(&identity.npub()).unwrap();
+    assert_eq!(authenticated.pubkey_full().serialize()[0], 0x03);
+    assert_eq!(configured.pubkey_full().serialize()[0], 0x02);
+    assert_ne!(authenticated, configured);
+    assert_eq!(authenticated.node_addr(), configured.node_addr());
+    assert_eq!(authenticated.address(), configured.address());
+    assert!(application_source_matches(&authenticated, &configured));
+
+    let other = crate::Identity::from_secret_str(&"31".repeat(32)).unwrap();
+    let other_authenticated = PeerIdentity::from_pubkey_full(other.pubkey_full());
+    assert_ne!(other_authenticated.pubkey(), configured.pubkey());
+    assert!(!application_source_matches(
+        &other_authenticated,
+        &configured
+    ));
+}
+
 async fn exercise(config: &Input, nodes: &mut Vec<TestNode>, outcome: &mut Outcome) {
     let target = PeerIdentity::from_npub(&config.target_npub).unwrap();
     nodes.push(make_test_node().await);
@@ -212,7 +238,10 @@ async fn exercise(config: &Input, nodes: &mut Vec<TestNode>, outcome: &mut Outco
         while let Ok(event) = application.event_rx.try_recv() {
             application.event_rx.release_messages(event.messages.len());
             for message in event.messages {
-                assert_eq!(message.source_peer, target, "application source binding");
+                assert!(
+                    application_source_matches(&message.source_peer, &target),
+                    "application source binding"
+                );
                 let payload = message.payload.as_slice();
                 match stage {
                     0 => {
