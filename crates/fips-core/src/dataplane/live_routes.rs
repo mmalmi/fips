@@ -411,7 +411,7 @@ fn classify_direct_fsp_packet(
     packet: &ReceivedPacket,
 ) -> Option<DataplaneRawIngress>
 {
-    let prefix = FspWireHeader::parse(packet.data.as_slice()).ok()?;
+    let prefix = FspWireHeader::parse_encrypted(packet.data.as_slice()).ok()?;
     if prefix.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT == 0 {
         return None;
     }

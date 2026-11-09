@@ -208,6 +208,7 @@
     ) -> Vec<u8> {
         let mut data = fsp_wire(counter, flags);
         data.truncate(FSP_HEADER_SIZE);
+        data[2..4].copy_from_slice(&(plaintext.len() as u16).to_le_bytes());
         let mut ciphertext = plaintext.to_vec();
         test_cipher(key)
             .seal_in_place_append_tag(

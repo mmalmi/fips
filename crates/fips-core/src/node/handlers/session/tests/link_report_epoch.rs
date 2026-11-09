@@ -256,6 +256,9 @@ async fn client_only_role_is_bound_to_identity_epoch_and_declaration_order() {
         .await;
     assert!(fixture.node.bloom_state.leaf_dependents().is_empty());
     fixture.receive(true, &role).await;
+    assert!(fixture.node.bloom_state.leaf_dependents().is_empty());
+    fixture.receive(true, &[LinkMessageType::ClientSupport.to_byte()]).await;
+    fixture.receive(true, &role).await;
     assert_eq!(fixture.node.bloom_state.leaf_dependents().len(), 1);
     assert!(
         fixture
@@ -333,6 +336,60 @@ async fn client_only_role_is_bound_to_identity_epoch_and_declaration_order() {
     );
     fixture.node.remove_active_peer(&fixture.remote);
     assert!(fixture.node.bloom_state.leaf_dependents().is_empty());
+}
+
+#[tokio::test]
+async fn upstream_multipath_messages_cannot_enable_fork_link_extensions() {
+    let mut fixture = LinkReportEpochFixture::new();
+    let mut probe = vec![0u8; 27];
+    probe[0] = 0x52;
+    probe[1..5].copy_from_slice(&1u32.to_le_bytes());
+    probe[6..10].copy_from_slice(&2u32.to_le_bytes());
+    let mut ack = probe.clone();
+    ack[0] = 0x53;
+    ack[10..14].copy_from_slice(&3u32.to_le_bytes());
+    // Valid PathClose with permitted trailing bytes: this can otherwise look
+    // like a legacy count=3 listener hint, so length checks alone do not suffice.
+    let close = vec![0x54, 3, 0x10, 0, 0x20, 0, 0, 0];
+    for message in [probe, ack, close] {
+        fixture.receive(true, &message).await;
+        let peer = fixture.node.peers.get(&fixture.remote).unwrap();
+        assert!(!peer.client_only_supported);
+        assert!(!peer.client_only);
+        assert!(!peer.local_udp_listeners_received);
+    }
+}
+
+#[tokio::test]
+async fn namespaced_link_extensions_require_capability_and_cannot_downgrade() {
+    use crate::protocol::{LINK_EXTENSION_CLIENT_SUPPORT, LinkExtension};
+    let mut fixture = LinkReportEpochFixture::new();
+    let role = LinkExtension::ClientOnly(2).encode();
+    fixture.receive(true, &role).await;
+    assert!(!fixture.node.peers.get(&fixture.remote).unwrap().client_only);
+    let support = LinkExtension::ClientSupport {
+        response: false,
+        capabilities: LINK_EXTENSION_CLIENT_SUPPORT | 0x8000,
+    }.encode();
+    fixture.receive(false, &support).await;
+    assert!(!fixture.node.peers.get(&fixture.remote).unwrap().client_only_supported);
+    let mut malformed = support.clone();
+    malformed.push(0);
+    fixture.receive(true, &malformed).await;
+    assert!(!fixture.node.peers.get(&fixture.remote).unwrap().client_only_supported);
+    fixture.receive(true, &support).await;
+    assert!(fixture.node.peers.get(&fixture.remote).unwrap().namespaced_link_extensions);
+    fixture.receive(true, &[0x53]).await;
+    assert!(fixture.node.peers.get(&fixture.remote).unwrap().namespaced_link_extensions);
+    fixture.receive(true, &[0x52, 2, 0, 0, 0, 0, 0, 0, 0]).await;
+    assert!(!fixture.node.peers.get(&fixture.remote).unwrap().client_only);
+    fixture.receive(true, &role).await;
+    assert!(fixture.node.peers.get(&fixture.remote).unwrap().client_only);
+    fixture.node.reset_peer_routing_after_restart(&fixture.remote);
+    let peer = fixture.node.peers.get(&fixture.remote).unwrap();
+    assert!(!peer.namespaced_link_extensions);
+    assert!(!peer.client_only_supported);
+    assert_eq!(peer.client_support_probes, 0);
 }
 
 #[tokio::test]

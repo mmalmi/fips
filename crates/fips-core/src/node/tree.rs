@@ -205,12 +205,7 @@ impl Node {
             // at the existing rate-limit deadline. No additional timer is
             // needed, and an incomplete send retains pending negotiation.
             self.mark_tree_announce_pending(peer_addr);
-            self.send_dataplane_fmp_link_plaintext(
-                peer_addr,
-                &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
-                false,
-            )
-            .await?;
+            self.send_client_support(peer_addr, false).await?;
             if let Some(peer) = self.peers.get_mut(peer_addr) {
                 // Our first bootstrap can precede the peer's receiver. Only
                 // a capability sent after its authenticated tree bootstrap
@@ -232,9 +227,14 @@ impl Node {
         // Every neighbor of an active client can withdraw its old tree role.
         // Older-only and mixed-adjacency networks retain ordinary routing.
         let encoded = if self.is_leaf_only {
-            let mut message = vec![crate::protocol::LinkMessageType::ClientOnly.to_byte()];
-            message.extend_from_slice(&self.tree_state.my_declaration().sequence().to_le_bytes());
-            message
+            let sequence = self.tree_state.my_declaration().sequence();
+            if peer.namespaced_link_extensions {
+                crate::protocol::LinkExtension::ClientOnly(sequence).encode()
+            } else {
+                let mut message = vec![crate::protocol::LinkMessageType::ClientOnly.to_byte()];
+                message.extend_from_slice(&sequence.to_le_bytes());
+                message
+            }
         } else {
             self.build_tree_announce()?
                 .encode()
@@ -264,13 +264,7 @@ impl Node {
             // Commit the successful tree send before awaiting capability. A
             // canceled reply stays pending but cannot replay that tree early.
             self.mark_tree_announce_pending(peer_addr);
-            if let Err(error) = self
-                .send_dataplane_fmp_link_plaintext(
-                    peer_addr,
-                    &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
-                    false,
-                )
-                .await
+            if let Err(error) = self.send_client_support(peer_addr, false).await
             {
                 self.stats_mut().tree.send_failed += 1;
                 return Err(error);

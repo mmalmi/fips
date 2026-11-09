@@ -301,7 +301,7 @@ impl DataplaneTurnDriver {
                     return None;
                 }
             },
-            PacketProtocol::Fsp => match FspWireHeader::parse(packet.payload.as_slice()) {
+            PacketProtocol::Fsp => match FspWireHeader::parse_encrypted(packet.payload.as_slice()) {
                 Ok(header) => DataplaneIngressHeader::Fsp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
@@ -612,6 +612,12 @@ impl DataplaneTurnDriver {
                             }
                         }
                         DataplaneSessionIngressHandoff::Rejected { output, error } => {
+                            // An invalid inner session message still arrived
+                            // over an authenticated FMP frame. Preserve link
+                            // delivery/CE accounting without delivering FSP.
+                            if let Some(receipt) = receipt {
+                                self.fmp_ingress_receipts.push(receipt);
+                            }
                             self.output_drops.push(DataplaneOutputDrop::from_output(
                                 &output,
                                 dataplane_output_error_from_session_handoff(error),

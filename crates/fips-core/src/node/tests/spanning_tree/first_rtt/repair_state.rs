@@ -141,6 +141,13 @@ async fn unmeasured_better_root_does_not_rearm_obsolete_declaration() {
 async fn declare_client(node: &mut Node, peer: NodeAddr) {
     node.dispatch_link_message(crate::node::AuthenticatedLinkMessage {
         source_peer: *node.get_peer(&peer).unwrap().identity(),
+        msg_type: crate::protocol::LinkMessageType::ClientSupport.to_byte(),
+        payload: &[],
+        ce_flag: false,
+    })
+    .await;
+    node.dispatch_link_message(crate::node::AuthenticatedLinkMessage {
+        source_peer: *node.get_peer(&peer).unwrap().identity(),
         msg_type: crate::protocol::LinkMessageType::ClientOnly.to_byte(),
         payload: &0u64.to_le_bytes(),
         ce_flag: false,

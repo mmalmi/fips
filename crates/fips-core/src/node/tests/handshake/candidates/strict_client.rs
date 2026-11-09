@@ -146,7 +146,7 @@ fn run(strict: bool, modern: bool) {
                 )
                 .await;
             }
-            for _ in 0..3 {
+            for _ in 0..8 {
                 tokio::time::sleep(Duration::from_millis(15)).await;
                 node.node.send_tree_announce_to_peer(&addr).await.unwrap();
                 node.node.bloom_state.mark_update_needed(addr);
@@ -158,6 +158,23 @@ fn run(strict: bool, modern: bool) {
                     .iter()
                     .any(|body| body[0] == LinkMessageType::ClientSupport.to_byte())
             );
+            assert!(observed.iter().any(|body| {
+                body[0] == LinkMessageType::Extension.to_byte()
+                    && matches!(
+                        crate::protocol::LinkExtension::decode(&body[1..]),
+                        Some(crate::protocol::LinkExtension::ClientSupport { .. })
+                    )
+            }));
+            if !modern {
+                assert!(
+                    observed.iter().filter(|body| body.as_slice() == [0x53]).count() <= 3,
+                    "legacy capability solicitation must stop after three attempts"
+                );
+                let first_probe = observed.iter().find(|body| {
+                    body[0] == LinkMessageType::Extension.to_byte() || body.as_slice() == [0x53]
+                }).unwrap();
+                assert_eq!(first_probe[0], LinkMessageType::Extension.to_byte());
+            }
             if strict {
                 assert!(node.node.is_leaf_only());
                 assert!(

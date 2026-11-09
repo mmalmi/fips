@@ -101,15 +101,17 @@ pub enum LinkMessageType {
     /// Periodic heartbeat for link liveness detection.
     /// No payload — the msg_type byte alone is sufficient.
     Heartbeat = 0x51,
-    /// Authenticated endpoint-only role: u64 LE declaration sequence.
-    /// Old peers ignore this unknown message.
-    /// Replaces TreeAnnounce so this peer can never become a transit parent.
+    /// Legacy fork client role. Requires positive legacy capability detection;
+    /// upstream uses this byte for PathProbe. New peers use Extension.
     ClientOnly = 0x52,
-    /// Support for ClientOnly, without declaring the sender a client. No payload.
+    /// Legacy fork capability, with an exactly empty body. A valid upstream
+    /// PathAck is at least 26 body bytes and can never enable this capability.
     ClientSupport = 0x53,
-    /// Same-host accepting UDP listeners: count u8, followed by u16 LE ports.
-    /// Hosts are derived from the authenticated loopback carrier, never supplied.
+    /// Legacy fork same-host listener hints, enabled only after detection.
+    /// Upstream uses this byte for PathClose. New peers use Extension.
     LocalUdpListeners = 0x54,
+    /// Magic-prefixed fork extension envelope, ignored by upstream peers.
+    Extension = 0xe0,
 }
 
 impl LinkMessageType {
@@ -128,6 +130,7 @@ impl LinkMessageType {
             0x52 => Some(LinkMessageType::ClientOnly),
             0x53 => Some(LinkMessageType::ClientSupport),
             0x54 => Some(LinkMessageType::LocalUdpListeners),
+            0xe0 => Some(LinkMessageType::Extension),
             _ => None,
         }
     }
@@ -153,6 +156,7 @@ impl fmt::Display for LinkMessageType {
             LinkMessageType::ClientOnly => "ClientOnly",
             LinkMessageType::ClientSupport => "ClientSupport",
             LinkMessageType::LocalUdpListeners => "LocalUdpListeners",
+            LinkMessageType::Extension => "Extension",
         };
         write!(f, "{}", name)
     }
@@ -481,6 +485,7 @@ mod tests {
             LinkMessageType::SessionDatagram,
             LinkMessageType::Disconnect,
             LinkMessageType::Heartbeat,
+            LinkMessageType::Extension,
         ];
 
         for ty in types {

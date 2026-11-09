@@ -150,7 +150,7 @@
         let fmp_timestamp = 166_001;
         let fmp_inner_timestamp = 166_002_u32;
         let fsp_inner_timestamp = 166_003_u32;
-        let fsp_inner_flags = 0x05;
+        let fsp_inner_flags = 0x01;
         let fmp_counter = 166;
         let fsp_counter = 167;
         let fmp_flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
@@ -270,11 +270,28 @@
     #[tokio::test]
     async fn local_coordinate_hints_require_session_authentication() {
         for authentic in [false, true] {
-            check_coordinate_hints(authentic).await;
+            check_coordinate_hints(authentic, 0, 0, false).await;
         }
     }
 
-    async fn check_coordinate_hints(authentic: bool) {
+    #[tokio::test]
+    async fn malformed_fsp_does_not_deliver_or_update_coordinates() {
+        for bit in 1..8 {
+            check_coordinate_hints(true, 1 << bit, 0, false).await;
+        }
+        for bit in 3..8 {
+            // Includes DIRECT_TRANSPORT, which is invalid in this wrapped carrier.
+            check_coordinate_hints(true, 0, 1 << bit, false).await;
+        }
+        check_coordinate_hints(true, 0, 0, true).await;
+    }
+
+    async fn check_coordinate_hints(
+        authentic: bool,
+        inner_flags: u8,
+        extra_flags: u8,
+        bad_length: bool,
+    ) {
         let local_addr = NodeAddr::from_bytes([0xc1; 16]);
         let source_identity = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source_identity.pubkey_full());
@@ -304,16 +321,19 @@
         let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
             fsp_inner_timestamp,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            0,
+            inner_flags,
             endpoint_payload,
         );
-        let fsp_wire = fsp_encrypted_wire_with_coords(
+        let mut fsp_wire = fsp_encrypted_wire_with_coords(
             198,
-            crate::node::session_wire::FSP_FLAG_CP,
+            crate::node::session_wire::FSP_FLAG_CP | extra_flags,
             &fsp_inner,
             if authentic { fsp_key } else { fsp_key ^ 1 },
             &coords_prefix,
         );
+        if bad_length {
+            fsp_wire[2..4].copy_from_slice(&0u16.to_le_bytes());
+        }
         let datagram = crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_wire)
             .with_ttl(8)
             .with_path_mtu(1280)
@@ -350,17 +370,52 @@
             &mut driver,
             &mut routes,
             transport_id,
-            remote_addr,
+            remote_addr.clone(),
             fmp_wire,
             fmp_timestamp,
         )
         .await;
 
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
-        assert_eq!(turn.summary().inbound_admitted(), 2);
-        if !authentic {
+        assert_eq!(turn.summary().inbound_admitted(), if extra_flags != 0 || bad_length { 1 } else { 2 });
+        if !authentic || inner_flags != 0 || extra_flags != 0 || bad_length {
+            let mut turn = turn;
+            assert_eq!(turn.take_fmp_ingress_receipts().len(), 1);
             assert!(turn.fsp_coord_warmups().is_empty());
             assert_eq!(turn.fsp_session_ingress_count(), 0);
+            let activity = driver.owner_fsp_activity(fsp_owner).unwrap();
+            assert_eq!(activity.last_authenticated_rx_activity, None);
+            assert!(!activity.current_epoch_confirmed());
+            if authentic && inner_flags != 0 {
+                // A valid message using the same FSP counter must still be a
+                // replay: rejecting inner flags must not release its replay row.
+                let mut valid_inner = fsp_inner;
+                valid_inner[5] = 0;
+                let replay = fsp_encrypted_wire_with_coords(
+                    198,
+                    crate::node::session_wire::FSP_FLAG_CP,
+                    &valid_inner,
+                    fsp_key,
+                    &coords_prefix,
+                );
+                let datagram = crate::protocol::SessionDatagram::new(source_addr, local_addr, replay)
+                    .with_ttl(8)
+                    .encode();
+                let mut plaintext = fmp_inner_timestamp.to_le_bytes().to_vec();
+                plaintext.extend_from_slice(&datagram);
+                let replay = fmp_encrypted_wire(0xc7, 200, 0, &plaintext, fmp_key);
+                let turn = pump_one_fmp_session_ingress_turn(
+                    &mut driver,
+                    &mut routes,
+                    transport_id,
+                    remote_addr,
+                    replay,
+                    fmp_timestamp + 1,
+                ).await;
+                assert!(turn.fsp_coord_warmups().is_empty());
+                assert_eq!(turn.fsp_session_ingress_count(), 0);
+                assert!(turn.drops().iter().any(|drop| drop.reason == PacketDropReason::Replay));
+            }
             return;
         }
         assert_eq!(turn.fsp_coord_warmups().len(), 1);

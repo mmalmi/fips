@@ -25,6 +25,7 @@ pub(crate) mod error;
 pub(crate) mod filter;
 mod handshake;
 pub(crate) mod link;
+mod link_extensions;
 pub(crate) mod session;
 pub(crate) mod tree;
 
@@ -37,6 +38,7 @@ pub use link::{
     Disconnect, DisconnectReason, HandshakeMessageType, LinkMessageType,
     SESSION_DATAGRAM_HEADER_SIZE, SessionDatagram, SessionDatagramRef,
 };
+pub(crate) use link_extensions::{LINK_EXTENSION_CLIENT_SUPPORT, LinkExtension};
 pub use session::{
     COORDS_REQUIRED_SIZE, CoordsRequired, FspFlags, FspInnerFlags, MTU_EXCEEDED_SIZE, MtuExceeded,
     PATH_MTU_NOTIFICATION_SIZE, PathBroken, PathMtuNotification, SESSION_RECEIVER_REPORT_SIZE,

@@ -3,6 +3,21 @@ use crate::NodeAddr;
 use crate::proto::protocol::ProtocolError;
 use crate::proto::stp::TreeCoordinate;
 
+fn check_routing_signal_body(payload: &[u8], expected: usize) -> Result<(), ProtocolError> {
+    if payload[0] != 0 {
+        return Err(ProtocolError::Malformed(
+            "routing signal has reserved body flags".into(),
+        ));
+    }
+    if payload.len() != expected {
+        return Err(ProtocolError::MessageTooLong {
+            max: expected,
+            got: payload.len(),
+        });
+    }
+    Ok(())
+}
+
 /// Path MTU notification (msg_type 0x13).
 ///
 /// Sent by a node that discovers a path MTU value (from transit router
@@ -120,7 +135,7 @@ impl CoordsRequired {
                 got: payload.len(),
             });
         }
-        // payload[0] is flags (reserved, ignored)
+        check_routing_signal_body(payload, 33)?;
         let mut dest_bytes = [0u8; 16];
         dest_bytes.copy_from_slice(&payload[1..17]);
         let mut reporter_bytes = [0u8; 16];
@@ -211,13 +226,13 @@ impl PathBroken {
                 got: payload.len(),
             });
         }
-        // payload[0] is flags (reserved, ignored)
         let mut dest_bytes = [0u8; 16];
         dest_bytes.copy_from_slice(&payload[1..17]);
         let mut reporter_bytes = [0u8; 16];
         reporter_bytes.copy_from_slice(&payload[17..33]);
 
-        let (last_known_coords, _consumed) = decode_optional_coords(&payload[33..])?;
+        let (last_known_coords, consumed) = decode_optional_coords(&payload[33..])?;
+        check_routing_signal_body(payload, 33 + consumed)?;
 
         Ok(Self {
             dest_addr: NodeAddr::from_bytes(dest_bytes),
@@ -296,7 +311,7 @@ impl MtuExceeded {
                 got: payload.len(),
             });
         }
-        // payload[0] is flags (reserved, ignored)
+        check_routing_signal_body(payload, 35)?;
         let mut dest_bytes = [0u8; 16];
         dest_bytes.copy_from_slice(&payload[1..17]);
         let mut reporter_bytes = [0u8; 16];
@@ -308,5 +323,43 @@ impl MtuExceeded {
             reporter: NodeAddr::from_bytes(reporter_bytes),
             mtu,
         })
+    }
+}
+
+#[cfg(test)]
+mod routing_signal_validation_tests {
+    use super::*;
+
+    fn assert_strict_body<T: std::fmt::Debug>(
+        encoded: Vec<u8>,
+        decode: fn(&[u8]) -> Result<T, ProtocolError>,
+    ) {
+        let body = &encoded[5..];
+        assert!(decode(body).is_ok());
+        for len in 0..body.len() {
+            assert!(decode(&body[..len]).is_err(), "accepted truncated body {len}");
+        }
+        for bit in 0..8 {
+            let mut invalid = body.to_vec();
+            invalid[0] = 1 << bit;
+            assert!(matches!(decode(&invalid), Err(ProtocolError::Malformed(_))));
+        }
+        let mut invalid = body.to_vec();
+        invalid.push(0);
+        assert!(matches!(decode(&invalid), Err(ProtocolError::MessageTooLong { .. })));
+    }
+
+    #[test]
+    fn routing_signals_reject_reserved_flags_truncation_and_trailing_bytes() {
+        let dest = NodeAddr::from_bytes([1; 16]);
+        let reporter = NodeAddr::from_bytes([2; 16]);
+        assert_strict_body(CoordsRequired::new(dest, reporter).encode(), CoordsRequired::decode);
+        assert_strict_body(MtuExceeded::new(dest, reporter, 1280).encode(), MtuExceeded::decode);
+        assert_strict_body(PathBroken::new(dest, reporter).encode(), PathBroken::decode);
+        let coords = TreeCoordinate::from_addrs(vec![dest, reporter]).unwrap();
+        assert_strict_body(
+            PathBroken::new(dest, reporter).with_last_coords(coords).encode(),
+            PathBroken::decode,
+        );
     }
 }

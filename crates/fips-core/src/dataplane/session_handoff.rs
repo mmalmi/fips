@@ -109,6 +109,18 @@ fn dataplane_session_ingress_from_output(
                 DataplaneSessionHandoffError::InvalidPacket,
             );
         };
+        // This extension belongs only to the negotiated direct carrier.
+        // Wrapped encrypted envelopes must pass preflight before key lookup.
+        if prefix.flags & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT != 0
+            || (prefix.phase == FSP_PHASE_ESTABLISHED
+                && !prefix.is_unencrypted()
+                && FspWireHeader::parse_encrypted(datagram.payload).is_err())
+        {
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
+        }
         (
             datagram.src_addr,
             datagram.path_mtu,

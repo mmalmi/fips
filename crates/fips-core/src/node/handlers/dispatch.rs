@@ -4,6 +4,7 @@ use crate::NodeAddr;
 use crate::node::{
     AuthenticatedLinkMessage, AuthenticatedSessionDatagram, Node, PeerSessionIndexKind,
 };
+use crate::protocol::{LINK_EXTENSION_CLIENT_SUPPORT, LinkExtension, LinkMessageType};
 use tracing::{debug, info, trace};
 
 impl Node {
@@ -65,44 +66,111 @@ impl Node {
                 trace!(peer = %self.peer_display_name(&source_addr), "Received heartbeat");
             }
             0x52 => {
-                self.handle_client_only(&source_addr, payload);
+                if self.legacy_link_extensions_enabled(&source_addr) {
+                    self.handle_client_only(&source_addr, payload);
+                }
             }
             0x53 => {
-                self.handle_client_support(&source_addr, payload).await;
+                if payload.is_empty() {
+                    self.handle_client_support(&source_addr, false, false).await;
+                }
             }
-            0x54 => self.handle_local_udp_listeners(&source_addr, payload),
+            0x54 => {
+                if self.legacy_link_extensions_enabled(&source_addr) {
+                    self.handle_local_udp_listeners(&source_addr, payload);
+                }
+            }
+            0xe0 => self.handle_link_extension(&source_addr, payload).await,
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
             }
         }
     }
 
-    async fn handle_client_support(&mut self, from: &NodeAddr, payload: &[u8]) {
-        if !payload.is_empty() {
+    fn legacy_link_extensions_enabled(&self, from: &NodeAddr) -> bool {
+        self.peers.get(from).is_some_and(|peer| {
+            peer.client_only_supported && !peer.namespaced_link_extensions
+        })
+    }
+
+    async fn handle_link_extension(&mut self, from: &NodeAddr, payload: &[u8]) {
+        let Some(message) = LinkExtension::decode(payload) else {
+            return;
+        };
+        match message {
+            LinkExtension::ClientSupport { response, capabilities } => {
+                if capabilities & LINK_EXTENSION_CLIENT_SUPPORT != 0 {
+                    self.handle_client_support(from, true, response).await;
+                }
+            }
+            message if self.peers.get(from).is_some_and(|peer| {
+                peer.client_only_supported && peer.namespaced_link_extensions
+            }) => match message {
+                LinkExtension::ClientOnly(sequence) => {
+                    self.handle_client_only(from, &sequence.to_le_bytes());
+                }
+                LinkExtension::LocalUdpListeners(body) => {
+                    self.handle_local_udp_listeners(from, body);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    async fn handle_client_support(&mut self, from: &NodeAddr, namespaced: bool, response: bool) {
+        let Some(peer) = self.peers.get_mut(from) else {
+            return;
+        };
+        if peer.namespaced_link_extensions && !namespaced {
             return;
         }
-        if let Some(peer) = self.peers.get_mut(from)
-            && !peer.client_only_supported
-        {
-            let reply = !self.config.is_leaf_only() && !peer.client_only;
+        let first = !peer.client_only_supported || (namespaced && !peer.namespaced_link_extensions);
+        let reply = if namespaced { !response } else { first };
+        if first {
             peer.client_only_supported = true;
+            peer.namespaced_link_extensions = namespaced;
             self.refresh_client_role();
             self.mark_tree_announce_pending(from);
-            // Complete first-contact negotiation without waiting for another
-            // tree announcement. Only the first authenticated capability gets
-            // this reply; periodic announcements recover a lost response.
-            if reply
-                && let Err(error) = self
-                    .send_dataplane_fmp_link_plaintext(
-                        from,
-                        &[crate::protocol::LinkMessageType::ClientSupport.to_byte()],
-                        false,
-                    )
-                    .await
-            {
-                debug!(%error, "Client capability reply remains pending");
+        }
+        // Requests can be retried after loss; responses never generate a loop.
+        if reply && let Err(error) = self.send_client_support(from, true).await {
+            debug!(%error, "Client capability reply remains pending");
+        }
+    }
+
+    pub(in crate::node) async fn send_client_support(
+        &mut self,
+        to: &NodeAddr,
+        response: bool,
+    ) -> Result<(), crate::node::NodeError> {
+        if self.legacy_link_extensions_enabled(to) {
+            return self.send_dataplane_fmp_link_plaintext(
+                to, &[LinkMessageType::ClientSupport.to_byte()], false,
+            ).await;
+        }
+        let message = LinkExtension::ClientSupport {
+            response,
+            capabilities: LINK_EXTENSION_CLIENT_SUPPORT,
+        }.encode();
+        self.send_dataplane_fmp_link_plaintext(to, &message, false).await?;
+        if !response {
+            let legacy_probe = self.peers.get_mut(to).is_some_and(|peer| {
+                let previous = peer.client_support_probes;
+                peer.client_support_probes = previous.saturating_add(1);
+                !peer.client_only_supported && (1..=3).contains(&previous)
+            });
+            if legacy_probe && self.config.is_leaf_only() {
+                // Older fork clients/routers used an empty 0x53 capability.
+                // Upstream PathAck requires 26 body bytes and drops this shape.
+                // Solicit it only after an unanswered namespaced probe, at most
+                // three times per peer epoch, at the existing role cadence.
+                self.send_dataplane_fmp_link_plaintext(
+                    to, &[LinkMessageType::ClientSupport.to_byte()], false,
+                ).await?;
             }
         }
+        Ok(())
     }
 
     /// The authenticated carrier supplies the identity: no claimed address or
@@ -115,6 +183,9 @@ impl Node {
         let Some(peer) = self.peers.get_mut(from) else {
             return;
         };
+        if !peer.client_only_supported {
+            return;
+        }
         if peer
             .routing_role_sequence
             .is_some_and(|last| sequence < last || (sequence == last && !peer.client_only))
@@ -123,7 +194,6 @@ impl Node {
         }
         peer.routing_role_sequence = Some(sequence);
         peer.client_only = true;
-        peer.client_only_supported = true;
         self.refresh_client_role();
         let changed = !self.bloom_state.leaf_dependents().contains(from);
         self.bloom_state.add_leaf_dependent(*from);

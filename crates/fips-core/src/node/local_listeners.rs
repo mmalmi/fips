@@ -63,6 +63,13 @@ impl Node {
         let Some(ip) = self.authenticated_loopback_ip(addr) else {
             return Ok(());
         };
+        let Some(peer) = self.peers.get(addr) else {
+            return Ok(());
+        };
+        if !peer.client_only_supported {
+            return self.send_client_support(addr, false).await;
+        }
+        let namespaced = peer.namespaced_link_extensions;
         let mut ports = self
             .bound_udp_listener_snapshot()
             .into_iter()
@@ -75,14 +82,18 @@ impl Node {
         ports.sort_unstable();
         ports.dedup();
         ports.truncate(MAX_LOCAL_UDP_LISTENERS);
-        let mut body = vec![
-            crate::protocol::LinkMessageType::LocalUdpListeners.to_byte(),
-            ports.len() as u8,
-        ];
+        let mut body = vec![ports.len() as u8];
         for port in ports {
             body.extend_from_slice(&port.to_le_bytes());
         }
-        self.send_dataplane_fmp_link_plaintext(addr, &body, false)
+        let message = if namespaced {
+            crate::protocol::LinkExtension::LocalUdpListeners(&body).encode()
+        } else {
+            let mut message = vec![crate::protocol::LinkMessageType::LocalUdpListeners.to_byte()];
+            message.extend_from_slice(&body);
+            message
+        };
+        self.send_dataplane_fmp_link_plaintext(addr, &message, false)
             .await
     }
 

@@ -551,6 +551,8 @@ impl Node {
         if let Some(active) = self.peers.get_mut(peer) {
             active.clear_filter();
             active.client_only_supported = false;
+            active.namespaced_link_extensions = false;
+            active.client_support_probes = 0;
             active.local_udp_listeners.clear();
             active.local_udp_listeners_received = false;
             active.client_support_sent = false;

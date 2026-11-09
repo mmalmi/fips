@@ -130,6 +130,13 @@ impl OwnerState {
             let CryptoResult::Opened(output) = completion.result else {
                 unreachable!("open FSP session payload slot contains only opened outputs");
             };
+            if !fsp_session_inner_header_valid(&output) {
+                // Authentication consumes its replay row, but an invalid
+                // inner header must not update coordinates, paths or MMP.
+                flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
+                retired.push_output(output);
+                return;
+            }
             self.record_authenticated_path(&output);
             retired.collect_authenticated_coords(&output);
             self.authenticated_counter_highest = self
@@ -188,6 +195,10 @@ impl OwnerState {
         }
         match completion.result {
             CryptoResult::Opened(output) => {
+                if !fsp_session_inner_header_valid(&output) {
+                    retired.push_output(output);
+                    return;
+                }
                 let from_draining = completion.reservation.generation != self.generation
                     && completion.reservation.receive_epoch
                         .is_some_and(|(epoch, _)| epoch == DataplaneReceiveEpoch::Current);
@@ -276,6 +287,18 @@ impl OwnerState {
             self.background_in_flight = self.background_in_flight.saturating_add(1);
         }
     }
+}
+
+fn fsp_session_inner_header_valid(output: &PacketOutput) -> bool {
+    if output.owner().protocol() != PacketProtocol::Fsp
+        || !matches!(output.target(), OutputTarget::SessionPayload { .. })
+    {
+        return true;
+    }
+    output
+        .opened_payload()
+        .and_then(crate::node::session_wire::fsp_strip_inner_header)
+        .is_some()
 }
 
 fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) -> bool {
