@@ -8,6 +8,8 @@ volume_mode=
 [ "$stage" != test ] || volume_mode=,readonly
 upstream=$(cd "$2" && pwd)
 volume=$3
+# Refuse missing custody instead of silently creating an empty cache.
+docker volume inspect "$volume" >/dev/null
 logs=$(cd "$4" && pwd)
 fork=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 [ "$(git -C "$upstream" rev-parse HEAD)" = 79ee9c2c90b683a37bfd80ac3102c06ed35d3aa8 ]

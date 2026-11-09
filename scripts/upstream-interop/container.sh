@@ -39,7 +39,7 @@ case "$INTEROP_STAGE" in
             --extern "fips=$1" -L dependency=/work/target/debug/deps \
             -o /work/target/debug/upstream-native-client
         sha256sum /work/target/debug/fips /work/target/debug/examples/native-echo \
-            /work/target/debug/upstream-native-client
+            /work/target/debug/upstream-native-client | tee /work/upstream-binaries.sha256
         ;;
     fork)
         cd /fork
