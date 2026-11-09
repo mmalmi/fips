@@ -436,7 +436,19 @@ impl Node {
 
         if self.max_peers > 0 && self.peers.len() >= self.max_peers {
             let is_known_active = self.peers.contains_key(&peer_node_addr);
+            // The pending candidate must not conflict with its own authenticated
+            // replacement. The later ACL/admission check still owns mutation.
+            let replaces_candidate = superseded_candidate.is_some_and(|link| {
+                self.can_replace_inbound_neighbor_rotation(
+                    &peer_node_addr,
+                    packet.transport_id,
+                    &packet.remote_addr,
+                    link,
+                    Self::now_ms(),
+                )
+            });
             if !is_known_active
+                && !replaces_candidate
                 && !self.can_receive_neighbor_rotation(&peer_node_addr, Self::now_ms())
             {
                 debug!(

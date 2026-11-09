@@ -4,7 +4,7 @@ use crate::node::tests::session::{
     expect_single_endpoint_data_event, recv_endpoint_event_while_draining,
     run_large_stack_async_test, send_endpoint_data_via_dataplane,
 };
-use crate::node::tests::spanning_tree::process_dataplane_packet;
+use crate::node::tests::spanning_tree::{poll_available_packets, process_dataplane_packet};
 use crate::node::wire::Msg1Header;
 
 async fn dial(nodes: &mut [TestNode], source: usize, destination: usize) {
@@ -29,7 +29,9 @@ async fn quiesce(nodes: &mut [TestNode]) {
         let mut idle = 0;
         while idle < 3 {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            if process_available_packets(nodes).await == 0 {
+            // This is a timed multi-node poll: a rejected duplicate proof has
+            // no crypto completion to wait for and must not consume the bound.
+            if poll_available_packets(nodes).await == 0 {
                 idle += 1;
             } else {
                 idle = 0;

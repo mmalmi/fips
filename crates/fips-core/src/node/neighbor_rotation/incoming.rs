@@ -76,6 +76,29 @@ impl Node {
         self.rotation_victim(now_ms).map(|_| outgoing)
     }
 
+    /// A same-path request may replace the parked candidate within its original
+    /// attempt. Use the same check before and after inbound ACL authorization.
+    pub(in crate::node) fn can_replace_inbound_neighbor_rotation(
+        &self,
+        peer: &NodeAddr,
+        transport: TransportId,
+        remote: &TransportAddr,
+        link: LinkId,
+        now_ms: u64,
+    ) -> bool {
+        self.peers.get_connection(&link).is_some_and(|conn| {
+            !conn.is_outbound()
+                && conn.has_session()
+                && conn.transport_id() == Some(transport)
+                && conn.source_addr() == Some(remote)
+                && conn
+                    .expected_identity()
+                    .is_some_and(|identity| identity.node_addr() == peer)
+        }) && self
+            .neighbor_rotation_rejection(peer, false, now_ms, Some(link))
+            .is_none()
+    }
+
     /// Called after Noise identity and the inbound ACL have been checked.
     pub(in crate::node) async fn begin_inbound_neighbor_rotation(
         &mut self,
@@ -88,17 +111,8 @@ impl Node {
         if let Some(link) = replacing {
             // Decide while the old candidate still owns its index and deadline.
             // A same-path restart continues that attempt without a new cooldown.
-            return self.peers.get_connection(&link).is_some_and(|conn| {
-                !conn.is_outbound()
-                    && conn.has_session()
-                    && conn.transport_id() == Some(transport)
-                    && conn.source_addr() == Some(remote)
-                    && conn
-                        .expected_identity()
-                        .is_some_and(|identity| *identity.node_addr() == peer)
-            }) && self
-                .neighbor_rotation_rejection(&peer, false, now_ms, Some(link))
-                .is_none();
+            return self
+                .can_replace_inbound_neighbor_rotation(&peer, transport, remote, link, now_ms);
         }
         let Some(outgoing) = self.unanswered_rotation_for_transfer(&peer, now_ms) else {
             return self.begin_neighbor_rotation(peer, false, now_ms);

@@ -136,6 +136,11 @@ async fn connect(
         })
         .unwrap();
     let header = Msg2Header::parse(msg2).unwrap();
+    assert_eq!(
+        header.receiver_idx,
+        SessionIndex::new(sender_index),
+        "candidate response must belong to the fresh request"
+    );
     handshake.read_message_2(header.noise_msg2(msg2)).unwrap();
     Candidate {
         link,

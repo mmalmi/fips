@@ -155,6 +155,13 @@ async fn declare_client(node: &mut Node, peer: NodeAddr) {
     .await;
     assert!(node.get_peer(&peer).unwrap().client_only);
     assert!(node.tree_state().peer_coords(&peer).is_none());
+    // Capability negotiation schedules its own bootstrap advertisement. Model
+    // that send before measuring whether receiver reports request repairs.
+    assert!(node.get_peer(&peer).unwrap().has_pending_tree_announce());
+    node.peers
+        .get_mut(&peer)
+        .unwrap()
+        .record_tree_announce_sent(Node::now_ms());
 }
 
 #[tokio::test]
