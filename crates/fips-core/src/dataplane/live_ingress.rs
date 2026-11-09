@@ -524,7 +524,7 @@ impl DataplaneEstablishedFastIngressSink {
         fsp_routes: &HashMap<NodeAddr, DataplaneIngressRoute>,
         packet: ReceivedPacket,
     ) -> DataplaneFastIngressDirectFspResult {
-        let Ok(header) = FspWireHeader::parse(packet.data.as_slice()) else {
+        let Ok(header) = FspWireHeader::parse_encrypted(packet.data.as_slice()) else {
             return DataplaneFastIngressDirectFspResult::Miss(packet);
         };
         if header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT == 0 {

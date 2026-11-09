@@ -150,7 +150,7 @@
         let fmp_timestamp = 166_001;
         let fmp_inner_timestamp = 166_002_u32;
         let fsp_inner_timestamp = 166_003_u32;
-        let fsp_inner_flags = 0x05;
+        let fsp_inner_flags = 0x01;
         let fmp_counter = 166;
         let fsp_counter = 167;
         let fmp_flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;

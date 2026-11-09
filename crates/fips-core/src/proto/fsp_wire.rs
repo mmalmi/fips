@@ -238,7 +238,8 @@ pub fn fsp_prepend_inner_header(
 
 /// Strip the 6-byte FSP inner header from a decrypted payload.
 ///
-/// Returns `(timestamp, msg_type, inner_flags, &rest)` or None if too short.
+/// Returns `(timestamp, msg_type, inner_flags, &rest)`, or None if the header
+/// is too short or sets a reserved inner flag. Only the spin bit is defined.
 pub fn fsp_strip_inner_header(plaintext: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
     if plaintext.len() < FSP_INNER_HEADER_SIZE {
         return None;
@@ -246,6 +247,9 @@ pub fn fsp_strip_inner_header(plaintext: &[u8]) -> Option<(u32, u8, u8, &[u8])> 
     let timestamp = u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
     let msg_type = plaintext[4];
     let inner_flags = plaintext[5];
+    if inner_flags & !0x01 != 0 {
+        return None;
+    }
     Some((
         timestamp,
         msg_type,
@@ -426,6 +430,16 @@ mod tests {
     fn test_inner_header_too_short() {
         assert!(fsp_strip_inner_header(&[0, 0, 0, 0, 0]).is_none()); // needs 6 bytes
         assert!(fsp_strip_inner_header(&[]).is_none());
+    }
+
+    #[test]
+    fn test_inner_header_rejects_each_reserved_flag() {
+        for bit in 1..8 {
+            for spin in [0, 1] {
+                let plaintext = fsp_prepend_inner_header(1, 0x10, (1 << bit) | spin, b"data");
+                assert!(fsp_strip_inner_header(&plaintext).is_none());
+            }
+        }
     }
 
     // ===== Flag Constants Tests =====

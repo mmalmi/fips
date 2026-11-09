@@ -428,6 +428,7 @@
             crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
         );
         wire.extend((0..700).map(|idx| (idx % 251) as u8));
+        wire[2..4].copy_from_slice(&700u16.to_le_bytes());
         let mut output =
             transport_output(owner, 4242, 9, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 220;
@@ -490,6 +491,7 @@
                 crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
             );
             wire.extend((0..700).map(|idx| (idx % 251) as u8));
+        wire[2..4].copy_from_slice(&700u16.to_le_bytes());
             let mut output = transport_output(
                 owner,
                 counter,
@@ -577,6 +579,7 @@
             crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
         );
         wire.extend((0..900).map(|idx| (idx % 251) as u8));
+        wire[2..4].copy_from_slice(&900u16.to_le_bytes());
         let mut output =
             transport_output(owner, 4646, 10, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 240;
@@ -693,6 +696,7 @@
             crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
         );
         wire.extend((0..900).map(|idx| (idx % 251) as u8));
+        wire[2..4].copy_from_slice(&900u16.to_le_bytes());
         let mut output =
             transport_output(owner, 4848, 12, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 240;
@@ -765,6 +769,7 @@
             crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
         );
         wire.extend((0..900).map(|idx| (idx % 251) as u8));
+        wire[2..4].copy_from_slice(&900u16.to_le_bytes());
         let mut output =
             transport_output(owner, 4747, 10, transport_id, remote_addr.clone(), wire);
         output.path_mtu = 240;

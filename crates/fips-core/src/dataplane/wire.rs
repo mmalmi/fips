@@ -4,6 +4,7 @@ pub(crate) enum WirePreflightError {
     WrongVersion,
     WrongPhase,
     PlaintextFsp,
+    ReservedFspFlags,
     BadFspCoords,
     LengthMismatch,
 }
@@ -135,6 +136,62 @@ mod wire_length_tests {
             Err(WirePreflightError::LengthMismatch)
         );
     }
+
+    fn encrypted_fsp_frame(flags: u8) -> Vec<u8> {
+        let mut frame = build_fsp_established_header(9, flags, 6).unwrap().to_vec();
+        if flags & crate::node::session_wire::FSP_FLAG_CP != 0 {
+            // Empty optional source and destination coordinates.
+            frame.extend_from_slice(&[0; 4]);
+        }
+        frame.extend_from_slice(&[0; 6 + AEAD_TAG_SIZE]);
+        frame
+    }
+
+    #[test]
+    fn fsp_encrypted_header_validates_length_with_and_without_coords() {
+        for flags in [0, crate::node::session_wire::FSP_FLAG_CP] {
+            let frame = encrypted_fsp_frame(flags);
+            assert!(FspWireHeader::parse_encrypted(&frame).is_ok());
+            for declared in [0u16, 5, 7, u16::MAX] {
+                let mut invalid = frame.clone();
+                invalid[2..4].copy_from_slice(&declared.to_le_bytes());
+                assert_eq!(
+                    FspWireHeader::parse_encrypted(&invalid),
+                    Err(WirePreflightError::LengthMismatch)
+                );
+            }
+            let mut invalid = frame.clone();
+            invalid.push(0);
+            assert_eq!(
+                FspWireHeader::parse_encrypted(&invalid),
+                Err(WirePreflightError::LengthMismatch)
+            );
+            let mut invalid = frame;
+            invalid.truncate(invalid.len() - 7);
+            assert_eq!(
+                FspWireHeader::parse_encrypted(&invalid),
+                Err(WirePreflightError::LengthMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn fsp_encrypted_header_rejects_reserved_flags_but_preserves_direct_carrier() {
+        let allowed = crate::node::session_wire::FSP_FLAG_CP
+            | crate::node::session_wire::FSP_FLAG_K
+            | crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
+        for flags in 0..=0x0f {
+            if flags & !allowed == 0 {
+                assert!(FspWireHeader::parse_encrypted(&encrypted_fsp_frame(flags)).is_ok());
+            }
+        }
+        for bit in 4..8 {
+            assert_eq!(
+                FspWireHeader::parse_encrypted(&encrypted_fsp_frame(1 << bit)),
+                Err(WirePreflightError::ReservedFspFlags)
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,6 +236,28 @@ impl FspWireHeader {
             ciphertext_offset,
             flags,
         })
+    }
+
+    /// Validate a complete encrypted frame before selecting a receive key.
+    /// Coordinates are cleartext and are not included in the declared payload
+    /// length. The direct-transport bit is a negotiated carrier extension;
+    /// wrapped SessionDatagrams reject it separately at their handoff.
+    pub(crate) fn parse_encrypted(data: &[u8]) -> Result<Self, WirePreflightError> {
+        let header = Self::parse(data)?;
+        let allowed_flags = crate::node::session_wire::FSP_FLAG_CP
+            | crate::node::session_wire::FSP_FLAG_K
+            | crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
+        if header.flags & !allowed_flags != 0 {
+            return Err(WirePreflightError::ReservedFspFlags);
+        }
+        let declared = usize::from(u16::from_le_bytes([data[2], data[3]]));
+        let plaintext_len = data
+            .len()
+            .checked_sub(usize::from(header.ciphertext_offset) + AEAD_TAG_SIZE);
+        if plaintext_len != Some(declared) {
+            return Err(WirePreflightError::LengthMismatch);
+        }
+        Ok(header)
     }
 
     pub(crate) fn counter(&self) -> u64 {

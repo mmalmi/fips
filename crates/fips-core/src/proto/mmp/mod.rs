@@ -217,6 +217,7 @@ impl MmpPeerState {
         self.sender.reset_for_rekey();
         self.receiver.reset_for_rekey(now);
         self.metrics.reset_for_rekey();
+        self.spin_bit = SpinBitState::new(self.spin_bit.is_initiator());
     }
 
     /// Current operating mode.
@@ -553,6 +554,22 @@ mod tests {
         assert_eq!(config.mode, MmpMode::Full);
         assert_eq!(config.log_interval_secs, 30);
         assert_eq!(config.owd_window_size, 32);
+    }
+
+    #[test]
+    fn link_rekey_restarts_spin_for_new_counters_without_carrying_rtt() {
+        let now = Instant::now();
+        for initiator in [false, true] {
+            let mut state = MmpPeerState::new(&MmpConfig::default(), initiator);
+            state.spin_bit.rx_observe(!initiator, 1000, now);
+            assert!(state.spin_bit.tx_bit());
+            state.reset_for_rekey(now + Duration::from_secs(10));
+            assert_eq!(state.spin_bit.is_initiator(), initiator);
+            assert!(!state.spin_bit.tx_bit(), "a new epoch must not carry the old spin bit");
+            let sample = state.spin_bit.rx_observe(!initiator, 1, now + Duration::from_secs(11));
+            assert!(sample.is_none(), "an RTT sample cannot span key epochs");
+            assert!(state.spin_bit.tx_bit(), "new counters must advance the spin bit");
+        }
     }
 
     #[test]

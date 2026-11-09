@@ -112,6 +112,19 @@ fn dataplane_session_ingress_from_output(
                 DataplaneSessionHandoffError::InvalidPacket,
             );
         };
+        // The direct-transport extension has no meaning inside an FMP
+        // SessionDatagram. Validate established envelopes before even warming
+        // coordinates; key selection happens later in raw ingress.
+        if prefix.flags & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT != 0
+            || (prefix.phase == FSP_PHASE_ESTABLISHED
+                && !prefix.is_unencrypted()
+                && FspWireHeader::parse_encrypted(datagram.payload).is_err())
+        {
+            return DataplaneSessionIngressHandoff::rejected(
+                output,
+                DataplaneSessionHandoffError::InvalidPacket,
+            );
+        }
         let coord_warmup = dataplane_fsp_coord_warmup(
             datagram.src_addr,
             local_addr,
