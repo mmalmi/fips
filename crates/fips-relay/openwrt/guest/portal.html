@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Freedom Wi-Fi</title>
+<style>body{background:#faf9f5;color:#19342a;font:18px/1.5 system-ui;margin:0}main{max-width:29rem;margin:8vh auto;padding:1.5rem}small{letter-spacing:.14em;text-transform:uppercase}h1{line-height:1.1;font-size:2.3rem}button,a.pay{display:inline-block;border:0;background:#205c48;color:white;border-radius:.5rem;padding:.75rem 1.1rem;font:inherit;cursor:pointer}form{margin:1rem 0}textarea{width:100%;box-sizing:border-box}code{overflow-wrap:anywhere;font-size:.8rem}a{color:#205c48}</style>
+<main>
+<small>Freedom Wi-Fi</small>{{if not .Secure}}<h1>Get internet</h1>
+<p>{{.Minutes}} minutes of Wi-Fi for <strong>{{.Price}} sats</strong>.</p>
+<a class="pay" href="{{.TLSURL}}">Continue to secure checkout</a>{{else if not .Up}}<h1>Internet is unavailable</h1>
+<p>Try again when this hotspot has a connection.</p>
+{{if .Active}}<p>Your pass is active until {{.End}} UTC.</p>{{end}}{{else if .Active}}<h1>You're online</h1>
+<p>Your pass is active until {{.End}} UTC.</p>
+<p>
+<a href="https://nostrvpn.org/">Get Nostr VPN</a>
+</p>{{else if .Invoice}}<h1>Pay {{.Price}} sats</h1>
+<p>Open your wallet or copy the invoice to a device with internet access. After paying, check your payment here.</p>
+<a class="pay" href="{{.Link}}">Open wallet</a>
+<p>
+<code>{{.Invoice}}</code>
+</p>
+<form method="post">
+<input type="hidden" name="id" value="{{.ID}}">
+<button name="action" value="check">Check payment</button>
+</form>{{else if .Cashu}}<h1>Pay with Cashu</h1>
+<p>Paste a {{.Price}} sat token from <strong>{{.Mint}}</strong>. Your wallet may include mint fees. If it rounds up by one sat, that extra credit extends your pass.</p>
+<form method="post">
+<input type="hidden" name="id" value="{{.ID}}">
+<textarea required name="token" rows="4" maxlength="32768" autocomplete="off" aria-label="Cashu token">
+</textarea>
+<button name="action" value="redeem">Pay {{.Price}} sats</button>
+</form>{{if .PendingCashu}}<form method="post"><input type="hidden" name="id" value="{{.ID}}"><button name="action" value="recover">Recover payment</button></form>{{end}}{{else}}<h1>Get internet</h1>
+<p>{{.Minutes}} minutes of Wi-Fi for <strong>{{.Price}} sats</strong>.</p>
+<form method="post">
+<button name="action" value="start-lightning">Pay with Lightning</button>
+</form><form method="post">
+<button name="action" value="start-cashu">Pay with Cashu</button>
+</form>{{end}}</main>
+</html>

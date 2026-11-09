@@ -1,0 +1,4 @@
+iifname "br-freedom" ether saddr . ip saddr @freedom_clients return
+iifname "br-freedom" meta nfproto ipv4 tcp dport 80 redirect to :2080
+iifname "br-freedom" meta nfproto ipv4 udp dport 53 redirect to :2053
+iifname "br-freedom" meta nfproto ipv4 tcp dport 53 redirect to :2053

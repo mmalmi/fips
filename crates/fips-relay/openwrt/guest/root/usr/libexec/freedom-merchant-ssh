@@ -1,0 +1,15 @@
+#!/bin/sh
+# The Linux SSH key is restricted to a single merchant helper command.
+set -eu
+[ "$#" -ge 6 ] && [ "$1" = paid-exit ] && [ "$2" = wallet ] && [ "$3" = --config ] && [ "$5" = --json ]
+host=$(uci -q get freedom_guest.main.merchant_host)
+case "$host" in ''|-*|*[!a-zA-Z0-9@._-]*) exit 2;; esac
+key=/etc/freedom-guest/merchant.key
+if [ "$6" = freedom-receive ] && [ "$#" = 6 ]; then
+    { printf 'receive\n'; cat; } | ssh -T -i "$key" "$host"
+elif [ "$6" = topup ] && [ "$#" = 9 ] && [ "$8" = --mint ] && [ "$9" = "$(uci -q get freedom_guest.main.mint)" ]; then
+    case "$7" in ''|*[!0-9]*) exit 2;; esac
+    printf 'topup %s\n' "$7" | ssh -T -i "$key" "$host"
+else
+    exit 2
+fi

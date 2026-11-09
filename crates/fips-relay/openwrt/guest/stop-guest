@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -z "${IPKG_INSTROOT:-}" ] || exit 0
+[ ! -x /etc/init.d/freedom-guest ] || /etc/init.d/freedom-guest stop

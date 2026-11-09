@@ -1,0 +1,7 @@
+#!/bin/sh
+[ -z "${IPKG_INSTROOT:-}" ] || exit 0
+rm -f /tmp/luci-indexcache
+/etc/init.d/rpcd reload
+/etc/init.d/freedom-guest enabled || exit 0
+[ "$(uci -q get freedom_guest.main.mode)" != off ] || exit 0
+fw4 check && fw4 reload && /etc/init.d/freedom-guest start

@@ -9,6 +9,12 @@ The binary must be cross-compiled for the selected CPU architecture. The package
 builder checks its ELF machine against the APK architecture. Hardware validation
 currently uses ARM64; other architectures need their own build and runtime check.
 
+## Freedom guest Wi-Fi
+
+The optional [Freedom guest internet package](guest/README.md) sells time passes through a phone checkout. The operator can use local internet, select multiple paid Nostr VPN exits, or delegate selection to an automatic buyer.
+
+The [native FIPS customer entry](../PROTOTYPE-RESULTS.md#acceptance-evidence) is a separate way onto the mesh for compatible clients. An operator can offer that entry alongside the guest checkout and configure free or paid forwarding independently.
+
 ## Freedom web interface
 
 The optional `luci-app-freedom` package adds **Services → Freedom** to LuCI.

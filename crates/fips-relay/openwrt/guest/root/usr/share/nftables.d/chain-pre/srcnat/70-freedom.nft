@@ -1,0 +1,1 @@
+iifname "br-freedom" oifname @freedom_uplink masquerade
