@@ -23,6 +23,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Child,
 };
+#[path = "destination_service/bids.rs"]
+mod bids;
 #[path = "destination_service/bandwidth.rs"]
 mod bandwidth;
 #[path = "destination_service/concurrency.rs"]
@@ -267,10 +269,16 @@ impl Bench {
     }
 
     async fn deliver(&self, destination: usize, label: &str) {
+        self.deliver_from(0, destination, label).await;
+    }
+
+    async fn deliver_from(&self, source: usize, destination: usize, label: &str) {
         let payload = format!("{label}{}", "x".repeat(900));
         let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
         for _ in 0..6 {
-            self.send(destination, &payload).await;
+            request(&self.configs[source], &AdminRequest::Send {
+                destination: self.npubs[destination].clone(), payload: payload.clone()
+            }).await.unwrap();
             if tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let s = request(&self.configs[destination], &AdminRequest::Status)

@@ -389,15 +389,20 @@ impl Dataplane {
         packet: OutboundPacket,
     ) -> Result<u64, AdmissionDrop> {
         let lane = packet.lane();
+        let owner = packet.owner;
+        let shard = self.owner_shard_index(owner);
         if self.outbound_admission_lens.lane(lane) >= self.config.lane_capacity(lane) {
-            let drop = AdmissionDrop::outbound(&packet);
-            self.record_drop(drop.clone().into());
-            return Err(drop);
+            if let Some(displaced) = self.shards[shard].outbound_admission.displace_lower_bid(&packet) {
+                self.record_drop(displaced.into());
+                self.outbound_admission_lens.bulk -= 1;
+            } else {
+                let drop = AdmissionDrop::outbound(&packet);
+                self.record_drop(drop.clone().into());
+                return Err(drop);
+            }
         }
 
         let ingress_seq = self.next_outbound_seq();
-        let owner = packet.owner;
-        let shard = self.owner_shard_index(owner);
         let lane_ready = self.shards[shard].submit_outbound_packet_with_seq(packet, ingress_seq);
         self.outbound_admission_lens.increment(lane);
         if lane_ready {
@@ -461,6 +466,11 @@ impl Dataplane {
             .config
             .lane_capacity(lane)
             .saturating_sub(self.outbound_admission_lens.lane(lane));
+        if packets.len() > available && packets.iter().any(|p| matches!(p.class, PacketClass::Paid(_))) {
+            let count = packets.len();
+            let admitted = packets.into_iter().map(|p| self.submit_outbound_packet(p)).filter(Result::is_ok).count();
+            return (admitted, count - admitted);
+        }
         let admitted = available.min(packets.len());
         let dropped_packets = packets.split_off(admitted);
         let dropped = dropped_packets.len();

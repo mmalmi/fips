@@ -131,6 +131,7 @@ pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
         && previous.destination.node_addr() == next.destination.node_addr()
         && previous.next_hop == next.next_hop
         && previous.path == next.path
+        && previous.bid_msat_per_kib == next.bid_msat_per_kib
         && previous.price == next.price
         && previous.billing == next.billing
         && previous.trial == next.trial

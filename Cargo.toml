@@ -13,12 +13,14 @@ publish = false
 members = [
     ".",
     "crates/fips-core",
+    "crates/fips-credit",
     "crates/fips-endpoint",
     "crates/fips-identity",
     "crates/fips-relay",
     "crates/fips-relay-app",
     "crates/fips-sim",
 ]
+exclude = ["vendor/peer-payments", "vendor/cashu-credit"]
 resolver = "2"
 
 # Flash-constrained routers need room for durable payment journals and updates.
@@ -34,6 +36,7 @@ strip = "symbols"
 # including its forwarding policy, instead of a second registry copy.
 [patch.crates-io]
 nvpn-fips-core = { path = "crates/fips-core" }
+peer-payments = { path = "vendor/peer-payments" }
 
 [dependencies]
 nvpn-fips-core = { version = "=0.4.90", path = "crates/fips-core", features = ["webrtc-transport"] }

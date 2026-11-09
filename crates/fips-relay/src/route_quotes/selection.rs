@@ -455,6 +455,7 @@ impl RouteQuotes {
         destination: PeerIdentity,
         selection: &PriceSelection,
         reuse_unchanged: bool,
+        bid_msat_per_kib: u64,
     ) -> Result<RouteOffer, String> {
         let _work = selection.work.lock().await;
         let quality = self
@@ -465,7 +466,7 @@ impl RouteQuotes {
             )
             .await
             .map_err(|e| e.to_string())?;
-        self.select_with_quality(destination, selection, reuse_unchanged, &quality)
+        self.select_with_quality(destination, selection, reuse_unchanged, &quality, bid_msat_per_kib)
             .await
     }
 
@@ -475,6 +476,7 @@ impl RouteQuotes {
         selection: &PriceSelection,
         reuse_unchanged: bool,
         quality: &SourceRouteQuality,
+        bid_msat_per_kib: u64,
     ) -> Result<RouteOffer, String> {
         let dest = *destination.node_addr();
         let mut peers: Vec<_> = self
@@ -519,12 +521,14 @@ impl RouteQuotes {
             state.candidate_indices(&peers.iter().map(|p| p.node_addr).collect::<Vec<_>>(), now)
         };
         let request = QuoteRequest {
+            preferred_mint: (bid_msat_per_kib > 0).then(|| self.policy.mint_url.clone()),
             destination,
             ancestors: vec![*self.endpoint.node_addr()],
             deadline_unix: unix_now()?
                 .checked_add(QUOTE_SECONDS)
                 .ok_or("clock overflow")?,
             reuse_unchanged: true,
+            bid_msat_per_kib,
             requested_max_units: None,
         };
         let mut pending = JoinSet::new();

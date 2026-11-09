@@ -10,10 +10,12 @@ const MAX_PER_PROVIDER: usize = 16;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
+    preferred_mint: Option<String>,
     provider: NodeAddr,
     destination: NodeAddr,
     ancestors: Vec<NodeAddr>,
     max_units: Option<u64>,
+    bid_msat_per_kib: u64,
 }
 
 struct Cached {
@@ -158,10 +160,12 @@ impl QuoteClient {
         request: &QuoteRequest,
     ) -> Result<RouteOffer, String> {
         let key = Key {
+            preferred_mint: request.preferred_mint.clone(),
             provider: *peer.node_addr(),
             destination: *request.destination.node_addr(),
             ancestors: request.ancestors.clone(),
             max_units: request.requested_max_units,
+            bid_msat_per_kib: request.bid_msat_per_kib,
         };
         let offer = self
             .cache

@@ -1,0 +1,15 @@
+[package]
+name = "fips-credit"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Bounded service-credit admission at the existing FIPS forwarding hook"
+
+[dependencies]
+nvpn-fips-core = { version = "=0.4.90", path = "../fips-core" }
+peer-payments = { version = "=0.1.0" }
+
+[dev-dependencies]
+nvpn-fips-core = { version = "=0.4.90", path = "../fips-core", features = ["sim-transport"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

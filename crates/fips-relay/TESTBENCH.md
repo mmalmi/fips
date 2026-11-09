@@ -183,6 +183,27 @@ another adapter.
 
 ### Mint host configuration
 
+A fresh forwarding-data service can run its own Cashu mint. Install the Unix
+`cashu-service-mint` helper (built with `local-mint-cln`) beside `fips-relay`.
+Set `terms.controller.mint_url` to a fixed numeric loopback address and add
+this field under `terms` before `fips-relay init`.
+
+```json
+"local_mint": { "cln_socket": "/path/to/lightning-rpc" }
+```
+
+Normal relay startup now brings up the mint and exports the Cashu API on its
+authenticated FIPS endpoint at port 44745. Clients use the pinned mint host's
+npub in `terms.mint_mesh`. A Lightning deposit buys transferable service sats.
+A separate new profile can opt into Lightning withdrawals with `"redeemable":
+true` inside `local_mint`. The helper pins the node identity, network and
+redemption policy. It requires an existing Core Lightning node. Back up the
+whole stopped mint directory and the node's separate Lightning state.
+
+Run `python3 crates/fips-relay/tests/managed_mint.py /path/to/fips-relay` to check
+the two installed binaries with an isolated Core Lightning RPC fixture.
+
+
 Run the test mint on its own loopback listener, for example `127.0.0.1:3338`.
 The ordinary relay daemon on that host can expose it using this top-level field
 in its existing service configuration:

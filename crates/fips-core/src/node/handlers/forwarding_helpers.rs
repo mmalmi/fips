@@ -59,7 +59,7 @@ fn forward_run_reached_limit(run_len: usize, configured_limit: usize) -> bool {
 
 fn forwarding_lane(forward: &PreparedSessionForward) -> ForwardingLane {
     match forwarding_packet_class(forward) {
-        crate::dataplane::PacketClass::Bulk => ForwardingLane::Bulk,
+        crate::dataplane::PacketClass::Bulk | crate::dataplane::PacketClass::Paid(_) => ForwardingLane::Bulk,
         crate::dataplane::PacketClass::Background => ForwardingLane::Background,
         _ => ForwardingLane::Priority,
     }

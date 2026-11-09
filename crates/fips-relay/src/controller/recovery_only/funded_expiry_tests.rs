@@ -106,6 +106,7 @@ async fn exercise(installed: bool, lost_completion: bool) {
                     billing: saved_offer.billing,
                     destination: saved_offer.destination.npub(),
                     max_rate_msat_per_kib: 1024,
+                    bid_msat_per_kib: 0,
                     paused: false,
                     pending: Some(saved_offer),
                     selected_trial: None,

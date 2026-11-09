@@ -24,6 +24,7 @@ pub(crate) fn contract_from_offer(
     digest.update(id.as_bytes());
     digest.update(channel.id.as_bytes());
     Ok(Contract {
+        bid_msat_per_kib: offer.bid_msat_per_kib,
         billing: offer.billing,
         id: format!("{:x}", digest.finalize()),
         channel_id: channel.id.clone(),
@@ -64,16 +65,20 @@ pub(super) fn validate_offer_address(
         || offer.path.len() < 2
         || offer.path.len() + request.ancestors.len() > MAX_PAID_HOPS + 2
         || offer.path.first() != Some(&offer.provider)
-        || offer.path.last() != Some(offer.destination.node_addr())
+        || (offer.path.last() != Some(offer.destination.node_addr())
+            && (offer.bid_msat_per_kib == 0 || offer.path.contains(offer.destination.node_addr())))
         || offer.path.get(1) != Some(&offer.next_hop)
         || offer.path.iter().collect::<HashSet<_>>().len() != offer.path.len()
         || offer.path.iter().any(|p| request.ancestors.contains(p))
+        || offer.bid_msat_per_kib != request.bid_msat_per_kib
+        || (offer.bid_msat_per_kib > 0 && !offer.billing.has_free_handshakes())
+        || u128::from(offer.price.msat) < u128::from(offer.bid_msat_per_kib) * (offer.path.len() - 1) as u128
         || offer.price.per_bytes != PRICE_BYTES
         || (offer.price.msat == 0 && !offer.billing.has_free_handshakes())
         || offer.price.msat > policy.max_rate_msat_per_kib
         || offer.expires_unix <= now
         || offer.expires_unix > now.saturating_add(3_600)
-        || (offer.price.msat != 0 && offer.mint_url != policy.mint_url)
+        || (offer.price.msat != 0 && (offer.mint_url != request.preferred_mint.as_ref().unwrap_or(&policy.mint_url).as_str() || !policy.accepts_mint(&offer.mint_url)))
         || !valid_key(&offer.receiver_pubkey_hex)
         || offer.max_units == 0
         || request

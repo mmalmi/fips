@@ -13,6 +13,11 @@ impl ForwardingPolicy for DurableRelay {
     }
 
     fn decide(&self, request: &ForwardingRequest<'_>) -> fips_core::node::ForwardingDecision {
+        self.decide_with_bid(request, &mut 0)
+    }
+
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid: &mut u64) -> fips_core::node::ForwardingDecision {
+        *bid = 0;
         use fips_core::node::{ForwardingAdmission, ForwardingClass, ForwardingDecision};
         // Never wait for the disk-writing controller on the native node loop.
         let Ok(windows) = self.windows.read() else {
@@ -32,10 +37,10 @@ impl ForwardingPolicy for DurableRelay {
             return ForwardingDecision::Reject;
         };
         match admission {
-            Admission::Granted(token) => ForwardingDecision::Admit(ForwardingAdmission {
-                token,
-                class: ForwardingClass::Unspecified,
-            }),
+            Admission::Granted {token, bid_msat_per_kib} => {
+                *bid = bid_msat_per_kib;
+                ForwardingDecision::Admit(ForwardingAdmission {token, class: ForwardingClass::Unspecified})
+            },
             Admission::CreditExhausted => ForwardingDecision::Retry,
             Admission::WindowExhausted {
                 channel_id,

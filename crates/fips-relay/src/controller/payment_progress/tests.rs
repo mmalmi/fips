@@ -35,6 +35,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
     buyer.accept_channel(provider, terms.clone(), 0).unwrap();
     buyer
         .accept_quote(Contract {
+            bid_msat_per_kib: 0,
             billing: Default::default(),
             id: "quote".into(),
             channel_id: terms.id.clone(),

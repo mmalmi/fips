@@ -78,6 +78,7 @@ impl ForwardingPolicy for Gate {
 
 fn policy(mint: &str) -> ControllerPolicy {
     ControllerPolicy {
+        additional_receive_mints: vec![],
         mint_url: mint.into(),
         channel_capacity_sat: 64,
         max_locked_sat: 128,

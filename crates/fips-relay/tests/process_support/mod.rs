@@ -33,15 +33,18 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
         destination_fees: Default::default(),
         return_allowance: false,
         return_bandwidth: None,
+        public_free_transit: false,
         free_bandwidth: None,
         price_selection: None,
         payment_cadence: Default::default(),
         funding_request_budget: None,
         neighbors: vec![],
         terms: ServiceTerms {
+            local_mint: None,
             billing: Default::default(),
             mint_mesh: None,
             controller: ControllerPolicy {
+                additional_receive_mints: vec![],
                 mint_url: mint.into(),
                 channel_capacity_sat: 32,
                 max_locked_sat: 64,

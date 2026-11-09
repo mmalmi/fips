@@ -39,6 +39,7 @@ const MAX_REQUEST_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct QuotePolicy {
+    pub additional_receive_mints: Vec<String>,
     pub destination_fees: BTreeMap<NodeAddr, u64>,
     pub billing: BillingBasis,
     pub mint_url: String,
@@ -51,6 +52,12 @@ pub struct QuotePolicy {
     pub capacity_sat: u64,
     /// Fixed relationship allowance; quoting another destination cannot change it.
     pub grace_msat: u64,
+}
+
+impl QuotePolicy {
+    fn accepts_mint(&self, mint: &str) -> bool {
+        mint == self.mint_url || self.additional_receive_mints.iter().any(|allowed| allowed == mint)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -82,6 +89,10 @@ fn unix_now() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map(|t| t.as_secs())
         .map_err(|_| "invalid clock".into())
+}
+
+pub(crate) fn zero_bid(value: &u64) -> bool {
+    *value == 0
 }
 
 fn is_false(value: &bool) -> bool {
@@ -168,7 +179,7 @@ impl RouteQuotes {
     /// Request a fresh quote using native routing or the opted-in source selector.
     /// A direct final destination needs no paid forwarding quote.
     pub async fn request_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
-        self.request_route_inner(destination, false).await
+        self.request_route_at_bid(destination, false, 0).await
     }
 
     pub(crate) fn billing_basis(&self) -> BillingBasis {
@@ -178,13 +189,13 @@ impl RouteQuotes {
     /// Check current native prices and paths while reusing unchanged offers.
     /// This does not accept a quote, fund a channel or authorize any traffic.
     pub async fn refresh_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
-        self.request_route_inner(destination, true).await
+        self.request_route_at_bid(destination, true, 0).await
     }
 
     /// Mint bootstrap never creates a payment obligation or accepts a priced
     /// route. Request only when opening a connection; reuse the bounded cache.
     pub(crate) async fn require_free_route(&self, destination: PeerIdentity) -> Result<(), String> {
-        let Some(offer) = self.request_native_route(destination, true).await? else {
+        let Some(offer) = self.request_native_route(destination, true, 0).await? else {
             return Ok(());
         };
         if offer.price.msat != 0 {
@@ -210,17 +221,21 @@ impl RouteQuotes {
             .retire(id)
     }
 
-    async fn request_route_inner(
+    pub(crate) async fn request_route_at_bid(
         &self,
         destination: PeerIdentity,
         reuse_unchanged: bool,
+        bid_msat_per_kib: u64,
     ) -> Result<RouteOffer, String> {
+        if bid_msat_per_kib > self.policy.max_rate_msat_per_kib || (bid_msat_per_kib > 0 && !self.policy.billing.has_free_handshakes()) {
+            return Err("priority bid outside local policy".into());
+        }
         if let Some(selection) = &self.selection {
             return self
-                .select_priced_route(destination, selection, reuse_unchanged)
+                .select_priced_route(destination, selection, reuse_unchanged, bid_msat_per_kib)
                 .await;
         }
-        self.request_native_route(destination, reuse_unchanged)
+        self.request_native_route(destination, reuse_unchanged, bid_msat_per_kib)
             .await?
             .ok_or_else(|| "destination is a direct neighbor".into())
     }
@@ -230,6 +245,7 @@ impl RouteQuotes {
         &self,
         destination: PeerIdentity,
         reuse_unchanged: bool,
+        bid_msat_per_kib: u64,
     ) -> Result<Option<RouteOffer>, String> {
         let deadline_unix = unix_now()?.checked_add(20).ok_or("clock overflow")?;
         let provider = self.resolve(destination, None, deadline_unix).await?;
@@ -239,10 +255,12 @@ impl RouteQuotes {
         self.request_from(
             provider,
             QuoteRequest {
+                preferred_mint: (bid_msat_per_kib > 0).then(|| self.policy.mint_url.clone()),
                 destination,
                 ancestors: vec![*self.endpoint.node_addr()],
                 deadline_unix,
                 reuse_unchanged,
+                bid_msat_per_kib,
                 requested_max_units: None,
             },
         )
@@ -257,10 +275,12 @@ impl RouteQuotes {
         self.request_from(
             provider,
             QuoteRequest {
+                preferred_mint: (old.bid_msat_per_kib > 0).then(|| old.mint_url.clone()),
                 destination: old.destination,
                 ancestors: vec![*self.endpoint.node_addr()],
                 deadline_unix: unix_now()?.checked_add(20).ok_or("clock overflow")?,
                 reuse_unchanged: false,
+                bid_msat_per_kib: old.bid_msat_per_kib,
                 requested_max_units: old.trial.then_some(old.max_units),
             },
         )
@@ -341,6 +361,9 @@ impl RouteQuotes {
             || request.deadline_unix <= now
             || request.deadline_unix > now.saturating_add(MAX_REQUEST_SECONDS)
             || request.requested_max_units == Some(0)
+            || request.preferred_mint.as_ref().is_some_and(|mint| request.bid_msat_per_kib == 0 || !self.policy.accepts_mint(mint))
+            || request.bid_msat_per_kib > self.policy.max_rate_msat_per_kib
+            || (request.bid_msat_per_kib > 0 && !self.policy.billing.has_free_handshakes())
         {
             return Err("invalid quote path or deadline".into());
         }
@@ -372,7 +395,10 @@ impl RouteQuotes {
         if request.ancestors.contains(next.node_addr()) {
             return Err("quote loop".into());
         }
-        let downstream = if next.node_addr() == request.destination.node_addr() {
+        // A receive-only seed sells its own link. Beyond that link the
+        // native network carries the packet on ordinary best-effort terms.
+        let native_tail = request.bid_msat_per_kib > 0 && self.free.public_free_transit();
+        let downstream = if native_tail || next.node_addr() == request.destination.node_addr() {
             None
         } else {
             if request.ancestors.len() == MAX_PAID_HOPS {
@@ -387,7 +413,11 @@ impl RouteQuotes {
             .destination_fees
             .get(request.destination.node_addr())
             .copied()
-            .unwrap_or(self.policy.fee_msat_per_kib);
+            .unwrap_or(self.policy.fee_msat_per_kib)
+            .max(request.bid_msat_per_kib);
+        if downstream.as_ref().is_some_and(|offer| offer.price.msat > 0 && offer.mint_url != self.policy.mint_url) {
+            return Err("onward purchase needs an authorized funding mint".into());
+        }
         let rate = local_fee_msat_per_kib
             .checked_add(downstream.as_ref().map_or(0, |d| d.price.msat))
             .ok_or("quote price overflow")?;
@@ -402,7 +432,7 @@ impl RouteQuotes {
         if let Some(downstream) = &downstream {
             path.extend_from_slice(&downstream.path);
         } else {
-            path.push(*request.destination.node_addr());
+            path.push(*next.node_addr());
         }
         let expires_unix = now
             .checked_add(self.policy.lifetime_secs)
@@ -417,6 +447,7 @@ impl RouteQuotes {
             StoredOffer {
                 local_fee_msat_per_kib,
                 offer: RouteOffer {
+                    bid_msat_per_kib: request.bid_msat_per_kib,
                     trial: request.requested_max_units.is_some(),
                     billing: self.policy.billing,
                     id: String::new(),
@@ -428,7 +459,7 @@ impl RouteQuotes {
                     price,
                     expires_unix,
                     max_units,
-                    mint_url: self.policy.mint_url.clone(),
+                    mint_url: request.preferred_mint.unwrap_or_else(|| self.policy.mint_url.clone()),
                     receiver_pubkey_hex: self.policy.receiver_pubkey_hex.clone(),
                     capacity_sat: self.policy.capacity_sat,
                     grace_msat: self.policy.grace_msat,

@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) enum Admission {
-    Granted(u64),
+    Granted { token: u64, bid_msat_per_kib: u64 },
     CreditExhausted,
     WindowExhausted { channel_id: String, cost_msat: u64 },
 }
@@ -10,7 +10,7 @@ pub(crate) enum Admission {
 impl RelayLedger {
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
         match self.admit_with_windows(request, now_unix, None)? {
-            Admission::Granted(token) => Some(token),
+            Admission::Granted {token, ..} => Some(token),
             Admission::CreditExhausted | Admission::WindowExhausted { .. } => None,
         }
     }
@@ -60,6 +60,7 @@ impl RelayLedger {
         {
             return None;
         }
+        let bid_msat_per_kib = a.contract.bid_msat_per_kib;
         let legacy = a.contract.billing.is_legacy();
         let digest = if legacy {
             fingerprint(request)
@@ -131,7 +132,7 @@ impl RelayLedger {
             state.seen.insert((*request.ingress.node_addr(), digest));
         }
         state.pending.insert(token, (id, digest));
-        Some(Admission::Granted(token))
+        Some(Admission::Granted {token, bid_msat_per_kib})
     }
 
     /// Used only by the durable wrapper, which must commit the recovered

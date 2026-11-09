@@ -7,6 +7,7 @@ fn watch(j: &mut Journal, offer: &RouteOffer) -> WatchedRoute {
         billing: offer.billing,
         destination: offer.destination.npub(),
         max_rate_msat_per_kib: offer.price.msat,
+        bid_msat_per_kib: 0,
         paused: false,
         pending: Some(offer.clone()),
         selected_trial: None,

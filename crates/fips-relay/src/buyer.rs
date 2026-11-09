@@ -11,7 +11,7 @@ mod forwarding;
 mod retirement;
 const REFUND_DEADLINE_VERSION: u16 = 0x100;
 
-pub use forwarding::{PaidForwarder, RouteObserver};
+pub use forwarding::{PaidForwarder, PeerCreditForwarder, RouteObserver};
 
 use crate::{
     durable::{
@@ -165,7 +165,7 @@ impl State {
 
     fn validate_and_recover(&mut self) -> Result<(), BuyerError> {
         if !matches!(self.history_version(), 1..=4)
-            || self.total_budget_sat == 0
+            || (self.total_budget_sat == 0 && (!self.channels.is_empty() || !self.quotes.is_empty() || self.history.is_some()))
             || self.next_token == 0
             || self.channels.len() > self.limits.max_channels
             || self.quotes.len() > self.limits.max_contracts
@@ -306,9 +306,6 @@ impl BuyerAuthorizer {
         total_budget_sat: u64,
         limits: Limits,
     ) -> Result<Self, BuyerError> {
-        if total_budget_sat == 0 {
-            return Err(BuyerError::Budget);
-        }
         let owner = acquire_owner(directory)?;
         if directory
             .join("buyer.json")

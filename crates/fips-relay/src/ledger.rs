@@ -95,6 +95,9 @@ impl BillingBasis {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contract {
+    /// Local scheduling bid committed when this paid offer was accepted.
+    #[serde(default, skip_serializing_if = "crate::route_quotes::zero_bid")]
+    pub bid_msat_per_kib: u64,
     pub id: String,
     pub channel_id: String,
     #[serde(with = "node_addr")]
@@ -549,6 +552,7 @@ pub(crate) fn validate_contract(c: &Contract, channel: &ChannelTerms) -> Result<
         || c.id.len() > 128
         || c.max_units == 0
         || c.price.msat == 0
+        || (c.bid_msat_per_kib > 0 && (!c.billing.has_free_handshakes() || c.price.per_bytes != crate::route_quotes::PRICE_BYTES || c.bid_msat_per_kib > c.price.msat))
         || c.price.amount_due_msat(c.max_units).is_none()
         || c.next_hop == channel.buyer
         || c.expires_unix > channel.expires_unix

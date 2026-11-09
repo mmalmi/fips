@@ -508,3 +508,28 @@ async fn source_retry_policy_replacement_and_shutdown_drop_without_accounting() 
         assert!(policy.completions.lock().unwrap().is_empty());
     }
 }
+
+#[test]
+fn waiting_forwarded_data_serves_highest_funded_bid_then_fifo() {
+    let mut queue = OutboundAdmissionQueue::new();
+    let a = fmp_owner(960);
+    let b = fmp_owner(961);
+    let paid = |n| PacketClass::Paid(std::num::NonZeroU64::new(n).unwrap());
+    let make = |owner, class| OutboundPacket::fmp(owner, 1, class, 0, 0, PacketBuffer::new(vec![0]));
+    let pop = |queue: &mut OutboundAdmissionQueue, lane| {
+        let mut run = Vec::new();
+        let cursor = queue.pop_next_run_into(lane, 8, &mut run).unwrap();
+        queue.continue_owner_lane(cursor);
+        run.iter().map(|p| p.ingress_seq).collect::<Vec<_>>()
+    };
+    queue.admit_with_seq(make(a, PacketClass::Background), 0);
+    queue.admit_run_with_seq(vec![make(a, paid(2)), make(a, paid(8)), make(a, paid(8))], 1);
+    queue.admit_with_seq(make(b, paid(5)), 4);
+    queue.admit_with_seq(make(b, PacketClass::Control), 5);
+    assert_eq!(pop(&mut queue, Lane::Priority), [5]);
+    assert_eq!(pop(&mut queue, Lane::Bulk), [2, 3]);
+    assert_eq!(pop(&mut queue, Lane::Bulk), [4]);
+    assert_eq!(pop(&mut queue, Lane::Bulk), [1]);
+    assert_eq!(pop(&mut queue, Lane::Background), [0]);
+    assert_eq!(queue.len(), 0);
+}

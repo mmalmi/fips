@@ -1,6 +1,9 @@
 //! Record local sends and couple onward purchases to upstream admission.
 use super::*;
 
+mod credit;
+pub use credit::PeerCreditForwarder;
+
 impl OriginatedSessionObserver for BuyerAuthorizer {
     fn prepare(&self, intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
         self.prepare_intent(intent)
@@ -55,6 +58,15 @@ pub struct PaidForwarder {
 }
 
 impl PaidForwarder {
+    /// Add explicitly negotiated peer-credit windows without bypassing onward
+    /// purchase authorization or changing any existing Cashu relationship.
+    pub fn with_peer_credit(
+        self,
+        credit: Arc<fips_credit::CreditForwarder>,
+    ) -> PeerCreditForwarder {
+        PeerCreditForwarder::new(self, credit)
+    }
+
     pub fn new(seller: Arc<DurableRelay>, buyer: Arc<BuyerAuthorizer>) -> Self {
         Self::for_billing(seller, buyer, BillingBasis::UniqueSessionEnvelope)
     }
@@ -130,8 +142,9 @@ impl PaidForwarder {
         &self,
         request: &ForwardingRequest<'_>,
         refusal: &mut fips_core::node::ForwardingDecision,
+        bid: &mut u64,
     ) -> Option<ForwardingAdmission> {
-        let mut admit_seller = || match self.seller.decide(request) {
+        let mut admit_seller = || match self.seller.decide_with_bid(request, bid) {
             fips_core::node::ForwardingDecision::Admit(admission) => Some(admission.token),
             decision => {
                 *refusal = decision;
@@ -254,9 +267,14 @@ impl ForwardingPolicy for PaidForwarder {
     }
 
     fn decide(&self, request: &ForwardingRequest<'_>) -> fips_core::node::ForwardingDecision {
+        self.decide_with_bid(request, &mut 0)
+    }
+
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid: &mut u64) -> fips_core::node::ForwardingDecision {
+        *bid = 0;
         use fips_core::node::ForwardingDecision;
         let mut refusal = ForwardingDecision::Reject;
-        self.admit_with_seller(request, &mut refusal)
+        self.admit_with_seller(request, &mut refusal, bid)
             .map_or(refusal, ForwardingDecision::Admit)
     }
 

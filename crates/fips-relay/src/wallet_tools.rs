@@ -190,11 +190,27 @@ pub async fn offline_wallet(
     config: &ServiceConfig,
     command: WalletRequest,
 ) -> Result<Value, String> {
+    offline_wallet_at_mint(config, command, &config.terms.controller.mint_url).await
+}
+
+/// Wallet operations stay inside the chosen issuer's balance and custody history.
+pub async fn offline_wallet_at_mint(config: &ServiceConfig, command: WalletRequest, mint: &str) -> Result<Value, String> {
+    let issuer = config.terms.controller.receiving_mints().position(|candidate| candidate == mint)
+        .ok_or("mint is outside the saved receiving policy")?;
     RelayService::validate_stored_state(config)?;
     let _owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
     RelayService::validate_stored_state(config)?;
     let wallet = RelayService::open_checked_wallet(config).await?;
-    let mint = &config.terms.controller.mint_url;
+    // Index zero retains the original export paths and SDK sequence.
+    // The saved account manifest binds the order of every additional issuer.
+    let (export_root, scope) = if issuer == 0 {
+        (config.state_directory.clone(), "fips-exports".to_owned())
+    } else {
+        (config.state_directory.join(format!("issuer-{issuer}")), format!("fips-exports-{issuer}"))
+    };
+    if issuer != 0 && matches!(&command, WalletRequest::Export { .. } | WalletRequest::AcknowledgeExports { .. }) {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&export_root).map_err(|e| e.to_string())?;
+    }
     let uses_mint = matches!(
         &command,
         WalletRequest::Import { .. } | WalletRequest::Export { .. } | WalletRequest::Recover
@@ -245,11 +261,11 @@ pub async fn offline_wallet(
             }
             WalletRequest::Export { id, amount_sat } => {
                 let request_id =
-                    history::prepare_export(&config.state_directory, mint, id, &wallet)
+                    history::prepare_export(&export_root, mint, &scope, id, &wallet)
                         .await
                         .map_err(|e| format!("prepare wallet export: {e}"))?;
                 export_payment(
-                    &config.state_directory,
+                    &export_root,
                     mint,
                     &id.to_string(),
                     amount_sat,
@@ -260,7 +276,7 @@ pub async fn offline_wallet(
                 .map_err(|e| format!("send wallet export: {e}"))
             }
             WalletRequest::AcknowledgeExports { through } => {
-                history::acknowledge(&config.state_directory, mint, through, &wallet).await
+                history::acknowledge(&export_root, mint, &scope, through, &wallet).await
             }
         }
     }

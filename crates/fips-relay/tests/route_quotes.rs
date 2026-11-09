@@ -82,6 +82,7 @@ async fn quote_scenario(free: bool) {
                     node.clone(),
                     Arc::new(control),
                     QuotePolicy {
+                        additional_receive_mints: vec![],
                         destination_fees: Default::default(),
                         billing: if free {
                             BillingBasis::ForwardingData
@@ -212,6 +213,7 @@ async fn quote_scenario(free: bool) {
                     // Bypass the source cache: the provider must select its
                     // current grant B, never reinstall superseded grant A.
                     let request = QuoteRequest {
+                        preferred_mint: None,
                         destination: peers[destination],
                         ancestors: vec![*peers[source].node_addr()],
                         deadline_unix: std::time::SystemTime::now()
@@ -220,6 +222,7 @@ async fn quote_scenario(free: bool) {
                             .as_secs()
                             + 10,
                         reuse_unchanged: true,
+                        bid_msat_per_kib: 0,
                         requested_max_units: None,
                     };
                     for _ in 0..3 {
@@ -300,10 +303,12 @@ async fn quote_scenario(free: bool) {
             .as_secs()
             + 10;
         let invalid = QuoteRequest {
+            preferred_mint: None,
             destination: peers[4],
             ancestors: vec![*peers[1].node_addr(), *peers[0].node_addr()],
             deadline_unix,
             reuse_unchanged: false,
+            bid_msat_per_kib: 0,
             requested_max_units: None,
         };
         assert!(matches!(
@@ -324,10 +329,12 @@ async fn quote_scenario(free: bool) {
         let mut accepted = 0;
         for caller in callers {
             let body = serde_json::to_vec(&QuoteRequest {
+                preferred_mint: None,
                 destination: peers[2],
                 ancestors: vec![*caller.node_addr()],
                 deadline_unix,
                 reuse_unchanged: true,
+                bid_msat_per_kib: 0,
                 requested_max_units: None,
             })
             .unwrap();

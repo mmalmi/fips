@@ -242,6 +242,7 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
                 node.clone(),
                 control.clone(),
                 QuotePolicy {
+                    additional_receive_mints: vec![],
                     destination_fees: Default::default(),
                     billing: BillingBasis::ForwardingData,
                     mint_url: "http://test.invalid".into(),
@@ -287,10 +288,12 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
             .request(
                 peers[1],
                 &QuoteRequest {
+                    preferred_mint: None,
                     destination,
                     ancestors: vec![*peers[0].node_addr()],
                     deadline_unix: unix_now().unwrap() + QUOTE_SECONDS,
                     reuse_unchanged: true,
+                    bid_msat_per_kib: 0,
                     requested_max_units: None,
                 },
             )
@@ -360,7 +363,7 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
         let promoted = {
             let _work = selection.work.lock().await;
             source
-                .select_with_quality(destination, selection, true, &working(&trial, 0.0))
+                .select_with_quality(destination, selection, true, &working(&trial, 0.0), 0)
                 .await
                 .unwrap()
         };
@@ -387,7 +390,7 @@ async fn real_quote_promotion_with_injected_quality_installs_current_free_grant(
         let repeated = {
             let _work = selection.work.lock().await;
             source
-                .select_with_quality(destination, selection, true, &working(&promoted, 0.0))
+                .select_with_quality(destination, selection, true, &working(&promoted, 0.0), 0)
                 .await
                 .unwrap()
         };

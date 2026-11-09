@@ -4,13 +4,14 @@
 mod accept_barrier;
 mod config;
 mod control;
+mod managed_mint;
 mod mint_access;
 mod network;
 pub(crate) use mint_access::OfflineMint;
 mod transport_startup;
 pub(crate) use config::read_json;
+pub use config::{LocalMintConfig, ServiceConfig, ServiceTerms};
 use config::{Manifest, REQUIRED, check_state};
-pub use config::{ServiceConfig, ServiceTerms};
 pub use control::{AdminRequest, native_request, request};
 #[cfg(feature = "testbench")]
 pub(crate) use control::{read_record, write_record};
@@ -91,10 +92,15 @@ impl ForwardingPolicy for ServiceForwarder {
     }
 
     fn decide(&self, request: &ForwardingRequest<'_>) -> ForwardingDecision {
+        self.decide_with_bid(request, &mut 0)
+    }
+
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid: &mut u64) -> ForwardingDecision {
+        *bid = 0;
         if !self.ready.load(Ordering::Acquire) {
             return ForwardingDecision::Reject;
         }
-        self.relay.decide(request)
+        self.relay.decide_with_bid(request, bid)
     }
 
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
@@ -106,6 +112,7 @@ pub struct RelayService {
     config: ServiceConfig,
     endpoint: Arc<FipsEndpoint>,
     mint: Option<crate::mint_mesh::MeshMintBridge>,
+    managed_mint: Option<managed_mint::ManagedMint>,
     controller: Arc<Controller>,
     seller: Arc<DurableRelay>,
     buyer: Arc<BuyerAuthorizer>,
@@ -227,6 +234,16 @@ impl RelayService {
         let create = manifest.is_none();
         let owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
         let root = &config.state_directory;
+        let managed_mint = if let Some(mint) = &config.terms.local_mint {
+            if create {
+                managed_mint::initialize(root, mint).await?;
+                None
+            } else {
+                Some(managed_mint::ManagedMint::start(&config, mint).await?)
+            }
+        } else {
+            None
+        };
         if create {
             let directory = root.join("wallet");
             let wallet = CashuWalletService::create_file_backed_with_capacity(
@@ -250,7 +267,7 @@ impl RelayService {
         }
         let receiver = FileSpilmanPaymentReceiver::load(
             &root.join("receiver"),
-            FileSpilmanPaymentReceiverConfig::new([config.terms.controller.mint_url.clone()]),
+            FileSpilmanPaymentReceiverConfig::new(config.terms.controller.receiving_mints().cloned()),
         )?;
         let receiver_pubkey = receiver.receiver_pubkey_hex().to_string();
         if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
@@ -291,6 +308,7 @@ impl RelayService {
         if let Some(policy) = &config.free_bandwidth {
             free = free.with_bandwidth(policy.clone())?;
         }
+        free.set_public_free_transit(config.public_free_transit);
         let free = Arc::new(free);
         let relay = PaidForwarder::with_free_routes(
             seller.clone(),
@@ -419,7 +437,7 @@ impl RelayService {
         let payment_control = Arc::new(
             PaymentControl::new(receiver, root.join("wallet"), seller.clone()).with_keyset_refresh(
                 root.join("receiver"),
-                FileSpilmanPaymentReceiverConfig::new([t.controller.mint_url.clone()]),
+                FileSpilmanPaymentReceiverConfig::new(t.controller.receiving_mints().cloned()),
             ),
         );
         let payment_server = PaymentServer::start_shared(payment_control.clone(), payment_incoming);
@@ -487,6 +505,7 @@ impl RelayService {
             config,
             endpoint,
             mint,
+            managed_mint,
             controller,
             seller,
             buyer,
@@ -516,6 +535,7 @@ impl RelayService {
         let Self {
             endpoint,
             mint,
+            managed_mint,
             controller,
             seller,
             buyer,
@@ -541,6 +561,10 @@ impl RelayService {
             Some(mint) => mint.shutdown().await,
             None => Ok(()),
         };
+        let child_result = match managed_mint {
+            Some(child) => child.shutdown().await,
+            None => Ok(()),
+        };
         endpoint.shutdown().await.map_err(|e| e.to_string())?;
         receive_task.abort();
         let _ = receive_task.await;
@@ -555,7 +579,7 @@ impl RelayService {
         drop(endpoint);
         drop(_owner);
         result?;
-        mint_result
+        mint_result.and(child_result)
     }
 }
 

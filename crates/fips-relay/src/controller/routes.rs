@@ -180,6 +180,7 @@ impl Controller {
             .collect();
         let changed = previous.iter().any(|o| {
             o.purchase.provider != offered.provider
+                || o.offer.bid_msat_per_kib != offered.bid_msat_per_kib
                 || o.offer.price != offered.price
                 || o.offer.billing != offered.billing
                 || o.offer.next_hop != offered.next_hop

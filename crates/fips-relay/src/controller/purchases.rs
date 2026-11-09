@@ -252,6 +252,7 @@ impl Controller {
                 )?;
                 if existing.purchase.contract.expires_unix <= now()?
                     || existing.offer.price != offer.price
+                || existing.offer.bid_msat_per_kib != offer.bid_msat_per_kib
                     || existing.offer.billing != offer.billing
                     || existing.offer.next_hop != offer.next_hop
                     || existing.offer.path != offer.path

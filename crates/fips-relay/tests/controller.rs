@@ -260,6 +260,7 @@ async fn controller_scenario(
                     nodes[i].clone(),
                     Arc::new(quote_transport),
                     QuotePolicy {
+                        additional_receive_mints: vec![],
                         destination_fees: Default::default(),
                         billing,
                         mint_url: mint.url().to_string(),

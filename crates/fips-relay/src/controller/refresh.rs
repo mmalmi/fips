@@ -15,6 +15,9 @@ pub(super) struct RefreshCheck {
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchedRoute {
+    /// Voluntary local rate offered to each forwarding hop, in msat per KiB.
+    #[serde(default, skip_serializing_if = "crate::route_quotes::zero_bid")]
+    pub bid_msat_per_kib: u64,
     #[serde(
         default,
         skip_serializing_if = "crate::ledger::BillingBasis::is_legacy"
@@ -33,6 +36,7 @@ impl WatchedRoute {
         offer.destination.npub() == self.destination
             && offer.billing == self.billing
             && offer.price.per_bytes == 1024
+            && offer.bid_msat_per_kib == self.bid_msat_per_kib
             && offer.price.msat <= self.max_rate_msat_per_kib
     }
 }
@@ -71,6 +75,8 @@ impl Controller {
                 .map_err(|_| "invalid watched destination")?;
             if id != &watch.destination
                 || destination.node_addr() == &j.local
+                || watch.bid_msat_per_kib > watch.max_rate_msat_per_kib
+                || (watch.bid_msat_per_kib > 0 && !watch.billing.has_free_handshakes())
                 || (watch.max_rate_msat_per_kib == 0 && !watch.billing.has_free_handshakes())
                 || watch.pending.as_ref().is_some_and(|offer| {
                     !watch.accepts(offer)
@@ -139,6 +145,7 @@ impl Controller {
             || expected.paused
             || watch.destination != expected.destination
             || watch.billing != expected.billing
+            || watch.bid_msat_per_kib != expected.bid_msat_per_kib
             || watch.max_rate_msat_per_kib != expected.max_rate_msat_per_kib
             || !watch.accepts(offer)
             || offer.buyer != j.local
@@ -171,8 +178,15 @@ impl Controller {
         destination: PeerIdentity,
         max_rate_msat_per_kib: u64,
     ) -> Result<RouteAccess, String> {
+        self.watch_route_at_bid(destination, max_rate_msat_per_kib, 0).await
+    }
+
+    /// Authorize this per-hop bid within an independent total route price ceiling.
+    pub async fn watch_route_at_bid(&self, destination: PeerIdentity, max_rate_msat_per_kib: u64, bid_msat_per_kib: u64) -> Result<RouteAccess, String> {
         let _work = self.refresh_work.lock().await;
-        if destination.node_addr() == self.services.endpoint.node_addr()
+        if bid_msat_per_kib > max_rate_msat_per_kib
+            || (bid_msat_per_kib > 0 && !self.services.quotes.billing_basis().has_free_handshakes())
+            || destination.node_addr() == self.services.endpoint.node_addr()
             || (max_rate_msat_per_kib == 0
                 && !self.services.quotes.billing_basis().has_free_handshakes())
             || max_rate_msat_per_kib > self.services.quotes.max_rate_msat_per_kib()
@@ -189,12 +203,13 @@ impl Controller {
                         return Err("saved watch billing basis cannot change".into());
                     }
                     if (old.pending.is_some() || !old.paused)
-                        && old.max_rate_msat_per_kib != max_rate_msat_per_kib
+                        && (old.max_rate_msat_per_kib != max_rate_msat_per_kib || old.bid_msat_per_kib != bid_msat_per_kib)
                     {
                         return Err(
                             "finish pending purchase or pause before changing authorization".into(),
                         );
                     }
+                    old.bid_msat_per_kib = bid_msat_per_kib;
                     old.paused = false;
                     old.max_rate_msat_per_kib = max_rate_msat_per_kib;
                     return Ok(old.pending.clone());
@@ -208,6 +223,7 @@ impl Controller {
                             billing,
                             destination: saved,
                             max_rate_msat_per_kib,
+                            bid_msat_per_kib,
                             paused: false,
                             pending: None,
                             selected_trial: None,
@@ -233,7 +249,7 @@ impl Controller {
             None => {
                 let watch = self.snapshot().await?.watched_routes[&id].clone();
                 self.restore_interrupted_trial(&watch).await?;
-                self.services.quotes.request_route(destination).await?
+                self.services.quotes.request_route_at_bid(destination, false, watch.bid_msat_per_kib).await?
             }
         };
         self.accept_watched_offer(&id, offer).await
@@ -436,7 +452,7 @@ impl Controller {
                         false
                     };
                     if replace {
-                        self.services.quotes.request_route(destination).await?
+                        self.services.quotes.request_route_at_bid(destination, false, watch.bid_msat_per_kib).await?
                     } else if let Some(old) = free.filter(|offer| !offer.trial) {
                         let remaining = self.services.quotes.free.remaining_units(&old);
                         let headroom = old.max_units.div_ceil(4).max(2_048).min(old.max_units);
@@ -462,14 +478,14 @@ impl Controller {
                         {
                             // A fresh recursive request replaces the whole free
                             // continuation. Cached grants cannot renew its quota.
-                            self.services.quotes.request_route(destination).await?
+                            self.services.quotes.request_route_at_bid(destination, false, watch.bid_msat_per_kib).await?
                         } else {
-                            self.services.quotes.refresh_route(destination).await?
+                            self.services.quotes.request_route_at_bid(destination, true, watch.bid_msat_per_kib).await?
                         }
                     } else {
                         // Keep the selector's evidence and retry rules for trials;
                         // exhaustion alone must not authorize another trial quota.
-                        self.services.quotes.refresh_route(destination).await?
+                        self.services.quotes.request_route_at_bid(destination, true, watch.bid_msat_per_kib).await?
                     }
                 };
                 if offer.price.msat != 0

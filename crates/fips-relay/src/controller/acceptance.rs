@@ -44,7 +44,7 @@ impl Controller {
                 } => return self.handle_settle(peer, &channel_id, *payment).await,
             };
         let timing = TransitionTiming::new("accept_incoming", &channel.id);
-        if channel.buyer != *peer.node_addr() || channel.mint_url != self.policy.mint_url {
+        if channel.buyer != *peer.node_addr() || !self.policy.accepts_mint(&channel.mint_url) {
             return Err("wrong upstream payer or mint".into());
         }
         let state = self.snapshot().await?;

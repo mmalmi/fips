@@ -2,21 +2,20 @@
 use super::*;
 use cashu_service::CashuRequestSequence;
 
-const SCOPE: &str = "fips-exports";
 const MAX_FILES: usize = 128;
 
-fn request_id(id: u64) -> Result<String, String> {
-    CashuRequestSequence::new(SCOPE, id)
+fn request_id(scope: &str, id: u64) -> Result<String, String> {
+    CashuRequestSequence::new(scope, id)
         .map(|s| s.request_id())
         .map_err(|e| e.to_string())
 }
 
-async fn floor(wallet: &CashuWalletService, mint: &str) -> Result<u64, String> {
+async fn floor(wallet: &CashuWalletService, mint: &str, scope: &str) -> Result<u64, String> {
     let history = wallet
         .wallet_send_history()
         .await
         .map_err(|e| e.to_string())?;
-    let Some(history) = history.sequences.get(SCOPE) else {
+    let Some(history) = history.sequences.get(scope) else {
         return Ok(0);
     };
     if history.mint_url != normalize_mint_url(mint).map_err(|e| e.to_string())? {
@@ -24,7 +23,7 @@ async fn floor(wallet: &CashuWalletService, mint: &str) -> Result<u64, String> {
     }
     // Resume an already acknowledged handoff before validating a new export ID.
     wallet
-        .retire_owned_send_requests(SCOPE, history.through)
+        .retire_owned_send_requests(scope, history.through)
         .await
         .map(|history| history.through)
         .map_err(|e| e.to_string())
@@ -82,11 +81,12 @@ fn clean(root: &Path, files: &[(PathBuf, Option<u64>)], through: u64) -> Result<
 pub(super) async fn prepare_export(
     root: &Path,
     mint: &str,
+    scope: &str,
     id: u64,
     wallet: &CashuWalletService,
 ) -> Result<String, String> {
-    let request = request_id(id)?;
-    let through = floor(wallet, mint).await?;
+    let request = request_id(scope, id)?;
+    let through = floor(wallet, mint, scope).await?;
     if id <= through {
         return Err("export request has been acknowledged and cannot be reused".into());
     }
@@ -101,11 +101,12 @@ pub(super) async fn prepare_export(
 pub(super) async fn acknowledge(
     root: &Path,
     mint: &str,
+    scope: &str,
     through: u64,
     wallet: &CashuWalletService,
 ) -> Result<Value, String> {
-    request_id(through)?;
-    let previous = floor(wallet, mint).await?;
+    request_id(scope, through)?;
+    let previous = floor(wallet, mint, scope).await?;
     let files = files(root)?;
     for (path, id) in &files {
         if let Some(id) = id.filter(|id| *id > previous && *id <= through) {
@@ -114,7 +115,7 @@ pub(super) async fn acknowledge(
                 wallet,
                 send_request(
                     normalize_mint_url(mint).map_err(|e| e.to_string())?,
-                    request_id(id)?,
+                    request_id(scope, id)?,
                     cached.amount_sat,
                 ),
                 &cached,
@@ -126,7 +127,7 @@ pub(super) async fn acknowledge(
     // unfinished sends, preserves gross costs and closes absent numbers too.
     // Commit that permanent replay barrier before removing any token files.
     let history = wallet
-        .retire_owned_send_requests(SCOPE, through)
+        .retire_owned_send_requests(scope, through)
         .await
         .map_err(|e| e.to_string())?;
     clean(root, &files, history.through)?;

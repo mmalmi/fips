@@ -26,6 +26,7 @@ fn channel() -> ChannelTerms {
 }
 fn contract() -> Contract {
     Contract {
+        bid_msat_per_kib: 0,
         billing: Default::default(),
         id: "route-a".into(),
         channel_id: "channel-a".into(),

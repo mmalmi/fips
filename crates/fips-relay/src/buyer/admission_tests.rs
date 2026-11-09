@@ -11,6 +11,7 @@ fn fixture(root: &Path, max_units: u64, limits: Limits) -> (BuyerAuthorizer, Rou
         PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: true,
         billing: BillingBasis::ForwardingData,
         id: "source-trial".into(),
@@ -124,6 +125,7 @@ fn channel_capacity_counts_pending_reservations_across_quotes() {
         seller.open_channel_verified(incoming.clone(), 0).unwrap();
         seller
             .add_contract(Contract {
+                bid_msat_per_kib: 0,
                 id: "incoming-quote".into(),
                 channel_id: incoming.id.clone(),
                 next_hop: offer.provider,
@@ -200,6 +202,7 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
     seller.open_channel_verified(incoming.clone(), 0).unwrap();
     seller
         .add_contract(Contract {
+            bid_msat_per_kib: 0,
             id: "incoming-quote".into(),
             channel_id: incoming.id.clone(),
             next_hop: offer.provider,
@@ -269,6 +272,7 @@ fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
         .accept_channel(offer.provider, replacement.clone(), 0)
         .unwrap();
     let replacement_contract = Contract {
+        bid_msat_per_kib: 0,
         id: "replacement-quote".into(),
         channel_id: replacement.id.clone(),
         ..contract.clone()

@@ -55,6 +55,7 @@ impl Controller {
                 && old.destination.node_addr() == offer.destination.node_addr()
         }) {
             if old.price != offer.price
+                || old.bid_msat_per_kib != offer.bid_msat_per_kib
                 || old.next_hop != offer.next_hop
                 || old.billing != offer.billing
                 || old.path != offer.path
@@ -84,6 +85,7 @@ impl Controller {
         }) {
             if old.purchase.channel != saved.purchase.channel
                 || old.offer.price != saved.offer.price
+                || old.offer.bid_msat_per_kib != saved.offer.bid_msat_per_kib
                 || old.offer.billing != saved.offer.billing
                 || old.offer.next_hop != saved.offer.next_hop
                 || old.offer.path != saved.offer.path

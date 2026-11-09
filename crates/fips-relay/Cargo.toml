@@ -17,6 +17,7 @@ path = "src/bin/fips-relay-test-mint.rs"
 required-features = ["testbench"]
 
 [dependencies]
+fips-credit = { version = "=0.1.0", path = "../fips-credit" }
 nvpn-fips-core = { version = "=0.4.90", path = "../fips-core" }
 # Funding-cost development requires local cashu-service/CDK/Spilman corrections;
 # see FUNDING-COSTS.md. Update the pin when those APIs are released.
@@ -31,13 +32,14 @@ thiserror = "2"
 tempfile = "3"
 nvpn-fips-tcp = { version = "=0.2.4" }
 nvpn-fips-tcp-endpoint = { version = "=0.2.23" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "signal", "process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cashu = { version = "=0.18.0", default-features = false }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
+peer-payments = { version = "=0.1.0" }
 cdk-common = { version = "=0.18.0", default-features = false, features = ["wallet"] }
 cdk-sqlite = { version = "=0.18.0", default-features = false, features = ["wallet"] }
 nvpn-fips-core = { version = "=0.4.90", path = "../fips-core", features = ["sim-transport"] }

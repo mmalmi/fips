@@ -27,6 +27,7 @@ fn open(seller: &DurableRelay, terms: &ChannelTerms, paid: u64) {
     seller.open_channel_verified(terms.clone(), paid).unwrap();
     seller
         .add_contract(Contract {
+            bid_msat_per_kib: 0,
             id: format!("quote-{}", terms.id),
             channel_id: terms.id.clone(),
             destination: *peer(9).node_addr(),

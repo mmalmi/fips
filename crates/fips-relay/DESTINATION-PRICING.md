@@ -142,6 +142,52 @@ Without the environment flag, the test verifies concurrency and reports whether
 queue pressure occurred. The strict mode rejects a run with no observed overflow
 during paid delivery; offered rate alone is insufficient evidence of congestion.
 
+## Voluntary priority on public seeds
+
+A public seed can charge zero for ordinary forwarding and let a buyer bid for
+priority on its outgoing link. The unit is millisatoshis per KiB of forwarded
+session data. One msat/KiB costs about 1,049 sats for one GiB on one paid link.
+There is no fixed tip. When data is queued for the same link, a higher funded
+bid goes first. Equal bids on that link keep their arrival order. Control traffic
+keeps its reserved capacity, and ordinary public transit uses the background
+lane. An unpaid packet cannot claim a bid in its header.
+
+On a new seed account, set `public_free_transit` to `true`, configure
+`free_bandwidth` with both global and per-peer rates and bursts, and use
+`forwarding_data` billing with `terms.fee_msat_per_kib` set to zero.
+Leave destination overrides empty. Set `terms.buyer_budget_sat` and the
+controller's `max_wallet_spend_sat`, `max_locked_sat` and
+`max_funding_overhead_sat` to zero, with automatic renewal disabled.
+Keep a positive channel capacity for incoming payments and a positive
+`terms.max_rate_msat_per_kib` for the largest quote the seed can issue.
+Unmodified clients can use the seed's free forwarding without obtaining a quote.
+
+The seed uses its own receiving wallet. Its immutable
+`terms.controller.mint_url` names the primary issuer, and
+`terms.controller.additional_receive_mints` can list up to two more. A buyer
+offers its own funding mint. A seed accepts it only if it is on the configured
+list. With the relay stopped, `fips-relay wallet CONFIG [MINT]` reads one wallet
+request from standard input. The mint selects the balance and export history.
+Omitting the mint selects the primary issuer.
+
+To bid from an application, use `Controller::watch_route_at_bid` or send the
+following request to the local relay control socket. The two rates have different
+purposes. This example offers 4 per paid link and permits up to 8 for the route.
+The buyer's existing capital, channel and wallet-spend limits still apply.
+
+```json
+{"type":"bid","destination":"<destination npub>","bid_msat_per_kib":4,"max_rate_msat_per_kib":8}
+```
+
+A relay with an onward buying budget can negotiate the bid through multiple
+hops. Each participating relay charges the larger of its local fee and the bid.
+A receive-only public seed charges for its own outgoing link and sends the
+rest of the route at ordinary native priority. The offer's `path` ends at
+the last quoted next hop. Any remaining distance to `destination` is best effort.
+A direct destination needs no forwarding payment. Existing zero-bid watches keep
+their previous pricing. A buyer must finish pending purchases and pause a watch
+before changing its authorization.
+
 ## Automatic source watches
 
 An explicit `watch` with `max_rate_msat_per_kib: 0` persists permission to obtain

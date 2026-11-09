@@ -1,28 +1,28 @@
 //! Bind the SDK's original close values to the application's released reports.
 use super::*;
 
-pub(super) fn valid_history(r: &ReceiverHistory, t: &Totals, mint: &str) -> bool {
-    r.validate().is_ok()
-        && r.totals.len() <= 1
-        && t.refund_deadline()
-            .is_some_and(|expiry| r.expires_through_unix <= expiry)
-        && r.totals.first().is_none_or(|s| {
-            s.mint == mint
-                && s.unit == "sat"
-                && s.channels <= t.accounting.channels
-                && s.capacity <= t.accounting.capacity_sat
-                && s.signed_amount <= t.signed_sat
-                && s.closed_amount <= t.paid_sat
-                && s.value_after_stage1 <= t.value_sat
-                && t.paid_sat
-                    .checked_add(t.receiver_fee_reserve_sat)
-                    .is_some_and(|v| s.receiver_sum <= v)
-                && s.sender_sum <= t.returned_sat
-                && s.value_after_stage1
-                    .checked_sub(s.receiver_sum)
-                    .and_then(|v| v.checked_sub(s.sender_sum))
-                    .is_some_and(|v| v <= t.fee_sat)
-        })
+pub(super) fn valid_history(r: &ReceiverHistory, t: &Totals, policy: &ControllerPolicy) -> bool {
+    if r.validate().is_err() || r.totals.len() > 1 + policy.additional_receive_mints.len()
+        || !t.refund_deadline().is_some_and(|expiry| r.expires_through_unix <= expiry)
+        || r.totals.iter().any(|s| s.unit != "sat" || !policy.accepts_mint(&s.mint)) {
+        return false;
+    }
+    // The SDK retains a separate row per issuer. The controller's sat totals
+    // bound the sum across those rows, including any historic pre-SDK reports.
+    fn sum<T>(rows: &[T], field: impl Fn(&T) -> u64) -> u128 {
+        rows.iter().map(|row| u128::from(field(row))).sum()
+    }
+    let value = sum(&r.totals, |s| s.value_after_stage1);
+    let receiver = sum(&r.totals, |s| s.receiver_sum);
+    let sender = sum(&r.totals, |s| s.sender_sum);
+    sum(&r.totals, |s| s.channels) <= u128::from(t.accounting.channels)
+        && sum(&r.totals, |s| s.capacity) <= u128::from(t.accounting.capacity_sat)
+        && sum(&r.totals, |s| s.signed_amount) <= u128::from(t.signed_sat)
+        && sum(&r.totals, |s| s.closed_amount) <= u128::from(t.paid_sat)
+        && value <= u128::from(t.value_sat)
+        && receiver <= u128::from(t.paid_sat) + u128::from(t.receiver_fee_reserve_sat)
+        && sender <= u128::from(t.returned_sat)
+        && value.checked_sub(receiver + sender).is_some_and(|fee| fee <= u128::from(t.fee_sat))
 }
 
 impl Plan {

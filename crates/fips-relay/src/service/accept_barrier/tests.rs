@@ -63,6 +63,7 @@ impl Fixture {
         Purchase {
             provider: self.provider,
             contract: Contract {
+                bid_msat_per_kib: 0,
                 id: "full-contract".into(),
                 channel_id: channel.id.clone(),
                 destination: *self.destination.node_addr(),

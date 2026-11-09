@@ -126,6 +126,7 @@ impl CustomerProfile {
             destination_fees: Default::default(),
             return_allowance: false,
             return_bandwidth: None,
+            public_free_transit: false,
             free_bandwidth: None,
             price_selection: None,
             payment_cadence: Default::default(),
@@ -136,9 +137,11 @@ impl CustomerProfile {
                 self.entry_address.to_string(),
             )],
             terms: ServiceTerms {
+                local_mint: None,
                 billing: self.billing,
                 mint_mesh: self.mint_mesh.clone(),
                 controller: ControllerPolicy {
+                    additional_receive_mints: vec![],
                     mint_url: self.mint_url.clone(),
                     channel_capacity_sat: self.channel_capacity_sat,
                     max_locked_sat: self.channel_capacity_sat * 2,

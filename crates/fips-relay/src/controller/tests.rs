@@ -141,6 +141,7 @@ async fn funding_requires_original_wallet_and_recovers_without_another_debit() {
 pub(super) fn unresolved_journal() -> Journal {
     let local = NodeAddr::from_bytes([1; 16]);
     let policy = ControllerPolicy {
+        additional_receive_mints: vec![],
         mint_url: "http://127.0.0.1:1234".into(),
         channel_capacity_sat: 32,
         max_locked_sat: 32,
@@ -200,6 +201,7 @@ fn repurchase_rejects_unfinished_refunds_stale_offers_and_competing_renewal() {
         expires_unix: now().unwrap() + 600,
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: Default::default(),
         id: "old-offer".into(),

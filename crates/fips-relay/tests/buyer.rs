@@ -38,6 +38,7 @@ fn channel(id: &str) -> ChannelTerms {
 
 fn quote(id: &str, channel: &ChannelTerms) -> Contract {
     Contract {
+        bid_msat_per_kib: 0,
         billing: Default::default(),
         id: id.into(),
         channel_id: channel.id.clone(),

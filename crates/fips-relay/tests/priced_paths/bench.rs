@@ -364,6 +364,7 @@ async fn start_inner(
         .unwrap();
         admissions.push(admission.clone());
         let quote_policy = QuotePolicy {
+            additional_receive_mints: vec![],
             destination_fees: Default::default(),
             billing: BillingBasis::ForwardingData,
             mint_url: mint_url.into(),

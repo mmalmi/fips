@@ -199,6 +199,7 @@ async fn funded_payments_recover_journal_writes_without_lifecycle_authority() {
         .unwrap();
     authorizer
         .accept_quote(Contract {
+            bid_msat_per_kib: 0,
             billing: BillingBasis::ForwardingAttempt,
             id: "payment".into(),
             channel_id: channel.id.clone(),

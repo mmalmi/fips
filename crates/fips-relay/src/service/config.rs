@@ -25,6 +25,10 @@ pub struct ServiceTerms {
     #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
     pub billing: BillingBasis,
     pub controller: ControllerPolicy,
+    /// Opt in to running a mint with this relay. Its redemption policy belongs
+    /// to the original issuer and is immutable across service restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_mint: Option<LocalMintConfig>,
     /// Optional pinned FIPS transport for the immutable loopback mint URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
@@ -39,6 +43,24 @@ pub struct ServiceTerms {
     pub max_rate_msat_per_kib: u64,
     pub quote_lifetime_secs: u64,
     pub quote_max_units: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalMintConfig {
+    pub cln_socket: PathBuf,
+    #[serde(default)]
+    pub redeemable: bool,
+}
+
+impl LocalMintConfig {
+    pub(super) fn mode(&self) -> &'static str {
+        if self.redeemable {
+            "redeemable"
+        } else {
+            "insert-only"
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,7 +98,11 @@ pub struct ServiceConfig {
     /// Optional rate limits for earned replies; omission keeps the small default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
-    /// Optional local rate limits for already negotiated free-data forwarding.
+    /// Allow ordinary clients to forward without negotiating a free grant.
+    /// Only valid on bounded, receive-only, zero-base-price public seeds.
+    #[serde(default)]
+    pub public_free_transit: bool,
+    /// Optional local rate limits for free-data forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
     /// Opt-in source offer comparison and native quality-based path trials.
@@ -135,6 +161,7 @@ impl ServiceConfig {
     pub(super) fn quote_policy(&self, receiver_pubkey_hex: String) -> Result<QuotePolicy, String> {
         let t = &self.terms;
         Ok(QuotePolicy {
+            additional_receive_mints: t.controller.additional_receive_mints.clone(),
             destination_fees: self
                 .destination_fees
                 .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?,
@@ -175,6 +202,16 @@ impl ServiceConfig {
         }
         self.validate_network()?;
         let t = &self.terms;
+        if let Some(mint) = &t.local_mint {
+            if !mint.cln_socket.is_absolute()
+                || self.mint_export.is_some()
+                || t.mint_mesh.is_some()
+                || !t.billing.has_free_handshakes()
+            {
+                return Err("local mint requires an absolute Core Lightning socket, forwarding-data billing and its own mint endpoint".into());
+            }
+            crate::mint_mesh::local_address(&t.controller.mint_url)?;
+        }
         if let Some(export) = &self.mint_export {
             export.validate()?;
             if t.mint_mesh.is_some() || !t.billing.has_free_handshakes() {
@@ -213,7 +250,11 @@ impl ServiceConfig {
             .checked_mul(1_000)
             .ok_or("capacity overflow")?;
         t.wallet_capacity()?;
-        if t.buyer_budget_sat == 0
+        if self.public_free_transit && (!t.controller.receive_only() || !t.billing.has_free_handshakes()
+            || t.fee_msat_per_kib != 0 || !self.destination_fees.is_empty() || self.free_bandwidth.is_none()) {
+            return Err("public free transit requires bounded free bandwidth, zero local fees and a receive-only account".into());
+        }
+        if (t.buyer_budget_sat == 0) != t.controller.receive_only()
             || t.window_msat == 0
             || t.window_msat > t.grace_msat
             || t.grace_msat > cap

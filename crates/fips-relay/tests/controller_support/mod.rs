@@ -63,6 +63,7 @@ pub(super) async fn accepted_routes(
 
 pub(super) fn policy(mint_url: &str, automatic_renewal: bool, capacity: u64) -> ControllerPolicy {
     ControllerPolicy {
+        additional_receive_mints: vec![],
         mint_url: mint_url.to_string(),
         channel_capacity_sat: capacity,
         max_locked_sat: capacity * 2,

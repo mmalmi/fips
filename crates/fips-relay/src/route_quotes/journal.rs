@@ -117,10 +117,12 @@ fn validate_saved(
 ) -> Result<(), String> {
     let offer = &entry.offer;
     let mut request = QuoteRequest {
+        preferred_mint: (offer.bid_msat_per_kib > 0).then(|| offer.mint_url.clone()),
         destination: offer.destination,
         ancestors: vec![offer.buyer],
         deadline_unix: now.saturating_add(MAX_REQUEST_SECONDS),
         reuse_unchanged: false,
+        bid_msat_per_kib: offer.bid_msat_per_kib,
         requested_max_units: offer.trial.then_some(offer.max_units),
     };
     validation::validate_offer_address(policy, offer.buyer, offer, local, &request, now)?;
@@ -140,16 +142,17 @@ fn validate_saved(
             return Err("retained quote exceeds its downstream agreement".into());
         }
     } else {
-        path.push(*offer.destination.node_addr());
+        path.push(offer.next_hop);
     }
     let rate = entry
         .local_fee_msat_per_kib
         .checked_add(entry.downstream.as_ref().map_or(0, |d| d.price.msat));
-    if entry.local_fee_msat_per_kib > policy.max_rate_msat_per_kib
+    if entry.local_fee_msat_per_kib < offer.bid_msat_per_kib
+        || entry.local_fee_msat_per_kib > policy.max_rate_msat_per_kib
         || (entry.local_fee_msat_per_kib == 0 && !policy.billing.has_free_handshakes())
         || offer.path != path
         || Some(offer.price.msat) != rate
-        || offer.mint_url != policy.mint_url
+        || !policy.accepts_mint(&offer.mint_url)
         || offer.receiver_pubkey_hex != policy.receiver_pubkey_hex
         || offer.capacity_sat != policy.capacity_sat
         || offer.grace_msat != policy.grace_msat
@@ -240,6 +243,8 @@ impl RouteQuotes {
                         && old.buyer == offered.buyer
                         && old.destination == offered.destination
                         && old.path == offered.path
+                        && old.bid_msat_per_kib == offered.bid_msat_per_kib
+                        && old.mint_url == offered.mint_url
                         && old.price == offered.price
                         && old.max_units == offered.max_units
                         && old.trial == offered.trial

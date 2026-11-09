@@ -7,6 +7,7 @@ fn peer(n: u8) -> PeerIdentity {
 pub(super) fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
     let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
     let policy = QuotePolicy {
+        additional_receive_mints: vec![],
         destination_fees: Default::default(),
         billing: Default::default(),
         mint_url: "http://test.invalid".into(),
@@ -19,13 +20,16 @@ pub(super) fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
         grace_msat: 16_384,
     };
     let request = QuoteRequest {
+        preferred_mint: None,
         destination,
         ancestors: vec![*buyer.node_addr()],
         deadline_unix: 110,
         reuse_unchanged: false,
+        bid_msat_per_kib: 0,
         requested_max_units: None,
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: Default::default(),
         id: "quote".into(),

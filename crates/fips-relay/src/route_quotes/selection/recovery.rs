@@ -262,6 +262,7 @@ mod tests {
             nodes[0].clone(),
             Arc::new(transport),
             QuotePolicy {
+                additional_receive_mints: vec![],
                 destination_fees: Default::default(),
                 billing: BillingBasis::ForwardingData,
                 mint_url: "http://test.invalid".into(),

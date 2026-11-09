@@ -38,6 +38,7 @@ fn terms() -> ChannelTerms {
 }
 fn quote(id: usize, expiry: u64) -> Contract {
     Contract {
+        bid_msat_per_kib: 0,
         id: format!("quote-{id}"),
         channel_id: "channel".into(),
         destination: address(9),

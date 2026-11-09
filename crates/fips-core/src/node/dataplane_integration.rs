@@ -162,7 +162,7 @@ impl Node {
             ..Default::default()
         };
         let pending_policy = match class {
-            Some(PacketClass::Bulk | PacketClass::Background) => {
+            Some(PacketClass::Bulk | PacketClass::Paid(_) | PacketClass::Background) => {
                 DATAPLANE_PENDING_OUTBOUND_FAST_POLICY
             }
             _ => dataplane_fmp_link_pending_policy(plaintext),

@@ -281,7 +281,7 @@ impl Controller {
             validate_channel(terms).map_err(|e| e.to_string())?;
             if id != &terms.id
                 || terms.buyer == j.local
-                || terms.mint_url != j.policy.mint_url
+                || !j.policy.accepts_mint(&terms.mint_url)
                 || h.through_unix == 0
                 || j.incoming
                     .values()

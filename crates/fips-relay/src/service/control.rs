@@ -115,6 +115,10 @@ impl RelayService {
                         .await?
                 ))
             }
+            AdminRequest::Bid { destination, bid_msat_per_kib, max_rate_msat_per_kib } => {
+                let peer = PeerIdentity::from_npub(&destination).map_err(|_| "invalid destination npub")?;
+                Ok(json!(self.controller.watch_route_at_bid(peer, max_rate_msat_per_kib, bid_msat_per_kib).await?))
+            }
             AdminRequest::PauseRouteRefresh => {
                 self.controller.pause_route_refresh().await?;
                 Ok(json!({"paused": true}))
@@ -248,6 +252,11 @@ pub enum AdminRequest {
     },
     Watch {
         destination: String,
+        max_rate_msat_per_kib: u64,
+    },
+    Bid {
+        destination: String,
+        bid_msat_per_kib: u64,
         max_rate_msat_per_kib: u64,
     },
     PauseRouteRefresh,

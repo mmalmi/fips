@@ -241,6 +241,7 @@ fn service_forwarder_preserves_readiness_and_temporary_admission() {
         .unwrap();
     seller
         .add_contract(Contract {
+            bid_msat_per_kib: 0,
             billing: BillingBasis::ForwardingData,
             id: "route".into(),
             channel_id: "channel".into(),

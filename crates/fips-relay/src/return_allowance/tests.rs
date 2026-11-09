@@ -176,6 +176,7 @@ fn rejected_forwarding_earns_nothing_and_paid_reverse_routes_keep_their_accounti
             .unwrap();
         seller
             .add_contract(Contract {
+                bid_msat_per_kib: 0,
                 id: id.clone(),
                 channel_id: id,
                 destination: *peer(destination).node_addr(),

@@ -90,6 +90,9 @@ pub use refresh::WatchedRoute;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerPolicy {
+    /// Additional operator-trusted issuers for incoming sat channels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_receive_mints: Vec<String>,
     pub mint_url: String,
     pub channel_capacity_sat: u64,
     /// Bounds unresolved reservations and actual wallet debits. Confirmed local
@@ -103,6 +106,20 @@ pub struct ControllerPolicy {
     #[serde(default = "ControllerPolicy::default_channel_lifetime_secs")]
     pub channel_lifetime_secs: u64,
     pub renewal: Option<RenewalPolicy>,
+}
+
+impl ControllerPolicy {
+    pub(crate) fn receiving_mints(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.mint_url).chain(&self.additional_receive_mints)
+    }
+
+    pub(crate) fn accepts_mint(&self, mint: &str) -> bool {
+        self.receiving_mints().any(|allowed| allowed == mint)
+    }
+
+    pub(crate) fn receive_only(&self) -> bool {
+        self.max_wallet_spend_sat == 0 && self.max_locked_sat == 0
+    }
 }
 
 #[derive(Clone)]
@@ -461,13 +478,17 @@ impl Controller {
         }) {
             return Err("invalid renewal policy".into());
         }
+        let mut seen = HashSet::from([&policy.mint_url]);
+        if policy.additional_receive_mints.len() > 2 || policy.additional_receive_mints.iter().any(|mint| {
+            mint.len() > 512 || mint.ends_with('/') || !seen.insert(mint) ||
+            !cashu_service::normalize_mint_url(mint).is_ok_and(|url| url == *mint)
+        }) { return Err("invalid additional receiving mints".into()); }
         if policy.channel_capacity_sat == 0
             || policy.channel_capacity_sat.checked_mul(1_000).is_none()
-            || policy.max_locked_sat < policy.channel_capacity_sat
-            || policy
-                .channel_capacity_sat
+            || (policy.receive_only() && (policy.max_funding_overhead_sat != 0 || policy.renewal.is_some()))
+            || (!policy.receive_only() && policy.channel_capacity_sat
                 .checked_add(policy.max_funding_overhead_sat)
-                .is_none_or(|max| max > policy.max_locked_sat || max > policy.max_wallet_spend_sat)
+                .is_none_or(|max| max > policy.max_locked_sat || max > policy.max_wallet_spend_sat))
             || !(60..=ControllerPolicy::DEFAULT_CHANNEL_LIFETIME_SECS)
                 .contains(&policy.channel_lifetime_secs)
             || policy.mint_url.is_empty()

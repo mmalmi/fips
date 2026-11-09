@@ -424,9 +424,10 @@ impl Node {
                 destination: datagram_ref.dest_addr,
                 session_payload: datagram_ref.payload,
             };
-            match policy.decide(&request) {
+            let mut bid_msat_per_kib = 0;
+            match policy.decide_with_bid(&request, &mut bid_msat_per_kib) {
                 crate::node::ForwardingDecision::Admit(admission) => Some(
-                    crate::node::forwarding_policy::ForwardingPermit::new(policy, admission),
+                    crate::node::forwarding_policy::ForwardingPermit::new(policy, admission, bid_msat_per_kib),
                 ),
                 crate::node::ForwardingDecision::Retry => {
                     self.wait_for_forwarding_admission(

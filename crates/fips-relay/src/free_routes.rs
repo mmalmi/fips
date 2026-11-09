@@ -135,6 +135,7 @@ struct State {
 #[derive(Debug, Default)]
 pub struct FreeRoutes {
     state: Mutex<State>,
+    public_free_transit: bool,
     accounts: Option<(
         Arc<crate::durable::DurableRelay>,
         Arc<crate::buyer::BuyerAuthorizer>,
@@ -182,6 +183,10 @@ impl FreeRoutes {
             .bandwidth = Some(crate::unpaid_budget::UnpaidBudget::for_free(&policy));
         Ok(self)
     }
+
+    pub(super) fn public_free_transit(&self) -> bool { self.public_free_transit }
+
+    pub(super) fn set_public_free_transit(&mut self, enabled: bool) { self.public_free_transit = enabled; }
 
     pub(crate) fn for_accounts(
         seller: Arc<crate::durable::DurableRelay>,
@@ -307,35 +312,32 @@ impl FreeRoutes {
         };
         let incoming = (*request.ingress.node_addr(), request.destination);
         let outgoing = (request.next_hop, request.destination);
-        if bytes == 0
-            || state
-                .incoming
-                .get(&incoming)
-                .is_none_or(|l| l.offer.next_hop != request.next_hop || !l.fits(bytes, now))
-        {
+        if bytes == 0 { return false; }
+        let negotiated = state.incoming.get(&incoming).is_some_and(|lease| lease.offer.expires_unix > now);
+        if negotiated {
+            if state.incoming.get(&incoming).is_none_or(|lease| lease.offer.next_hop != request.next_hop || !lease.fits(bytes, now)) {
+                return false;
+            }
+        } else if !self.public_free_transit || state.activating_paid.contains(&incoming)
+            || self.accounts.as_ref().is_none_or(|(seller, _)| seller.has_active_route(incoming.0, incoming.1, now)) {
+            // Opening a paid agreement takes this book's guard before installation.
+            // An exhausted live paid route must still go through seller admission.
             return false;
         }
-        if request.next_hop != request.destination
-            && state
-                .outgoing
-                .get(&outgoing)
-                .is_none_or(|l| !l.fits(bytes, now))
-        {
+        let use_onward_grant = request.next_hop != request.destination &&
+            (negotiated || state.outgoing.get(&outgoing).is_some_and(|lease| lease.offer.expires_unix > now));
+        if use_onward_grant && state.outgoing.get(&outgoing).is_none_or(|lease| !lease.fits(bytes, now)) {
             return false;
         }
-        // Permissions, rate credit and both byte quotas commit under one lock.
-        // A missing continuation cannot consume a neighbor's free bandwidth.
-        if state
-            .bandwidth
-            .as_mut()
-            .is_some_and(|budget| !budget.admit(incoming.0, request.session_payload.len()))
-        {
+        // An unnegotiated continuation is allowed only on receive-only seeds.
+        // Their immutable policy prohibits funding or signing an onward purchase.
+        if state.bandwidth.as_mut().is_some_and(|budget| !budget.admit(incoming.0, request.session_payload.len())) {
             return false;
         }
-        if request.next_hop != request.destination {
+        if use_onward_grant {
             state.outgoing.get_mut(&outgoing).unwrap().used += bytes;
         }
-        state.incoming.get_mut(&incoming).unwrap().used += bytes;
+        if negotiated && let Some(lease) = state.incoming.get_mut(&incoming) { lease.used += bytes; }
         state.free_packets = state.free_packets.saturating_add(1);
         state.free_bytes = state.free_bytes.saturating_add(bytes);
         true
@@ -353,8 +355,11 @@ impl FreeRoutes {
         let bytes = u64::try_from(bytes).ok().filter(|n| *n > 0)?;
         let now = now()?;
         let mut state = self.state.lock().ok()?;
-        let lease = state.outgoing.get_mut(&(next, destination))?;
-        lease.reserve(bytes, now, false, admit)
+        match state.outgoing.get_mut(&(next, destination)) {
+            Some(lease) if lease.offer.expires_unix > now => lease.reserve(bytes, now, false, admit),
+            _ if self.public_free_transit => admit(),
+            _ => None,
+        }
     }
 
     /// None means no free permission; Some(false) is a known local denial and

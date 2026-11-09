@@ -12,6 +12,7 @@ impl BuyerAuthorizer {
     ) -> Result<(), BuyerError> {
         let capacity = validate_channel(&terms).map_err(|_| BuyerError::InvalidAgreement)?;
         self.change_if_needed(|state| {
+            if state.total_budget_sat == 0 { return Err(BuyerError::Budget); }
             if terms.buyer != state.local || provider == state.local || advance_msat > capacity {
                 return Err(BuyerError::InvalidAgreement);
             }

@@ -34,9 +34,9 @@ async fn run() -> Result<(), String> {
     use fips_relay::service::{AdminRequest, RelayService, ServiceConfig, native_request, request};
     use std::{io::Read, path::Path};
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 3 {
+    if args.len() != 3 && !(args.len() == 4 && args[1] == "wallet") {
         return Err(
-            "usage: fips-relay <init|run|ctl|native|wallet> <config.json>; ctl/native/wallet read one JSON request from stdin"
+            "usage: fips-relay <init|run|ctl|native|wallet> <config.json> [wallet-mint-url]; ctl/native/wallet read one JSON request from stdin"
                 .into(),
         );
     }
@@ -87,7 +87,7 @@ async fn run() -> Result<(), String> {
                 return Err("wallet request too large".into());
             }
             let command = serde_json::from_slice(&bytes).map_err(|_| "invalid wallet JSON")?;
-            let result = fips_relay::wallet_tools::offline_wallet(&config, command).await?;
+            let result = fips_relay::wallet_tools::offline_wallet_at_mint(&config, command, args.get(3).unwrap_or(&config.terms.controller.mint_url)).await?;
             println!(
                 "{}",
                 serde_json::to_string(&result).map_err(|e| e.to_string())?

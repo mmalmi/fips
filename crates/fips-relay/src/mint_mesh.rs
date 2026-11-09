@@ -34,28 +34,32 @@ impl MintMesh {
     pub(crate) fn target(&self, mint_url: &str) -> Result<(PeerIdentity, SocketAddr), String> {
         bridge::validate_port(self.service_port)?;
         let peer = PeerIdentity::from_npub(&self.npub).map_err(|_| "invalid mesh mint identity")?;
-        let url = url::Url::parse(mint_url).map_err(|_| "invalid mesh mint URL")?;
-        let ip = match url.host() {
-            Some(url::Host::Ipv4(ip)) => IpAddr::V4(ip),
-            Some(url::Host::Ipv6(ip)) => IpAddr::V6(ip),
-            _ => return Err("mesh mint URL requires a numeric loopback address".into()),
-        };
-        if !ip.is_loopback()
-            || url.scheme() != "http"
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err("mesh mint URL must name only its fixed loopback HTTP listener".into());
-        }
-        let port = url
-            .port_or_known_default()
-            .filter(|port| *port != 0)
-            .ok_or("mesh mint URL requires a nonzero port")?;
-        Ok((peer, SocketAddr::new(ip, port)))
+        Ok((peer, local_address(mint_url)?))
     }
+}
+
+pub(crate) fn local_address(mint_url: &str) -> Result<SocketAddr, String> {
+    let url = url::Url::parse(mint_url).map_err(|_| "invalid mesh mint URL")?;
+    let ip = match url.host() {
+        Some(url::Host::Ipv4(ip)) => IpAddr::V4(ip),
+        Some(url::Host::Ipv6(ip)) => IpAddr::V6(ip),
+        _ => return Err("mesh mint URL requires a numeric loopback address".into()),
+    };
+    if !ip.is_loopback()
+        || url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("mesh mint URL must name only its fixed loopback HTTP listener".into());
+    }
+    let port = url
+        .port_or_known_default()
+        .filter(|port| *port != 0)
+        .ok_or("mesh mint URL requires a nonzero port")?;
+    Ok(SocketAddr::new(ip, port))
 }
 
 #[cfg(test)]

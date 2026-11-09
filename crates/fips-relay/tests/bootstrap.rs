@@ -51,6 +51,7 @@ fn only_the_explicit_new_tariff_excludes_handshakes_from_both_ledgers() {
             grace_msat: 2_000,
         };
         let quote = Contract {
+            bid_msat_per_kib: 0,
             id: "route".into(),
             channel_id: terms.id.clone(),
             destination: address(9),

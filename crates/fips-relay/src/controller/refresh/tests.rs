@@ -68,6 +68,7 @@ async fn controller_with_neighbors(
             endpoint.clone(),
             Arc::new(transport),
             QuotePolicy {
+                additional_receive_mints: vec![],
                 destination_fees: Default::default(),
                 billing: BillingBasis::ForwardingData,
                 mint_url: policy.mint_url.clone(),
@@ -131,6 +132,7 @@ async fn assert_disconnected_watch(restored: bool) {
         billing: offer.billing,
         destination: id.clone(),
         max_rate_msat_per_kib: 8192,
+        bid_msat_per_kib: 0,
         paused: false,
         pending: restored.then(|| offer.clone()),
         selected_trial: None,
@@ -211,6 +213,7 @@ fn authorized_watch(offer: &RouteOffer) -> WatchedRoute {
         billing: offer.billing,
         destination: offer.destination.npub(),
         max_rate_msat_per_kib: 8192,
+        bid_msat_per_kib: 0,
         paused: false,
         pending: None,
         selected_trial: None,

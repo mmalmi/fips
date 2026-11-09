@@ -95,6 +95,13 @@ pub trait ForwardingPolicy: Debug + Send + Sync + 'static {
         self.admit_classified(request)
             .map_or(ForwardingDecision::Reject, ForwardingDecision::Admit)
     }
+    /// Optionally attach a locally verified bid to this same reservation.
+    /// Only normal data admissions use the bid; it cannot promote protocol classes.
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid_msat_per_kib: &mut u64) -> ForwardingDecision {
+        *bid_msat_per_kib = 0;
+        self.decide(request)
+    }
+
     /// Optional coalesced wake after usable allowance changes. This is advisory:
     /// queued packets still require a fresh decision under the current policy.
     fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
@@ -109,6 +116,7 @@ pub(super) struct ForwardingPermit {
     policy: Arc<dyn ForwardingPolicy>,
     token: Option<u64>,
     class: ForwardingClass,
+    bid_msat_per_kib: u64,
 }
 
 impl ForwardingPermit {
@@ -117,17 +125,19 @@ impl ForwardingPermit {
         policy: &Arc<dyn ForwardingPolicy>,
         request: &ForwardingRequest<'_>,
     ) -> Option<Self> {
+        let mut bid = 0;
         policy
-            .decide(request)
+            .decide_with_bid(request, &mut bid)
             .admission()
-            .map(|admission| Self::new(policy, admission))
+            .map(|admission| Self::new(policy, admission, bid))
     }
 
-    pub(super) fn new(policy: &Arc<dyn ForwardingPolicy>, admission: ForwardingAdmission) -> Self {
+    pub(super) fn new(policy: &Arc<dyn ForwardingPolicy>, admission: ForwardingAdmission, bid_msat_per_kib: u64) -> Self {
         Self {
             policy: Arc::clone(policy),
             token: Some(admission.token),
             class: admission.class,
+            bid_msat_per_kib,
         }
     }
 
@@ -136,7 +146,7 @@ impl ForwardingPermit {
         match self.class {
             ForwardingClass::Unspecified => None,
             ForwardingClass::Control => Some(PacketClass::Control),
-            ForwardingClass::Normal => Some(PacketClass::Bulk),
+            ForwardingClass::Normal => Some(std::num::NonZeroU64::new(self.bid_msat_per_kib).map_or(PacketClass::Bulk, PacketClass::Paid)),
             ForwardingClass::Background => Some(PacketClass::Background),
         }
     }

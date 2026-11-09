@@ -50,6 +50,7 @@ pub(super) fn fixture_for_local(directory: &Path, local: NodeAddr) -> (Store, Ou
             per_bytes: 1024,
         },
         billing: Default::default(),
+        bid_msat_per_kib: 0,
         trial: false,
         expires_unix: channel.expires_unix,
         max_units: 30_000,

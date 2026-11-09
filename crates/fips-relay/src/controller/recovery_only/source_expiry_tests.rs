@@ -11,6 +11,7 @@ fn watch(store: &mut Store, old: &Outgoing, paused: bool, selected: bool) -> Wat
         destination: offer.destination.npub(),
         max_rate_msat_per_kib: offer.price.msat,
         billing: offer.billing,
+        bid_msat_per_kib: 0,
         paused,
         pending: Some(offer.clone()),
         selected_trial: selected.then(|| old.purchase.contract.id.clone()),

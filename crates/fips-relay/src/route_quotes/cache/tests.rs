@@ -7,19 +7,24 @@ fn fixture() -> (Key, QuoteRequest, RouteOffer) {
     };
     let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
     let key = Key {
+        preferred_mint: None,
         provider: *provider.node_addr(),
         destination: *destination.node_addr(),
         ancestors: vec![*buyer.node_addr()],
         max_units: None,
+        bid_msat_per_kib: 0,
     };
     let request = QuoteRequest {
+        preferred_mint: None,
         destination,
         ancestors: key.ancestors.clone(),
         deadline_unix: unix_now().unwrap() + 10,
         reuse_unchanged: true,
+        bid_msat_per_kib: 0,
         requested_max_units: None,
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: Default::default(),
         id: "fixed-agreement".into(),

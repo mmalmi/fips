@@ -54,7 +54,7 @@ impl Totals {
         )
     }
 
-    fn valid(&self, mint: &str) -> bool {
+    fn valid(&self, policy: &ControllerPolicy) -> bool {
         self.accounting.valid(MAX_CHANNELS)
             && self
                 .refund_deadline()
@@ -71,7 +71,7 @@ impl Totals {
             && self
                 .receiver
                 .as_ref()
-                .is_none_or(|r| receiver::valid_history(r, self, mint))
+                .is_none_or(|r| receiver::valid_history(r, self, policy))
             && (self.accounting.channels != 0
                 || *self
                     == Self {
@@ -124,8 +124,8 @@ impl Plan {
         self.ledger
             .validate(MAX_CHANNELS)
             .map_err(|e| e.to_string())?;
-        if !self.before.valid(&j.policy.mint_url)
-            || !self.after.valid(&j.policy.mint_url)
+        if !self.before.valid(&j.policy)
+            || !self.after.valid(&j.policy)
             || self.before.accounting != self.ledger.before
             || self.after.accounting != self.ledger.after
             || j.history
@@ -184,7 +184,7 @@ impl Controller {
             };
         };
         if !matches!(j.history_version(), 5 | 6)
-            || !h.totals.valid(&j.policy.mint_url)
+            || !h.totals.valid(&j.policy)
             || (h.totals.refund_through_unix.is_some()
                 && j.version & journal::FUNDING_DEADLINES_VERSION == 0)
             || (j.history_version() == 6) != h.totals.receiver.is_some()

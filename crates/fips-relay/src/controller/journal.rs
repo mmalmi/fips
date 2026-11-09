@@ -158,7 +158,8 @@ impl Controller {
             }
             validate_contract(&o.purchase.contract, &o.purchase.channel)
                 .map_err(|e| e.to_string())?;
-            if o.purchase.contract.price != o.offer.price
+            if o.purchase.contract.bid_msat_per_kib != o.offer.bid_msat_per_kib
+                || o.purchase.contract.price != o.offer.price
                 || o.purchase.contract.billing != o.offer.billing
                 || o.purchase.contract.destination != *o.offer.destination.node_addr()
                 || o.purchase.contract.next_hop != o.offer.next_hop
@@ -173,8 +174,10 @@ impl Controller {
                 || id != &i.contract.id
                 || i.offer.provider != local
                 || i.channel.buyer != i.offer.buyer
-                || i.channel.mint_url != policy.mint_url
+                || !policy.accepts_mint(&i.channel.mint_url)
+                || i.offer.mint_url != i.channel.mint_url
                 || i.verified_paid_msat > i.channel.capacity_sat * 1_000
+                || i.contract.bid_msat_per_kib != i.offer.bid_msat_per_kib
                 || i.contract.price != i.offer.price
                 || i.contract.billing != i.offer.billing
                 || i.contract.destination != *i.offer.destination.node_addr()
@@ -208,7 +211,10 @@ impl Controller {
                 {
                     return Err("invalid onward quote".into());
                 }
-            } else if i.offer.next_hop != *i.offer.destination.node_addr() {
+            } else if i.offer.next_hop != *i.offer.destination.node_addr()
+                && !(policy.receive_only() && i.offer.bid_msat_per_kib > 0
+                    && i.offer.path == [local, i.offer.next_hop])
+            {
                 return Err("missing onward quote".into());
             }
         }

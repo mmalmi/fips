@@ -336,7 +336,9 @@ async fn exercise_crowded() {
         assert!(occupied(&bench.nodes, &bench.peers, &candidates).await);
     }
     let after_local = hop_usage(&bench).await;
-    let local_paid = observer.while_occupied(&candidates, payments(&bench)).await;
+    let local_paid = observer
+        .while_occupied(&candidates, payment_baseline(&bench, false))
+        .await;
     for pair in [(0, 1), (5, 4)] {
         let before = &before_local[&pair];
         let after = &after_local[&pair];

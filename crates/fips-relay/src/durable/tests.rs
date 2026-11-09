@@ -25,6 +25,7 @@ fn node_callbacks_do_not_wait_for_a_checkpoint_writer() {
     relay.open_channel_verified(terms.clone(), 0).unwrap();
     relay
         .add_contract(Contract {
+            bid_msat_per_kib: 0,
             billing: Default::default(),
             id: "quote".into(),
             channel_id: terms.id,

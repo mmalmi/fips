@@ -358,6 +358,7 @@ fn offer() -> RouteOffer {
     let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let provider = NodeAddr::from_bytes([2; 16]);
     RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: Default::default(),
         id: "offer".into(),
@@ -415,6 +416,7 @@ fn renewal_triggers_at_local_capacity_byte_limit_and_service_expiry() {
             expires_unix: 600,
         },
         contract: Contract {
+            bid_msat_per_kib: 0,
             billing: Default::default(),
             id: "contract".into(),
             channel_id: "channel".into(),
@@ -447,6 +449,7 @@ fn renewal_triggers_at_local_capacity_byte_limit_and_service_expiry() {
 #[test]
 fn renewal_policy_rejects_unbounded_or_immediate_expiry_cycles() {
     let mut policy = ControllerPolicy {
+        additional_receive_mints: vec![],
         mint_url: "http://127.0.0.1:1234".into(),
         channel_capacity_sat: 16,
         max_locked_sat: 32,

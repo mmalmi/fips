@@ -12,6 +12,12 @@ pub(super) async fn attach(
     endpoint: Arc<FipsEndpoint>,
     quotes: Arc<RouteQuotes>,
 ) -> Result<Option<MeshMintBridge>, String> {
+    if config.terms.local_mint.is_some() {
+        let backend = crate::mint_mesh::local_address(&config.terms.controller.mint_url)?;
+        return MeshMintBridge::serve(endpoint, managed_mint::SERVICE_PORT, backend)
+            .await
+            .map(Some);
+    }
     if let Some(export) = &config.mint_export {
         return MeshMintBridge::serve(endpoint, export.service_port, export.backend)
             .await
@@ -61,7 +67,11 @@ impl OriginatedSessionObserver for OfflinePolicy {
     fn complete(&self, _: u64, _: ForwardingOutcome) {}
 }
 
-pub(crate) struct OfflineMint {
+pub(crate) enum OfflineMint {
+    Local(managed_mint::ManagedMint),
+    Mesh(OfflineMesh),
+}
+pub(crate) struct OfflineMesh {
     bridge: Option<MeshMintBridge>,
     quotes: Arc<RouteQuotes>,
     endpoint: Arc<FipsEndpoint>,
@@ -71,6 +81,11 @@ impl OfflineMint {
     /// Caller retains the service's exclusive root lock throughout this lifetime.
     /// No buyer, seller, payment worker or wallet is opened by this network.
     pub(crate) async fn start(config: &ServiceConfig) -> Result<Option<Self>, String> {
+        if let Some(local) = &config.terms.local_mint {
+            return managed_mint::ManagedMint::start(config, local)
+                .await
+                .map(|child| Some(Self::Local(child)));
+        }
         if config.terms.mint_mesh.is_none() {
             return Ok(None);
         }
@@ -122,11 +137,11 @@ impl OfflineMint {
         }
         .await;
         match initialized {
-            Ok((bridge, quotes)) => Ok(Some(Self {
+            Ok((bridge, quotes)) => Ok(Some(Self::Mesh(OfflineMesh {
                 bridge,
                 quotes,
                 endpoint,
-            })),
+            }))),
             Err(error) => {
                 let _ = endpoint.shutdown().await;
                 Err(error)
@@ -135,11 +150,14 @@ impl OfflineMint {
     }
 
     pub(crate) async fn shutdown(self) -> Result<(), String> {
-        let Self {
+        let OfflineMesh {
             bridge,
             quotes,
             endpoint,
-        } = self;
+        } = match self {
+            Self::Local(child) => return child.shutdown().await,
+            Self::Mesh(mesh) => mesh,
+        };
         let bridge_result = match bridge {
             Some(bridge) => bridge.shutdown().await,
             None => Ok(()),

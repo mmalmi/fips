@@ -38,6 +38,7 @@ fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
         .unwrap();
     buyer
         .accept_quote(Contract {
+            bid_msat_per_kib: 0,
             billing: Default::default(),
             id: "quote".into(),
             channel_id: "channel".into(),
@@ -108,6 +109,7 @@ fn suspended_writer_still_closes_exact_packet_authority() {
     ] {
         buyer
             .accept_quote(Contract {
+                bid_msat_per_kib: 0,
                 billing: BillingBasis::ForwardingData,
                 id: id.into(),
                 channel_id: "channel".into(),
