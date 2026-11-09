@@ -26,6 +26,11 @@ start_service() {
 stop_service() {
 	nft flush set inet fw4 freedom_uplink 2>/dev/null || true
 }
+service_stopped() {
+	# procd has requested termination. Cleanup waits for the daemon's lock,
+	# and also handles a stopped/crashed daemon without touching its journal.
+	/usr/sbin/freedom-guest --cleanup
+}
 service_triggers() {
 	procd_add_reload_trigger freedom_guest
 }

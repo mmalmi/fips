@@ -25,6 +25,7 @@ type Order struct {
 	Created, Until         int64
 	Quote                  Quote
 	Proofs                 []string
+	Replaces               string `json:",omitempty"`
 }
 type Portal struct {
 	c      Config
@@ -104,7 +105,13 @@ func (p *Portal) unlock(ctx context.Context, id string, o Order) error {
 				start = pass.Until
 			}
 		}
-		o.Until = start + int64(o.Minutes)*60
+		seconds := int64(o.Minutes) * 60
+		if o.Method == "cashu" && o.NetSat > 0 && o.Price > 0 {
+			// Keep the purchased terms unchanged. Round fractional seconds up so
+			// even a small surplus is credited when the receipt is first granted.
+			seconds = (seconds*int64(o.NetSat) + int64(o.Price) - 1) / int64(o.Price)
+		}
+		o.Until = start + seconds
 		if e := p.save(id, o); e != nil {
 			return e
 		}
@@ -122,8 +129,14 @@ func (p *Portal) checkout(ctx context.Context, id, ip, mac, action, token string
 			return "", errors.New("open the secure checkout to pay with a token")
 		}
 		method := strings.TrimPrefix(action, "start-")
+		replaced := map[string]bool{}
+		for _, o := range p.orders {
+			if o.Replaces != "" {
+				replaced[o.Replaces] = true
+			}
+		}
 		for k, o := range p.orders {
-			if o.MAC == mac && o.IP == ip && (o.Until > time.Now().Unix() || (o.Until == 0 && o.Method == method && o.Mint == p.c.Mint && o.Price == p.c.Price && (len(o.Proofs) > 0 || o.Created > time.Now().Unix()-600) && (o.Method != "lightning" || o.Quote.Expiry > time.Now().Unix()))) {
+			if o.MAC == mac && o.IP == ip && (o.Until > time.Now().Unix() || (!replaced[k] && o.Until == 0 && o.Method == method && o.Mint == p.c.Mint && o.Price == p.c.Price && (len(o.Proofs) > 0 || o.Created > time.Now().Unix()-600) && (o.Method != "lightning" || o.Quote.Expiry > time.Now().Unix()))) {
 				return k, nil
 			}
 		}
@@ -156,6 +169,28 @@ func (p *Portal) checkout(ctx context.Context, id, ip, mac, action, token string
 		return id, p.syncClients(ctx)
 	}
 	switch action {
+	case "replace-cashu":
+		if !tls || o.Method != "cashu" || len(o.Proofs) == 0 {
+			return "", errors.New("no pending Cashu payment")
+		}
+		// An unavailable receipt does not prove the token was unspent. Retain
+		// the original proof claims and receipt identity indefinitely, and link
+		// the separate purchase to it for recovery and idempotent retries.
+		for key, next := range p.orders {
+			if next.Replaces == id && next.MAC == mac && next.IP == ip {
+				return key, nil
+			}
+		}
+		if len(p.orders) >= 8192 {
+			return "", errors.New("payment store is full")
+		}
+		var key [20]byte
+		if _, e := rand.Read(key[:]); e != nil {
+			return "", e
+		}
+		nextID := hex.EncodeToString(key[:])
+		next := Order{IP: ip, MAC: mac, Mint: o.Mint, Method: "cashu", Price: o.Price, Minutes: o.Minutes, Created: time.Now().Unix(), Replaces: id}
+		return nextID, p.save(nextID, next)
 	case "recover":
 		if !tls || o.Method != "cashu" || len(o.Proofs) == 0 || o.NetSat <= 0 {
 			return "", errors.New("no pending Cashu payment")
@@ -166,7 +201,6 @@ func (p *Portal) checkout(ctx context.Context, id, ip, mac, action, token string
 		if e := receive(ctx, cfg, id, o.Proofs, ""); e != nil {
 			return "", errors.New("no completed wallet receipt yet; retain your original token")
 		}
-		o.Minutes = o.Minutes * o.NetSat / o.Price
 	case "check":
 		if o.Method != "lightning" {
 			return "", errors.New("this pass uses Cashu")
@@ -215,7 +249,6 @@ func (p *Portal) checkout(ctx context.Context, id, ip, mac, action, token string
 		if e = receive(ctx, cfg, id, keys, token); e != nil {
 			return "", errors.New("payment unconfirmed; retain the original token and retry")
 		}
-		o.Minutes = o.Minutes * netValue / o.Price
 	default:
 		return "", errors.New("unknown checkout action")
 	}
@@ -257,6 +290,7 @@ func (p *Portal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
+	checkoutError := ""
 	if r.Method == "POST" {
 		if !secure {
 			http.Error(w, "Open the secure checkout", 403)
@@ -275,13 +309,16 @@ func (p *Portal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		id, e = p.checkout(ctx, r.PostForm.Get("id"), ip, mac, r.PostForm.Get("action"), strings.TrimSpace(r.PostForm.Get("token")), secure)
 		if e != nil {
-			http.Error(w, e.Error(), 400)
+			// Render the saved order with recovery actions after an uncertain
+			// payment, without putting error details or the token in a URL.
+			id = r.PostForm.Get("id")
+			checkoutError = e.Error()
+		} else {
+			http.Redirect(w, r, "/?id="+url.QueryEscape(id), 303)
 			return
 		}
-		http.Redirect(w, r, "/?id="+url.QueryEscape(id), 303)
-		return
 	}
-	if r.Method != "GET" && r.Method != "HEAD" {
+	if r.Method != "GET" && r.Method != "HEAD" && r.Method != "POST" {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
@@ -328,5 +365,8 @@ func (p *Portal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		link = template.URL("lightning:" + o.Quote.Invoice)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = page.Execute(w, map[string]any{"Up": up, "Active": o.Until > time.Now().Unix(), "End": time.Unix(o.Until, 0).UTC().Format("15:04"), "Price": price, "Minutes": minutes, "ID": id, "Mint": o.Mint, "Cashu": o.Method == "cashu", "PendingCashu": len(o.Proofs) > 0, "Invoice": o.Quote.Invoice, "Link": link, "Secure": secure, "TLSURL": tlsURL})
+	if checkoutError != "" {
+		w.WriteHeader(http.StatusBadRequest)
+	}
+	_ = page.Execute(w, map[string]any{"Up": up, "Active": o.Until > time.Now().Unix(), "End": time.Unix(o.Until, 0).UTC().Format("15:04"), "Price": price, "Minutes": minutes, "ID": id, "Mint": o.Mint, "Cashu": o.Method == "cashu", "PendingCashu": len(o.Proofs) > 0, "Replaces": o.Replaces, "Error": checkoutError, "Invoice": o.Quote.Invoice, "Link": link, "Secure": secure, "TLSURL": tlsURL})
 }

@@ -5,6 +5,7 @@
 <title>Freedom Wi-Fi</title>
 <style>body{background:#faf9f5;color:#19342a;font:18px/1.5 system-ui;margin:0}main{max-width:29rem;margin:8vh auto;padding:1.5rem}small{letter-spacing:.14em;text-transform:uppercase}h1{line-height:1.1;font-size:2.3rem}button,a.pay{display:inline-block;border:0;background:#205c48;color:white;border-radius:.5rem;padding:.75rem 1.1rem;font:inherit;cursor:pointer}form{margin:1rem 0}textarea{width:100%;box-sizing:border-box}code{overflow-wrap:anywhere;font-size:.8rem}a{color:#205c48}</style>
 <main>
+{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
 <small>Freedom Wi-Fi</small>{{if not .Secure}}<h1>Get internet</h1>
 <p>{{.Minutes}} minutes of Wi-Fi for <strong>{{.Price}} sats</strong>.</p>
 <a class="pay" href="{{.TLSURL}}">Continue to secure checkout</a>{{else if not .Up}}<h1>Internet is unavailable</h1>
@@ -29,11 +30,13 @@
 <textarea required name="token" rows="4" maxlength="32768" autocomplete="off" aria-label="Cashu token">
 </textarea>
 <button name="action" value="redeem">Pay {{.Price}} sats</button>
-</form>{{if .PendingCashu}}<form method="post"><input type="hidden" name="id" value="{{.ID}}"><button name="action" value="recover">Recover payment</button></form>{{end}}{{else}}<h1>Get internet</h1>
+</form>{{if .PendingCashu}}<form method="post"><input type="hidden" name="id" value="{{.ID}}"><button name="action" value="recover">Recover payment</button></form>
+<p>Token rejected or payment still unconfirmed? Keep your original token and try recovery first. You can also pay with a different token. The original payment stays recoverable; if both payments succeed, their time adds up.</p>
+<form method="post"><input type="hidden" name="id" value="{{.ID}}"><button name="action" value="replace-cashu">Start a separate payment</button></form>{{end}}{{else}}<h1>Get internet</h1>
 <p>{{.Minutes}} minutes of Wi-Fi for <strong>{{.Price}} sats</strong>.</p>
 <form method="post">
 <button name="action" value="start-lightning">Pay with Lightning</button>
 </form><form method="post">
 <button name="action" value="start-cashu">Pay with Cashu</button>
-</form>{{end}}</main>
+</form>{{end}}{{if .Replaces}}<p><a href="/?id={{.Replaces}}">Return to the original payment</a> to retry or recover it.</p>{{end}}</main>
 </html>

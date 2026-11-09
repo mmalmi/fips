@@ -41,22 +41,42 @@ func (p *Portal) reconcile(ctx context.Context) {
 		_ = os.WriteFile("/var/run/freedom-guest.uplink", []byte(name+"\n"), 0644)
 	}
 }
-func run() error {
-	c, e := readConfig()
-	if e != nil {
-		return e
-	}
-	if c.Mode == "off" {
-		return nil
-	}
+func withHotspotLock(wait bool, action func() error) error {
 	// One writer per hotspot, including manual starts and overlapping procd retries.
 	f, e := os.OpenFile("/var/run/freedom-guest.lock", os.O_CREATE|os.O_RDWR, 0600)
 	if e != nil {
 		return e
 	}
 	defer f.Close()
-	if e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
-		return errors.New("hotspot is already running")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if e == nil {
+			break
+		}
+		if !wait || !errors.Is(e, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			return fmt.Errorf("hotspot is already running or locked: %w", e)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return action()
+}
+func cleanup() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	e := cleanupRouting(ctx)
+	if e == nil {
+		os.Remove("/var/run/freedom-guest.uplink")
+	}
+	return e
+}
+func run() (err error) {
+	c, e := readConfig()
+	if e != nil {
+		return e
+	}
+	if c.Mode == "off" {
+		return cleanup()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -64,10 +84,7 @@ func run() error {
 		return errors.New("install the Freedom firewall includes first")
 	}
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = clearUplink(cleanup)
-		os.Remove("/var/run/freedom-guest.uplink")
+		err = errors.Join(err, cleanup())
 	}()
 	if e = setupRules(ctx); e != nil {
 		return fmt.Errorf("guest routing: %w", e)
@@ -102,10 +119,16 @@ func run() error {
 	}
 }
 func main() {
-	if len(os.Args) != 1 {
+	var e error
+	switch {
+	case len(os.Args) == 1:
+		e = withHotspotLock(false, run)
+	case len(os.Args) == 2 && os.Args[1] == "--cleanup":
+		e = withHotspotLock(true, cleanup)
+	default:
 		log.Fatal("unexpected arguments")
 	}
-	if e := run(); e != nil {
+	if e != nil {
 		log.Fatal(e)
 	}
 }

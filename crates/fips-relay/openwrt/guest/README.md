@@ -13,7 +13,7 @@ Guest receipts and upstream purchase budgets are independent. The hotspot sells 
 
 ## Provision a hotspot
 
-1. Install the APK on a supported OpenWrt 25.12 ARM64 router with fw4 and LuCI. It starts off. Reserve a dedicated IPv4 bridge named `br-freedom`, a non-overlapping guest subnet, routing tables 19971 and 19973, rule priorities 19971–19974 and mark 0x4e13. Use an isolated Wi-Fi AP on that bridge, separate from LAN, management and mesh. Give it a dedicated firewall zone with input and forward set to REJECT and output set to ACCEPT so the router can reply to guests. Keep software/hardware flow offloading disabled for guest traffic. Use client isolation and encrypted Wi-Fi where supported. Access passes identify the associated device by IPv4 and MAC address.
+1. Install the APK on a supported OpenWrt 25.12 ARM64 router with fw4 and LuCI. It starts off. Reserve a dedicated IPv4 bridge named `br-freedom`, a non-overlapping guest subnet, routing tables 19971 and 19973, route protocol 199 within those tables, rule priorities 19971–19974 and mark 0x4e13. Use an isolated Wi-Fi AP on that bridge, separate from LAN, management and mesh. Give it a dedicated firewall zone with input and forward set to REJECT and output set to ACCEPT so the router can reply to guests. Keep software/hardware flow offloading disabled for guest traffic. Use client isolation and encrypted Wi-Fi where supported. Access passes identify the associated device by IPv4 and MAC address.
 2. Give the bridge a fixed IPv4 address. Provide DHCPv4 on that subnet with this address as gateway and an external IPv4 resolver in DHCP option 6. Disable guest IPv6, router advertisements and cross-zone forwarding. Publish the checkout DNS name pointing to the bridge address in a resolver guests can use after purchase. Before payment the built-in captive DNS answers with that address and HTTP opens the checkout. Payments require a certificate trusted by guest devices. Install its full chain and private key in a root-only directory. A guest with a prepared Cashu token can pay offline. A Lightning wallet needs its own connection to send payment (or the invoice can be paid from another device).
 3. Configure a dedicated Nostr VPN merchant wallet on Linux with an accepted mint. Install the adjacent executable `freedom-merchant` on that host. It needs Python 3, `nvpn` on PATH, the merchant's CDK SQLite wallet and a private writable journal directory. The default database is `cashu/wallet.sqlite` alongside the Nostr VPN config. Set `FREEDOM_WALLET_DB` for a different data directory. The helper can also run directly on a router with these dependencies. The tested CLI and CDK receipt format are from Nostr VPN 4.1.19. Initialize/add the accepted mint in the wallet before use. Regularly refresh the merchant wallet to mint settled Lightning quotes.
 4. Edit `/etc/config/freedom_guest`. Set `address`, `tls_name`, `tls_cert`, `tls_key`, `mint`, `nvpn_config`, `price_sat`, `minutes` and a persistent private `state` path. `wallet` points to the local helper or an operator-owned transport adapter. For a remote wallet, set `wallet` to `/usr/libexec/freedom-merchant-ssh`, set `merchant_host` to the Linux SSH account and host, and install a dedicated SSH private key at `/etc/freedom-guest/merchant.key` (mode 0600). Pin the Linux server host key in the router root user’s known_hosts. On Linux restrict its authorized_keys entry with `restrict,command="/usr/local/libexec/freedom-merchant --stdio /etc/nvpn/merchant.toml https://mint.example"`, substituting the real config and accepted mint. The remote config and mint are fixed by that command. The router sends only the top-up amount or receipt request over encrypted stdin. The router must reach the same mint as the merchant. The portal grants access after verified receipt. Both the merchant order journal and the router pass store need persistent backups.
@@ -51,9 +51,17 @@ config uplink 'automatic'
 
 For a specific priority, put ordered `list provider 'first'` and `list provider 'second'` entries in the `main` section with `option mode 'selected'`. Empty or unavailable paid profiles close access. Guest traffic cannot fall through to the direct uplink. Payment records are capped at 8,192 orders per router. A full journal stops new purchases. Retain both journals for reconciliation and replay protection.
 
+## Payment recovery and shutdown
+
+If a Cashu payment is rejected or its receipt is unavailable, keep the original token and try **Recover payment**. **Start a separate payment** permits a different token without releasing the original proof claims. It links back to the original checkout; retrying that action reuses the same separate checkout. A later receipt for the original payment remains recoverable, and successful payments add their time together. The accepted one-sat surplus buys proportional time rounded up to the next second. Retrying a granted receipt preserves its saved expiry.
+
+Stopping or removing the service closes firewall admission before removing its exact policy rules and protocol-199 default routes. Cleanup waits for the daemon to release its process lock. `freedom-guest --cleanup` also handles a stopped or crashed daemon. Conflicting policy rules are preserved, and a cleanup failure leaves the remaining unreachable guards in place. The dedicated firewall zone must remain isolated even after package removal.
+
+Older packages installed untagged default routes. These are preserved because the service cannot prove their ownership, and startup refuses to overwrite them. During an upgrade from such a package, stop the service, inspect tables 19971 and 19973, and remove only routes confirmed to belong to that old Freedom instance before restarting. Do not flush shared tables or remove another service's rules. Keep the payment journals intact.
+
 ## Build and verify
 
-The verified target is `aarch64_cortex-a53`. From this directory, use Go 1.27.3 with the checked-in go.sum. Run Go tests on Linux, where the routing code uses SO_MARK.
+The package target is `aarch64_cortex-a53`. From this directory, use Go 1.27.3 with the checked-in go.sum. The live probe uses Linux SO_MARK. On Linux, run the complete package checks:
 
 ```sh
 go mod verify
@@ -62,6 +70,14 @@ python3 -B test_merchant.py
 GOTOOLCHAIN=local GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
   -mod=readonly -buildvcs=false -trimpath -ldflags='-s -w' -o /tmp/freedom-guest .
 ```
+
+The payment, recovery-page and routing-command checks also run on macOS without substituting a production probe:
+
+```sh
+go test -mod=readonly portal.go payments.go settings.go routing.go guest_test.go routing_test.go
+```
+
+Routing tests substitute command boundaries; they check ownership, teardown order and failures, not the live kernel or OpenWrt service lifecycle. Cross-compilation alone does not establish router acceptance. Rebuild the APK from the changed source and repeat stop/uninstall, connection and phone-payment checks before deployment; earlier package evidence applies only to its recorded source manifest.
 
 On a root-owned Linux staging filesystem, provide the hash of the input source manifest and run the package builder. The verified Alpine aarch64 apk-tools-static 3.0.8-r0 archive has SHA-256 `8b5da539b70bb9dfca6567d336821bb316193544fd420213784584f285e99bb1`; its extracted `sbin/apk.static` has SHA-256 `0b5895ca7d881b2cf7af67cfae9e1629f602f7242b92a038243689527b86732c`. The APK records both the manifest digest and executable digest in `/usr/share/freedom-guest/build.json`. Inspect the APK and verify its digest before private installation. Distribution via a public feed uses the release owner's signing and provenance checks.
 

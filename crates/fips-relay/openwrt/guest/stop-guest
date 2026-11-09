@@ -1,3 +1,7 @@
 #!/bin/sh
 [ -z "${IPKG_INSTROOT:-}" ] || exit 0
-[ ! -x /etc/init.d/freedom-guest ] || /etc/init.d/freedom-guest stop
+if [ -x /etc/init.d/freedom-guest ]; then
+	/etc/init.d/freedom-guest stop || exit 1
+elif [ -x /usr/sbin/freedom-guest ]; then
+	/usr/sbin/freedom-guest --cleanup || exit 1
+fi
