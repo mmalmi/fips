@@ -6,6 +6,10 @@ mod lan_discovery;
 
 impl Node {
     const NOSTR_NODE_EVENT_DRAIN_BUDGET: usize = 1;
+    /// Longest validity of any deferred signal (traversal offers live 120 s).
+    pub(in crate::node) const PENDING_MESH_SIGNAL_TTL: std::time::Duration =
+        std::time::Duration::from_secs(120);
+    pub(in crate::node) const MAX_PENDING_MESH_SIGNALS_PER_PEER: usize = 8;
 
     /// Poll all transports for discovered peers and auto-connect.
     ///
@@ -541,13 +545,11 @@ impl Node {
             {
                 MeshSignalSessionAction::Send => {}
                 MeshSignalSessionAction::Defer => {
-                    self.pending_mesh_signals
-                        .entry(signal.recipient)
-                        .or_default()
-                        .push(super::PendingMeshSignal {
-                            msg_type: SessionMessageType::DataPacket.to_byte(),
-                            payload,
-                        });
+                    self.defer_mesh_signal(
+                        signal.recipient,
+                        SessionMessageType::DataPacket.to_byte(),
+                        payload,
+                    );
                     continue;
                 }
                 MeshSignalSessionAction::Drop => continue,
@@ -639,10 +641,7 @@ impl Node {
         {
             MeshSignalSessionAction::Send => {}
             MeshSignalSessionAction::Defer => {
-                self.pending_mesh_signals
-                    .entry(peer_addr)
-                    .or_default()
-                    .push(super::PendingMeshSignal { msg_type, payload });
+                self.defer_mesh_signal(peer_addr, msg_type, payload);
                 return;
             }
             MeshSignalSessionAction::Drop => return,
@@ -657,7 +656,40 @@ impl Node {
         }
     }
 
+    /// Queue a signal until the peer's end-to-end session is established.
+    ///
+    /// Signals are short-lived offers and answers. A peer whose session never
+    /// completes must not accumulate them, so each peer keeps only the newest
+    /// few and `prune_expired_pending_mesh_signals` drops the stale ones.
+    pub(in crate::node) fn defer_mesh_signal(
+        &mut self,
+        peer_addr: NodeAddr,
+        msg_type: u8,
+        payload: Vec<u8>,
+    ) {
+        let signals = self.pending_mesh_signals.entry(peer_addr).or_default();
+        if signals.len() >= Self::MAX_PENDING_MESH_SIGNALS_PER_PEER {
+            let excess = signals.len() + 1 - Self::MAX_PENDING_MESH_SIGNALS_PER_PEER;
+            signals.drain(..excess);
+        }
+        signals.push(super::PendingMeshSignal {
+            msg_type,
+            payload,
+            queued_at: Instant::now(),
+        });
+    }
+
+    pub(in crate::node) fn prune_expired_pending_mesh_signals(&mut self, now: Instant) {
+        self.pending_mesh_signals.retain(|_, signals| {
+            signals.retain(|signal| {
+                now.saturating_duration_since(signal.queued_at) < Self::PENDING_MESH_SIGNAL_TTL
+            });
+            !signals.is_empty()
+        });
+    }
+
     async fn flush_pending_mesh_signals(&mut self, limit: usize) {
+        self.prune_expired_pending_mesh_signals(Instant::now());
         let ready = self
             .pending_mesh_signals
             .keys()

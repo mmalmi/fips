@@ -405,3 +405,34 @@ async fn mesh_signal_warms_session_over_existing_multihop_route() {
         "waiting for session readiness must retain one parsed signal without duplicating it"
     );
 }
+
+#[test]
+fn deferred_mesh_signals_are_bounded_and_expire() {
+    let mut node = Node::new(Config::new()).expect("node");
+    let peer = *Identity::generate().node_addr();
+
+    for index in 0..1_000u32 {
+        node.defer_mesh_signal(peer, 0, index.to_le_bytes().to_vec());
+    }
+    let queued = &node.pending_mesh_signals[&peer];
+    assert_eq!(queued.len(), Node::MAX_PENDING_MESH_SIGNALS_PER_PEER);
+    assert_eq!(
+        queued.last().expect("newest signal").payload,
+        999u32.to_le_bytes().to_vec(),
+        "the newest signals must survive the per-peer bound"
+    );
+
+    let now = std::time::Instant::now();
+    node.prune_expired_pending_mesh_signals(now);
+    assert_eq!(
+        node.pending_mesh_signals[&peer].len(),
+        Node::MAX_PENDING_MESH_SIGNALS_PER_PEER,
+        "fresh signals must be retained"
+    );
+
+    node.prune_expired_pending_mesh_signals(now + Node::PENDING_MESH_SIGNAL_TTL);
+    assert!(
+        node.pending_mesh_signals.is_empty(),
+        "signals for a peer whose session never completes must expire"
+    );
+}
