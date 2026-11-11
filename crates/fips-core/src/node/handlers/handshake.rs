@@ -524,7 +524,7 @@ impl Node {
                     if websocket_over_udp {
                         // A sealed Msg1 can be replayed. Advertise only a bounded
                         // candidate and keep the exact UDP owner until fresh proof.
-                        conn.bind_refresh_owner(existing_peer);
+                        conn.bind_refresh_owner(existing_peer, false);
                     } else {
                         self.retire_peer_for_epoch_restart(peer_node_addr, new_epoch, now_ms);
                     }
@@ -910,7 +910,10 @@ impl Node {
                     .dataplane_fmp_link_metrics(&peer_node_addr, Instant::now())
                     .is_some_and(|metrics| metrics.current_epoch_authenticated)
         }) {
-            conn.bind_refresh_owner(peer);
+            let unconfirmed = self
+                .dataplane_fmp_link_metrics(&peer_node_addr, Instant::now())
+                .is_some_and(|metrics| !metrics.current_epoch_authenticated);
+            conn.bind_refresh_owner(peer, unconfirmed);
         }
 
         // Create link

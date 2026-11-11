@@ -158,6 +158,10 @@ pub struct PeerConnection {
     /// Current owner when this refresh was admitted. Retries cannot retarget it.
     refresh_owner: Option<RefreshOwner>,
 
+    /// Eligibility of an initial fallback when its receiver was offered.
+    /// Delayed traffic on the first path cannot revoke an advertised fallback.
+    refresh_owner_was_unconfirmed: bool,
+
     /// Number of resends performed so far.
     resend_count: u32,
 
@@ -201,6 +205,7 @@ impl PeerConnection {
             completed_handshake_response: None,
             handshake_confirmation: None,
             refresh_owner: None,
+            refresh_owner_was_unconfirmed: false,
             resend_count: 0,
             crossed_msg1_resent: false,
             next_resend_at_ms: 0,
@@ -235,6 +240,7 @@ impl PeerConnection {
             completed_handshake_response: None,
             handshake_confirmation: None,
             refresh_owner: None,
+            refresh_owner_was_unconfirmed: false,
             resend_count: 0,
             crossed_msg1_resent: false,
             next_resend_at_ms: 0,
@@ -273,6 +279,7 @@ impl PeerConnection {
             completed_handshake_response: None,
             handshake_confirmation: None,
             refresh_owner: None,
+            refresh_owner_was_unconfirmed: false,
             resend_count: 0,
             crossed_msg1_resent: false,
             next_resend_at_ms: 0,
@@ -438,13 +445,14 @@ impl PeerConnection {
         self.handshake_confirmation.as_ref()
     }
 
-    pub(crate) fn bind_refresh_owner(&mut self, peer: &ActivePeer) {
+    pub(crate) fn bind_refresh_owner(&mut self, peer: &ActivePeer, unconfirmed: bool) {
         self.refresh_owner = peer.our_index().map(|index| RefreshOwner {
             link: peer.link_id(),
             generation: peer.session_generation(),
             index,
             epoch: peer.remote_epoch(),
         });
+        self.refresh_owner_was_unconfirmed = unconfirmed;
     }
 
     pub(crate) fn awaits_epoch_restart(&self) -> bool {
@@ -466,6 +474,10 @@ impl PeerConnection {
 
     pub(crate) fn confirms_refresh_of(&self, peer: &ActivePeer) -> bool {
         self.handshake_confirmation.is_some() && self.targets_refresh_owner(peer)
+    }
+
+    pub(crate) fn confirms_unconfirmed_refresh_of(&self, peer: &ActivePeer) -> bool {
+        self.refresh_owner_was_unconfirmed && self.confirms_refresh_of(peer)
     }
 
     pub(crate) fn retain_handshake_confirmation(&mut self, packet: &ReceivedPacket) {

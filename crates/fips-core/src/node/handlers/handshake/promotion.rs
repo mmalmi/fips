@@ -192,20 +192,19 @@ impl Node {
             // A fresh responder installs its receiver before advertising Msg2.
             // If that reply never arrives, transport priority must not strand
             // the peer on this unconfirmed path after another carrier proves
-            // possession of its candidate keys. Established sessions and rekey
-            // handoffs retain their existing arbitration.
+            // possession of its candidate keys. Use the owner's liveness when
+            // this fallback was offered: a delayed first-path packet can arrive
+            // after the initiator has switched to the advertised candidate.
+            // Established sessions and rekey handoffs retain their arbitration.
             let confirmed_initial_fallback = inbound_alternate_path
-                && connection.confirms_refresh_of(existing_peer)
+                && connection.confirms_unconfirmed_refresh_of(existing_peer)
                 && !existing_peer.fmp_mmp_is_initiator()
                 && existing_peer.handshake_msg2().is_some()
                 && !existing_peer.rekey_in_progress()
                 && existing_peer.pending_new_session().is_none()
                 && !existing_peer.is_draining()
                 && remote_epoch.is_some()
-                && existing_peer.remote_epoch() == remote_epoch
-                && self
-                    .dataplane_fmp_link_metrics(&peer_node_addr, std::time::Instant::now())
-                    .is_some_and(|metrics| !metrics.current_epoch_authenticated);
+                && existing_peer.remote_epoch() == remote_epoch;
             let existing_payload_path_unusable = self
                 .session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms)
                 || self

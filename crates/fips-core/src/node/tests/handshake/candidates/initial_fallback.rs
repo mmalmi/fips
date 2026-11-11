@@ -5,7 +5,12 @@ fn confirmed_fallback_replaces_only_unconfirmed_initial_responder() {
     super::super::super::session::run_large_stack_async_test(
         "confirmed-initial-fallback",
         || async {
-            for (established, owner_changed) in [(false, false), (true, false), (false, true)] {
+            for (established, late_heartbeat, owner_changed) in [
+                (false, false, false),
+                (true, false, false),
+                (false, true, false),
+                (false, false, true),
+            ] {
                 let mut node = make_test_node().await;
                 let remote = make_node();
                 // Generation is timestamp-derived, not a first-session counter.
@@ -79,6 +84,13 @@ fn confirmed_fallback_replaces_only_unconfirmed_initial_responder() {
                         .handshake_confirmation()
                         .is_none()
                 );
+
+                // The alternate receiver has already been advertised. A
+                // delayed first-path heartbeat must not revoke that offer:
+                // its sender can have switched to the candidate meanwhile.
+                if late_heartbeat {
+                    deliver_owner_heartbeat(&mut node, &mut owner, remote.node_addr()).await;
+                }
 
                 let retained_index = if owner_changed {
                     // A newer receiver on the same identity must not inherit a
