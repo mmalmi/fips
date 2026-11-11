@@ -34,7 +34,8 @@ enum MeshSignalSessionAction {
 
 pub(super) struct PendingMeshSignal {
     msg_type: u8,
-    payload: Vec<u8>,
+    pub(super) payload: Vec<u8>,
+    queued_at: std::time::Instant,
 }
 
 /// True if `ip` is not a viable canonical advert endpoint for peers off
