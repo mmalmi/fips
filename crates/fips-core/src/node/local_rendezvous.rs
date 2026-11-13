@@ -269,6 +269,25 @@ impl Node {
         self.local_rendezvous.transport_id
     }
 
+    /// Whether this peer is currently reached over the loopback rendezvous.
+    pub(in crate::node) fn is_same_host_peer(&self, node_addr: &NodeAddr) -> bool {
+        self.peers.get(node_addr).is_some_and(|peer| {
+            peer.transport_id()
+                .zip(peer.current_addr())
+                .is_some_and(|(transport_id, addr)| {
+                    self.is_local_rendezvous_path(transport_id, addr)
+                })
+        })
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn set_local_rendezvous_transport_for_test(
+        &mut self,
+        transport_id: TransportId,
+    ) {
+        self.local_rendezvous.transport_id = Some(transport_id);
+    }
+
     /// Retire stale fixed-address state only after its replacement completed
     /// Noise IK and the normal identity ACL.
     pub(in crate::node) fn retire_replaced_local_anchor(
