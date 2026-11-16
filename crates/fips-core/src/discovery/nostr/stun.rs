@@ -30,14 +30,14 @@ pub(super) async fn observe_traversal_addresses(
     per_server_timeout: Duration,
     network: Option<&dyn crate::host_network::HostNetwork>,
 ) -> Result<TraversalAddressObservation, BootstrapError> {
-    let local_port = socket.local_addr()?.port();
+    let bound = socket.local_addr()?;
     let local_addresses = if share_local_candidates {
-        local_addresses_from_port(local_port, network)
+        local_candidate_ips(bound.ip(), &private_interface_ips(), network)
             .into_iter()
             .map(|ip| TraversalAddress {
                 protocol: "udp".to_string(),
                 ip,
-                port: local_port,
+                port: bound.port(),
             })
             .collect::<Vec<_>>()
     } else {
@@ -321,36 +321,37 @@ fn parse_xor_mapped_address(value: &[u8], txn_id: &[u8; 12]) -> Option<SocketAdd
     }
 }
 
-fn local_addresses_from_port(
-    port: u16,
+fn local_candidate_ips(
+    bound: IpAddr,
+    interface_ips: &[IpAddr],
     network: Option<&dyn crate::host_network::HostNetwork>,
 ) -> Vec<String> {
-    let mut addresses = Vec::new();
-    let interface_ips = private_interface_ips();
-    push_private_interface_ips(&mut addresses, &interface_ips);
-    push_local_probe(
-        &mut addresses,
-        "0.0.0.0:0",
-        "8.8.8.8:80",
-        &interface_ips,
-        network,
-    );
-    push_local_probe(
-        &mut addresses,
-        "[::]:0",
-        "[2001:4860:4860::8888]:80",
-        &interface_ips,
-        network,
-    );
-    push_bound_addr(&mut addresses, ("0.0.0.0", port));
-    push_bound_addr(&mut addresses, ("::", port));
-    addresses
-}
-
-fn push_private_interface_ips(addresses: &mut Vec<String>, interface_ips: &[IpAddr]) {
-    for ip in interface_ips.iter().copied() {
-        push_ip(addresses, ip);
+    if !bound.is_unspecified() {
+        return if bound.is_loopback() {
+            Vec::new()
+        } else {
+            vec![bound.to_string()]
+        };
     }
+    let mut addresses = Vec::new();
+    for &ip in interface_ips {
+        if ip.is_ipv4() == bound.is_ipv4() {
+            push_ip(&mut addresses, ip);
+        }
+    }
+    let (probe_bind, probe_destination) = if bound.is_ipv4() {
+        ("0.0.0.0:0", "8.8.8.8:80")
+    } else {
+        ("[::]:0", "[2001:4860:4860::8888]:80")
+    };
+    push_local_probe(
+        &mut addresses,
+        probe_bind,
+        probe_destination,
+        interface_ips,
+        network,
+    );
+    addresses
 }
 
 #[cfg(unix)]
@@ -450,14 +451,6 @@ fn push_local_probe(
     }
 }
 
-fn push_bound_addr<A: std::net::ToSocketAddrs>(addresses: &mut Vec<String>, bind_addr: A) {
-    if let Ok(local_addr) =
-        std::net::UdpSocket::bind(bind_addr).and_then(|socket| socket.local_addr())
-    {
-        push_ip(addresses, local_addr.ip());
-    }
-}
-
 fn push_ip(addresses: &mut Vec<String>, ip: IpAddr) {
     if ip.is_unspecified() {
         return;
@@ -482,6 +475,27 @@ mod tests {
     use super::interface_flags_allow_private_candidate;
     use super::{is_private_overlay_candidate_ip, parse_stun_binding_success};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn local_offers_use_addresses_reachable_on_the_traversal_socket() {
+        let v4 = IpAddr::from([192, 168, 1, 7]);
+        let v6: IpAddr = "fd00::7".parse().unwrap();
+        let interfaces = [v6, v4];
+        for (bound, expected) in [
+            (Ipv4Addr::UNSPECIFIED.into(), v4),
+            (Ipv6Addr::UNSPECIFIED.into(), v6),
+            (v4, v4),
+            (v6, v6),
+        ] {
+            assert_eq!(
+                super::local_candidate_ips(bound, &interfaces, None),
+                vec![expected.to_string()]
+            );
+        }
+        assert!(
+            super::local_candidate_ips(Ipv4Addr::LOCALHOST.into(), &interfaces, None).is_empty()
+        );
+    }
 
     const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
     const TEST_TXN_ID: [u8; 12] = [
