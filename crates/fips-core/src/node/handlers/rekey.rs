@@ -572,7 +572,9 @@ impl Node {
             return;
         }
         for node_addr in plan.initiate {
-            let _ = self.initiate_rekey(&node_addr).await;
+            if self.routine_fmp_rekey_ready(&node_addr) {
+                let _ = self.initiate_rekey(&node_addr).await;
+            }
         }
     }
 
