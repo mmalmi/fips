@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Return active flows to a recovered, trusted direct link after using a same-host relay.
 - Advertise LAN traversal addresses that the bound UDP socket can receive on.
 - Expose aggregate WebSocket connection counts to embedded applications.
+- Use authenticated link activity to drive rekey and recovery, preserve admission capacity for useful peers, and stop retrying idle sessions after a successful repair.
 
 ## [0.4.118] - 2026-11-05
 

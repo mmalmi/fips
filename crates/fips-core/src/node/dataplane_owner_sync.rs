@@ -352,7 +352,9 @@ impl Node {
         // transit peer; pinning that transient ingress would leave payload on
         // the routed branch after the direct carrier is already usable.
         let selected_next_hop = self.find_next_hop(node_addr).map(|peer| *peer.node_addr());
-        let selected_direct = (selected_next_hop == Some(*node_addr)).then_some(*node_addr);
+        let selected_direct = (selected_next_hop == Some(*node_addr)
+            && !self.session_direct_path_degradation_active(node_addr, Self::now_ms()))
+        .then_some(*node_addr);
 
         // A supplied handshake or established reply carrier remains preferred
         // while its adjacent FMP path can send. Initial tree-mode handshakes
