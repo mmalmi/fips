@@ -232,6 +232,9 @@ impl Node {
                         self.session_direct_path_exclusive_trust_timeout_ms(),
                     )
                     && !failed_learned_routes.contains(&next_hop)
+                    && !(healthy_direct_route.is_some()
+                        && !direct_session_untrusted
+                        && self.is_same_host_peer(&next_hop))
                     && self.peers.get(&next_hop).is_some_and(|peer| {
                         peer.is_healthy() && peer.can_send() && !peer.client_only
                     }))
@@ -534,6 +537,11 @@ impl Node {
             return true;
         }
         if self.active_peer_uses_configured_static_udp_path(&direct_addr) {
+            return false;
+        }
+        // A same-host hop's onward path shares this host's network, so its
+        // loopback link cost is no evidence of a cheaper path than direct.
+        if self.is_same_host_peer(&candidate_addr) {
             return false;
         }
         let Some(candidate) = self.peers.get(&candidate_addr) else {

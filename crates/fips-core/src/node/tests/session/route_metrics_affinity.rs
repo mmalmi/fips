@@ -789,3 +789,59 @@ async fn test_stale_session_receiver_reports_do_not_change_route_choice() {
         "ignored stale reports must not update goodput"
     );
 }
+
+#[test]
+fn test_same_host_hop_yields_to_healthy_direct_link() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let same_host_hop = *node.peer_ids().next().expect("same-host peer");
+    let rendezvous_transport = TransportId::new(7);
+    node.set_local_rendezvous_transport_for_test(rendezvous_transport);
+    node.get_peer_mut(&same_host_hop)
+        .expect("same-host peer")
+        .set_current_addr(
+            rendezvous_transport,
+            &TransportAddr::from_string("127.0.0.1:21211"),
+        );
+    assert!(
+        node.route_candidate_beats_direct(None, same_host_hop),
+        "a same-host hop still carries traffic when there is no direct link"
+    );
+
+    let direct_link = LinkId::new(45);
+    let (direct_conn, direct_identity) =
+        make_completed_connection(&mut node, direct_link, TransportId::new(1), 1000);
+    let remote_addr = *direct_identity.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2000)
+        .unwrap();
+    let session = make_noise_session(node.identity(), &Identity::generate());
+    let mut entry = crate::node::session::SessionEntry::new(
+        remote_addr,
+        direct_identity.pubkey_full(),
+        EndToEndState::Established(session),
+        1000,
+        true,
+    );
+    entry.mark_established(1000);
+    node.sessions.insert(remote_addr, entry);
+    node.learn_reverse_route(remote_addr, same_host_hop);
+    seed_dataplane_fmp_srtt_for_test(&mut node, remote_addr, 30);
+    seed_dataplane_fmp_srtt_for_test(&mut node, same_host_hop, 1);
+    // The flow started through the same-host peer before the direct link
+    // was up, and is still active there.
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, same_host_hop, Node::now_ms());
+
+    let selected = (0..4)
+        .map(|_| {
+            node.find_next_hop(&remote_addr)
+                .map(|peer| *peer.node_addr())
+                .expect("route")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        selected,
+        vec![remote_addr; 4],
+        "a loopback first hop is not evidence of a cheaper path than a healthy direct link"
+    );
+}
