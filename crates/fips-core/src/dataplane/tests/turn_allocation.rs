@@ -65,6 +65,7 @@ fn receipt_only_control_guard_rejects_mixed_controls_and_all_drop_classes() {
                 DataplaneTunOutboundDropReason::InvalidPacket,
             )),
             6 => turn.drops.push(PacketDrop {
+                received_carrier: None,
                 owner: fmp_owner(983),
                 counter: Some(1),
                 send_token: None,

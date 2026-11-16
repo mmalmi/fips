@@ -33,12 +33,6 @@ impl OriginatedSessionObserver for NoReturnData {
 #[ignore = "observes the production 45-second drain"]
 fn recovered_unanswered_burst_waits_for_new_application_traffic() {
     run_large_stack_async_test("fips-idle-recovery", || async {
-        let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_ansi(false)
-            .with_test_writer()
-            .finish();
-        let _logging = tracing::subscriber::set_default(subscriber);
         let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
         let result = AssertUnwindSafe(exercise(&mut nodes)).catch_unwind().await;
         cleanup_nodes(&mut nodes).await;
