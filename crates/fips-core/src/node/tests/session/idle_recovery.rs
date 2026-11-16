@@ -53,11 +53,35 @@ async fn tick(nodes: &mut [TestNode]) {
     tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
-async fn recover(nodes: &mut [TestNode], previous: [u8; 32]) -> [u8; 32] {
+async fn recover(
+    nodes: &mut [TestNode],
+    previous: [u8; 32],
+    reverse: &Arc<NoReturnData>,
+) -> [u8; 32] {
     let destination = *nodes[2].node.node_addr();
+    let source = *nodes[0].node.node_addr();
     tokio::time::timeout(Duration::from_secs(16), async {
         loop {
             tick(nodes).await;
+            // The existing protocol proves the new responder key with ordinary
+            // authenticated return traffic. Allow one control packet after
+            // responder cutover without reporting delivery of the old request.
+            if nodes[2]
+                .node
+                .get_session(&source)
+                .and_then(|session| session.handshake_hash())
+                .is_some_and(|hash| hash != &previous)
+            {
+                nodes[2].node.set_originated_session_observer(None);
+                nodes[2]
+                    .node
+                    .send_dataplane_fsp_coords_warmup(&source)
+                    .await
+                    .unwrap();
+                nodes[2]
+                    .node
+                    .set_originated_session_observer(Some(reverse.clone()));
+            }
             let hash = *nodes[0]
                 .node
                 .get_session(&destination)
@@ -85,8 +109,7 @@ async fn exercise(nodes: &mut [TestNode]) {
         node.node.config.node.rekey.after_secs = u64::MAX;
         node.node.config.node.rekey.after_messages = u64::MAX;
     }
-    // Only established reverse records are rejected. Ordinary Noise setup and
-    // the payload-free confirmation retain their production control path.
+    // Block reverse reports so the original data remains unanswered.
     let reverse = Arc::new(NoReturnData::default());
     nodes[2]
         .node
@@ -133,7 +156,7 @@ async fn exercise(nodes: &mut [TestNode]) {
         expect_single_endpoint_data_event(event).payload.as_slice(),
         b"unanswered"
     );
-    let recovered = recover(nodes, initial).await;
+    let recovered = recover(nodes, initial, &reverse).await;
     assert!(
         reverse.0.load(Ordering::Relaxed) > 0,
         "receiver reports must be rejected"
@@ -210,7 +233,7 @@ async fn exercise(nodes: &mut [TestNode]) {
     send_endpoint_data_via_dataplane(&mut nodes[0].node, identities[2], b"new request".to_vec())
         .await
         .unwrap();
-    recover(nodes, recovered).await;
+    recover(nodes, recovered, &reverse).await;
     send_endpoint_data_via_dataplane(&mut nodes[0].node, identities[2], b"usable again".to_vec())
         .await
         .unwrap();
