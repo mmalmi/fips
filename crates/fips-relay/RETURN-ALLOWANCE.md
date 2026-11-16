@@ -86,3 +86,11 @@ reports and depleted budgets may be dropped. Silence means unknown quality,
 not a free or working path. Monetary cost-aware routing and its simulations are
 still required; these changes reuse the native measurements rather than adding
 another reporting or receipt protocol.
+
+## Session key rotation
+
+During rekeying the initiating endpoint needs an authenticated record from the
+responder under the new key. An active forward purchase earns credit for this
+ordinary return traffic when every transit relay enables `return_allowance`.
+A separately funded reverse route also carries it. With neither source of
+reverse capacity, a one-way purchase can stall when the old keys retire.

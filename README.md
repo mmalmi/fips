@@ -51,6 +51,21 @@ All traffic over the FIPS mesh is encrypted and authenticated both
 hop-to-hop between peers and independently end-to-end between FIPS
 endpoints.
 
+## Optional paid forwarding
+
+A FIPS node can run ordinary mesh routing without a wallet or a payment service.
+An operator can install a forwarding policy to offer prepaid transit or bounded
+peer credit. The policy charges the authenticated neighbor that submitted the
+packet. A recipient can receive traffic without purchasing a return route.
+
+The [peer-credit adapter](crates/fips-credit/README.md) includes a three-node
+example tested with `cargo test --locked -p fips-credit`. The experimental
+[Cashu relay](crates/fips-relay/README.md) requires the payment-library sources
+described in its [build notes](crates/fips-relay/FUNDING-COSTS.md). For one-way
+paid traffic to continue across key rotation, enable
+[bounded replies](crates/fips-relay/RETURN-ALLOWANCE.md) on each transit relay
+or fund the return route. Both use the existing FIPS protocol.
+
 ## Features
 
 - **Self-organizing mesh routing.** Spanning-tree coordinates with

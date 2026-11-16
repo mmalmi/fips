@@ -13,6 +13,7 @@ publish = false
 members = [
     ".",
     "crates/fips-core",
+    "crates/fips-credit",
     "crates/fips-endpoint",
     "crates/fips-identity",
     "crates/fips-sim",
@@ -25,9 +26,8 @@ members = [
     "vendor/igd-next",
     "vendor/crab_nat",
 ]
-# These experimental applications depend on unreleased payment/TCP work.
-# Keep the stable libraries and daemon independently buildable and testable.
-exclude = ["crates/fips-relay", "crates/fips-relay-app"]
+# The wallet relay uses a separately qualified payment-library graph.
+exclude = ["crates/fips-relay", "crates/fips-relay-app", "vendor/peer-payments", "vendor/cashu-credit"]
 resolver = "2"
 
 # Flash-constrained routers need room for durable payment journals and updates.
