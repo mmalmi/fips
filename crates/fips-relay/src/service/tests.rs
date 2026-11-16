@@ -12,6 +12,52 @@ fn zero_default_fee_config() -> ServiceConfig {
 }
 
 #[test]
+fn mint_export_requires_free_handshakes_and_cannot_also_be_a_client() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(config.mint_export.is_none());
+    config.mint_export = Some(crate::mint_mesh::MintExport {
+        backend: "127.0.0.1:3338".parse().unwrap(),
+        service_port: 44_745,
+    });
+    assert!(config.validate().unwrap_err().contains("forwarding-data"));
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.validate().unwrap();
+    config.terms.mint_mesh = Some(crate::mint_mesh::MintMesh {
+        npub: Identity::generate().npub(),
+        service_port: 44_745,
+    });
+    assert!(config.validate().unwrap_err().contains("no client adapter"));
+}
+
+#[test]
+fn funding_request_budget_is_local_optional_and_requires_positive_limits() {
+    let mut value: Value =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    let original: ServiceConfig = serde_json::from_value(value.clone()).unwrap();
+    assert!(
+        serde_json::to_value(&original)
+            .unwrap()
+            .get("funding_request_budget")
+            .is_none()
+    );
+    let budget = json!({"burst": 128, "requests_per_minute": 60_000});
+    value["funding_request_budget"] = budget.clone();
+    let configured: ServiceConfig = serde_json::from_value(value.clone()).unwrap();
+    configured.validate().unwrap();
+    assert_eq!(configured.terms, original.terms);
+    assert_eq!(
+        serde_json::to_value(&configured).unwrap()["funding_request_budget"],
+        budget
+    );
+    for field in ["burst", "requests_per_minute"] {
+        let mut invalid = value.clone();
+        invalid["funding_request_budget"][field] = 0.into();
+        assert!(serde_json::from_value::<ServiceConfig>(invalid).is_err());
+    }
+}
+
+#[test]
 fn public_configuration_accepts_zero_default_fee_and_free_only_ceiling() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("service.json");
@@ -98,6 +144,34 @@ fn return_allowance_is_explicit_and_cannot_change_legacy_tariffs() {
 }
 
 #[test]
+fn custom_reply_rates_require_enabled_allowance_and_valid_bounds() {
+    let mut config: ServiceConfig =
+        serde_json::from_str(include_str!("../../service.example.json")).unwrap();
+    assert!(config.return_bandwidth.is_none());
+    config.terms.billing = BillingBasis::ForwardingData;
+    config.return_bandwidth = Some(crate::free_routes::FreeBandwidthPolicy {
+        global_bytes_per_second: 32_768,
+        global_burst_bytes: 65_536,
+        peer_bytes_per_second: 8_192,
+        peer_burst_bytes: 16_384,
+    });
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .contains("requires return allowance")
+    );
+    config.return_allowance = true;
+    config.validate().unwrap();
+    config
+        .return_bandwidth
+        .as_mut()
+        .unwrap()
+        .peer_bytes_per_second = 0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn free_bandwidth_is_opt_in_and_rejects_invalid_or_legacy_configuration() {
     let mut value: Value =
         serde_json::from_str(include_str!("../../service.example.json")).unwrap();
@@ -132,8 +206,9 @@ fn free_bandwidth_is_opt_in_and_rejects_invalid_or_legacy_configuration() {
 }
 
 #[test]
-fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
+fn service_forwarder_preserves_readiness_and_temporary_admission() {
     use crate::ledger::{BytePrice, ChannelTerms, Contract};
+    use fips_core::node::ForwardingDecision;
     let directory = tempfile::tempdir().unwrap();
     let ingress = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let destination = *Identity::generate().node_addr();
@@ -153,6 +228,7 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     seller
         .open_channel_verified(
             ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: *ingress.node_addr(),
                 mint_url: "http://test.invalid".into(),
@@ -165,6 +241,7 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
         .unwrap();
     seller
         .add_contract(Contract {
+            bid_msat_per_kib: 0,
             billing: BillingBasis::ForwardingData,
             id: "route".into(),
             channel_id: "channel".into(),
@@ -174,7 +251,7 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
                 msat: 1,
                 per_bytes: 1,
             },
-            max_units: 100,
+            max_units: 500,
             expires_unix: expires,
         })
         .unwrap();
@@ -194,6 +271,10 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     };
     assert!(forwarding.admit(&request).is_none());
     assert!(forwarding.admit_classified(&request).is_none());
+    assert!(matches!(
+        forwarding.decide(&request),
+        ForwardingDecision::Reject
+    ));
     assert_eq!(
         forwarding.relay.bootstrap_stats().unwrap().admitted_packets,
         0
@@ -215,6 +296,41 @@ fn restored_allowance_is_inaccessible_until_service_startup_finishes() {
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 0);
     forwarding.complete(token.token, ForwardingOutcome::Submitted);
     assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 4);
+
+    let policy: &dyn ForwardingPolicy = &forwarding;
+    request.session_payload = &[1; 97];
+    assert!(matches!(policy.decide(&request), ForwardingDecision::Retry));
+    assert_eq!(seller.channel_usage("channel").unwrap().reserved_msat, 4);
+    seller.apply_verified_balance("channel", 1_000).unwrap();
+    let ForwardingDecision::Admit(admission) = policy.decide(&request) else {
+        panic!("accepted payment must replenish the waiting packet's allowance");
+    };
+    assert_eq!(admission.class, fips_core::node::ForwardingClass::Normal);
+    forwarding.ready.store(false, Ordering::Release);
+    assert!(matches!(
+        policy.decide(&request),
+        ForwardingDecision::Reject
+    ));
+    policy.complete(admission.token, ForwardingOutcome::Submitted);
+    assert_eq!(seller.channel_usage("channel").unwrap().submitted_msat, 101);
+    forwarding.ready.store(true, Ordering::Release);
+
+    request.session_payload = &[1; 101];
+    assert!(matches!(
+        policy.decide(&request),
+        ForwardingDecision::Reject
+    ));
+    request.session_payload = &[1; 4];
+    assert!(matches!(policy.decide(&request), ForwardingDecision::Retry));
+    assert_eq!(seller.channel_usage("channel").unwrap().reserved_msat, 101);
+    seller.checkpoint().unwrap();
+    let ForwardingDecision::Admit(admission) = policy.decide(&request) else {
+        panic!("a durable checkpoint must reopen the consumed window");
+    };
+    policy.complete(admission.token, ForwardingOutcome::Unconfirmed);
+    let usage = seller.channel_usage("channel").unwrap();
+    assert_eq!(usage.reserved_msat, 105);
+    assert_eq!(usage.submitted_msat, 101);
 }
 
 #[test]

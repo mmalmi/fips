@@ -11,6 +11,7 @@ pub(super) const REQUIRED: &[&str] = &[
     "seller/ledger.json",
     "buyer/buyer.json",
     "controller/controller.json",
+    "quotes/offers.json",
     "receiver/spilman-receiver-key.json",
     "receiver/spilman-receiver.sqlite",
     "wallet/cashu/seed.json",
@@ -24,8 +25,15 @@ pub struct ServiceTerms {
     #[serde(default, skip_serializing_if = "BillingBasis::is_legacy")]
     pub billing: BillingBasis,
     pub controller: ControllerPolicy,
+    /// Opt in to running a mint with this relay. Its redemption policy belongs
+    /// to the original issuer and is immutable across service restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_mint: Option<LocalMintConfig>,
+    /// Optional pinned FIPS transport for the immutable loopback mint URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
     /// Logical wallet bytes, including completion reservations; not filesystem space.
-    /// Set only before initialization. Omission preserves an unconfigured wallet.
+    /// Required before initialization; missing saved limits are never inferred.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_capacity_bytes: Option<u64>,
     pub buyer_budget_sat: u64,
@@ -37,11 +45,32 @@ pub struct ServiceTerms {
     pub quote_max_units: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalMintConfig {
+    pub cln_socket: PathBuf,
+    #[serde(default)]
+    pub redeemable: bool,
+}
+
+impl LocalMintConfig {
+    pub(super) fn mode(&self) -> &'static str {
+        if self.redeemable {
+            "redeemable"
+        } else {
+            "insert-only"
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     pub state_directory: PathBuf,
     pub transports: fips_core::config::TransportsConfig,
+    /// Export one fixed local mint HTTP listener over this endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_export: Option<crate::mint_mesh::MintExport>,
     /// Opt-in inbound payment control for authenticated direct UDP peers in
     /// this network. It does not authorize Internet access or onward purchases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,6 +79,12 @@ pub struct ServiceConfig {
     /// is configured separately; neither grants purchase authority.
     #[serde(default)]
     pub neighbor_admission: NeighborAdmission,
+    /// Optional total native peer limit, including protected configured peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peers: Option<usize>,
+    /// Local native exploration policy; does not authorize payment control or spending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighbor_rotation: Option<fips_core::config::NeighborRotationConfig>,
     pub neighbors: Vec<PeerConfig>,
     /// Local fees for future offers; existing financial agreements stay intact.
     #[serde(
@@ -60,7 +95,14 @@ pub struct ServiceConfig {
     /// Optional bounded opaque replies on the reverse of an admitted path.
     #[serde(default)]
     pub return_allowance: bool,
-    /// Optional local rate limits for already negotiated free-data forwarding.
+    /// Optional rate limits for earned replies; omission keeps the small default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
+    /// Allow ordinary clients to forward without negotiating a free grant.
+    /// Only valid on bounded, receive-only, zero-base-price public seeds.
+    #[serde(default)]
+    pub public_free_transit: bool,
+    /// Optional local rate limits for free-data forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_bandwidth: Option<crate::free_routes::FreeBandwidthPolicy>,
     /// Opt-in source offer comparison and native quality-based path trials.
@@ -70,6 +112,26 @@ pub struct ServiceConfig {
     /// Local timing only; does not change saved financial terms or authority.
     #[serde(default, skip_serializing_if = "PaymentCadence::is_default")]
     pub payment_cadence: PaymentCadence,
+    /// Optional local CDK HTTP pacing for channel opening and offline import/export/recovery.
+    /// Omission retains CDK defaults; use only within the mint operator's limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_request_budget: Option<crate::controller::FundingRequestBudget>,
+}
+
+impl ServiceTerms {
+    /// Example allowance for a wallet that both sends and receives payments.
+    /// This is not a filesystem reservation or a measured device sizing limit.
+    pub const DEFAULT_WALLET_CAPACITY_BYTES: u64 = 20 * 1024 * 1024;
+
+    pub(crate) fn wallet_capacity(&self) -> Result<u64, String> {
+        let maximum = self
+            .wallet_capacity_bytes
+            .ok_or("wallet storage maximum is required in saved terms; uncapped accounts need explicit recovery")?;
+        if maximum == 0 || maximum > i64::MAX as u64 {
+            return Err("wallet storage maximum is out of range".into());
+        }
+        Ok(maximum)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +140,7 @@ pub(super) struct Manifest {
     pub(super) version: u16,
     pub(super) npub: String,
     pub(super) receiver_pubkey: String,
+    pub(super) sender_pubkey: String,
     pub(super) terms: ServiceTerms,
 }
 
@@ -95,6 +158,25 @@ pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T
 }
 
 impl ServiceConfig {
+    pub(super) fn quote_policy(&self, receiver_pubkey_hex: String) -> Result<QuotePolicy, String> {
+        let t = &self.terms;
+        Ok(QuotePolicy {
+            additional_receive_mints: t.controller.additional_receive_mints.clone(),
+            destination_fees: self
+                .destination_fees
+                .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?,
+            billing: t.billing,
+            mint_url: t.controller.mint_url.clone(),
+            receiver_pubkey_hex,
+            fee_msat_per_kib: t.fee_msat_per_kib,
+            max_rate_msat_per_kib: t.max_rate_msat_per_kib,
+            lifetime_secs: t.quote_lifetime_secs,
+            max_units: t.quote_max_units,
+            capacity_sat: t.controller.channel_capacity_sat,
+            grace_msat: t.grace_msat,
+        })
+    }
+
     pub fn read(path: &Path) -> Result<Self, String> {
         let value: Self = read_json(path)?;
         value.validate()?;
@@ -105,7 +187,7 @@ impl ServiceConfig {
         self.state_directory.join("control.sock")
     }
 
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if let Some(policy) = &self.price_selection {
             policy.validate()?;
             if !self.terms.billing.has_free_handshakes() {
@@ -120,6 +202,30 @@ impl ServiceConfig {
         }
         self.validate_network()?;
         let t = &self.terms;
+        if let Some(mint) = &t.local_mint {
+            if !mint.cln_socket.is_absolute()
+                || self.mint_export.is_some()
+                || t.mint_mesh.is_some()
+                || !t.billing.has_free_handshakes()
+            {
+                return Err("local mint requires an absolute Core Lightning socket, forwarding-data billing and its own mint endpoint".into());
+            }
+            crate::mint_mesh::local_address(&t.controller.mint_url)?;
+        }
+        if let Some(export) = &self.mint_export {
+            export.validate()?;
+            if t.mint_mesh.is_some() || !t.billing.has_free_handshakes() {
+                return Err(
+                    "mint export requires forwarding-data billing and no client adapter".into(),
+                );
+            }
+        }
+        if let Some(mesh) = &t.mint_mesh {
+            mesh.target(&t.controller.mint_url)?;
+            if !t.billing.has_free_handshakes() {
+                return Err("mesh mint access requires forwarding-data billing".into());
+            }
+        }
         if let Some(policy) = &self.free_bandwidth {
             policy.validate()?;
             if !t.billing.has_free_handshakes() {
@@ -129,6 +235,12 @@ impl ServiceConfig {
         if self.return_allowance && !t.billing.has_free_handshakes() {
             return Err("return allowance requires forwarding-data billing".into());
         }
+        if let Some(policy) = &self.return_bandwidth {
+            policy.validate()?;
+            if !self.return_allowance {
+                return Err("return bandwidth requires return allowance".into());
+            }
+        }
         self.destination_fees
             .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?;
         Controller::validate_policy(&t.controller)?;
@@ -137,12 +249,12 @@ impl ServiceConfig {
             .channel_capacity_sat
             .checked_mul(1_000)
             .ok_or("capacity overflow")?;
-        if t.wallet_capacity_bytes
-            .is_some_and(|maximum| maximum == 0 || maximum > i64::MAX as u64)
-        {
-            return Err("wallet storage maximum is out of range".into());
+        t.wallet_capacity()?;
+        if self.public_free_transit && (!t.controller.receive_only() || !t.billing.has_free_handshakes()
+            || t.fee_msat_per_kib != 0 || !self.destination_fees.is_empty() || self.free_bandwidth.is_none()) {
+            return Err("public free transit requires bounded free bandwidth, zero local fees and a receive-only account".into());
         }
-        if t.buyer_budget_sat == 0
+        if (t.buyer_budget_sat == 0) != t.controller.receive_only()
             || t.window_msat == 0
             || t.window_msat > t.grace_msat
             || t.grace_msat > cap
@@ -165,7 +277,8 @@ impl ServiceConfig {
 pub(super) fn check_state(root: &Path) -> Result<(), String> {
     let mut required = REQUIRED.to_vec();
     // Cashu creates its sender channel store only at first funding. Once a
-    // funding intent exists, losing that store must never look like a new buyer.
+    // funding intent exists, losing that store must never look like a new buyer,
+    // including after completed funding entries retire into lifetime totals.
     let file = File::open(root.join("controller/controller.json")).map_err(|e| e.to_string())?;
     if file.metadata().map_err(|e| e.to_string())?.len() > crate::durable::MAX_JOURNAL_BYTES {
         return Err("controller journal too large".into());
@@ -174,7 +287,11 @@ pub(super) fn check_state(root: &Path) -> Result<(), String> {
     let funding = journal["funding"]
         .as_object()
         .ok_or("missing funding history")?;
-    if !funding.is_empty() || root.join("wallet/spilman-client.json").exists() {
+    let next_funding = journal["next_funding"]
+        .as_u64()
+        .filter(|next| *next > 0)
+        .ok_or("invalid funding sequence")?;
+    if next_funding > 1 || !funding.is_empty() || root.join("wallet/spilman-client.json").exists() {
         required.push("wallet/spilman-client.json");
     }
     for relative in required {

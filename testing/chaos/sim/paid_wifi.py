@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import signal
 
-from .paid_finances import financial_snapshot, payments_credited
+from .paid_finances import financial_observation, financial_snapshot, payments_credited
 from .paid_faults import paid_progress, validate_finances
 from .paid_relay import PaidRelayRun, eventually, relay_config
 from .paid_settlement import original_channels, require, settle_and_collect
@@ -25,29 +25,37 @@ from .wifi_discovery import WifiRun
 from .wifi_remote import ETHERTYPE, digest
 
 
-def retain_channels(prior, current):
+def retain_channels(prior, current, *, quote_max_units=30_000):
     """Rejoining cannot replace funding, release capital or reset authorization."""
     require(original_channels(current, current) == original_channels(prior, prior),
             "rejoin changed the original channel owners")
-    validate_finances(prior, current, wallet=False)
+    validate_finances(prior, current, wallet=False, quote_max_units=quote_max_units)
 
 
-def reconciled_channels(prior, current):
-    retain_channels(prior, current)
+def reconciled_channels(prior, current, *, quote_max_units=30_000):
+    retain_channels(prior, current, quote_max_units=quote_max_units)
     # A new signature can race the earlier frozen stream-payment target. Only
     # require credit already observed here to survive the coming partition.
     return current if payments_credited(current) else None
 
 
 class PaidWifiRun(WifiRun):
+    quote_max_units = 30_000
+
     def __init__(self, args):
+        from .wifi_channel import options
+        options(args)
         promotion_artifact = wifi_promotion_checks.options(args)
         requested_outage = getattr(args, "outage_node", None)
         if requested_outage is not None:
             if not getattr(args, "active_outage", False):
                 raise ValueError("--outage-node requires --active-outage")
-            if requested_outage not in ("n02", "n03"):
-                raise ValueError("outage node must be n02 or n03")
+            if requested_outage not in ("n01", "n02", "n03"):
+                raise ValueError("outage node must be n01, n02 or n03")
+        if getattr(args, 'root_outage', False):
+            if (not getattr(args, 'active_outage', False) or requested_outage is not None
+                    or any(getattr(args, name, False) for name in ('brief_outage', 'streams', 'interrupted_promotion'))):
+                raise ValueError('root outage requires the active probe scenario and automatic radio selection')
         self.outage_node = requested_outage or "n03"
         if getattr(args, "brief_outage", False) and not getattr(args, "active_outage", False):
             raise ValueError("--brief-outage requires --active-outage")
@@ -90,9 +98,14 @@ class PaidWifiRun(WifiRun):
                               self.run, self.root, args.mint_address, max_issued_sat=384)
         return LocalMint(args.mint_binary, args.mint_address, self.root)
 
+    @property
+    def buyer_budget(self):
+        return 64
+
     def profile_config(self, node):
         config = relay_config([node.interface], self.mint_url)
         config["state_directory"] = node.state
+        config["terms"]["buyer_budget_sat"] = self.buyer_budget
         if getattr(self.args, "active_outage", False):
             config["return_allowance"] = False
         config["transports"]["ethernet"][node.interface]["ethertype"] = ETHERTYPE
@@ -110,7 +123,8 @@ class PaidWifiRun(WifiRun):
                     "instrumented promotion artifact changed before setup")
         self.mint_url = self.mint.start()
         self.evidence["mint_process"] = self.mint.info
-        self.phase("fresh test mint started with a 384-sat issuance cap")
+        cap = getattr(self.mint, 'settings', {}).get('max_issued_sat', 384)
+        self.phase(f"fresh test mint started with a {cap}-sat issuance cap")
         super().setup()
 
     def before_launch(self):
@@ -158,18 +172,21 @@ class PaidWifiRun(WifiRun):
     def finances(self):
         return financial_snapshot(self, wallet=None)
 
+    def financial_observation(self):
+        return financial_observation(self, wallet=None)
+
     def assert_finances(self):
         current = eventually("consistent hardware financial observation", self.finances)
         if self.channel_anchor is None:
             for state in current.values():
                 require(not state["funding"] and not state["signed"] and not state["credited"]
-                        and not any(state["budget"].values()) and state["remaining"] == 64,
+                        and not any(state["budget"].values()) and state["remaining"] == self.buyer_budget,
                         "discovery created spending or payment authority")
         else:
-            retain_channels(self.channel_anchor, current)
+            self.retain_channels(self.channel_anchor, current)
         return current
 
-    def account_execute(self, name, binary, action, body):
+    def account_execute(self, name, binary, action, body, *, operation_timeout=45):
         self.check_forwards()
         self.monitor.check()
         if name == "mint":
@@ -177,7 +194,8 @@ class PaidWifiRun(WifiRun):
             return self.mint.request(body)
         require(binary == "fips-relay" and action == "wallet", "unexpected offline account operation")
         fields = dict(body)
-        return self.nodes[name].control(fields.pop("type"), action=action, **fields)
+        return self.nodes[name].control(fields.pop("type"), action=action,
+                                        operation_timeout=operation_timeout, **fields)
 
     def paid_streams(self, before, phase):
         for source, destination in (("n01", "n03"), ("n03", "n01")):
@@ -190,7 +208,7 @@ class PaidWifiRun(WifiRun):
             evidence[source] = sample
         self.phase("wireless stream accounting and automatic payment confirmed", directions=evidence)
         return eventually("reconciled channel observation before radio departure", lambda:
-                          reconciled_channels(before, self.finances()))
+                          reconciled_channels(before, self.finances(), quote_max_units=self.quote_max_units))
 
     def exercise(self):
         if getattr(self.args, "interrupted_promotion", False):
@@ -207,13 +225,16 @@ class PaidWifiRun(WifiRun):
             self.channel_anchor = self.paid_streams(funded, "paid two-hop wireless stream delivered")
             original_channels(self.nodes, self.channel_anchor)
             self.phase("original channels automatically paid before outage", financial=self.channel_anchor)
-            if getattr(self.args, "active_outage", False):
+            if getattr(self.args, "handover_frequency", None) is not None:
+                from .wifi_channel import exercise
+                exercise(self)
+            elif getattr(self.args, "active_outage", False):
                 active_radio_outage(self, outage_node=self.outage_node)
             else:
                 self.mesh_outage()
             rejoined = self.assert_finances()
             paid = self.paid_streams(rejoined, "same paid route delivers after automatic radio rejoin")
-            retain_channels(self.channel_anchor, paid)
+            self.retain_channels(self.channel_anchor, paid)
             for name, node in self.nodes.items():
                 require(self.ctl(name, "status")["npub"] == node.npub, "radio rejoin changed identity")
             self.phase("same funding and channels pay automatically after radio rejoin", financial=paid)
@@ -240,13 +261,16 @@ class PaidWifiRun(WifiRun):
         current = eventually("original financial accounts before collection", self.finances)
         original_channels(self.nodes, current)
         if self.channel_anchor is not None:
-            retain_channels(self.channel_anchor, current)
+            self.retain_channels(self.channel_anchor, current)
         settle_and_collect(self, current, execute=self.account_execute,
                            stop=lambda name: self.nodes[name].stop(),
                            export_path=lambda name, relative: self.nodes[name].state + "/" + relative)
         collection = self.evidence["phases"][-1]["settlement_collection"]
         self.phase("all 384 test sats collected; every test wallet empty")
         return collection
+
+    def retain_channels(self, prior, current):
+        return retain_channels(prior, current, quote_max_units=self.quote_max_units)
 
     def finish(self):
         try:
@@ -263,12 +287,20 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--mint-binary", type=Path, required=True,
                         help="test-mint executable for this controller host")
+    parser.add_argument("--mint-host", type=Path,
+                        help="private inventory for a remote Linux test-mint host")
     parser.add_argument("--mint-address", required=True,
                         help="assigned private controller address, or 127.0.0.1 with SSH forwarding")
     parser.add_argument("--mint-ssh-forward", action="store_true",
                         help="use dedicated inventory SSH forwards instead of controller LAN access")
     parser.add_argument("--open-mesh", action="store_true",
                         help="temporarily test paid forwarding over open 802.11s, restoring the saved SAE profile")
+    parser.add_argument("--streams", action="store_true",
+                        help="exact paid TCP/FIPS streams before, during and after bounded frame loss")
+    parser.add_argument("--carrier-pressure-port", type=int,
+                        help="unused middle-router port for bounded rejection during paid radio streams")
+    parser.add_argument("--carrier-pressure-transport", choices=('tcp', 'websocket', 'udp'), default='tcp',
+                        help="TCP rejected records (default), WebSocket discovery-only expiry, or UDP packet pressure")
     parser.add_argument("--interrupted-promotion", action="store_true",
                         help="hold real full acceptance, withdraw the middle radio and recover one Watch")
     parser.add_argument("--promotion-provenance", type=Path,
@@ -277,22 +309,40 @@ def main():
                         help="also crash the source at the held commitment and restart its saved profile during the cut")
     parser.add_argument("--active-outage", action="store_true",
                         help="interrupt live paid round trips before automatic radio recovery")
+    parser.add_argument("--handover-frequency", type=int,
+                        help="stagger an open-mesh channel switch to this enabled non-DFS frequency and back")
     parser.add_argument("--brief-outage", action="store_true",
                         help="rejoin before FIPS peer eviction; requires --active-outage")
     parser.add_argument("--recovery-timing", action="store_true",
                         help="record bounded recovery observations and scoped native logs")
     parser.add_argument("--beacon-interval-secs", type=int, choices=(10, 30),
                         help="compare native discovery intervals with --recovery-timing; default unchanged")
-    parser.add_argument("--outage-node", choices=("n02", "n03"),
-                        help="radio to remove with --active-outage: n02 bridge or n03 leaf (default)")
+    parser.add_argument("--outage-node", choices=("n01", "n02", "n03"),
+                        help="radio to remove with --active-outage: n01 source, n02 bridge or n03 leaf (default)")
+    parser.add_argument('--root-outage', action='store_true',
+                        help='select the elected root, observe its replacement and require the original tree after rejoin')
+    parser.add_argument('--crowded-rejoin', nargs='?', type=int, choices=(1, 2, 3), const=1, default=0,
+                        help='repeat crowded radio recovery one to three times, retaining useful peers and paid channels')
+    parser.add_argument('--crowded-pressure', nargs='?', type=int, choices=(1, 2, 3, 4), const=1, default=0,
+                        help='after one crowded rejoin, retry admission with one to four fresh identity groups')
+    parser.add_argument('--crowded-newcomer', action='store_true',
+                        help='replace the disconnected buyer with a fresh paying radio identity; requires one crowded rejoin and a remote mint')
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.carrier_pressure_port is not None and not 1024 <= args.carrier_pressure_port <= 65535:
+        parser.error("carrier pressure requires an unprivileged port")
+    if args.carrier_pressure_transport != 'tcp' and args.carrier_pressure_port is None:
+        parser.error("--carrier-pressure-transport requires --carrier-pressure-port")
     if args.outage_node is not None and not args.active_outage:
         parser.error("--outage-node requires --active-outage")
     if args.brief_outage and not args.active_outage:
         parser.error("--brief-outage requires --active-outage")
     if args.recovery_timing and not args.active_outage:
         parser.error("--recovery-timing requires --active-outage")
+    if args.crowded_pressure and args.crowded_rejoin != 1:
+        parser.error('--crowded-pressure requires exactly one --crowded-rejoin')
+    if args.crowded_newcomer and (args.crowded_rejoin != 1 or args.crowded_pressure or not args.mint_host):
+        parser.error('--crowded-newcomer requires one --crowded-rejoin, a remote mint and no --crowded-pressure')
     os.umask(0o077)
 
     def deadline(_signum, _frame):
@@ -300,7 +350,22 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    PaidWifiRun(args).execute()
+    if args.crowded_newcomer:
+        from .wifi_newcomer import NewcomerWifiRun
+        NewcomerWifiRun(args).execute()
+    elif args.crowded_rejoin:
+        from .wifi_crowded import CrowdedWifiRun
+        CrowdedWifiRun(args).execute()
+    elif args.carrier_pressure_port is not None:
+        from .wifi_carrier_pressure import WifiCarrierPressureRun
+        from .wifi_carrier_owner import WifiCarrierOwnerRun
+        pressure_run = WifiCarrierOwnerRun if args.carrier_pressure_transport == 'tcp' else WifiCarrierPressureRun
+        pressure_run(args).execute()
+    elif args.streams:
+        from .wifi_stream import WifiStreamRun
+        WifiStreamRun(args).execute()
+    else:
+        PaidWifiRun(args).execute()
 
 
 if __name__ == "__main__":

@@ -14,13 +14,42 @@ const PACKETS: usize = 128;
 const BATCH: usize = 32;
 const PAYLOAD: usize = 256;
 const MAGIC: &[u8] = b"recovery-timing";
-const PACING: Duration = Duration::from_millis(500);
+#[derive(Clone, Copy)]
+struct Schedule {
+    packets: usize,
+    batch: usize,
+    packet_ms: u64,
+    batch_ms: u64,
+    provider: usize,
+}
+
+const FAILOVER: Schedule = Schedule {
+    packets: PACKETS,
+    batch: BATCH,
+    packet_ms: 500,
+    batch_ms: 16_000,
+    provider: 2,
+};
+const RETURN: Schedule = Schedule {
+    packets: 256,
+    batch: 16,
+    packet_ms: 250,
+    batch_ms: 10_000,
+    provider: 1,
+};
+
+impl Schedule {
+    fn due_ms(self, sequence: usize) -> u64 {
+        (sequence / self.batch) as u64 * self.batch_ms
+            + (sequence % self.batch) as u64 * self.packet_ms
+    }
+}
 const FEEDBACK: Duration = Duration::from_secs(15);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_edge_loss_separates_recovery_from_batch_confirmation() {
     tokio::time::timeout(
-        Duration::from_secs(180),
+        Duration::from_secs(420),
         run(0, Scenario::RecoveryTiming, 116),
     )
     .await
@@ -87,11 +116,13 @@ async fn send_stream(
     controller: &Controller,
     peers: &[PeerIdentity],
     started: Instant,
+    schedule: Schedule,
+    offset: usize,
 ) -> Vec<Sent> {
-    let mut sent = Vec::with_capacity(PACKETS);
-    for sequence in 0..PACKETS {
-        tokio::time::sleep_until(started + PACING * sequence as u32).await;
-        let batch_agreement = if sequence % BATCH == 0 {
+    let mut sent = Vec::with_capacity(schedule.packets);
+    for sequence in 0..schedule.packets {
+        tokio::time::sleep_until(started + Duration::from_millis(schedule.due_ms(sequence))).await;
+        let batch_agreement = if sequence % schedule.batch == 0 {
             let purchases = controller.purchases().await.unwrap();
             assert!(purchases.len() <= 1);
             purchases.first().map(|p| agreement(p, peers))
@@ -99,7 +130,7 @@ async fn send_stream(
             None
         };
         let started_at_ms = elapsed(started);
-        node.send_datagram(peers[3], 44_740, 44_740, payload(sequence))
+        node.send_datagram(peers[3], 44_740, 44_740, payload(offset + sequence))
             .await
             .unwrap();
         sent.push(Sent {
@@ -123,7 +154,7 @@ struct Driver<'a> {
 }
 
 impl Driver<'_> {
-    async fn sample(&mut self, started: Instant) -> Observation {
+    async fn sample(&mut self, started: Instant, target: usize) -> Observation {
         let began = elapsed(started);
         let next = mobility::Evidence::read(self.root, &self.controllers[0]).await;
         next.follows(&self.evidence);
@@ -218,8 +249,8 @@ impl Driver<'_> {
                 .is_some_and(|v| v.is_finite() && v > 0.0);
         let working = before == after
             && !pending
-            && provider == Some(2)
-            && native_provider == Some(2)
+            && provider == Some(target)
+            && native_provider == Some(target)
             && qualified
             && selected.is_some_and(|p| p.contract.max_units > 32_768)
             && authorized > 0
@@ -242,6 +273,118 @@ impl Driver<'_> {
                 "controller_errors": errors(self.controllers),
             }),
         }
+    }
+    async fn egress_membership(&self, connected: bool) {
+        tokio::time::timeout(Duration::from_secs(100), async {
+            loop {
+                let mut ready = true;
+                for (source, destination) in [(1, 3), (3, 1)] {
+                    let peers = self.nodes[source].peers().await.unwrap();
+                    let matches: Vec<_> = peers
+                        .iter()
+                        .filter(|p| p.node_addr == *self.peers[destination].node_addr())
+                        .collect();
+                    ready &= if connected {
+                        matches.len() == 1 && matches[0].connected
+                    } else {
+                        // Configured simulation peers retain their reconnect
+                        // record after the carrier is declared disconnected.
+                        matches.iter().all(|peer| !peer.connected)
+                    };
+                }
+                if ready {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("the actual native edge must observe departure and rejoin");
+    }
+
+    async fn stream(
+        &mut self,
+        network: &SimNetwork,
+        receiver: &mut FipsEndpointServiceReceiver,
+        schedule: Schedule,
+        offset: usize,
+        first: Option<&Purchase>,
+    ) {
+        let started = Instant::now();
+        let started_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let source = self.nodes[0].clone();
+        let controller = self.controllers[0].clone();
+        let peers = self.peers;
+        let observe = async {
+            let mut received = BTreeMap::new();
+            let mut observations = Vec::new();
+            let mut cut = None;
+            let mut batch = Vec::new();
+            let mut ticker = tokio::time::interval(Duration::from_millis(250));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let until =
+                started + Duration::from_millis(schedule.due_ms(schedule.packets - 1) + 6500);
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(until) => break,
+                    _ = ticker.tick() => observations.push(self.sample(started, schedule.provider).await),
+                    count = receiver.recv_batch_into(&mut batch, 32) => {
+                        assert!(count.is_some(), "destination receiver remains open");
+                        for message in &batch {
+                            let data = message.data.as_slice();
+                            if data.len() != PAYLOAD || &data[8..8 + MAGIC.len()] != MAGIC {
+                                continue; // Previous setup traffic is outside the numbered stream.
+                            }
+                            assert_eq!(message.source_peer.node_addr(), self.peers[0].node_addr());
+                            let sequence = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+                            assert!(sequence >= offset && sequence < offset + schedule.packets);
+                            assert_eq!(data, payload(sequence).as_slice());
+                            let sequence = sequence - offset;
+                            assert!(received.insert(sequence, Received {
+                                observed_at_ms: elapsed(started), enqueued_at_ms: message.enqueued_at_ms,
+                            }).is_none(), "numbered payloads are never replayed or duplicated");
+                            if cut.is_none() && let Some(first) = first {
+                                assert_eq!(self.controllers[0].purchases().await.unwrap(), vec![first.clone()]);
+                                cut = Some(elapsed(started));
+                                // Keep both source links and all processes intact.
+                                network.set_link_up("1", "3", false);
+                            }
+                        }
+                    }
+                }
+            }
+            (
+                if first.is_some() {
+                    cut.expect("a real numbered delivery must precede the cut")
+                } else {
+                    0
+                },
+                received,
+                observations,
+            )
+        };
+        let (sent, (cut, received, observations)) = tokio::join!(
+            send_stream(&source, &controller, peers, started, schedule, offset),
+            observe,
+        );
+        let result = checks::summarize(&sent, &received, &observations, cut, schedule);
+        eprintln!(
+            "recovery timeline {}",
+            json!({
+                "phase": if first.is_some() { "edge_loss" } else { "edge_return" },
+                "started_unix_ms": started_unix_ms, "transition_at_ms": cut,
+                "sent": sent, "received": received,
+                "observations": observations, "result": result,
+                "claim": "observed delivery/quality/provider-credit timing; no isolated trigger attribution",
+            })
+        );
+        assert!(
+            result.is_ok(),
+            "recovery timeline did not prove delivery, payment and confirmation"
+        );
     }
 }
 
@@ -278,76 +421,23 @@ pub(super) async fn exercise(
     assert!(initial.has_recent_delivery_feedback);
     assert_eq!(initial.next_hop, Some(*peers[1].node_addr()));
     let wire_before = network.stats();
-    let started = Instant::now();
-    let started_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    let observe = async {
-        let mut received = BTreeMap::new();
-        let mut observations = Vec::new();
-        let mut cut = None;
-        let mut batch = Vec::new();
-        let mut ticker = tokio::time::interval(Duration::from_millis(250));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let until = started + Duration::from_secs(70);
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(until) => break,
-                _ = ticker.tick() => observations.push(driver.sample(started).await),
-                count = receiver.recv_batch_into(&mut batch, 32) => {
-                    assert!(count.is_some(), "destination receiver remains open");
-                    for message in &batch {
-                        let data = message.data.as_slice();
-                        if data.len() != PAYLOAD || &data[8..8 + MAGIC.len()] != MAGIC {
-                            continue; // Previous setup traffic is outside the numbered stream.
-                        }
-                        assert_eq!(message.source_peer.node_addr(), peers[0].node_addr());
-                        let sequence = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
-                        assert!(sequence < PACKETS);
-                        assert_eq!(data, payload(sequence).as_slice());
-                        assert!(received.insert(sequence, Received {
-                            observed_at_ms: elapsed(started), enqueued_at_ms: message.enqueued_at_ms,
-                        }).is_none(), "numbered payloads are never replayed or duplicated");
-                        if cut.is_none() {
-                            assert_eq!(controllers[0].purchases().await.unwrap(), vec![first.clone()]);
-                            cut = Some(elapsed(started));
-                            // Keep both source links and all processes intact.
-                            network.set_link_up("1", "3", false);
-                        }
-                    }
-                }
-            }
-        }
-        (
-            cut.expect("a real numbered delivery must precede the cut"),
-            received,
-            observations,
-        )
-    };
-    let (sent, (cut, received, observations)) = tokio::join!(
-        send_stream(&nodes[0], &controllers[0], peers, started),
-        observe,
-    );
-    let wire = network.stats().delta_since(&wire_before);
+    driver
+        .stream(network, receiver, FAILOVER, 0, Some(first))
+        .await;
     assert!(
-        wire.packets_dropped_down > 0,
+        network
+            .stats()
+            .delta_since(&wire_before)
+            .packets_dropped_down
+            > 0,
         "the edge cut must drop actual carrier traffic"
     );
-    let result = checks::summarize(&sent, &received, &observations, cut);
-    eprintln!(
-        "recovery timeline {}",
-        json!({
-            "started_unix_ms": started_unix_ms, "cut_at_ms": cut,
-            "sent": sent, "received": received,
-            "observations": observations, "result": result, "wire": wire,
-            "claim": "observed delivery/quality/provider-credit timing; no isolated trigger attribution",
-        })
-    );
-    assert!(
-        result.is_ok(),
-        "recovery timeline did not prove delivery, payment and confirmation"
-    );
+    driver.egress_membership(false).await;
+    network.set_link_up("1", "3", true);
+    driver.egress_membership(true).await;
+    driver
+        .stream(network, receiver, RETURN, PACKETS, None)
+        .await;
     let budget = controllers[0].funding_budget().await.unwrap();
     assert_eq!(budget.wallet_debited_sat, 128);
     assert_eq!(budget.locked_sat, 128);

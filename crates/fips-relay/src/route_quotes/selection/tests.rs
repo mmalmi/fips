@@ -7,6 +7,7 @@ pub(super) fn offer(provider: u8, rate: u64) -> RouteOffer {
     let destination = peer(4);
     let provider = *peer(provider).node_addr();
     RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: BillingBasis::ForwardingData,
         id: provider.to_string(),

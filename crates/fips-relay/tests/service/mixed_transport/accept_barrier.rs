@@ -26,7 +26,8 @@ async fn private_accept_barrier_holds_real_provider_commit_until_release() {
         )
         .await
         .unwrap();
-        let mut bench = MixedBench::start(mint.url(), &network).await;
+        let mut bench =
+            MixedBench::start_with_second_hop(mint.url(), &network, SecondHop::Tcp).await;
         bench.assert_carriers().await;
         for config in &bench.configs {
             request(config, &AdminRequest::PauseRenewals).await.unwrap();

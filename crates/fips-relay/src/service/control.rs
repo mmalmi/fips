@@ -9,6 +9,14 @@ mod route_quality_tests;
 impl RelayService {
     async fn handle(&self, request: AdminRequest) -> Result<Value, String> {
         match request {
+            AdminRequest::NetworkChanged => {
+                let rebound = self
+                    .endpoint
+                    .rebind_network_transports(None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"rebound_transports": rebound}))
+            }
             #[cfg(feature = "testbench")]
             AdminRequest::TestAcceptBarrierArm {
                 buyer,
@@ -70,6 +78,12 @@ impl RelayService {
                 #[cfg(feature = "measurements")]
                 let status = {
                     let mut status = status;
+                    status["stream_probe"] = json!(*self.stream_probe.lock().unwrap());
+                    status["stream_carrier"] = json!(
+                        service_carriers
+                            .iter()
+                            .find(|c| c.service_port == probe::stream::PORT)
+                    );
                     status["payment_progress"] = serde_json::to_value(payment_progress)
                         .map_err(|error| error.to_string())?;
                     status
@@ -100,6 +114,10 @@ impl RelayService {
                         .watch_route(peer, max_rate_msat_per_kib)
                         .await?
                 ))
+            }
+            AdminRequest::Bid { destination, bid_msat_per_kib, max_rate_msat_per_kib } => {
+                let peer = PeerIdentity::from_npub(&destination).map_err(|_| "invalid destination npub")?;
+                Ok(json!(self.controller.watch_route_at_bid(peer, max_rate_msat_per_kib, bid_msat_per_kib).await?))
             }
             AdminRequest::PauseRouteRefresh => {
                 self.controller.pause_route_refresh().await?;
@@ -137,7 +155,19 @@ impl RelayService {
                     .try_acquire()
                     .map_err(|_| "a probe sender is already running")?;
                 Ok(
-                    json!({"probe": probe::send(&self.endpoint, probe, &self.probe_receiver).await?}),
+                    json!({"probe": probe::send(&self.endpoint, probe, &self.probe_receiver,
+                        self.probe_stop.subscribe()).await?}),
+                )
+            }
+            #[cfg(feature = "measurements")]
+            AdminRequest::StreamProbe { probe } => {
+                let _permit = self
+                    .probe_sender
+                    .try_acquire()
+                    .map_err(|_| "a probe sender is already running")?;
+                Ok(
+                    json!({"probe": probe::stream::run(self.endpoint.clone(), probe,
+                    &self.stream_probe, self.probe_stop.subscribe()).await?}),
                 )
             }
             AdminRequest::PauseRenewals => {
@@ -188,6 +218,8 @@ impl RelayService {
                 _ = jobs.join_next(), if !jobs.is_empty() => {}
             }
         }
+        // Operator traffic must stop promptly; financial jobs still drain.
+        service.probe_stop.send_replace(true);
         drop(listener);
         while jobs.join_next().await.is_some() {}
         std::fs::remove_file(&socket).map_err(|e| e.to_string())?;
@@ -211,6 +243,7 @@ pub enum AdminRequest {
     #[cfg(feature = "testbench")]
     TestAcceptBarrierRelease,
     Status,
+    NetworkChanged,
     RouteQuality {
         destination: String,
     },
@@ -219,6 +252,11 @@ pub enum AdminRequest {
     },
     Watch {
         destination: String,
+        max_rate_msat_per_kib: u64,
+    },
+    Bid {
+        destination: String,
+        bid_msat_per_kib: u64,
         max_rate_msat_per_kib: u64,
     },
     PauseRouteRefresh,
@@ -231,6 +269,10 @@ pub enum AdminRequest {
     },
     SendProbe {
         probe: SendProbe,
+    },
+    #[cfg(feature = "measurements")]
+    StreamProbe {
+        probe: probe::stream::StreamProbe,
     },
     Settle,
     PauseRenewals,

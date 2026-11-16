@@ -1,0 +1,71 @@
+#!/bin/sh
+# Run under the service supervisor INSIDE a dedicated Nostr VPN buyer namespace.
+# Bring up this guard before configuring the router's WireGuard peer.
+set -eu
+[ "$#" = 3 ] || { echo 'usage: buyer-gateway WIREGUARD_DEVICE NVPN_CONFIG manual|automatic' >&2; exit 2; }
+wgdev=$1; config=$2; mode=$3
+case "$wgdev" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
+[ "${#wgdev}" -le 15 ]
+case "$mode" in manual|automatic) ;; *) exit 2;; esac
+[ -f "$config" ]
+wg show "$wgdev" public-key >/dev/null
+# Use one fresh, dedicated namespace per buyer. Do not replace an existing
+# owner's policy rules, WireGuard mark or nftables table.
+if ! nft list table inet freedom_paid_guest >/dev/null 2>&1; then
+	[ -z "$(ip -4 rule list | awk '/^(70|71|72):/')" ]
+	[ -z "$(ip -4 route show table 19951 2>/dev/null || true)" ]
+	[ "$(wg show "$wgdev" fwmark)" = off ]
+	nft -f - <<NFT
+table inet freedom_paid_guest {
+ set live { type ifname; flags timeout; }
+ chain input {
+  type filter hook input priority -40; policy accept;
+  iifname "$wgdev" drop
+ }
+ chain forward {
+  type filter hook forward priority -40; policy accept;
+  iifname "$wgdev" meta nfproto ipv4 oifname @live accept
+  iifname "$wgdev" drop
+  oifname "$wgdev" iifname @live ct state established,related accept
+  oifname "$wgdev" drop
+ }
+ chain nat {
+  type nat hook postrouting priority srcnat - 1; policy accept;
+  iifname "$wgdev" oifname @live masquerade
+ }
+}
+NFT
+else
+	# A supervisor restart may reuse only this interface's installed guard.
+	nft list chain inet freedom_paid_guest forward | grep -Fq "iifname \"$wgdev\" drop"
+fi
+clear() { nft flush set inet freedom_paid_guest live; }
+clear
+trap 'clear; exit 0' INT TERM
+rule() {
+	existing=$(ip -4 rule list | awk -v prefix="$1:" '$1==prefix {$1=""; print substr($0,2)}')
+	[ "$existing" = "from all $2" ] || { [ -z "$existing" ] && ip -4 rule add pref "$1" $2; }
+}
+rule 72 "iif $wgdev unreachable"
+rule 71 "iif $wgdev lookup 19951"
+rule 70 "fwmark 0xf113 lookup main"
+wg set "$wgdev" fwmark 0xf113
+while :; do
+	# The daemon must report a realized paid exit and the Linux route must
+	# agree. A direct fallback or stale private VPN never opens the gate.
+	tun=$(timeout 4 nvpn status --config "$config" --json 2>/dev/null | jq -er --arg source "paid_$mode" '
+		select(.internet_source == $source and .daemon.running and .daemon.state.vpn_active and
+		.exit_node != null and .exit_node != "" and .daemon.state.tunnel_exit_peer == .exit_node) |
+		.daemon.state.tunnel_interface | select(type == "string" and test("^[a-zA-Z0-9_-]{1,15}$"))' || true)
+	route=$(ip -j -4 route get 1.1.1.1 2>/dev/null | jq -er '.[0].dev' || true)
+	if [ -n "$tun" ] && [ "$route" = "$tun" ] && ip -j -d link show dev "$tun" | jq -e '.[0].linkinfo.info_kind == "tun"' >/dev/null; then
+		ip -4 route replace table 19951 default dev "$tun"
+		nft -f - <<NFT
+flush set inet freedom_paid_guest live
+add element inet freedom_paid_guest live { "$tun" timeout 12s }
+NFT
+	else
+		clear
+	fi
+	sleep 3
+done

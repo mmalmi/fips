@@ -27,6 +27,8 @@ impl Controller {
         peer: PeerIdentity,
         id: &str,
     ) -> Result<ControllerResponse, String> {
+        let timing = TransitionTiming::new("seal_request", id);
+        timing.mark("received");
         let state = self.snapshot().await?;
         let channel = state
             .incoming
@@ -44,6 +46,7 @@ impl Controller {
         if peer.node_addr() != &channel.buyer {
             return Err("wrong settlement buyer".into());
         }
+        timing.mark("authorized");
         let Some(_claim) = self.settlement_claim(id) else {
             return Ok(ControllerResponse::Pending);
         };
@@ -57,6 +60,8 @@ impl Controller {
     // the original channel expiry. Neither path invents a new usage claim.
     pub(super) async fn seal_sale(&self, channel: ChannelTerms) -> Result<ChannelUsage, String> {
         let id = channel.id.clone();
+        let timing = TransitionTiming::new("seal", &id);
+        timing.mark("started");
         let saved = channel.clone();
         self.change(move |j| {
             for incoming in j.incoming.values_mut().filter(|i| i.channel.id == saved.id) {
@@ -80,10 +85,23 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("intent_saved");
         let state = self.snapshot().await?;
-        for incoming in state.incoming.values().filter(|i| i.channel.id == id) {
-            self.services.quotes.stop_reusing(&incoming.offer.id)?;
-        }
+        let quotes = self.services.quotes.clone();
+        let ids: Vec<_> = state
+            .incoming
+            .values()
+            .filter(|i| i.channel.id == id)
+            .map(|i| i.offer.id.clone())
+            .collect();
+        blocking(move || {
+            for id in ids {
+                quotes.retire_offer(&id)?;
+            }
+            Ok(())
+        })
+        .await?;
+        timing.mark("offers_retired");
         if let Some(usage) = state.seller_settlements[&id].usage {
             return Ok(usage);
         }
@@ -91,6 +109,7 @@ impl Controller {
         let channel_id = id.to_string();
         let usage =
             blocking(move || seller.seal_channel(&channel_id).map_err(|e| e.to_string())).await?;
+        timing.mark("usage_sealed");
         let channel_id = id.to_string();
         self.change(move |j| {
             j.seller_settlements
@@ -100,6 +119,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("usage_saved");
         Ok(usage)
     }
 
@@ -109,6 +129,13 @@ impl Controller {
         id: &str,
         payment: CashuSpilmanPayment,
     ) -> Result<ControllerResponse, String> {
+        if id.is_empty() || id.len() > 128 {
+            return Err("invalid settlement identity".into());
+        }
+        // Read settlement state after excluding concurrent expiry completion.
+        let Some(_claim) = self.settlement_claim(id) else {
+            return Ok(ControllerResponse::Pending);
+        };
         let state = self.snapshot().await?;
         let sale = state
             .seller_settlements
@@ -120,11 +147,15 @@ impl Controller {
         {
             return Err("wrong settlement buyer or channel".into());
         }
-        let Some(_claim) = self.settlement_claim(id) else {
-            return Ok(ControllerResponse::Pending);
-        };
-        if let Some(old) = &sale.payment {
-            if old.balance != payment.balance {
+        // Expiry can save the completed report before a cooperative request.
+        // Reuse its signed balance without applying a new payment.
+        let final_balance = sale
+            .payment
+            .as_ref()
+            .map(|p| p.balance)
+            .or_else(|| sale.report.as_ref().map(|r| r.signed_sat));
+        if let Some(balance) = final_balance {
+            if balance != payment.balance {
                 return Err("final settlement balance already fixed".into());
             }
         } else {
@@ -157,6 +188,7 @@ impl Controller {
     // Caller owns settlement_claim. Mint close and proof import are idempotent;
     // the upstream receiver and wallet retain recovery state before our report.
     pub(super) async fn finish_sale(&self, id: &str) -> Result<SettlementReport, String> {
+        let timing = TransitionTiming::new("settle", id);
         let sale = self
             .snapshot()
             .await?
@@ -167,18 +199,19 @@ impl Controller {
         if let Some(report) = sale.report {
             return Ok(report);
         }
-        if sale.payment.is_none() && now()? <= sale.channel.expires_unix {
+        if sale.payment.is_none() && now()? < sale.channel.expires_unix {
             return Err("final signed payment missing before channel expiry".into());
         }
         let usage = sale.usage.ok_or("seal channel before mint settlement")?;
         let control = self.services.payment_control.clone();
         let seller = self.services.seller.clone();
-        let wallet_guard = self.wallet.clone().lock_owned().await;
+        let wallet = self.wallet.clone();
         let runtime = tokio::runtime::Handle::current();
+        let wallet_timing = timing.clone();
         let report = blocking(move || {
-            let _wallet = wallet_guard;
             runtime.block_on(async move {
                 let closed = control.close_at_mint(&sale.channel.id).await?;
+                wallet_timing.mark("mint_closed");
                 let report = SettlementReport::from_close(&closed)?;
                 if closed.mint_url != sale.channel.mint_url
                     || closed.unit != "sat"
@@ -191,7 +224,12 @@ impl Controller {
                 {
                     return Err("mint close does not match final agreement".into());
                 }
+                // Mint closing owns receiver records; reserve the wallet for
+                // payout import and keep ownership inside the blocking worker.
+                let _wallet = wallet.lock_owned().await;
+                wallet_timing.mark("wallet_ready");
                 control.import_wallet_payout(&sale.channel.id).await?;
+                wallet_timing.mark("payout_imported");
                 // A retained receiver signature can have reached its journal
                 // before the corresponding ledger update was interrupted.
                 let paid_msat = closed.signed_amount * 1_000;
@@ -204,6 +242,7 @@ impl Controller {
             })
         })
         .await?;
+        timing.mark("balance_applied");
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "payout").await?;
         let saved = report.clone();
@@ -216,6 +255,7 @@ impl Controller {
             Ok(())
         })
         .await?;
+        timing.mark("report_saved");
         Ok(report)
     }
 
@@ -244,15 +284,31 @@ impl Controller {
     /// Freeze an accepted purchase, deliver its final authorized balance,
     /// redeem the seller's payout and recover the buyer's unused funding.
     pub async fn settle_channel(&self, id: &str) -> Result<SettlementReport, String> {
-        let _channel = self.channel_work(id)?.lock_owned().await;
-        self.settle_purchase(id, false).await
+        let channel = self.channel_work(id)?.lock_owned().await;
+        let report = self.refund_purchase(id, false).await?;
+        drop(channel);
+        self.release_settlement(id).await?;
+        Ok(report)
     }
 
-    pub(super) async fn settle_purchase(
+    // The caller serializes this channel. Once its refund is durable, report
+    // retention cleanup needs neither the channel guard nor a forwarding pause.
+    pub(super) async fn refund_purchase(
         &self,
         id: &str,
         recovery_only: bool,
     ) -> Result<SettlementReport, String> {
+        let timing = TransitionTiming::new("refund", id);
+        let purchase = self.prepare_refund(id, recovery_only, &timing).await?;
+        self.finish_refund(purchase, &timing).await
+    }
+
+    pub(super) async fn prepare_refund(
+        &self,
+        id: &str,
+        recovery_only: bool,
+        timing: &TransitionTiming,
+    ) -> Result<BuyerSettlement, String> {
         let channel_id = id.to_string();
         let mut purchase = self
             .change(move |j| {
@@ -284,9 +340,9 @@ impl Controller {
                 Ok(settlement)
             })
             .await?;
+        timing.mark("intent_saved");
         if purchase.refunded {
-            self.release_settlement(id).await?;
-            return purchase.report.ok_or("settlement report missing".into());
+            return Ok(purchase);
         }
         if purchase.usage.is_none() {
             let peer = self.neighbor(purchase.provider).await?;
@@ -312,13 +368,14 @@ impl Controller {
             })
             .await?;
         }
+        timing.mark("sealed");
         if purchase.payment.is_none() {
-            let wallet_guard = self.wallet.clone().lock_owned().await;
             let directory = self.services.wallet_directory.clone();
             let buyer = self.services.buyer.clone();
             let saved = purchase.clone();
             let payment = blocking(move || {
-                let _wallet = wallet_guard;
+                // The channel guard and signer serialize final authorization.
+                // Wallet ownership is needed later to recover the refund.
                 buyer
                     .close_channel(&saved.channel.id)
                     .map_err(|e| e.to_string())?;
@@ -360,6 +417,20 @@ impl Controller {
             })
             .await?;
         }
+        timing.mark("signed");
+        Ok(purchase)
+    }
+
+    pub(super) async fn finish_refund(
+        &self,
+        mut purchase: BuyerSettlement,
+        timing: &TransitionTiming,
+    ) -> Result<SettlementReport, String> {
+        if purchase.refunded {
+            return purchase.report.ok_or("settlement report missing".into());
+        }
+        let channel_id = purchase.channel.id.clone();
+        let id = channel_id.as_str();
         if purchase.report.is_none() {
             let peer = self.neighbor(purchase.provider).await?;
             let payment = purchase.payment.clone().ok_or("final payment missing")?;
@@ -386,8 +457,10 @@ impl Controller {
             })
             .await?;
         }
+        timing.mark("provider_settled");
         let report = purchase.report.clone().ok_or("settlement report missing")?;
         let wallet_guard = self.wallet.clone().lock_owned().await;
+        timing.mark("wallet_ready");
         let directory = self.services.wallet_directory.clone();
         let terms = purchase.channel.clone();
         let expected_refund = report.refunded_sat;
@@ -410,6 +483,7 @@ impl Controller {
             })
         })
         .await?;
+        timing.mark("refund_verified");
         #[cfg(feature = "testbench")]
         wallet_barrier::hold(&self.services.wallet_directory, id, "refund").await?;
         purchase.refunded = true;
@@ -422,7 +496,7 @@ impl Controller {
             Ok(())
         })
         .await?;
-        self.release_settlement(id).await?;
+        timing.mark("refund_saved");
         Ok(report)
     }
 
@@ -442,6 +516,13 @@ impl Controller {
         if let Some(history) = &j.history {
             ids.extend(history.buyers.iter().cloned());
         }
+        // Retained routing history can outlive a completed unilateral refund.
+        // It has no cooperative report to request from the provider.
+        ids.retain(|id| {
+            !j.buyer_settlements
+                .get(id)
+                .is_some_and(|s| s.kind == SettlementKind::Expiry && s.terminal())
+        });
         ids
     }
 
@@ -483,7 +564,7 @@ impl Controller {
         for (id, sale) in snapshot.seller_settlements {
             if sale.usage.is_some()
                 && sale.report.is_none()
-                && (sale.payment.is_some() || now()? > sale.channel.expires_unix)
+                && (sale.payment.is_some() || now()? >= sale.channel.expires_unix)
             {
                 let Some(_claim) = self.settlement_claim(&id) else {
                     continue;

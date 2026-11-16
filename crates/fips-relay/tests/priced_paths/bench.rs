@@ -4,6 +4,11 @@ use cashu_service::{receive_payment_token, send_payment_token, simulation::MintP
 use fips_core::{FipsEndpointServiceReceiver, config::NeighborRotationConfig};
 use std::path::{Path, PathBuf};
 
+#[path = "bench/control.rs"]
+mod control;
+#[path = "bench/restart.rs"]
+mod restart;
+
 pub(super) async fn collect_wallets(
     root: &Path,
     wallets: &[PathBuf],
@@ -42,6 +47,7 @@ pub(super) struct Bench {
     pub network_name: String,
     pub network: SimNetwork,
     pub nodes: Vec<Arc<FipsEndpoint>>,
+    configs: Vec<Config>,
     pub peers: Vec<PeerIdentity>,
     pub buyers: Vec<Arc<BuyerAuthorizer>>,
     pub sellers: Vec<Arc<DurableRelay>>,
@@ -59,7 +65,7 @@ pub(super) struct Bench {
 }
 
 pub(super) async fn start(root_index: usize, scenario: Scenario, seed: u64) -> Bench {
-    start_inner(root_index, scenario, seed, false, false, None)
+    start_inner(root_index, scenario, seed, MintMode::Direct, false, None)
         .await
         .0
 }
@@ -69,7 +75,7 @@ pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> B
         root_index,
         Scenario::RecoveryTiming,
         seed,
-        false,
+        MintMode::Direct,
         true,
         None,
     )
@@ -77,10 +83,13 @@ pub(super) async fn start_with_promotion_gate(root_index: usize, seed: u64) -> B
     .0
 }
 
-#[cfg(unix)]
-pub(super) async fn start_with_mint_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
+pub(super) async fn start_with_mint_proxy(
+    root_index: usize,
+    scenario: Scenario,
+    seed: u64,
+) -> (Bench, MintProxy) {
     let (bench, proxy) =
-        start_inner(root_index, Scenario::MergeSplit, seed, true, false, None).await;
+        start_inner(root_index, scenario, seed, MintMode::Proxy, false, None).await;
     (bench, proxy.unwrap())
 }
 
@@ -93,7 +102,7 @@ pub(super) async fn start_with_neighbor_rotation(
         root_index,
         Scenario::MergeSplit,
         seed,
-        false,
+        MintMode::Direct,
         false,
         Some(rotation),
     ))
@@ -101,11 +110,31 @@ pub(super) async fn start_with_neighbor_rotation(
     .0
 }
 
+enum MintMode {
+    Direct,
+    Proxy,
+    Renewal,
+}
+
+#[cfg(unix)]
+pub(super) async fn start_with_renewal_proxy(root_index: usize, seed: u64) -> (Bench, MintProxy) {
+    let (bench, proxy) = start_inner(
+        root_index,
+        Scenario::MergeSplit,
+        seed,
+        MintMode::Renewal,
+        false,
+        None,
+    )
+    .await;
+    (bench, proxy.unwrap())
+}
+
 async fn start_inner(
     root_index: usize,
     scenario: Scenario,
     seed: u64,
-    intercept_mint: bool,
+    mint_mode: MintMode,
     hold_promotion: bool,
     rotation: Option<NeighborRotationConfig>,
 ) -> (Bench, Option<MintProxy>) {
@@ -119,7 +148,9 @@ async fn start_inner(
     let interrupted = matches!(scenario, Scenario::InterruptedMobility { .. });
     let mobile = matches!(
         scenario,
-        Scenario::Mobility | Scenario::InterruptedMobility { .. }
+        Scenario::Mobility
+            | Scenario::PendingFundingMobility
+            | Scenario::InterruptedMobility { .. }
     );
     let changing_neighbors = mobile || matches!(scenario, Scenario::QualityChurn);
     let selection = scenario.selection_policy();
@@ -141,7 +172,7 @@ async fn start_inner(
     )
     .await
     .unwrap();
-    let mint_proxy = if intercept_mint {
+    let mint_proxy = if !matches!(mint_mode, MintMode::Direct) {
         Some(MintProxy::start(mint.url()).await)
     } else {
         None
@@ -152,6 +183,10 @@ async fn start_inner(
     if recovery_timing || mesh {
         controller_policy.max_wallet_spend_sat = 128;
         controller_policy.renewal = None;
+    }
+    if matches!(mint_mode, MintMode::Renewal) {
+        controller_policy.max_wallet_spend_sat = 256;
+        controller_policy.renewal = policy(mint_url).renewal;
     }
     let network_name = format!("priced-{}", Identity::generate().node_addr());
     let network = SimNetwork::new(seed);
@@ -188,6 +223,7 @@ async fn start_inner(
     }
     fips_core::register_sim_network(network_name.clone(), network.clone());
     let mut nodes = Vec::new();
+    let mut configs = Vec::new();
     let mut peers = Vec::new();
     let mut buyers = Vec::new();
     let mut sellers = Vec::new();
@@ -218,18 +254,6 @@ async fn start_inner(
             )
             .unwrap(),
         );
-        let gate = Arc::new(Gate {
-            paid: PaidForwarder::for_billing(
-                seller.clone(),
-                buyer.clone(),
-                BillingBasis::ForwardingData,
-            )
-            .with_return_allowance()
-            .unwrap(),
-            blackhole: AtomicBool::new(false),
-            dropped: AtomicU64::new(0),
-            refused: AtomicU64::new(0),
-        });
         let mut config = Config::new();
         config.node.identity.nsec = Some(fips_core::encode_nsec(&key.keypair().secret_key()));
         config.node.control.enabled = mesh;
@@ -271,17 +295,9 @@ async fn start_inner(
             auto_connect: Some(mesh),
             accept_connections: Some(true),
         });
-        let node = Arc::new(
-            FipsEndpoint::builder()
-                .config(config)
-                .without_system_tun()
-                .forwarding_policy(gate.clone())
-                .originated_session_observer(buyer.clone())
-                .bind()
-                .await
-                .unwrap(),
-        );
-        receivers.push(node.register_service_receiver(44_740).await.unwrap());
+        configs.push(config.clone());
+        let (node, gate, receiver) = control::endpoint(config, buyer.clone(), seller.clone()).await;
+        receivers.push(receiver);
         let wallet = root.path().join(format!("wallet-{i}"));
         // The diamond funds its source; both mesh components have onward capital.
         let amount = if mesh || i == 0 { 256 } else { 1 };
@@ -306,14 +322,11 @@ async fn start_inner(
     }
     // Discovery supplies mesh neighbors; the diamond retains its configured links.
     for (i, node) in nodes.iter().enumerate().filter(|_| !mesh) {
-        node.update_peers(
-            (0..count)
-                .filter(|&j| edges.contains(&(i, j)) || edges.contains(&(j, i)))
-                .map(|j| PeerConfig::new(peers[j].npub(), "sim", j.to_string()))
-                .collect(),
-        )
-        .await
-        .unwrap();
+        configs[i].peers = (0..count)
+            .filter(|&j| edges.contains(&(i, j)) || edges.contains(&(j, i)))
+            .map(|j| PeerConfig::new(peers[j].npub(), "sim", j.to_string()))
+            .collect();
+        node.update_peers(configs[i].peers.clone()).await.unwrap();
     }
     let mut controllers = Vec::new();
     let mut services = Vec::new();
@@ -350,16 +363,8 @@ async fn start_inner(
         )
         .unwrap();
         admissions.push(admission.clone());
-        let (transport, incoming) = ControlTransport::start_with_admission(
-            nodes[i].clone(),
-            44_741,
-            admission.clone(),
-            i as u64 + 1,
-        )
-        .await
-        .unwrap();
-        let transport = Arc::new(transport);
         let quote_policy = QuotePolicy {
+            additional_receive_mints: vec![],
             destination_fees: Default::default(),
             billing: BillingBasis::ForwardingData,
             mint_url: mint_url.into(),
@@ -387,51 +392,24 @@ async fn start_inner(
             capacity_sat: 64,
             grace_msat: 8_000,
         };
-        quote_inputs.push((transport.clone(), quote_policy.clone()));
-        let quotes = RouteQuotes::new(nodes[i].clone(), transport, quote_policy).unwrap();
-        let quotes = Arc::new(if i == 0 && !mesh {
-            quotes
-                .with_price_selection(selection.clone(), buyers[0].clone())
-                .unwrap()
-        } else {
-            quotes
-        });
-        quote_servers.push(QuoteServer::start(quotes.clone(), incoming));
-        let (acceptance, incoming) = ControlTransport::start_with_admission(
-            nodes[i].clone(),
-            44_742,
-            admission.clone(),
-            i as u64 + 10,
-        )
-        .await
-        .unwrap();
-        let (payment, requests) = ControlTransport::start_with_admission(
-            nodes[i].clone(),
-            44_743,
-            admission,
-            i as u64 + 20,
-        )
-        .await
-        .unwrap();
-        let payment_control = Arc::new(PaymentControl::new(
-            receiver,
-            wallets[i].clone(),
-            sellers[i].clone(),
-        ));
-        payment_servers.push(PaymentServer::start_shared(
-            payment_control.clone(),
-            requests,
-        ));
-        let service = ControllerServices {
-            endpoint: nodes[i].clone(),
-            quotes,
-            acceptance: Arc::new(acceptance),
-            payments: Arc::new(payment),
-            payment_control,
-            seller: sellers[i].clone(),
+        let controls = control::Setup {
+            index: i,
+            node: nodes[i].clone(),
             buyer: buyers[i].clone(),
-            wallet_directory: wallets[i].clone(),
-        };
+            seller: sellers[i].clone(),
+            wallet: wallets[i].clone(),
+            receiver,
+            admission,
+            quote_policy,
+            selection: (i == 0 && !mesh).then(|| selection.clone()),
+        }
+        .start()
+        .await;
+        quote_inputs.push(controls.quote_input);
+        quote_servers.push(controls.quote_server);
+        payment_servers.push(controls.payment_server);
+        let service = controls.service;
+        let incoming = controls.incoming;
         let controller = Arc::new(
             Controller::create(
                 &root.path().join(format!("controller-{i}")),
@@ -475,6 +453,7 @@ async fn start_inner(
         network_name,
         network,
         nodes,
+        configs,
         peers,
         buyers,
         sellers,

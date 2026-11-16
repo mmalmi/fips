@@ -1,0 +1,8 @@
+{
+  "admin/services/freedom": {
+    "title": "Freedom",
+    "order": 60,
+    "action": { "type": "view", "path": "freedom" },
+    "depends": { "acl": ["luci-app-freedom"] }
+  }
+}

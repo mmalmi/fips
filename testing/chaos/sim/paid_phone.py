@@ -1,29 +1,28 @@
-"""Paid acceptance phone through three fresh, guarded OpenWrt mesh accounts.
+"""Paid phone acceptance with three fresh, guarded OpenWrt accounts.
 
-The operator selects the guest Wi-Fi and installs a verified isolated acceptance
-APK. This harness never installs apps, changes phone networks, or replays an
-uncertain funding/UI action. Private scenario/evidence paths are explicit inputs.
+The operator selects the scenario's Wi-Fi and installs a verified isolated acceptance
+APK. This harness never installs apps or replays an uncertain funding/UI action.
+The explicit renewal workload reconnects Wi-Fi under a device restoration timer.
+Private scenario/evidence paths are explicit inputs.
 """
 
-import argparse
 import hashlib
 import ipaddress
 import json
-import os
 from pathlib import Path
-import signal
 import time
-import traceback
 
 from .paid_finances import financial_snapshot, payments_credited
 from .paid_phone_checks import (
     check_customer_access, guest_source, installed_apk_hash, original_hashes,
     scenario,
 )
-from .paid_phone_finances import check_mint, validate_settled
-from .paid_relay import eventually, relay_config
+from .paid_phone_finances import check_mint, validate_settled, validate_reopened
+from .paid_relay import WALLET_CAPACITY_BYTES, eventually, relay_config
 from .paid_settlement import require, validate_report
 from .phone_customer import PhoneCustomer, LABELS, save
+from .phone_restart import force_stop, process
+from .phone_diagnostics import control as phone_control
 from .remote_mint import RemoteMint
 from .wifi_customer import CustomerAccess
 from .wifi_discovery import WifiRun
@@ -37,10 +36,8 @@ class Accounts:
 
     def ctl(self, name, kind):
         if name == 'phone':
-            require(kind == 'status', 'phone only exposes actual UI status')
-            state = self.run.phone.status()['customer']
-            require(state['running'] and state['relay'], 'phone live status unavailable')
-            return state['relay']
+            require(kind == 'status', 'phone account observation only accepts status')
+            return phone_control(self.run.phone, 'status')
         return self.run.ctl(name, kind)
 
     def state_json(self, name, relative):
@@ -52,13 +49,15 @@ class Accounts:
 
 class PaidPhoneRun(WifiRun):
     def __init__(self, args):
-        self.scenario = scenario(args.scenario)
+        self.scenario = scenario(args.scenario, transit=bool(getattr(args, 'transit', False)))
         self.customer = self.scenario['customer']
         guest = ipaddress.IPv4Interface(self.customer['cidr'])
         self.entry_address = f"{guest.ip}:{self.customer['entry_port']}"
         super().__init__(args)
         phone = self.scenario['phone']
-        self.phone = PhoneCustomer(phone['adb'], phone['serial'], phone['evidence_dir'])
+        self.phone = PhoneCustomer(phone['adb'], phone['serial'], phone['evidence_dir'],
+                                   instance=phone.get('instance'),
+                                   original_packages=phone.get('original_packages'))
         mint = self.scenario['mint']
         self.mint = RemoteMint(
             mint['ssh_spec'], args.mint_binary, self.run, self.root,
@@ -71,6 +70,8 @@ class PaidPhoneRun(WifiRun):
             test_funds_only=True, money_operations=True,
             phone_adapter=str(self.phone.root),
         )
+        self.restart_phone = bool(getattr(args, 'phone_restart', False))
+        self.evidence['phone_restart_requested'] = self.restart_phone
         self.original_phone = None
         self.steps = self.root / 'operations'
         self.steps.mkdir(mode=0o700)
@@ -78,7 +79,7 @@ class PaidPhoneRun(WifiRun):
         for name in (
             'paid_phone.py', 'paid_phone_checks.py', 'paid_phone_finances.py',
             'phone_customer.py', 'remote_mint.py', 'mint_host.py',
-            'wifi_customer.py',
+            'wifi_customer.py', 'phone_restart.py',
         ):
             self.evidence['harness_sha256'][name] = digest(Path(__file__).with_name(name).read_bytes())
 
@@ -136,26 +137,36 @@ class PaidPhoneRun(WifiRun):
         })
         super().setup()
 
-    def before_launch(self):
+    def configure_access(self):
         self.access = CustomerAccess(
             self.nodes['n01'], self.customer['interface'], self.customer['cidr'],
             self.customer['entry_port'], self.mint_url,
         )
         self.evidence['customer_access'] = self.access.enable()
-        for node in self.nodes.values():
-            node.remote([
-                'uclient-fetch', '-q', '-T', '5', '-O', '/dev/null',
-                self.mint_url + '/v1/info',
-            ], timeout=10)
-        self.check_customer_access()
-        profile = {
+
+    def customer_profile(self):
+        return {
             'version': 1, 'test_only': True, 'billing': 'forwarding_data',
             'entry_npub': self.nodes['n01'].npub,
             'entry_address': self.entry_address,
             'destination_npub': self.nodes['n03'].npub,
             'mint_url': self.mint_url, 'budget_sat': 64,
             'channel_capacity_sat': 32, 'max_rate_msat_per_kib': 8192,
+            'wallet_capacity_bytes': WALLET_CAPACITY_BYTES,
         }
+
+    def expected_edges(self):
+        return [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')]
+
+    def before_launch(self):
+        self.configure_access()
+        for node in self.nodes.values():
+            node.remote([
+                'uclient-fetch', '-q', '-T', '5', '-O', '/dev/null',
+                self.mint_url + '/v1/info',
+            ], timeout=10)
+        self.check_customer_access()
+        profile = self.customer_profile()
         save(self.root / 'profile.json', profile)
         self.phone.open_setup(profile)
         status = self.ui('setup')
@@ -167,6 +178,7 @@ class PaidPhoneRun(WifiRun):
         )
         self.evidence['phone_npub'] = status['customer']['npub']
         self.phase('customer entry and shared mint access configured; all accounts still empty')
+        self.before_funding()
         balances = {}
         for name, node in self.nodes.items():
             token = self.mint.grant(name)
@@ -190,6 +202,9 @@ class PaidPhoneRun(WifiRun):
         require(status['balance_sat'] == 128, 'phone initial funding differs')
         balances['phone'] = 128
         self.phase('four stopped accounts funded with 128 test sats each', balances=balances)
+
+    def before_funding(self):
+        """Optional local diagnostic preflight while every account is still empty."""
 
     def check_customer_access(self):
         checks = check_customer_access(self.phone, self.customer, self.mint_url, self.root)
@@ -281,8 +296,38 @@ class PaidPhoneRun(WifiRun):
         initial = eventually('four-account funding observation', self.finances, 45)
         self.journals('funded')
         self.phase('both endpoints authorized paid forwarding', financial=initial)
+        final = self.transfer('before-restart' if self.restart_phone else 'paid',
+                              2 if self.restart_phone else 4, initial)
+        if self.restart_phone:
+            before = self.journals('before-restart')
+            customer = self.phone.status()['customer']
+            stopped = force_stop(self.phone)
+            self.evidence['phone_restart'] = stopped
+            self.save()
+            reopened = self.phone.launch()['customer']
+            require(reopened['configured'] and not reopened['running']
+                    and all(reopened[key] == customer[key] for key in ('npub', 'profile')),
+                    'reopen changed the saved identity or immutable profile')
+            after_process = process(self.phone)
+            require(after_process and after_process['start_ticks'] > stopped['before']['start_ticks'],
+                    'reopen did not create a fresh candidate process')
+            self.evidence['phone_restart']['after'] = after_process
+            self.ui('start')
+            eventually('reopened phone authenticated at the original entry', joined, 90)
+            final = self.transfer('after-restart', 2, final)
+            validate_reopened(self.journals('after-restart'), before, self.mint_url,
+                              self.expected_edges())
+            self.phase('phone process reopened; original channels and budgets retained')
+        save(self.root / 'paid-finances.json', final)
+        self.journals('paid')
+        self.phone.screenshot('phone-paid-' + self.run)
+        self.verify_shortcuts()
+        self.settle()
+
+    def transfer(self, label, count, initial):
+        phone_npub = self.evidence['phone_npub']
         delivery = []
-        for index in range(4):
+        for index in range(count):
             before = self.ctl('n03', 'status')['received']
             self.ui('send')
 
@@ -300,12 +345,12 @@ class PaidPhoneRun(WifiRun):
                 'stale received payload',
             )
             delivery.append({'direction': 'phone_to_router', 'before': before, 'after': after})
-        for index in range(4):
+        for index in range(count):
             before = self.ui('status')['customer']['relay']['received']
-            payload = ('phone-mesh-' + self.run + '-' + str(index) + '-').ljust(1000, 'x')
+            payload = ('phone-mesh-' + self.run + '-' + label + '-' + str(index) + '-').ljust(1000, 'x')
             expected = hashlib.sha256(payload.encode()).hexdigest()
             self.once(
-                'reverse-send-' + str(index),
+                'reverse-send-' + label + '-' + str(index),
                 lambda payload=payload: self.ctl(
                     'n03', 'send', destination=phone_npub, payload=payload,
                 ),
@@ -333,15 +378,9 @@ class PaidPhoneRun(WifiRun):
             ) else None
 
         final = eventually('automatic payments on all four funded channels', paid, 60)
-        save(self.root / 'paid-finances.json', final)
-        self.journals('paid')
-        self.phase(
-            'eight fresh 1000-byte payloads delivered; every paying hop advanced',
-            delivery=delivery, financial=final,
-        )
-        self.phone.screenshot('phone-paid-' + self.run)
-        self.verify_shortcuts()
-        self.settle()
+        self.phase('paid phone cohort delivered; every paying hop advanced',
+                   cohort=label, delivery=delivery, financial=final)
+        return final
 
     def settle(self):
         reports = {}
@@ -370,21 +409,23 @@ class PaidPhoneRun(WifiRun):
         save(self.root / 'settled-balances.json', balances)
         report = self.mint.request({'type': 'report'})
         require(report['url'] == self.mint_url, 'mint identity changed')
+        save(self.root / 'settled-mint-report.json', report)
         checks = validate_settled(
             journals, json.loads((self.root / 'paid-journals.json').read_text()),
             balances, report,
-            [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')],
+            self.expected_edges(), channel_counts=getattr(self, 'settlement_channel_counts', None),
+            expiry_reports=getattr(self, 'expiry_reports', None),
         )
         self.phase(
             'all four accounts settled and all 512 test sats conserved',
             checks=checks, balances=balances,
         )
         for name, node in self.nodes.items():
-            export_id = 'collect-' + name
+            export_id = '1'
             exported = self.once(
                 'export-' + name,
                 lambda node=node, name=name: node.control(
-                    'export', action='wallet', id='collect-' + name,
+                    'export', action='wallet', id=1,
                     amount_sat=balances[name],
                 ),
             )
@@ -489,32 +530,7 @@ class PaidPhoneRun(WifiRun):
         )
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--scenario', type=Path, required=True)
-    parser.add_argument('--inventory', type=Path, required=True)
-    parser.add_argument('--binary', type=Path, required=True)
-    parser.add_argument('--mint-binary', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument(
-        '--open-mesh', action='store_true',
-        help='use the existing guarded temporary open radio profile',
-    )
-    args = parser.parse_args()
-    os.umask(0o077)
-
-    def deadline(_signal, _frame):
-        raise TimeoutError('phone mesh acceptance exceeded 1200 seconds')
-
-    signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(1200)
-    run = PaidPhoneRun(args)
-    try:
-        run.execute()
-    except Exception:
-        (run.root / 'failure-private.txt').write_text(traceback.format_exc())
-        raise
-
 
 if __name__ == '__main__':
+    from .paid_phone_cli import main
     main()

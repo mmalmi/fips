@@ -1,31 +1,34 @@
-# FIPS paid forwarding prototype
+# FIPS paid forwarding
 
-Experimental service components for **sender-funded, best-effort forwarding**.
+Service components for **sender-funded, best-effort forwarding**.
 Delivery receipts are an optional future experiment. The relay does not inspect
 TCP, UDP or application delivery acknowledgments inside encrypted FIPS traffic.
 
-See [the acceptance report and runbook](PROTOTYPE-RESULTS.md) for the completed
-three-router/Pixel demonstration and its limits, [SERVICE.md](SERVICE.md) for
-operation, and [TESTBENCH.md](TESTBENCH.md) for isolated funding and collection.
-Physical route changes, restart, exhaustion/renewal and customer Wi-Fi have been
-exercised. All 12,800 historical test sats were collected. The latest
-[performance comparison](PERFORMANCE.md) retained the baseline after rejecting
-two tuning experiments without reliable CPU savings.
+See [the current v1 assessment](READINESS.md) for qualified builds and known
+limits, [SERVICE.md](SERVICE.md) for operation, and [TESTBENCH.md](TESTBENCH.md)
+for isolated funding and collection. The [original prototype report](PROTOTYPE-RESULTS.md)
+records the completed three-router/Pixel demonstration; its scope and totals are
+historical. Current [cadence comparisons](CADENCE-RESULTS.md) report CPU, storage
+and wire measurements separately. The earlier [forwarding comparison](PERFORMANCE.md)
+retained its baseline after two tuning experiments failed to show reliable savings.
 
 See [openwrt/README.md](openwrt/README.md) for the persistent APK package,
 size-oriented ARM64 build, startup readiness checks and backup procedure.
+The optional [Freedom web interface](openwrt/README.md#freedom-web-interface)
+adds service controls, account setup, peers and payment credit to OpenWrt LuCI.
+It preserves the existing relay executable and saved financial terms.
 
-The broader [v1 readiness work](READINESS.md) is active. [Adaptive cadence](CADENCE.md),
-authenticated adjacent-neighbor admission, UDP/TCP/native Ethernet/WebSocket forwarding
-and financial-history retirement have bounded acceptance evidence. Physical checks
-also cover open Wi-Fi joining, paid provider failover/recovery and a Pixel session;
-the [matched cadence measurements](CADENCE-RESULTS.md) report their cost boundaries.
-Newer routing and recovery code still needs matched hardware acceptance. Software
-checks cover cancellation before funding, recovery of committed sends and exact
-proof-history handoff. Aggregate wallet storage, bounded database enumeration and
-broader physical mesh encounters remain open. The
-prototype reports below describe the earlier r6 hardware build, not current v1
-production readiness.
+The scoped v1 is locally qualified. [Adaptive cadence](CADENCE.md), authenticated adjacent
+admission, UDP/TCP/native Ethernet/WebSocket forwarding and financial-history
+retirement have software and controlled device evidence. This includes open Wi-Fi
+joining, paid route recovery, phone transit and wallet failure/recovery. Current
+Linux/ARM64/Android builds and controlled phone acceptance are complete on their
+recorded graphs. Full-history router forwarding/resource acceptance and controlled
+open-radio recovery pass. The [acceptance checklist](READINESS.md#acceptance-checklist)
+records the requirement evidence, the known historical acknowledgment timeout,
+and the explicit physical power-loss, storage and mobility limits. Public release
+and real-money operation have not been performed.
+The prototype reports below describe the earlier r6 hardware build.
 
 Fresh accounts can explicitly select the [bounded handshake tariff](BOOTSTRAP.md)
 to deliver through paid relays to an unfunded recipient without buying a reverse
@@ -44,11 +47,17 @@ unclaimed.
 
 ## Peer protocol
 
-The current development adapter requires the corrected local Cashu SDK, CDK and
-Spilman sources. It reserves complete wallet costs and preserves verified refunds
-under independent capital and lifetime limits. See [funding costs and dependencies](FUNDING-COSTS.md)
-before building or opening existing state; the pinned published dependencies do
-not yet provide these APIs.
+The wallet-backed relay uses the [paid-routing workspace](../../paid-routing/Cargo.toml).
+Cargo fetches the Cashu SDK, CDK, Spilman channels and Bitcoin RPC client from
+the public Git revisions recorded in its lockfile. From the repository root, run
+
+```sh
+cargo build --locked --manifest-path paid-routing/Cargo.toml -p fips-relay
+```
+
+The main daemon and the peer-credit adapter use the root workspace. See
+[funding costs and dependencies](FUNDING-COSTS.md#development-and-migration)
+for the wallet accounting and recovery requirements.
 
 The automatic path is **quote, accept, then batched cumulative payments**.
 For A → B → C → destination, B quotes its fee plus C's onward cost. A pays B;
@@ -82,6 +91,38 @@ payment message or new financial delivery receipt.
 Channel lifecycle changes use the controller's immutable agreements,
 channel-wide limits and durable finalization.
 Private operator commands are separate from this peer API.
+
+### Wire format and compatibility
+
+Each TCP exchange carries one JSON request and one JSON response, each prefixed
+by its four-byte big-endian body length. Controller and payment records use a
+snake-case `type` tag; quote requests are plain objects. Amounts, byte counts and
+Unix-second deadlines are integers. Clients must preserve their exact values,
+including unsigned 64-bit values that exceed floating-point integer precision.
+
+Completed exchanges may reuse their TCP connection for a later request. Each
+service port retains at most eight idle connections, with one per peer and
+direction. The request initiator expires its idle connection after five seconds;
+the responder releases it on peer FIN, capacity eviction or transport closure.
+Clients serialize requests on a reused stream. Connection and record deadlines
+remain bounded independently of idle reuse.
+Every request acquires fresh admission and revalidates membership; completion
+releases its record buffers and admission permit. Idle eviction closes TCP
+gracefully so an unacknowledged response is not discarded. A buffered request enters
+fresh admission before idle expiry or connection-pressure eviction is considered.
+A failed exchange is reported without replaying a transmitted request.
+
+These three services do not negotiate a wire version or capabilities. Acceptance
+uses matching software builds; independent clients and mixed-version upgrades
+remain unverified. Top-level request and response schemas reject unknown fields
+and operation tags. This is not a general compatibility guarantee: nested records
+have their own decoding rules, and omitted optional fields use their documented
+defaults, including legacy billing. Review schema and billing changes together.
+
+A timeout or disconnected stream does not prove rejection or roll back a
+committed operation. Financial recovery must resume the retained intent and its
+original offer, channel and payment evidence; transport acknowledgments alone
+do not certify durable application completion.
 
 ### Price cache and request bounds
 
@@ -183,8 +224,11 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   the final direct endpoint needs no onward forwarding channel. Together with
   the source observer, it records both source and relay purchases. It checks that
   the onward purchase is usable before reserving upstream allowance. A packet
-  rejected during renewal, before any send was queued, consumes no allowance
-  and can be retried after the replacement is accepted.
+  waiting during a controller-owned renewal reserves neither upstream allowance
+  nor onward payment evidence. Renewal release wakes the existing native queue,
+  which rechecks current route and payment authority before forwarding. Its
+  two-second wait and per-neighbor limits still apply; longer outages require
+  an application retry. Closed agreements continue to reject traffic.
 * `RouteQuotes` asks the native FIPS planner for the next hop, recursively asks
   that neighbor for an offer and adds the local fee. Requests carry the
   destination's public identity so lookup responses can be verified before any
@@ -204,7 +248,16 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   locks its full intended capacity against a separate working-capital limit.
   Background recovery uses the existing wallet recovery API to find committed
   channels even after quote expiry or pause, without spending again or enabling
-  routing. Missing records retain their reservation; orphan refunds remain work.
+  routing. Missing records retain their reservation. After immutable wallet
+  expiry, verified refunds can recover unused withdrawn funding and used/shared
+  channels while preserving their original signed obligations; see [recovery](HISTORY.md#withdrawn-routing-and-retained-recovery).
+* New channels default to a **12-hour service limit and 24-hour mint refund
+  deadline**. Providers automatically begin settlement when service ends;
+  unilateral buyer refunds wait for the funding deadline. Cooperative settlement
+  can return unused funds earlier. `channel_lifetime_secs` sets the funding
+  lifetime (default `86400`); shorter lifetimes end service halfway through.
+  Existing funded channels retain their original deadlines. Recovery and history
+  retirement use those saved financial terms.
 * Each controller periodically requests usage and sends cumulative payments
   through `BuyerAuthorizer`. Funding-proof retries use the same durable signing
   gate. Background recovery resumes retained requests without allocating fresh
@@ -280,8 +333,17 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   background path/price replacement under the existing spending and capital
   limits. No source watch arises from transit or unsolicited traffic. Quotes
   reuse unchanged offers, so polling does not exhaust pending-offer history;
-  stopped or sealed agreements are excluded from reuse. Pending watched offers
+  stopped or sealed agreements release their quote slots after the stop is saved.
+  Their accepted bindings and financial records remain in durable journals; the
+  retired quote cannot fund a fresh binding. Pending watched offers
   recover their exact funding intent. Settlement durably pauses source watches.
+  The service saves issued quotes, including their downstream agreement, before
+  replying, so a provider restart retains the exact offer used for channel
+  funding. This uses no additional wire messages. Retention keeps the same
+  128-offer total and 16-offer per-buyer limits, with a 1 MiB journal limit.
+  Expired offers are discarded; unchanged cached replies and repeated retirement
+  perform no journal write. Publication and durable retirement run off the node
+  loop. A failed write suspends quoting until the journal is recovered.
   A full native-route offer withdrawn during disconnection can still be cached
   by its provider. An eligible unpaused watch requests a fresh offer at its next
   ordinary refresh deadline, retaining the old fence and funding operation.
@@ -310,10 +372,15 @@ Strict relay and Android ARM64 linting, default builds, formatting and the
   authorized balance for closure, but cannot authorize a larger amount.
 * Optional `RenewalPolicy` schedules channel replacement from local submission
   evidence, byte limits, approaching expiry, or capacity consumed by reported
-  crash exposure. Such reports cannot authorize payment. The controller settles
-  the old channel and confirms its refund before funding a replacement. Fresh
-  offers must retain the provider, next hop, price, mint and byte allowance; changed service stops for a
-  new agreement. Historical channels and authorizations remain retained.
+  crash exposure. Such reports cannot authorize payment. When the capital limits
+  permit, the controller funds one exact successor while the old channel carries
+  traffic. It seals the old usage and obtains acknowledgment of its final signed
+  payment before activating the successor; mint settlement and refund follow.
+  Both funding records count against the limits until the refund is verified,
+  and an unfinished renewal prevents a third channel. Without that headroom, the
+  refund completes before replacement funding. Fresh offers retain the provider,
+  next hop, price, mint and byte allowance; changed service needs a new agreement.
+  Historical channels and unpaid crash exposure remain retained.
 * A second native controller test exhausts and replaces all six original channels
   while sending both ways across the three routers. It keeps the capital cap and
   lifetime spending limit, verifies positive relay margins and redeems/spends all
@@ -343,12 +410,36 @@ FIPS transport. These are loopback tests, not wireless hardware demonstrations.
 
 ```sh
 cargo test -p nvpn-fips-core --lib forwarding
-cargo test -p fips-relay --features testbench
+cargo test --manifest-path paid-routing/Cargo.toml --locked -p fips-relay --features testbench
 ./scripts/check-rust-file-lines.sh
 ```
 
 The settlement test owns temporary wallets/mint state and binds the mint to a
 random loopback port. It does not use a user's wallet or contact a public mint.
+
+For the focused CPU-pressure recovery check on Linux with a user systemd
+manager, first build the existing controller test using the deployment
+optimization profile:
+
+```sh
+cargo test --manifest-path paid-routing/Cargo.toml --offline --locked -p fips-relay --no-default-features \
+  --test controller --profile openwrt --no-run
+```
+
+Set `CONTROLLER_TEST` to the executable path printed by Cargo, then run:
+
+```sh
+systemd-run --user --scope -p CPUQuota=200% "$CONTROLLER_TEST" \
+  exhausted_channels_renew_automatically_without_resetting_capital_or_spending \
+  --exact --test-threads=1 --nocapture
+```
+
+Repeat with `CPUQuota=25%`, then run
+`bounded_handshakes_survive_paid_channel_renewal` at that same quota. The quota
+covers all five nodes and their test mint together. Both policies require
+recovery from each dropped session-handshake phase, fresh bidirectional delivery,
+automatic renewal and collection of all 1,280 test sats. These are finite
+functional checks; they do not establish router throughput or ARM timing.
 
 ### Code organization
 
@@ -374,9 +465,10 @@ demonstration; [v1 readiness](READINESS.md) records subsequent verification and
 remaining work. Current software checks cover route changes during unfinished
 renewal, expired-offer fences, funded-channel recovery, safe cancellation of
 unsubmitted funding, abandoned committed sends and exact financial-history
-handoffs. Aggregate wallet storage, bounded enumeration and broader combined
-failures still need acceptance. Renewal can interrupt delivery; maximum throughput
-and indefinite hotspot service are not claimed.
+handoffs. The pending full-history router case checks forwarding and observed
+resources during retirement pressure; [the current assessment](READINESS.md#completion-sequence)
+defines its acceptance and the storage/power-loss limits. Renewal can interrupt
+delivery; maximum throughput and indefinite hotspot service are not claimed.
 
 The controller retains up to 16 funded or unresolved channel intents and 32
 requested, outgoing and incoming routes in each category. Retained funding still
@@ -384,7 +476,10 @@ counts against capital after service stops until settlement and refund recovery
 complete. Settlement and renewal history are capped at 16 channels each.
 Same-service channel replacement requires an explicit renewal policy and
 remaining lifetime budget; changed routes require a source watch ceiling or a
-fresh explicit purchase. `settle_all` pauses watches and renewal before closure;
+fresh explicit purchase. Renewal considers local usage, authorized whole-sat
+balances and retained recovery exposure; payment authorization remains bounded
+separately by evidence and the lifetime budget.
+`settle_all` pauses watches and renewal before closure;
 saved replacement requests stay paused until explicitly resumed. Expired or
 withdrawn offers cannot regain routing authority during financial recovery;
 unresolved operations retain their capital and evidence.
@@ -414,8 +509,21 @@ against the same neighbor relationship. A new channel's reservation limit is its
 verified payment plus grace, minus outstanding reservations on older channels,
 capped by its funded capacity. If repeated failures consume the available allowance,
 automatic forwarding stops; a restart is not permission to write off that loss.
+After loss, [adaptive durable windows](CADENCE.md#independent-durable-windows)
+reserve less uncertainty to preserve room for subsequent traffic and payments.
+They retain the configured maximum and all earlier loss; finite grace can still
+be exhausted.
 This implementation assumes the accounting files survive the process restart.
 Never automatically replace missing/corrupt state with a newly initialized ledger.
+
+New service profiles use manifest version 3 and require `quotes/offers.json`
+(format version 2), bound to the provider identity and immutable quote terms.
+Each offer retains its original local fee and onward quote. Destination tariff
+changes apply to future offers; loading preserves already-issued prices without
+rewriting them. The journal contains no payment proofs or forwarding credit.
+Loading refuses missing, corrupt or mismatched state. Older profiles remain on
+their original software; this greenfield change does not migrate or reinitialize
+saved accounts.
 
 Buyer journals retain the same bounded evidence history. Pending observations
 become unconfirmed on restart; they cannot support a signature. Evidence lost

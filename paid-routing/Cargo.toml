@@ -1,0 +1,25 @@
+[workspace]
+members = ["../crates/fips-relay", "../crates/fips-relay-app"]
+resolver = "2"
+
+# Use the same forwarding policy types in the TCP adapter and the relay.
+[patch.crates-io]
+nvpn-fips-core = { path = "../crates/fips-core" }
+cashu-service = { git = "https://github.com/irislib/cashu-service.git", rev = "f09216a93e75b2d3e3dfcee9a5ddd59f39e79a24" }
+cashu = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-axum = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-common = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-http-client = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-signatory = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-sql-common = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-sqlite = { git = "https://github.com/mmalmi/cdk.git", rev = "ff3e1f8b8bcb951ac55cd42a00baf17c2369ff88" }
+cdk-spilman = { git = "https://github.com/mmalmi/cashu_spilman_channels.git", rev = "b5433e36514a4d77ff10a1574a1e4d0579f6543c" }
+bitreq = { git = "https://github.com/mmalmi/corepc.git", rev = "4decb6036cfc06cb12129e67bfd2819d29381d7b" }
+
+[profile.openwrt]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

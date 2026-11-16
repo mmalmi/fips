@@ -3,11 +3,15 @@
 set -euo pipefail
 GRADLE_ARGS=(--console=plain)
 if [[ $# -gt 0 ]]; then
-  if [[ $# -ne 1 || "$1" != "--isolated" ]]; then
-    echo "Usage: $0 [--isolated]" >&2
+  if [[ $# -gt 2 || "$1" != "--isolated" ]]; then
+    echo "Usage: $0 [--isolated [instance]]" >&2
     exit 2
   fi
   GRADLE_ARGS+=(-PisolatedBench=true)
+  if [[ $# -eq 2 ]]; then
+    [[ "$2" =~ ^[a-z][a-z0-9]{0,23}$ ]] || { echo "Invalid bench instance" >&2; exit 2; }
+    GRADLE_ARGS+=(-PbenchInstance="$2")
+  fi
 fi
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$APP_DIR/../.." && pwd)"
@@ -18,6 +22,6 @@ export NDK_HOME="$ANDROID_NDK_HOME"
 [[ -d "$ANDROID_NDK_HOME" ]] || { echo "Install Android NDK 28.2.13676358" >&2; exit 1; }
 cd "$REPO_DIR"
 cargo ndk -t arm64-v8a --platform 30 -o "$APP_DIR/android/app/src/main/jniLibs" \
-  build -p fips-relay-app --release --locked
+  build --manifest-path "$APP_DIR/../../paid-routing/Cargo.toml" -p fips-relay-app --release --locked
 gradle -p "$APP_DIR/android" :app:assembleDebug :app:lintDebug "${GRADLE_ARGS[@]}"
 echo "Built $APP_DIR/android/app/build/outputs/apk/debug/app-debug.apk"

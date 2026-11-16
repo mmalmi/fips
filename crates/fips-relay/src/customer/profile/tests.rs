@@ -9,7 +9,8 @@ fn saved_original() -> Value {
         "entry_address": "127.0.0.1:2121",
         "destination_npub": Identity::generate().npub(),
         "mint_url": "http://127.0.0.1:3338", "budget_sat": 128,
-        "channel_capacity_sat": 32, "max_rate_msat_per_kib": 8192
+        "channel_capacity_sat": 32, "max_rate_msat_per_kib": 8192,
+        "wallet_capacity_bytes": ServiceTerms::DEFAULT_WALLET_CAPACITY_BYTES
     })
 }
 
@@ -72,4 +73,147 @@ fn legacy_and_malformed_billing_never_fall_back_to_another_tariff() {
         saved["billing"] = invalid;
         assert!(serde_json::from_value::<CustomerProfile>(saved.clone()).is_err());
     }
+}
+
+#[test]
+fn relay_admission_changes_only_neighbor_policy_and_is_part_of_saved_terms() {
+    let original: CustomerProfile = serde_json::from_value(saved_original()).unwrap();
+    assert_eq!(
+        original.neighbor_admission,
+        NeighborAdmission::ConfiguredOnly
+    );
+    let mut relay = original.clone();
+    relay.neighbor_admission = NeighborAdmission::AuthenticatedAdjacent;
+    relay.validate().unwrap();
+    let encoded = serde_json::to_value(&relay).unwrap();
+    let restored: CustomerProfile = serde_json::from_value(encoded).unwrap();
+    assert_eq!(restored, relay);
+    assert_ne!(restored, original);
+    let mut expected = serde_json::to_value(original.config(Path::new("/customer"))).unwrap();
+    expected["neighbor_admission"] = json!("authenticated_adjacent");
+    assert_eq!(
+        serde_json::to_value(restored.config(Path::new("/customer"))).unwrap(),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn rejected_service_configuration_does_not_save_or_lock_customer_profile() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("customer");
+        let mint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        mint.set_nonblocking(true).unwrap();
+        let mut profile: CustomerProfile = serde_json::from_value(saved_original()).unwrap();
+        profile.mint_url = format!("http://{}/", mint.local_addr().unwrap());
+        profile.validate().unwrap();
+        let mut client = CustomerClient::open(&directory).unwrap();
+        for maximum in [0, u64::MAX] {
+            let mut invalid = profile.clone();
+            invalid.wallet_capacity_bytes = maximum;
+            assert!(
+                client
+                    .execute(CustomerCommand::Setup { profile: invalid })
+                    .await
+                    .is_err()
+            );
+            assert!(!directory.join("profile.json").exists());
+            assert!(!directory.join("state").exists());
+        }
+        let preview = client
+            .execute(CustomerCommand::Preview {
+                profile: profile.clone(),
+            })
+            .await;
+        let error = client
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("invalid controller capital policy"),
+            "{error}"
+        );
+        assert!(
+            !directory.join("profile.json").exists(),
+            "rejected setup saved its profile"
+        );
+        assert!(!directory.join("state").exists());
+        assert!(
+            preview.is_err(),
+            "preview must check the same service configuration"
+        );
+        assert_eq!(
+            client.execute(CustomerCommand::Status).await.unwrap()["configured"],
+            false
+        );
+
+        profile.mint_url.pop();
+        profile.budget_sat = 96;
+        client
+            .execute(CustomerCommand::Preview {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        let ready = client
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ready["configured"], true);
+        assert_eq!(ready["profile"]["budget_sat"], 96);
+        let wallet_directory = directory.join("state/wallet");
+        let wallet = cashu_service::CashuWalletService::open_file_backed(&wallet_directory)
+            .await
+            .unwrap();
+        assert_eq!(
+            wallet
+                .storage_capacity()
+                .await
+                .unwrap()
+                .unwrap()
+                .maximum_bytes,
+            profile.wallet_capacity_bytes
+        );
+        drop(wallet);
+        drop(client);
+        let mut reopened = CustomerClient::open(&directory).unwrap();
+        let after = reopened
+            .execute(CustomerCommand::Setup {
+                profile: profile.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ready["npub"], after["npub"]);
+        assert_eq!(ready["profile"], after["profile"]);
+        let original = std::fs::read(directory.join("profile.json")).unwrap();
+        let mut changed = profile.clone();
+        changed.wallet_capacity_bytes *= 2;
+        assert!(
+            reopened
+                .execute(CustomerCommand::Setup { profile: changed })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.join("profile.json")).unwrap(),
+            original
+        );
+        profile.budget_sat += 1;
+        assert!(
+            reopened
+                .execute(CustomerCommand::Setup { profile })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            mint.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    })
+    .await
+    .expect("local customer setup deadline");
 }

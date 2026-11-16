@@ -25,8 +25,12 @@ mod crowded;
 mod pending_funding;
 #[path = "merge_split/reliable.rs"]
 mod reliable;
+#[path = "merge_split/renewal_gap.rs"]
+mod renewal_gap;
 #[path = "merge_split/settlement_cleanup.rs"]
 mod settlement_cleanup;
+#[path = "merge_split/slow_renewal.rs"]
+mod slow_renewal;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn independently_discovered_meshes_merge_split_and_reuse_paid_channels() {
@@ -409,17 +413,31 @@ fn fresh_hops(
 }
 
 async fn payments(bench: &Bench) -> BTreeMap<String, u64> {
+    payment_baseline(bench, true).await
+}
+
+// Wait for every reachable hop. Carry each disconnected hop's full outstanding
+// target into the assertion after rejoining, alongside the balances already paid.
+async fn payment_baseline(bench: &Bench, merged: bool) -> BTreeMap<String, u64> {
     let targets: Vec<_> = hop_usage(bench)
         .await
         .into_iter()
-        .map(|((_, seller), usage)| {
+        .map(|((buyer, seller), usage)| {
             let supported = usage.evidence.min(usage.submitted);
             assert!(supported > 0, "payment target needs real supported usage");
-            (seller, usage.channel, supported.div_ceil(1000) * 1000)
+            (
+                buyer,
+                seller,
+                usage.channel,
+                supported.div_ceil(1000) * 1000,
+            )
         })
         .collect();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while !targets.iter().all(|(seller, channel, target)| {
+    let reachable = targets
+        .iter()
+        .filter(|(buyer, seller, _, _)| merged || adjacent(*buyer, *seller, false));
+    let settled = tokio::time::timeout(Duration::from_secs(20), async {
+        while !reachable.clone().all(|(_, seller, channel, target)| {
             bench.sellers[*seller]
                 .channel_usage(channel)
                 .unwrap()
@@ -429,16 +447,36 @@ async fn payments(bench: &Bench) -> BTreeMap<String, u64> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("automatic cumulative payments catch up on every paying hop");
+    .await;
+    if settled.is_err() {
+        let unpaid: Vec<_> = reachable
+            .filter_map(|(buyer, seller, channel, target)| {
+                let paid = bench.sellers[*seller]
+                    .channel_usage(channel)
+                    .unwrap()
+                    .paid_msat;
+                (paid < *target).then_some((*buyer, *seller, paid, *target))
+            })
+            .collect();
+        panic!(
+            "automatic cumulative payment deadline; (buyer, seller, paid msat, target msat): {unpaid:?}"
+        );
+    }
     targets
         .into_iter()
-        .map(|(seller, channel, _)| {
+        .map(|(buyer, seller, channel, target)| {
             let paid = bench.sellers[seller]
                 .channel_usage(&channel)
                 .unwrap()
                 .paid_msat;
-            (channel, paid)
+            if paid < target {
+                assert!(
+                    !merged && !adjacent(buyer, seller, false),
+                    "settled balance regressed"
+                );
+                eprintln!("partition defers {buyer}->{seller}: paid {paid} of {target} msat");
+            }
+            (channel, paid.max(target))
         })
         .collect()
 }

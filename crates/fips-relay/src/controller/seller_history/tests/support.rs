@@ -33,7 +33,7 @@ pub(super) fn receiver_plan(j: &Journal, ids: &[String]) -> Result<ReceiverPlan,
             "signed_amount":report.signed_sat, "closed_amount":report.paid_sat, "value_after_stage1":report.value_after_stage1_sat,
             "receiver_sum":report.receiver_value_sat().unwrap(), "sender_sum":report.refunded_sat,
             "usage":{"fixture_requests":1}});
-        let expiry = sale.channel.expires_unix + 60;
+        let expiry = sale.channel.refund_deadline().unwrap();
         let previous = after["expires_through_unix"].as_u64().unwrap();
         after["expires_through_unix"] = previous.max(expiry).into();
         if after["totals"].as_array().unwrap().is_empty() {
@@ -74,12 +74,15 @@ pub(super) fn prepare_sales(
     timestamp: u64,
 ) -> Result<(), String> {
     let j = store.journal.clone();
-    store.prepare_sales(seller, timestamp, |ids| receiver_plan(&j, ids))
+    Store::prepare_sales(&Mutex::new(store), seller, timestamp, |ids| {
+        receiver_plan(&j, ids)
+    })
 }
 
 pub(super) fn resume_sales(store: &mut Store, seller: &DurableRelay) -> Result<usize, String> {
     let j = store.journal.clone();
-    store.resume_sales(
+    Store::resume_sales(
+        &Mutex::new(store),
         seller,
         |ids| receiver_plan(&j, ids),
         |p| Ok(p.accounting.after.clone()),
@@ -92,7 +95,8 @@ pub(super) fn retire_sales(
     timestamp: u64,
 ) -> Result<usize, String> {
     let j = store.journal.clone();
-    store.retire_sales(
+    Store::retire_sales(
+        &Mutex::new(store),
         seller,
         timestamp,
         |ids| receiver_plan(&j, ids),

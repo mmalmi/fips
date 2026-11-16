@@ -14,6 +14,8 @@ pub mod durable;
 pub mod free_routes;
 pub mod ledger;
 pub mod measurements;
+#[cfg(unix)]
+pub mod mint_mesh;
 pub mod payment;
 pub mod payment_control;
 #[cfg(unix)]

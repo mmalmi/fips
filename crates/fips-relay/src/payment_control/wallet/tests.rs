@@ -1,14 +1,20 @@
 use super::*;
-use crate::ledger::Limits;
+use crate::{
+    buyer::{BuyerAuthorizer, BuyerError},
+    ledger::{BillingBasis, BytePrice, Contract, Limits},
+};
 use cashu_service::{
-    CashuSpilmanPaymentSigner, FileSpilmanPaymentReceiverConfig, FileSpilmanPaymentSigner,
+    FileSpilmanPaymentReceiverConfig, FileSpilmanPaymentSigner,
     StreamingRouteOpenCashuSpilmanChannelFromWalletRequest, create_topup_quote, load_mint_balance,
     load_wallet_overview, open_streaming_route_cashu_spilman_channel_from_wallet,
     restore_streaming_route_cashu_spilman_refund,
     simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
 };
 use cdk_sqlite::WalletSqliteDatabase;
-use fips_core::Identity;
+use fips_core::{
+    Identity,
+    node::{ForwardingOutcome, OriginatedSessionObserver, OriginatedSessionRequest},
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 async fn handle(
@@ -41,7 +47,7 @@ async fn open(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn controller_funding_reserves_payout_and_payment_requests_cannot_change_lifecycle() {
+async fn funded_payments_recover_journal_writes_without_lifecycle_authority() {
     let root = tempfile::tempdir().unwrap();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -98,12 +104,13 @@ async fn controller_funding_reserves_payout_and_payment_requests_cannot_change_l
     let identity = Identity::generate();
     let peer = PeerIdentity::from_pubkey_full(identity.pubkey_full());
     let channel = ChannelTerms {
+        refund_after_unix: None,
         id: opened.channel.channel_id,
         buyer: *peer.node_addr(),
         mint_url: mint.url().into(),
         expires_unix: now + 600,
         capacity_sat: 32,
-        grace_msat: 0,
+        grace_msat: 4_000,
     };
     let ledger = Arc::new(
         DurableRelay::create(&root.path().join("ledger"), Limits::default(), 10_000).unwrap(),
@@ -182,10 +189,128 @@ async fn controller_funding_reserves_payout_and_payment_requests_cannot_change_l
     // Updates need only existing receiver evidence, even while the wallet is
     // owned by another local operation and has no unreserved capacity.
     let wallet = CashuWalletService::open_file_backed(&seller).await.unwrap();
-    let payment = FileSpilmanPaymentSigner::load(&buyer)
-        .unwrap()
-        .sign_cashu_spilman_payment(&channel.id, 3, false)
+    let provider = *Identity::generate().node_addr();
+    let destination = *Identity::generate().node_addr();
+    let authorization = root.path().join("authorizer");
+    let authorizer =
+        BuyerAuthorizer::create(&authorization, *peer.node_addr(), 3, Limits::default()).unwrap();
+    authorizer
+        .accept_channel(provider, channel.clone(), 0)
         .unwrap();
+    authorizer
+        .accept_quote(Contract {
+            bid_msat_per_kib: 0,
+            billing: BillingBasis::ForwardingAttempt,
+            id: "payment".into(),
+            channel_id: channel.id.clone(),
+            destination,
+            next_hop: destination,
+            expires_unix: channel.expires_unix,
+            price: BytePrice {
+                msat: 1_000,
+                per_bytes: 1,
+            },
+            max_units: 3,
+        })
+        .unwrap();
+    let token = authorizer
+        .observe(&OriginatedSessionRequest {
+            source: *peer.node_addr(),
+            destination,
+            next_hop: provider,
+            session_payload: b"pay",
+        })
+        .unwrap();
+    authorizer.complete(token, ForwardingOutcome::Submitted);
+    assert_eq!(authorizer.evidence_msat(&channel.id), Some(3_000));
+
+    // Fail the real signer's commit after the buyer has durably authorized the
+    // claim. A rejected signature must not release or duplicate that budget.
+    let signer = FileSpilmanPaymentSigner::load(&buyer).unwrap();
+    let client = cashu_service::spilman_client_store_path(&buyer);
+    let retained_client = root.path().join("client-before-payment.json");
+    let original_client = std::fs::read(&client).unwrap();
+    std::fs::rename(&client, &retained_client).unwrap();
+    std::fs::create_dir(&client).unwrap();
+    assert!(matches!(
+        authorizer.sign_claim(&signer, provider, &channel.id, 3_000, now),
+        Err(BuyerError::Signer(error)) if error.starts_with("failed to write Spilman client store:")
+    ));
+    assert_eq!(authorizer.authorized_sat(&channel.id), Some(3));
+    assert_eq!(authorizer.remaining_budget_sat(), Some(0));
+    assert_eq!(ledger.channel_usage(&channel.id).unwrap().paid_msat, 0);
+    assert!(std::fs::read(&retained_client).unwrap() == original_client);
+    drop(signer);
+    drop(authorizer);
+    std::fs::remove_dir(&client).unwrap();
+    std::fs::rename(&retained_client, &client).unwrap();
+    let authorizer = BuyerAuthorizer::load(&authorization).unwrap();
+    assert_eq!(authorizer.authorized_sat(&channel.id), Some(3));
+    assert_eq!(authorizer.remaining_budget_sat(), Some(0));
+    let signer = FileSpilmanPaymentSigner::load(&buyer).unwrap();
+    let payment = authorizer
+        .sign_claim(&signer, provider, &channel.id, 0, now)
+        .unwrap();
+    assert_eq!(payment.balance, 3);
+    assert_eq!(authorizer.remaining_budget_sat(), Some(0));
+    drop(signer);
+
+    // Keep the original journal intact while making its atomic replacement
+    // fail. The real receiver must retain the signature before credit commits.
+    let journal = root.path().join("ledger/ledger.json");
+    let retained = root.path().join("ledger-before-payment.json");
+    let original = std::fs::read(&journal).unwrap();
+    std::fs::rename(&journal, &retained).unwrap();
+    std::fs::create_dir(&journal).unwrap();
+    let handler = control.clone();
+    let update = PaymentRequest::Update {
+        channel_id: channel.id.clone(),
+        payment: payment.clone(),
+    };
+    assert!(matches!(
+        tokio::task::spawn_blocking(move || handler.handle_inner(peer, update))
+            .await
+            .unwrap(),
+        Err("credit")
+    ));
+    assert_eq!(ledger.channel_usage(&channel.id).unwrap().paid_msat, 3000);
+    assert!(matches!(
+        ledger.checkpoint(),
+        Err(crate::durable::DurableError::Suspended)
+    ));
+    assert_eq!(std::fs::read(&retained).unwrap(), original);
+
+    // Repairing the filesystem alone cannot acknowledge uncommitted credit.
+    std::fs::remove_dir(&journal).unwrap();
+    std::fs::rename(&retained, &journal).unwrap();
+    assert!(matches!(
+        handle(
+            &control,
+            peer,
+            PaymentRequest::Update {
+                channel_id: channel.id.clone(),
+                payment: payment.clone(),
+            },
+        )
+        .await,
+        PaymentResponse::Rejected
+    ));
+    assert_eq!(std::fs::read(&journal).unwrap(), original);
+    drop(wallet);
+    drop(control);
+    drop(ledger);
+
+    let ledger = Arc::new(DurableRelay::load(&root.path().join("ledger")).unwrap());
+    assert_eq!(ledger.channel_usage(&channel.id).unwrap().paid_msat, 0);
+    let receiver = FileSpilmanPaymentReceiver::load(
+        &root.path().join("receiver"),
+        FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
+    )
+    .unwrap();
+    let control = Arc::new(PaymentControl::new(receiver, seller.clone(), ledger));
+    let wallet = CashuWalletService::open_file_backed(&seller).await.unwrap();
+    // Replay the original signed balance after reloading both stores. The
+    // existing settlement assertions also reject double credit or lost funds.
     let response = handle(
         &control,
         peer,
@@ -202,6 +327,35 @@ async fn controller_funding_reserves_payout_and_payment_requests_cannot_change_l
     drop(wallet);
     let _owner = control.wallet.lock().await;
     control.close_at_mint(&channel.id).await.unwrap();
+    drop(db);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while cashu_service::cashu_wallet_database_files(&seller)
+            .iter()
+            .skip(1)
+            .any(|path| path.exists())
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("wallet connections close before removing original evidence");
+    let retained_wallet = root.path().join("original-payout-wallet");
+    for original in [
+        cashu_service::cashu_wallet_seed_path(&seller),
+        cashu_service::cashu_wallet_db_path(&seller),
+        cashu_service::cashu_wallet_dir(&seller),
+    ] {
+        std::fs::rename(&original, &retained_wallet).unwrap();
+        assert!(
+            control.import_wallet_payout(&channel.id).await.is_err(),
+            "payout recovery must require the original wallet"
+        );
+        assert!(
+            !original.exists(),
+            "recovery must not recreate wallet evidence"
+        );
+        std::fs::rename(&retained_wallet, &original).unwrap();
+    }
     control.import_wallet_payout(&channel.id).await.unwrap();
     control.import_wallet_payout(&channel.id).await.unwrap();
     assert_eq!(
@@ -211,6 +365,9 @@ async fn controller_funding_reserves_payout_and_payment_requests_cannot_change_l
             .balance_sat,
         3
     );
+    let db = WalletSqliteDatabase::new(cashu_service::cashu_wallet_db_path(&seller))
+        .await
+        .unwrap();
     assert_eq!(
         db.storage_capacity().await.unwrap().unwrap().maximum_bytes,
         charged

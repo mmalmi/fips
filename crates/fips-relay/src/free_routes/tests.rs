@@ -17,6 +17,7 @@ fn peer(n: u8) -> PeerIdentity {
 }
 fn offer(buyer: u8, provider: u8, next: u8) -> RouteOffer {
     RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: BillingBasis::ForwardingData,
         id: format!("{buyer}-{provider}-{next}"),
@@ -442,6 +443,7 @@ fn paid_accounts_must_close_before_a_free_switch_without_erasing_history() {
     let routes = FreeRoutes::for_accounts(seller.clone(), buyer.clone());
     let grant = offer(1, 2, 9);
     let mut terms = ChannelTerms {
+        refund_after_unix: None,
         id: "in".into(),
         buyer: grant.buyer,
         mint_url: grant.mint_url.clone(),
@@ -450,6 +452,7 @@ fn paid_accounts_must_close_before_a_free_switch_without_erasing_history() {
         grace_msat: 100,
     };
     let mut contract = Contract {
+        bid_msat_per_kib: 0,
         billing: grant.billing,
         id: "route-in".into(),
         channel_id: terms.id.clone(),
@@ -564,3 +567,6 @@ fn expired_replacement_history_releases_capacity_without_closing_live_grants() {
         "expired active and retired records are both reclaimed"
     );
 }
+
+#[path = "public_seed_tests.rs"]
+mod public_seed;

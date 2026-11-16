@@ -26,7 +26,8 @@ def diagnostics(status, channel=None):
     """Keep only counters and public amounts; never persist request bodies."""
     try:
         measurement = status["measurements"]
-        if not isinstance(measurement, dict) or measurement["version"] != 1:
+        if (not isinstance(measurement, dict) or type(measurement.get("version")) is not int
+                or measurement["version"] not in (1, 2, 3)):
             raise RuntimeError("payment faults require the measurements build feature")
         pid = natural(measurement["process_id"])
         if pid == 0:
@@ -37,8 +38,11 @@ def diagnostics(status, channel=None):
             raise RuntimeError("payment diagnostic requires exactly one payment control port")
         counters = {key: natural(control[0][key]) for key in (
             "stream_bytes_sent", "stream_bytes_received", "requests_started", "requests_received")}
+        names = ("payment_usage", "payment_update", "payment_sign")
+        if measurement["version"] == 3:
+            names += ("payment_exchange",)
         operations = {name: {key: natural(value) for key, value in measurement["operations"][name].items()}
-                      for name in ("payment_usage", "payment_update", "payment_sign")}
+                      for name in names}
         for operation in operations.values():
             for key in ("spans", "journal_commits"):
                 natural(operation[key])

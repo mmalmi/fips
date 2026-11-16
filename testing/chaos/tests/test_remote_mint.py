@@ -196,8 +196,66 @@ class MintHostTests(unittest.TestCase):
         self.assertTrue(recovered["stopped"])
         self.assertEqual(self.host.control.call_count, 1)
 
+    def test_stalled_mint_resumes_on_release_or_deadline_without_restarting(self):
+        self.start()
+        for release in (True, False):
+            with self.subTest(release=release):
+                outcome = []
+                worker = threading.Thread(target=lambda: outcome.append(self.host.stall(seconds=1)))
+                worker.start()
+                try:
+                    deadline = time.monotonic() + 3
+                    while not (self.root / 'stall-active.json').exists():
+                        self.assertTrue(worker.is_alive())
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(0.01)
+                    self.assertEqual(self.host.stall_status()['phase'], 'stalled')
+                    if release:
+                        self.host.release_stall()
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(outcome[0]['reason'], 'released' if release else 'deadline')
+                    self.assertEqual(self.host.stall_status()['phase'], 'resumed')
+                    self.assertEqual(mint_host.process_start(self.info['pid']), self.info['start_ticks'])
+                finally:
+                    self.host.release_stall()
+                    worker.join(3)
+                for path in self.root.glob('stall-*.json'):
+                    path.unlink()
+
+    def test_failed_stall_observation_resumes_the_original_process(self):
+        self.start()
+        from unittest.mock import patch
+        save = mint_host.save
+
+        def fail_active(path, value):
+            if path.name == 'stall-active.json':
+                raise RuntimeError('observation failed')
+            return save(path, value)
+
+        with patch.object(mint_host, 'save', side_effect=fail_active):
+            with self.assertRaisesRegex(RuntimeError, 'observation failed'):
+                self.host.stall(seconds=1)
+        self.assertEqual(self.host.stall_status()['phase'], 'resumed')
+        self.assertTrue(self.host.finish()['stopped'])
+
 
 class RemoteMintTests(unittest.TestCase):
+    def test_explicit_mint_port_preserves_the_assigned_address(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'mint'
+            binary.write_bytes(b'\x7fELF\x02\x01' + b'\x00' * 12 + b'\xb7\x00')
+            spec = {'host': 'lab', 'state_parent': '/tmp/bench'}
+            for index, override in enumerate(({}, {'port': 0}, {'port': 8088})):
+                output = root / str(index)
+                output.mkdir()
+                mint = RemoteMint({**spec, **override}, binary, '123456789abc', output, '192.0.2.10')
+                self.assertEqual(mint.settings['bind'], f"192.0.2.10:{override.get('port', 0)}")
+            for port in (True, -1, 65536, '8088', None):
+                with self.subTest(port=port), self.assertRaisesRegex(ValueError, 'mint port'):
+                    RemoteMint({**spec, 'port': port}, binary, '123456789abc', root, '192.0.2.10')
+
     def test_refuses_wrong_architecture_and_excessive_test_funding(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
@@ -223,6 +281,22 @@ class RemoteMintTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "already attempted"):
                 mint.start()
             self.assertEqual(mint.remote.call_count, 1)
+
+    def test_checks_host_architecture_before_creating_state(self):
+        for machine, architecture, other in ((b"\xb7\x00", b"aarch64", b"x86_64"),
+                                             (b"\x3e\x00", b"x86_64", b"aarch64")):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                binary = root / "mint"
+                binary.write_bytes(b"\x7fELF\x02\x01" + b"\x00" * 12 + machine)
+                mint = RemoteMint({"host": "lab", "state_parent": "/tmp/bench"}, binary,
+                                  "123456789abc", root, "192.0.2.10")
+                mint.remote = Mock(return_value=other)
+                with self.assertRaisesRegex(RuntimeError, "architecture"):
+                    mint.start()
+                mint.remote.assert_called_once_with(["uname", "-m"])
+                with self.assertRaisesRegex(RuntimeError, "already attempted"):
+                    mint.start()
 
 
 if __name__ == "__main__":

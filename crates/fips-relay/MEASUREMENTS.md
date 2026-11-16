@@ -61,6 +61,40 @@ maximum capacity of the link. Per-application duplicate sequence detection is
 not a test of encrypted FIPS wire replay rejection; exercise wire replay
 separately when verifying billing under duplicated traffic.
 
+## Reliable duplex stream
+
+The optional `measurements` feature also enables `stream_probe` on the private
+operator socket. It uses TCP over FIPS on ordinary paid application port 44744;
+both endpoints require their normal paid routes. This adds no relay delivery
+receipts or special free application traffic.
+
+Arm both endpoints with the same fresh stream ID and byte count, each naming the
+other's npub. Set `connect` to `true` on exactly one endpoint:
+
+```json
+{"type":"stream_probe","probe":{"peer":"REPLACE_WITH_PEER_NPUB","stream_id":"3be81368471f470ebc95079d2213e0f2","bytes":1048576,"bytes_per_second":65536,"duration_secs":30,"connect":false}}
+```
+
+Each side sends and verifies the deterministic byte range independently. The
+command holds its adapter open for the full requested window, including after
+local completion, so the other endpoint can recover lost acknowledgements.
+Only the named authenticated peer can open its one TCP connection. Accepted
+application prefixes are never resubmitted by the diagnostic; TCP handles loss
+and backpressure on that original connection.
+
+Limits are 1 byte–64 MiB each way, a target of 1 byte/s–16 MiB/s and 1–300 seconds including
+setup, transfer and acknowledgement drain. The count cannot exceed target rate
+times duration. Writes are paced in bounded batches with a 64 KiB send buffer;
+scheduling and transport limits can reduce the achieved rate. At the deadline,
+success requires exact accepted, received and acknowledged counts. A disconnect,
+mismatch, cancellation or incomplete count fails the original run.
+
+`status.stream_probe` exposes progress, final stop reason, received SHA-256 and
+completion time. `status.stream_carrier` separately counts native submissions.
+Only one raw sender or stream probe can run at a time; service shutdown cancels
+the probe. A failed run must retain its original verdict before settlement or
+another explicitly armed experiment.
+
 ## Latency and overhead
 
 The optional `measurements` build feature adds process CPU, synchronous payment
@@ -132,6 +166,14 @@ run. Check process identity/start time when comparing counters across samples;
 a respawn starts a new measurement epoch. Record endpoint CPU too, so a small
 endpoint host is not mistaken for a router bottleneck. Keep unrelated host
 services available and include their competing load in the results.
+
+Linux `VmRSS` and `VmHWM` are approximate counters, as documented in
+[`proc_pid_status(5)`](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html).
+The shared process summarizer retains the maximum sampled reading and records
+high-water counter decreases without treating them as process restarts. It still
+rejects inconsistent process identities, clocks and CPU counters. Missing
+observations remain unavailable. Sampled maxima do not establish a hard memory
+ceiling or include unobserved processes and intervals.
 
 For efficiency, divide process user-plus-system CPU seconds by GiB successfully
 delivered at the destination. Obtain Linux clock ticks per second from
@@ -288,3 +330,162 @@ mint was kept alive; its simulated Lightning backend was not restarted. These
 measurements do not establish customer onboarding, Pixel operation, encrypted
 wire replay handling, interrupted renewal/funding recovery or full-router reboot
 recovery with active financial operations.
+
+## Payment phase timing
+
+Build with `measurements` and enable `RUST_LOG=warn,fips_payment=debug` to record
+each completed scheduler phase. Events contain the local `channel_id`, `stage`
+and monotonic `elapsed_us`; they distinguish scheduling, channel-lock,
+preparation, network exchange, signing and result-harvesting waits. Phase labels
+are local diagnostics and add no protocol messages or delivery receipts. An
+unfinished phase remains visible in the existing payment-progress status.
+
+Logging is disabled by default. Enable it only for a bounded diagnostic window
+and retain logs privately. A long phase identifies where time was spent; it does
+not by itself distinguish CPU work, filesystem waits and runtime scheduling.
+
+## Isolated storage wait diagnostic
+
+[`sqlite_io.c`](../../testing/chaos/tools/sqlite_io.c) compares a 2 KiB atomic
+journal with concurrent scratch SQLite WAL transactions. Build with a C11
+compiler, pthreads and SQLite development headers/library:
+
+```sh
+cc -std=c11 -O2 -pthread testing/chaos/tools/sqlite_io.c -lsqlite3 -o /tmp/sqlite-io
+```
+
+Usage is `sqlite-io ABSENT_ABSOLUTE_DIRECTORY baseline SECONDS` or
+`sqlite-io ABSENT_ABSOLUTE_DIRECTORY WAL_FRAMES SECONDS`. Each invocation requires
+a new directory and keeps its generated files for inspection. The directory
+selects the filesystem being measured; OpenWrt `/tmp` uses RAM. The update phase
+accepts 1–30 seconds; database setup and final checkpoint/close also run. SQLite
+cases use 5,480 fixed scratch rows, about 22 MiB with 4 KiB pages, and return
+commit and journal p95/max durations in nanoseconds.
+
+This probe creates no financial material and never opens an existing database.
+It isolates storage waits; it does not measure wallet retirement, signing,
+scheduling, network latency or delivery. [Readiness](READINESS.md#current-router-run)
+records the controlled observation and its limits.
+
+## Offline wallet preparation
+
+Offline commands now keep the wallet opened for their capacity check, rather
+than opening it again for balance, export-history checks or token operations.
+The exclusive account lock, storage limit, permanent request floor and gross
+spending counters remain unchanged.
+
+The existing genuine-receipt preparation records these native wall-clock samples:
+
+| Variant | Genuine receipts | Export/read calls | Import calls | Preparation seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Previous implementation | 64 | 65 | 65 | 6.156 |
+| Wallet reuse, first run | 64 | 65 | 65 | 5.289 |
+| Wallet reuse, diagnostic run | 64 | 65 | 65 | 5.260 |
+
+Each preparation returns its circulating original value. The first optimized
+paid scenario later times out; its completed preparation is a timing sample,
+and its failed verdict remains recorded. The diagnostic paid scenario passes.
+Evidence is in `work/wallet-open-reuse-1`; the final source/build audit is in
+`work/wallet-open-reuse-final-1`.
+
+These three small native samples do not establish full-history preparation time
+on ARM, payment CPU per byte or a router timing improvement. The separate
+131-export test runs with unchanged mint request pacing and concurrent functional
+work; its elapsed time is not a comparative performance result.
+
+The current ordinary ARM build also passes the unfunded installed-reader check:
+4,707 samples, 400,049 microseconds of startup and a maximum 18,349 microseconds
+of serialization, below its unchanged 25,000-microsecond limit. The independent
+check verifies stopped owners, removed fixtures and restored baselines
+(`work/wallet-phase-installed-check-2`). This measures observer overhead with
+an empty authorization trace; it does not measure paid forwarding performance.
+
+FULL10's genuine-history run records a 2.153–2.187-second relay authorization
+gap, entirely in the terminal observation tail; actual relay inter-commit gaps
+are at most 1.510 seconds. Its failed verdict remains preserved. The corrected
+observer reuses each channel's existing scheduler read once all stream packets
+are delivered and that channel is fully acknowledged, instead of adding status
+round trips after both channels finish. Later changed accounting invalidates an
+earlier boundary; a changed process epoch is rejected. Initial and terminal
+quiescent gaps, the two-second limit, complete event coverage and independent
+credit/delivery checks remain required. Software checks establish these observer
+rules; a fresh genuine hardware run must establish acceptance.
+
+FULL11 supplies that genuine workload: 5,480 receipts and 31 channels with the
+unchanged runtime and financial terms. Its separate delivery observer incorrectly
+counts waiting after the final packet as a delivery gap. The qualified correction
+ends only delivery timing at complete arrival; all payment observations continue.
+Independent reassessment of the immutable reads gives a 0.889467-second delivery
+bound, with both authorization, signature and provider-credit bounds below two
+seconds. All 84 packets arrive. Cleanup takes 24.611484 seconds, before the final
+delivery at 28.329593 seconds; final custody completes at 30.623802 seconds.
+The corrected acceptance preserves the original failed producer verdict.
+
+Its separate whole-process observer records 11,265 samples with zero capture
+errors and five all-five-profile cycles before cleanup. Maximum sampled sums of
+RSS are 55,228/39,348/53,444 KiB across the three routers; minimum observed host
+available memory is 215,424/208,748/216,480 KiB. Observed same-process CPU deltas
+sum to 3,767.08 seconds across the full preparation and workload. Missing process
+endpoints and possible missed short epochs prevent a complete CPU total; these
+are sampled bounds with no payment-specific CPU attribution or hard memory claim.
+
+### Current controlled radio recovery
+
+The current wallet/phase ARM artifact passes stationary open-radio departure,
+root replacement and rejoin. The independent acceptance checks 32 healthy
+one-way packets and eight complete round trips after recovery; the interrupted
+window delivers two round trips before isolation. Original processes and the two
+32-sat channels remain unchanged, and automatic payment resumes after rejoin.
+All 384 original test sats independently reconcile. The shared collector now
+finishes redeemed exports before shutting down the mint; the original run's
+unfinished export receipts are separately reconciled against the preserved mint
+ledger with no new issuance. The original failed audit remains recorded.
+This does not measure movement, fading, seamless roaming or automatic channel
+selection, and the bookkeeping recovery is not a mint-restart test.
+
+### Current payment recovery
+
+The current ARM artifact passes two independent 384-test-sat recovery cases.
+The first cuts all three relay processes after a committed initial channel
+opening, then restores the original request and quote without another buy.
+Both 1,280-packet streams arrive and all 267 management checks pass. The second
+cuts a committed settlement reply: the provider recovers while its buyer is
+offline, expires the reverse channel, and returns the original 28-sat refund to
+the late buyer. All 339 management checks pass. Independent audits reconcile
+both channels and all original money in each case; test processes are gone and
+normal router baselines restored. These results measure process recovery, not
+physical power-loss safety.
+
+### Current controlled phone regression
+
+`work/wallet-phase-phone-controlled-1` verifies unpaid denial and four paid
+1 MiB bidirectional windows on the current wallet/phase ARM and Android artifacts:
+foreground, background, forced idle and after idle. Forced idle lasts 48.07 seconds
+with the same phone process; all 594 management checks pass. Independent accounting
+reconciles the original four channels and 512 test sats. The owned app is removed
+after correcting the cleanup script's obsolete archive path; original accounts,
+Wi-Fi and router baselines are preserved.
+
+The foreground, background and after-idle windows consume 13.69, 14.45 and 14.56
+phone process CPU seconds respectively per delivered MiB, measured across each
+30-second window. These include forwarding and measurement work outside the
+transfer itself; they do not isolate payment cost or establish peak throughput.
+The phone stays plugged
+in, so the result does not measure battery consumption or natural off-charge idle.
+
+### Silent payment reply recovery
+
+The existing slow-neighbor controller fixture now holds both an unapplied update
+and a durably accepted payment's reply until the real transport deadline.
+`work/silent-payment-reply-1` passes in 137.95 seconds; the two holds expire after
+29.992 and 29.995 seconds. Automatic recovery retains the original channels,
+funding records and lifetime spending limits, reconciles accepted credit without
+another signature at the same balance, and lets a healthy neighbor progress.
+Package formatting and strict controller lint pass. The initial whole-workspace
+format check fails only on two unchanged core fixtures and remains recorded.
+
+The accepted-reply phase also verifies that a 15-second quiescence observation
+can expire while that original request is still pending. This explains why such
+a timeout alone cannot establish broken recovery; it does not establish the cause
+of the older native timeout, which had no phase snapshot. These are controlled
+fault observations, not normal payment latency or a hardware performance result.

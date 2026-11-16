@@ -4,6 +4,8 @@ use super::*;
 #[path = "pending/gate.rs"]
 mod gate;
 pub(crate) use gate::{ResponseGate, interpose, interpose_promotion};
+#[path = "pending/funding.rs"]
+pub(crate) mod funding;
 #[path = "pending/promotion.rs"]
 mod promotion;
 #[path = "pending/settlement.rs"]

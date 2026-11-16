@@ -10,10 +10,12 @@ const MAX_PER_PROVIDER: usize = 16;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
+    preferred_mint: Option<String>,
     provider: NodeAddr,
     destination: NodeAddr,
     ancestors: Vec<NodeAddr>,
     max_units: Option<u64>,
+    bid_msat_per_kib: u64,
 }
 
 struct Cached {
@@ -29,6 +31,7 @@ struct Entry {
 #[derive(Default)]
 struct Cache {
     entries: Mutex<BTreeMap<Key, Entry>>,
+    free: Arc<crate::free_routes::FreeRoutes>,
 }
 
 impl Cache {
@@ -89,7 +92,9 @@ impl Cache {
             {
                 let fresh = match &old.result {
                     Ok(offer) => {
-                        old.checked.elapsed() < FRESH_FOR && offer.expires_unix > unix_now()?
+                        old.checked.elapsed() < FRESH_FOR
+                            && offer.expires_unix > unix_now()?
+                            && self.free.can_reuse_received_offer(offer)
                     }
                     Err(_) => old.checked.elapsed() < REJECT_FOR,
                 };
@@ -136,12 +141,16 @@ impl QuoteClient {
         control: Arc<ControlTransport>,
         policy: Arc<QuotePolicy>,
         local: NodeAddr,
+        free: Arc<crate::free_routes::FreeRoutes>,
     ) -> Self {
         Self {
             control,
             policy,
             local,
-            cache: Cache::default(),
+            cache: Cache {
+                free,
+                ..Cache::default()
+            },
         }
     }
 
@@ -151,10 +160,12 @@ impl QuoteClient {
         request: &QuoteRequest,
     ) -> Result<RouteOffer, String> {
         let key = Key {
+            preferred_mint: request.preferred_mint.clone(),
             provider: *peer.node_addr(),
             destination: *request.destination.node_addr(),
             ancestors: request.ancestors.clone(),
             max_units: request.requested_max_units,
+            bid_msat_per_kib: request.bid_msat_per_kib,
         };
         let offer = self
             .cache

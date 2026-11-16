@@ -42,6 +42,7 @@ async fn fenced_native_refresh_requotes_once_at_the_existing_deadline() {
             provider.clone(),
             Arc::new(transport),
             QuotePolicy {
+                additional_receive_mints: vec![],
                 destination_fees: Default::default(),
                 billing: BillingBasis::ForwardingData,
                 mint_url: controller.policy.mint_url.clone(),

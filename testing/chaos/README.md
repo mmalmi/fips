@@ -27,9 +27,11 @@ The focused three-node line uses the production relay and a local test mint,
 with native Ethernet beacon discovery and no configured peer identities or
 addresses. It requires an existing Linux ARM64 `fips-test` image containing
 `ip`, `nsenter`, `tc` with kernel netem support, and Python 3.9+ with SQLite
-and Linux pidfd support, plus freshly built Linux ARM64
-`fips-relay` and `fips-relay-test-mint` executables. The harness never builds or
-pulls images. Its Python 3.9+ entry point needs only the standard library.
+and Linux pidfd support, plus Linux ARM64 `fips-relay` and matching
+`fips-relay-test-mint` executables. Use the relay extracted from the package being
+accepted and build the test mint from that package's exact source bundle. The
+harness never builds or pulls images. Its Python 3.9+ entry point needs only the
+standard library.
 
 From the repository root, set `BINARIES` to the directory containing those two
 executables, then run:
@@ -93,7 +95,12 @@ one forwarding hop; it does not establish Wi-Fi behavior, throughput, or scaling
 Faults have fixed parameters and must be observed, but packet scheduling is not
 claimed deterministic. Payment reconciliation after data faults alone does not
 prove recovery from an interrupted payment reply.
-The corrected Linux ARM64 fixture passed all 16 phases in about 140 seconds.
+The exact r32 package passes all 16 phases in 105.2 seconds with its matching
+test mint, using the existing assertions and timeouts. Both original channels
+settle, all 384 test sats are collected, and every node wallet is empty before
+ownership-checked cleanup. Source and executable hashes remain unchanged. The
+source reference, build record, binaries and result are retained in
+`work/paid-relay-verification/2026-09-29-ethernet-r32`.
 
 To also interrupt payment control, build both executables with
 `--features testbench,measurements` and add `--payment-faults` to the command
@@ -294,7 +301,16 @@ python3 -m sim.paid_diamond \
 ```
 
 Only the source receives 128 test sats, with at most two 64-sat channels and no
-renewal. The owned mint uses private SSH loopback forwards. A single watch
+renewal. The owned local mint uses private SSH loopback forwards. Alternatively,
+pass both `--mint-host /private/operator/mint-host.json` (the shared remote-mint
+host specification) and `--mint-address` with that host's assigned private LAN
+IPv4 address. This runs the supplied ARM64 or x86-64 Linux mint there with a
+128-sat issuance cap; the binary architecture must match the host.
+The host JSON contains `host`, `state_parent`, optional `ssh_config`, and optional
+integer `port` (0–65535). Omitting `port` or setting it to zero lets the host pick
+a port; an explicit port can use an existing permitted LAN ingress rule. The
+fixture checks reachability before issuing test money.
+All three routers must reach it before the single source grant. A single watch
 compares provider tariffs of 128/160 msat per KiB under a 192-msat ceiling. The
 normal selector defaults remain intact, including the 32-KiB trial and 60-second
 retry cooldown. Each phase allows at most sixteen 16-packet, 256-byte bursts,
@@ -352,6 +368,27 @@ and exhausted-trial recovery gaps. All 128 test sats were collected, all wallets
 ended empty, all 600 management checks passed, and original router settings were
 restored. The combined Linux harness suite passes 164 checks; that software
 coverage does not turn the failed hardware cycle into acceptance.
+
+#### Connected paths with degraded delivery
+
+Use `--loss-failover` instead of `--active-failover` to retain both wireless
+paths while dropping every second experimental frame from the cheaper provider
+at the destination. Only that directed test edge is impaired. The original
+watch, tariffs, channel limits, finite traffic allowance and selector defaults
+stay the same. The source samples native quality during each impaired burst,
+because a switch may finish before an after-burst observation.
+
+Acceptance additionally requires fresh loss above the configured threshold on
+the unchanged cheaper full agreement, working paid delivery through the
+alternative, and return to the cheaper provider after filter removal. Native
+peer authentication times and link IDs must remain unchanged at the observation
+points. Failed or uncertain fault installation is reconciled and cleared before
+financial collection. The current physical result and its limits are recorded
+in [relay readiness](../../crates/fips-relay/READINESS.md).
+
+This remains a finite functional test. The filter affects native control frames
+as well as data; it does not isolate control loss, continuously measure link
+availability, or establish lossless handover, throughput or mobile convergence.
 
 ### Paid Wi-Fi recovery
 
@@ -418,6 +455,68 @@ checked before stopping the mint. A failed cleanup is reported as a failed run.
 Run the Wi-Fi, financial, fault and settlement tests on Linux before hardware use;
 include `tests` in `PYTHONPATH` for the existing payment-fault test imports.
 
+Use `--streams` with a measurement-enabled relay for reliable TCP/FIPS delivery
+before, during and after controlled frame loss. Each 30-second window sends
+512 KiB in each direction at 32 KiB/s over the authenticated two-hop radio line.
+Both endpoints must acknowledge every byte and report the expected payload
+digest. The middle window drops every twentieth experimental EtherType frame
+arriving from the middle router at each leaf; actual drop counters must advance.
+The final window runs after both owned rules are removed, using the same
+processes and payment channels. Local fees are 1 msat/KiB so this finite workload
+fits the original spending and channel limits; return allowances are disabled.
+
+This mode shares the phone's stream dispatcher and validator, preserves both
+endpoint outcomes when observation fails, and uses the existing 384-sat
+settlement/collection and restoration checks. Resource snapshots include the
+whole relay process and diagnostic overhead; they are not a matched cadence or
+unloaded performance benchmark. Frame-loss and radio-departure modes are separate.
+
+Use `--carrier-pressure-port PORT` instead of `--streams` to test rejected TCP
+connections while the same paid radio line forwards exact TCP/FIPS streams.
+The port must be unused and unprivileged; only the temporary middle-router
+profile listens there, on its private management address, with eight inbound
+slots. Four workers send complete invalid Noise initiations, unsolicited replies
+and unknown-index encrypted records, at most 16 connections/s and 4,096 total.
+Each socket read waits at most two seconds for closure. Native receive/accept
+counters must match the records,
+without capacity rejection or first-frame timeouts, and the pool must end empty.
+Two 30-second windows each deliver and acknowledge 4 MiB per direction at
+256 KiB/s, during pressure and after it ends. Fees are 1 msat/KiB, with the
+existing 32 MiB quote bound. The original channels, automatic payment, test-fund
+collection, management checks and restoration remain mandatory. Process and RSS
+samples include diagnostic overhead; this finite test is not sustained DoS
+qualification. Run `python3 -m unittest tests.test_carrier_pressure` with the
+shared Wi-Fi/settlement checks before using hardware. An optional `--mint-host`
+JSON inventory selects the existing remote Linux test-mint adapter; set its `port`
+when the host firewall allows only a fixed test port.
+
+Add `--carrier-pressure-transport websocket` to use the same paid scenario for
+discovery-only WebSocket connections. The controller needs Python `websockets`
+15.x; it is not a router dependency. Each client first verifies a nonce-bound key
+hint, then sends pings, pongs, repeated hint requests or unsolicited hint replies
+every 50 ms. The listener uses a five-second first-record deadline with idle and
+ping timers disabled. A client must observe closure between 4.5 and seven seconds;
+early resets and its own timeout fail the test. At least 24 connections must close,
+native open/close counters must agree, and no FIPS data frames, capacity rejection
+or occupied slots may remain. The shared duplex, accounting and restoration checks
+apply unchanged. This tests startup expiry alongside radio forwarding, not paid
+forwarding over the WebSocket listener itself.
+
+Use `--carrier-pressure-transport udp` for two paced rejection windows at 2,000
+and 10,000 packets/s, followed by a quiet recovery window. Each carries the same
+4 MiB paid stream in both directions. One controller worker uses 64 source ports
+on its existing address, mixes invalid Noise initiations, unsolicited replies
+and unknown-index records, with a 45-second deadline and a 450,000-packet ceiling. It
+does not add addresses or spoof sources. The middle router's temporary UDP
+listener must be unused beforehand. Native receive counters must confirm that
+at least half the submitted packets reached FIPS, and actual submission must
+reach 75% of the target rate. Paid bytes must advance in both directions across
+multiple live samples. The original process must retain two peers, at most eight
+pending connections and a 64 MiB observed RSS high-water ceiling. These are finite
+trial thresholds, not general resource bounds or Sybil-fairness guarantees.
+Exact delivery, automatic credit, settlement and network restoration remain
+mandatory. Native transport samples retain kernel-drop and error counters.
+
 Add `--active-outage` to `sim.paid_wifi` to leave the radio mesh while an
 explicitly funded round-trip stream is still sending. The fixture waits for
 partial replies, removes leaf n03 from the radio mesh by default, observes actual peer
@@ -428,6 +527,9 @@ Reply counts must remain unchanged during a two-second isolated window.
 The radio then rejoins automatically; a distinct eight-packet round-trip stream
 must complete, followed by the existing bidirectional payment checks. Return
 allowances are disabled so both directions require the original paid channels.
+Build the relay with `--features measurements` for this mode: its process checks
+require the live measurement counters. The test mint is a separate build with
+`--features testbench`.
 
 Use `--active-outage --outage-node n02` to remove the middle router instead;
 add `--open-mesh` to use the existing temporary open-radio lifecycle. This bridge
@@ -436,7 +538,98 @@ of stale disconnected entries. Rejoin must restore exactly n01↔n02↔n03. The
 result records the selected radio and all three rosters, retains the same process
 epochs and financial authority, then requires fresh replies, both-direction paid
 progress, and the existing 384-test-sat collection. `--outage-node` is valid only
-with `--active-outage`; `n03` explicitly selects the default leaf case.
+with `--active-outage`; `n03` explicitly selects the default leaf case and `n01`
+selects the source radio.
+
+Use `--active-outage --root-outage` to select the currently elected routing root
+automatically. The fixture binds signed native tree observations to the three
+saved identities and verifies the selected root immediately before the cut.
+After peer eviction, every surviving connected component must replace that root
+with loop-free coordinates using only its remaining links. Rejoin must restore
+the original root and two-hop tree before fresh paid replies can qualify.
+Processes, channels and spending limits remain unchanged. This mode cannot be
+combined with a fixed `--outage-node`, `--brief-outage`, `--streams` or
+`--interrupted-promotion`.
+
+Use `--open-mesh --handover-frequency 5745` for a staggered channel change and
+return. The requested frequency must differ from the original and be explicitly
+enabled without radar/no-IR restrictions on every dedicated mesh radio. A leaf
+moves during partial paid delivery; the other radios follow after observed peer
+eviction. Fresh traffic must pay on the original channels in both directions.
+The same owned-profile guard restores the saved radio configuration after an
+interruption. This mode cannot be combined with another outage/pressure scenario.
+It tests controlled channel handover, not automatic channel selection or movement.
+
+Use `--crowded-rejoin` as a separate scenario, optionally with `--open-mesh`.
+It caps the middle router at two FIPS peers with two-second idle/rotation
+settings. After the leaf radio leaves and is evicted, an unfunded fourth identity
+on the leaf's host fills the spare slot over management-bound UDP. Continuous
+ordinary application data protects the other radio neighbor, including during
+paid probes and financial observations. The returning leaf
+must replace the idle peer, retain the useful peer's authentication time and
+deliver paid traffic on the original channels. The auxiliary process stays alive;
+it cannot provide an onward path. Existing guards restore all three routers and
+the normal settlement collects all 384 test sats. This is a neighbor-admission
+check, not a radio-congestion or throughput benchmark.
+
+Add `--crowded-newcomer` to one `--crowded-rejoin`, with an explicit
+`--mint-host`, to replace the departed buyer with a fresh radio identity. Four
+independent accounts receive 128 test sats each; the idle competitor stays
+unfunded. The original buyer stops with its channel unsettled. The newcomer
+must replace the idle competitor, retain the useful incumbent, reject unpaid
+forwarding, then buy and automatically pay for both directions over radio.
+The incumbent reuses its original channel for the new destination. Finally,
+the original buyer returns, both original directions deliver again, and the
+shared collector verifies every wallet and collects all 512 test sats.
+Stopped-account observations require unchanged durable financial authority;
+they do not open a second service or wallet owner. This mode cannot be combined
+with `--crowded-pressure`. It tests one newcomer in a fixed radio layout, without
+a fairness, movement or throughput claim.
+
+Use `--crowded-rejoin 3` for three departures and returns on the same funded
+accounts. The idle competitor remains running and may refill the slot immediately
+after each departure. Every round must retain the original useful peer and relay
+processes; both directions pay on the original channels between rounds. Each
+round's bounded observations are saved in `crowded_rejoins`. The same 900-second
+trial deadline, original spending limits and 384-test-sat issuance cap apply.
+Each departure requires two recently confirmed unique useful payloads sent after
+that round begins. The useful sender uses the existing ordinary-data command,
+with 128-byte payloads capped at four sends per second and 3,600 sends per trial;
+it stops before settlement. `useful_packets` records submission and observed
+payload hashes independently of the strict paid probes. Failed probes retain
+partial delivery counts and service observations; cleanup preserves the first
+failure while still restoring the radio and stopping the sender.
+
+Use `--crowded-pressure 4` for four successive groups of seven fresh identities
+plus the original idle candidate. Each group stops before the next starts, keeping
+at most eight candidates running. All 29 distinct accounts remain unfunded and
+retain their financial journals. This mode runs five minutes of paid traffic;
+every fresh candidate must send join traffic across three observations, including
+an actual startup counter reading before its retry backoff grows. The
+same original payment channels, capital limits and cleanup guard remain in use.
+Its 120,000-byte quote at 256 msat/KiB has the same 30-sat maximum charge as
+the single-group quote, allowing for the longer stream and charged FSP overhead.
+
+Add `--crowded-pressure` to one `--crowded-rejoin` for eight unfunded identities
+retrying the middle router over management-bound UDP while the original radio
+route carries 120 40-byte paid packets in each direction at one per second.
+Seven additional profiles share the existing guards; every fresh candidate must
+send UDP join traffic across at least three observations, while the original idle candidate
+keeps its existing retry backoff. All eight must remain unfunded. The two-minute
+stream must overlap at least 90 seconds of observed join pressure, retain
+the original authenticated peers and processes, and deliver every paid packet.
+Samples check the two-peer cap, at most eight native connections and a 64 MiB
+provider RSS high-water ceiling. These are finite trial checks, not proof of
+long-term memory bounds or resistance to arbitrary identity floods. Fresh quotes
+allow 60,000 bytes at 512 msat/KiB; the original 32-sat channels, spending and
+issuance limits apply. Candidate observations survive assertion failures, and
+the provider's authenticated roster determines which peers occupy its slots.
+Competitors stop before settlement, which still collects all 384 test sats.
+Both incumbent radio neighbors receive the same bounded ordinary application
+traffic through the accounting checks and competitor shutdown, so those checks
+do not leave a deliberately idle slot for candidates to replace.
+This mode uses fixed
+identities and a fixed radio layout, without a throughput or mobility claim.
 
 Add `--brief-outage` to restore after the finite 24-packet stream and the
 two-second quiet observation. At two packets per second, the stream spans at
@@ -580,6 +773,577 @@ records the passing same-process and full source-process restart hardware runs
 and their limits. Whole-router power loss and arbitrary mobile mesh encounters
 remain separate checks.
 
+### Router wallet snapshot failure
+
+`sim.wifi_signer_storage` binds one fresh test wallet's snapshot onto itself on
+the router's flash. Reads, locks and unrelated writes remain available; atomic
+snapshot replacement fails with `EBUSY`. An unfunded preflight proves the fault
+and restoration before any test money is issued. The existing lease guard
+restores the owned mount if the controller disappears.
+
+```sh
+python3 -m sim.wifi_signer_storage \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address 192.0.2.10 \
+  --output /private/results/new-router-snapshot-fault
+```
+
+Six 1,024-packet streams cover both directions before, during and after the
+fault. Acceptance requires an unchanged saved snapshot, retained pending
+authorization, continued payment by the opposite buyer and automatic retry
+after unmount. Both original channels, spending limits and relay processes must
+survive, every payload must arrive once, and all 384 test sats must be collected.
+For real `ENOSPC` on a wallet filesystem, add `--volume-image` pointing to a fresh
+8 MiB journaled ext4 image. Create it on Linux, then copy it to the controller:
+
+```sh
+image="$(mktemp /tmp/fips-wallet-volume.XXXXXX)"
+truncate -s 8M "$image"
+mkfs.ext4 -q -F -m 0 -b 4096 \
+  -E lazy_itable_init=0,lazy_journal_init=0 "$image"
+```
+
+The fixture copies the fresh, unfunded wallet onto that volume and verifies every
+file by hash before funding. The image lives on router flash; bounded random
+writes fill only its filesystem. A final one-byte write must also fail, and the
+parent filesystem must remain writable with at least 8 MiB free. The same payment
+and delivery checks then require recovery after deleting only the owned filler.
+The lease guard frees that filler if the controller disappears. Normal cleanup
+unmounts the stopped wallet and retains its image and file hashes for independent
+inspection and archival before removing the closed test profile.
+
+To check an actual SQLite write while full, also pass `--sqlite-probe` with the
+ARM64 `funding_costs` test executable built from the same frozen dependency graph.
+The fixture initializes a 64 MiB logical wallet allowance through normal service
+setup. The helper runs on the stopped, funded wallet before relay startup. It opens the
+real database, fills the marked wallet filesystem, and requires SQLite's disk-full
+error for a 256 KiB write that fits the logical allowance. The failed key must be
+absent; every proof record and the storage charge must remain unchanged. Freeing
+the filler must allow the identical write and readback, then removing the key must
+restore the original accounting. The ordinary relay then runs the six-stream
+payment/recovery scenario and collects all test funds. The helper is a test
+executable with development features; it does not replace the ordinary relay.
+
+These finite wallet-commit checks leave whole-router filesystem exhaustion,
+read-only-wallet operation, slow storage and electrical power cuts as separate
+qualifications. The signer-volume case does not restart the relay; its optional
+SQLite check runs before routing starts.
+
+Use `sim.wifi_full_state` with the same required arguments and `--volume-image`
+to place the middle relay's entire account on the dedicated flash-backed volume.
+After paid traffic in both directions, it fills that volume, requires a controller
+journal write to fail with `ENOSPC`, and crashes the owned relay. Startup must exit
+with a storage failure while the volume remains full; controller, buyer and seller
+journal hashes must remain unchanged. The guard keeps the normal router filesystem
+writable. Removing the filler must allow the same account and two original channels
+to recover with exactly the unbilled exposure predicted by the stopped journal.
+Four 1,024-packet streams, automatic payments after recovery and collection of all
+384 test sats are required. The stopped account image is retained for independent
+filesystem and file-hash verification. This still does not exercise system-wide
+router exhaustion, a SQLite write while full or electrical power loss.
+
+Focused Linux checks: `python3 -m unittest tests.test_wifi_signer_storage
+tests.test_wifi_full_state tests.test_wifi_discovery tests.test_remote_mint
+tests.test_wifi_restart` from `testing/chaos`.
+
+### Controller reads during wallet retirement
+
+`sim.wifi_retirement` uses the same guarded three-router lifecycle and capped test
+mint. Each fresh wallet enables a 20 MiB logical storage limit, including the
+shared receiver history reserve. It sends 1,024
+paid packets in each direction, settles the original channels, then holds SQLite
+write transactions on two isolated wallets. Once sender history
+retirement is durably pending, six controller reads must each complete within two
+seconds while both writers remain held. Releasing the transactions must finish
+the original sender/receiver handoffs without changing spending limits. The shared
+collector verifies wallet distribution and collects all 384 test sats.
+
+Build `tools/sqlite_hold.c` against SQLite for the router architecture and supply
+that executable with `--sqlite-hold`. The helper opens only an existing database,
+uses `BEGIN IMMEDIATE` without changing SQL data, and rolls back on release,
+termination or its deadline. The router guard also requests release during
+cleanup. Test a native build before using the ARM64 build:
+
+```sh
+cc -O2 -Wall -Wextra -Werror tools/sqlite_hold.c -lsqlite3 -o /tmp/sqlite-hold-native
+FIPS_SQLITE_HOLD=/tmp/sqlite-hold-native python3 -B -m unittest tests.test_sqlite_hold
+python3 -B -m sim.wifi_retirement \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address "$BENCH_MINT_ADDRESS" \
+  --sqlite-hold /private/artifacts/sqlite-hold-arm64 \
+  --output /private/results/wallet-retirement
+```
+
+Run from `testing/chaos`. Use a fresh output directory and a test-only mint;
+normal router accounts are never used. This measures bounded controller response
+under SQLite contention, not storage throughput or physical power-loss recovery.
+
+Add `--fragmented-live` to exercise paid forwarding during cleanup instead. This
+opt-in mode uses a fresh test mint with denominations 1, 64 and 128, creates and fully refunds
+fifteen ordinary 32-sat channels, and verifies the resulting 480 original refund
+coins occupy over 1 MiB of client history. It then buys a separate active channel
+and establishes its session before holding the source wallet writer. Exact fresh
+payloads, signed payments and provider credit must advance during the hold and
+again after release, within contiguous observations bracketed by the same pending
+retirement plan. The held-window payment must be acknowledged and credited before
+the post-release baseline. Payloads are never replayed to hide loss.
+
+The device mode uses 22-minute funding lifetimes and at most 300 seconds of
+old-channel deadline spread. The active channel opens 60 seconds before the first
+old expiry; its 660-second service lifetime and quote leave at least five minutes
+after the last old deadline. The writer starts 15 seconds before the first expiry
+and has a 420-second guard, covering the spread, probe setup, the final payment
+acknowledgment and controlled release.
+Post-release traffic and cleanup together have four minutes. The scenario has a
+40-minute deadline, leaving nine minutes beyond these expiry and observation
+windows for setup and final accounting. A setup that misses these bounds fails
+and retains its diagnostics. All original sender and seller retirement must
+finish before final settlement. The shared collector verifies the original 384
+sats and their per-wallet distribution, exporting at most 32 sats per unique
+transfer to stay within the ordinary wallet's output and recovery-record limits.
+This is controlled liveness evidence, not a benchmark of uninterrupted native
+execution or storage throughput. Use the updated test mint and SQLite hold helper;
+the ordinary router executable needs no special testbench capability. The mint's
+`fragmented_channel_keyset` setting defaults to false and is limited to 512
+issued test sats.
+
+Add `--retirement-renewal` together with `--fragmented-live` to check automatic
+renewal at two signed sats. While retirement is pending, another 512-packet stream
+must advance payment and delivery on the selected predecessor without a new
+funding reservation. After release, this mode requires exactly one automatic
+successor and 64 delivered successor packets, replacing the default mode's
+4,096-packet post-release overlap check. It keeps the same deadlines, wallet and
+spending limits, and original 384-sat grant. Reused refunds fund 17 channels in
+total; the final audit must account for both recent channels and 544 sats of
+lifetime debits, with the same 15 retired channels. This optional case remains
+unqualified on hardware until its run and independent original-state audit pass.
+
+Alternatively, add `--retirement-purchase` with `--fragmented-live`. The original
+route uses native radio; a distinct provider and destination use management-LAN
+UDP through two guarded auxiliary profiles. Exactly 384 initial test sats cover
+all five profiles: 128 per original profile and zero for each auxiliary. Two new
+purchase attempts must reject during held cleanup without changing funding or
+route authority, while existing paid forwarding progresses. After cleanup, one
+new 32-sat channel must fund and both routes must deliver 512 fresh packets with
+new provider credit. All five wallets enter the same final conservation check.
+This mixed-link case keeps the existing deadlines and needs its own hardware run
+and independent audit; it does not qualify a second radio route or performance.
+
+Add `--receiver-history-rows 5480` to the base retirement command for genuine
+receiver receipt pressure. This mode is separate from `--fragmented-live` and
+uses the ordinary router executable with a test mint supporting
+`receiver_history_keyset`. Its 3,072-sat issuance cap covers all five isolated
+profiles. Ordinary export/import commands create the retained receipts at the
+unchanged 20 MiB wallet limit; no synthetic financial records are inserted.
+Preparation has a six-hour allowance, and the command's initial alarm is eight
+hours. Smaller values from 1 to 5,480 are useful for setup checks but do not
+qualify the full-history workload.
+
+The initial 960-sat channel earns its payout at 32 packets/s. This sparse test
+keyset makes each partial payment reconstruct 960 one-sat outputs; 128 packets/s
+exhausted the unchanged credit allowance on the routers. The 32-sat onward
+channels retain their 128-packet/s setup rate. The receiver's 360-second quote
+covers the paced preparation; later transit remains limited by its unchanged
+60-second service channel. Each purchased route's expiry is recorded.
+The original incoming owner's refund deadline is 20 minutes after creation,
+allowing the 28 ordinary device channel cycles before its controlled retirement.
+After a stopped custody observation, preparation uses the existing finite native
+session probe with at most six fresh attempts. Every submitted attempt remains
+ordinarily billable and is retained, including loss; an uncertain send is never
+replayed. Measured retirement traffic still requires complete delivery.
+
+The receiver completes 28 onward channels before a controlled writer hold and
+release. The observation requires all 84 packets and both hops' payment/credit
+counters to advance without gaps exceeding two seconds, with cleanup completing
+before the last send. Stopped copies preserve receipt fingerprints and original
+ownership through collection of all 3,072 sats. Evidence is limited to 2 GiB,
+including a 512 MiB recovery reserve. A failed preparation resumes only its saved
+transfer and retains unrecovered originals; never rerun into the same output
+directory or replace its mint to hide a failure. Hardware acceptance also needs
+an independent audit of the original stopped wallets and mint.
+
+The shared `sim.offline_wallet.WalletCLI` helper retains command intents,
+deadlines and process epochs for offline wallet pressure checks. Optional GNU or
+BusyBox `time` capture records CPU and maximum resident memory outside the
+deadline supervisor; it includes that supervisor's overhead. A lost reply
+permits observation of the original command, never an automatic wallet retry.
+`tests/test_offline_wallet.py` covers completion, refusal, forced deadline and
+lost-reply ownership on Linux.
+
+### Router load, restart and frame loss
+
+`sim.wifi_restart_load` reuses the guarded three-router lifecycle and a capped
+remote test mint. Each of six rounds sends 4,000 1,000-byte payloads in each
+direction at 200 packets/s. After the third round, the middle candidate is
+force-killed and its persistent profile reopened. Original channels, budgets
+and the exact stopped journal's unbilled exposure must survive.
+
+```sh
+python3 -m sim.wifi_restart_load \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address 192.0.2.10 \
+  --output /private/results/new-router-load --frame-loss
+```
+
+The optional `--frame-loss` drops every twentieth test-EtherType frame from the
+middle router at both receivers during the second and fifth rounds. Rules live
+inside the existing owned table and expire with its recovery guard; original
+traffic is outside their match. Payments must advance while loss is still
+enabled. Impaired streams require at least 90% delivery, nonzero missing payloads
+and counted drops at least as large as that loss. Drop counters include control
+frames; they do not prove individual payload attribution. Healthy and subsequent
+recovery streams still require complete delivery. Financial closure collects
+all 384 test sats. This finite workload does not establish maximum throughput,
+physical power-loss recovery or delivery while the process is stopped.
+
+Use `--active-restart` instead of `--frame-loss` to crash the middle process
+during the fourth round's forward stream. Fresh delivery must resume within
+that same 20-second paced send, without rearming the receiver or resending the
+probe. Only that interrupted stream permits loss; the other eleven streams
+still require full delivery. The sender is drained before financial recovery
+and settlement, including after an uncertain crash response.
+
+Focused checks: `python3 -m unittest tests.test_wifi_restart_load
+tests.test_wifi_restart tests.test_wifi_discovery.AcceptanceTests` from `testing/chaos`.
+
+Use `sim.wifi_kernel_restart` with the same required arguments and without the
+optional fault flags to reset the middle router's kernel between the third and
+fourth rounds. Linux SysRq `b` reboots without syncing or unmounting storage.
+This interrupts that router's Wi-Fi and management connection; both other
+routers remain monitored. The fixture requires a changed boot ID, restored
+original LAN/Wi-Fi/service, unchanged candidate identity and configuration, and
+the original paid accounts before staging a new RAM executable. It never
+reinitializes the accounts or repeats an uncertain reset. Full stream delivery,
+bounded unbilled exposure and collection of all 384 test sats remain required.
+This checks physical-router kernel/cache loss with electrical power present;
+it does not qualify flash power interruption or unattended service recovery.
+Include `tests.test_wifi_kernel_restart` in the focused Linux checks.
+
+Use `sim.wifi_boot_restart` instead to exercise the installed init/UCI service.
+Its binary, startup wrapper and clock hook must match the tested sources. Before
+traffic, the fixture saves the middle router's UCI file and selects the fresh paid
+profile for its next boot. After reset, it must observe that exact account running
+under procd before staging observation tools; it issues no relay start or init.
+The pre-reset journal independently predicts the recovered unbilled allowance.
+Collection requires the supervised process to exit, then cleanup restores the
+original UCI file and service. Changed configuration or service ownership stops
+restoration instead of overwriting another owner. If the controller disappears
+during reboot, preserve the selected paid profile for deliberate recovery; no RAM
+lease survives the reset. This mode uses test funds and pauses offered traffic.
+Include `tests.test_wifi_boot_restart` and `tests.test_wifi_measurements` in the
+focused checks; physical power cuts remain separate.
+
+Add `--repeat-restarts` to `sim.wifi_boot_restart` for three unsynced boots before
+rounds 2, 4 and 6. Each direction sends 2,000 packets per round at the original
+rate, leaving capacity for the lost durable windows within the same two channels.
+All six rounds must deliver completely and advance automatic payments. Every
+boot must follow the preceding completed recovery, reopen the same paid account
+through the installed service, and retain cumulative unbilled exposure plus at
+most one additional durable window per channel. Funding, capital and lifetime
+spending limits remain unchanged. Traffic pauses at each reset; this is separate
+from the mint-outage and active-traffic restart experiments.
+The earlier r399 trial rejected incomplete delivery after two lost 4,000-msat
+windows consumed its 8,000-msat relationship grace despite remaining channel
+funds. Adaptive durable windows pass the same workload and limits in r403: all
+24,000 packets arrive across three boots, with cumulative loss of 4,000, 6,000
+and 7,000 msat per original channel. All test funds are collected. The test still
+requires complete delivery and exact retained loss; renewing a channel does not
+erase it. Finite allowance can still run out. This does not qualify indefinite
+restart continuity or electrical power cuts.
+
+Use `sim.wifi_boot_mint_outage` to repeat that paid boot with an unresponsive mint.
+After the first three paid cohorts, the owned Linux mint is suspended before
+reboot and stays suspended through the remaining traffic. Each router must fail
+its mint HTTP probe before reset and after boot; process observations also verify
+the outage throughout paid traffic. An independent host worker resumes the exact
+mint on release, error or a 420-second deadline. Cleanup resumes it before
+settlement; a run that relies on deadline recovery cannot pass. Include
+`tests.test_remote_mint` in the focused checks. This covers saved funded channels,
+not new funding or settlement while the mint is unavailable.
+
+### Router funding and settlement interruption
+
+`sim.wifi_settlement` uses the same three-router inventory, ordinary
+measurement-enabled relay, remote test mint and guarded persistent profiles.
+After bidirectional paid delivery, it holds a committed settlement reply at the
+mint and kills the three owned relay processes. The provider starts first and
+must restore the original mint result while its buyer remains stopped. Mint
+restore counters must advance without another swap or swap attempt. The buyer
+then restarts and must finish its original refund and release automatically,
+without another settlement request or new funding. The shared settlement checks
+finally collect all 384 test sats and restore the original router state.
+
+The opposite buyer stays stopped until the provider closes its channel at service
+expiry. With a 180-second channel lifetime, service expires after 90 seconds.
+The fixture observes the completed report without a cooperative payment before
+restarting that buyer. Recovery must return the same report, refund the original
+buyer and release the channel automatically, without new funding or another
+payment. The final journals must retain that original report and signed balance.
+
+Use `sim.wifi_funding` with the same arguments to interrupt renewal instead.
+It withholds one committed successor-funding reply while both original routes
+continue carrying paid traffic, then kills and restarts all three relay
+processes. Recovery must reuse the saved request, channel and wallet operation,
+activate exactly one successor, and refund its predecessor. Three pairs of
+opposing streams must deliver all 7,680 payloads before funding, while its reply
+is held and after restart; the final collection closes three channels and
+returns all 384 test sats. This shares the guest scenario's financial checks through
+`sim.renewal_interruption` and the settlement scenario's guarded process controls.
+
+Add `--initial` to `sim.wifi_funding` to interrupt the first purchase before any
+paid route exists. Unpaid traffic must remain blocked while the committed mint
+reply is held. All three relays restart, with the provider and destination first;
+the original purchase must then recover and activate without another buy request
+or funding reservation. Only afterward is the reverse route purchased. Both
+1,280-packet streams must deliver and pay, and the two channels must settle and
+return all 384 test sats. First-purchase and renewal cases share the same durable
+funding checks in `sim.funding_checks`. The first-purchase case also requires the
+exact requested offer in the provider's durable quote journal before interruption
+and while stopped. The recovered buyer/provider contracts must use that original
+offer and channel, including unchanged pricing, expiry and allowance.
+
+```sh
+python3 -B -m sim.wifi_settlement \
+  --inventory /private/operator/wifi-inventory.json \
+  --binary /private/artifacts/fips-relay \
+  --mint-binary /private/artifacts/fips-relay-test-mint \
+  --mint-host /private/operator/mint-host.json \
+  --mint-address 192.0.2.10 \
+  --output /private/results/new-router-settlement
+```
+
+This shares the committed-reply and automatic-recovery assertions with the guest
+power-loss scenario below. It preserves the router kernels and management
+network, so neither case establishes physical power-loss or flash-cache recovery.
+Focused checks from `testing/chaos`: `PYTHONPATH=.:tests python3 -B -m unittest
+tests.test_committed_settlement tests.test_paid_settlement tests.test_settlement_fixture`.
+
+### Manual router power cuts at committed mint boundaries
+
+`sim.wifi_power_cut --initial` accepts the same inventory, binary, mint and output
+arguments as `sim.wifi_funding`. Arrange an operator who can identify inventory
+node `n01` before starting. Alternatively, `--settlement` selects the existing
+committed-close scenario and cuts its provider, inventory node `n02`. Identify
+that different router before starting. The two modes are mutually exclusive.
+At the selected committed mint barrier, the harness freezes only the named
+candidate process without syncing files, stops the
+other two candidates, and writes `power-cut-request.json` in the fresh output
+directory. It keeps the other routers under management monitoring.
+
+Only after that request appears, disconnect the named router's power adapter,
+leave it disconnected for at least ten seconds, then reconnect it. Within the
+240-second observation window, record the operator's actual confirmation in
+`power-cut-confirmation.json`: copy `run`, `node` and `old_boot_id` from the
+request, and add `"power_disconnected": true`. Do not create this receipt from
+a detected reboot alone. The harness requires all three observations: that
+confirmation, loss of management reachability and a different boot identity.
+An unchanged/repeated boot, stale receipt or missing confirmation cannot pass.
+
+Recovery checks the original service, configuration and candidate identity before
+restaging the RAM executable and test-only shortcut filter. It reopens the saved
+account without initialization. Initial funding keeps its first-purchase recovery
+and paid-delivery checks. Settlement restores the original committed close with
+its buyer stopped, without another swap, then checks the original buyer refund
+and the opposite channel's independent expiry recovery. Both modes retain their
+384-test-sat conservation checks. The provider restores its filter without
+blocking either forwarding neighbor. Failure retains original financial evidence.
+No software reboot is dispatched.
+
+Physical settlement uses 1440-second refund lifetimes (720-second service
+expiry), a 750-second reverse-expiry wait and a 1200-second run deadline.
+Before arming, the original reverse channel must
+have at least 600 seconds left; before restarting its provider it must still have
+180 seconds. Both observations use the provider's clock and the automatic expiry
+deadline, so an operator delay or clock jump cannot silently overlap the strict
+no-resubmission check with an independent expiry swap. The process-only
+settlement and initial-funding timings remain unchanged.
+If the post-boot margin cannot be verified, the failed run preserves the original accounts
+and mint for deliberate recovery instead of starting participants or waiting for
+expiry from a stopped provider.
+
+The kernel can flush writes during the operator pause. This is a physical cut at
+a held application boundary; it does not qualify power removal during a flash
+write or history handoff. The settlement mode has harness checks, not physical
+acceptance. Hardware results remain scoped to their recorded artifacts in
+`crates/fips-relay/READINESS.md`. The focused Linux checks are the interruption modules above plus
+`tests.test_wifi_power_cut`, `tests.test_wifi_restart`,
+`tests.test_wifi_kernel_restart` and `tests.test_funding_checks`.
+
+### Guest kernel and filesystem power loss
+
+`sim.guest_powerloss` runs three relay accounts inside a disposable x86-64 KVM
+guest, with a separate host test mint. It needs existing QEMU/KVM access, BusyBox,
+Debian-style OpenSSH tools, `cpio`, `gzip` and `mkfs.ext4`, plus a readable Linux
+kernel with built-in virtio block/network, ext4 and gzip initramfs support.
+Supply matching native relay and test-mint executables from the locked source
+graph; build the relay without optional features and the mint with `testbench`.
+The harness records their hashes and copies their existing runtime libraries.
+
+From `testing/chaos`, with `KERNEL`, `BINARIES` and `REVISION` set to those inputs:
+
+```sh
+run_parent="$(mktemp -d /tmp/fips-power.XXXXXXXX)"
+python3 -B -m sim.guest_powerloss --kernel "$KERNEL" \
+  --binary-dir "$BINARIES" --source-revision "$REVISION" \
+  --output "$run_parent/case"
+```
+
+The output must be new and short enough for the mint's 100-byte control-socket
+limit. The guest uses two vCPUs, 1.5 GiB RAM, an owned 128 MiB ext4 image and
+loopback-only SSH forwarding. It mounts no host directory and changes no host
+network or service configuration. The mint URL stays identical across boots
+through a pinned SSH tunnel; the mint itself stays alive.
+
+After funding and bidirectional paid delivery, the default `--cut-at traffic`
+case kills the UUID/image-verified QEMU process during an active stream.
+A fresh kernel mounts
+the same disk; original accounts, funding, spending limits and exact unbilled
+crash exposure must survive. Subsequent streams require complete delivery, then
+the existing settlement checks collect all 384 test sats and stop the guest,
+tunnel and mint. The interrupted stream is not replayed. A funded failure keeps
+its original disk and mint for recovery; do not rerun initialization or replace
+that mint. Logs and process identities remain in the output directory.
+
+Use `--cut-at settlement` with a fresh output directory to cut the guest after
+the host mint commits a settlement swap but before its reply reaches the relay.
+The existing test-mint barrier pins this boundary; the relay needs no test
+feature or injected hook. Before restarting services, the recovered filesystem
+must retain the original funding and pending settlement. The provider starts
+alone and must restore the committed response and finish its payout without
+the buyer. Then the buyer must recover its original refund automatically,
+without a new settlement request. Final idempotent settlement and collection
+must reconcile all 384 sats. This case does not offer traffic after closing the
+interrupted channel.
+
+Use `--cut-at renewal_funding` to interrupt the next committed mint swap while
+preparing one replacement channel. Only one buyer has automatic renewal enabled;
+its original channel must keep delivering and paying in both directions while
+the funding reply is held. The test records whether that swap belongs to wallet
+preparation or channel opening, rather than claiming both boundaries were hit.
+After reboot, the saved funding intent and pending SDK operation must match
+before services start. Recovery must finish exactly one successor, preserve the
+original spending limits and channel funding, and refund the predecessor. For a
+saved channel opening, the successor must also retain its exact channel and
+wallet-operation identifiers. Fresh traffic must pay on the successor; the
+shared settlement checks reconcile all three channels and collect all 384 sats.
+
+This covers guest kernel/page-cache loss with QEMU's direct host I/O and ext4
+journal recovery. It does not simulate a physical flash-controller failure,
+host/mint power loss or radio interruption. The existing restart/settlement
+checks and the wrong-process refusal test run with
+`python3 -B -m unittest tests.test_guest_system tests.test_wifi_restart_load tests.test_paid_settlement`.
+
+Add `--write-iops 20` to limit the account disk to 20 write operations per second
+on both boots, including funding, paid traffic, crash recovery and settlement.
+The default `0` leaves writes unlimited. Before funding, 64 direct 4-KiB writes
+must reach that disk, and their elapsed time must demonstrate the requested
+throttle. The result records this probe and the guest block counters; every boot
+records its exact QEMU drive settings. Use separate fresh outputs for unlimited
+and throttled cases. The same financial and delivery checks apply to both; this
+finite storage-pressure case is not a flash endurance or throughput benchmark.
+
+### Continuous paid Wi-Fi renewal
+
+`sim.wifi_renewal_load` runs two simultaneous five-minute streams through one
+paid middle router: 42,000 packets per direction, 1,000 bytes each, at 140
+packets/s. Use the same three-router inventory and owned remote test mint as
+`sim.paid_wifi`, and a verified ARM64 measurements build supporting the bounded
+`max_duration_secs` and `lifetime_secs` diagnostic options:
+
+```sh
+PYTHONPATH=testing/chaos python3 -B -m sim.wifi_renewal_load \
+  --inventory /private/routers.json --binary /private/verified/fips-relay \
+  --mint-binary /private/verified/fips-relay-test-mint \
+  --mint-host /private/mint-host.json --mint-address PRIVATE_MINT_IPV4 \
+  --output /private/new-renewal-run
+```
+
+The tariff is 1 msat/KiB and each quote allows 32 MiB. Automatic renewal uses
+80% of channel capacity or allowance, with a 30-second expiry lead. The original
+32-sat channels, 64-sat lifetime buyer budgets, 128-sat wallet exposure limits,
+64-sat locked-capital limits, 8,000-msat grace and 4,000-msat durability window
+remain unchanged. Each router receives 128 test sats; all 384 must be collected.
+Quote lifetime remains 1,200 seconds; channel service ends after 900 seconds,
+with the immutable mint refund deadline at 1,800 seconds.
+
+Add `--expiry-renewal` to use 180-second quotes, an eight-second expiry lead and
+100% capacity/allowance thresholds. Traffic, prices, spending and channel deadlines
+stay as above. Acceptance requires replacement funding to start inside the expiry
+lead window, before the old grant expires, with its signed balance below 32 sats
+and observed bytes below the original quote allowance. This distinguishes expiry
+renewal from the default capacity case without adding another workload.
+
+Use `--expiry-renewal 3` for three consecutive replacements per direction with
+90-second quotes during the same five-minute streams. Acceptance checks one
+connected chain of four distinct channels and requires live delivery and growing
+credit on every successor before its next replacement. The observer retains all
+earlier usage, refunds and funding operations; lifetime spending and capital
+limits are the same. This mode also accepts `--frame-loss`.
+
+Add `--windows 2` to `--expiry-renewal 3` for ten minutes of offered traffic at
+the same rate, using two consecutive five-minute windows and 180-second quotes.
+The same processes and accounts span both windows; every successor must show
+delivery and growing credit within an active window. The gap between windows is
+measured and limited to 30 seconds. Fresh profiles declare 128-sat lifetime signing
+limits before funding, while channel capacity, wallet exposure, locked capital,
+prices and the total 384-test-sat issuance cap remain as above. Every original
+packet in both windows must arrive. This mode excludes injected frame loss and
+does not claim uninterrupted traffic across the measured gap.
+
+Expired, closed routes may be compacted by the ordinary runtime. The finite
+observer keeps earlier purchases in memory and verifies the native retirement
+fence, exact retained byte costs and terminal refund before accepting removal.
+It marks successor lineage reconstructed from that history with
+`retirement_reconstructed`; the delivery and live-payment requirements still
+apply. This observer retention changes no router journal or financial limit.
+
+Both receivers are armed before either sender starts. Each sender runs once,
+without pauses around renewal or payload retries. Default acceptance requires every
+packet, unchanged service processes, one actual refunded predecessor and one
+accepted successor in each direction, and fresh delivery plus increased
+successor credit while the continuous sends remain active. Raw failed or partial
+streams remain evidence. After the exact sends finish, cleanup removes any test
+loss filters, pauses renewals,
+verifies all retained channel settlements and uses the shared wallet collector.
+Unresolved funding retains the original accounts and mint for recovery.
+
+Add `--frame-loss`, independently or with `--expiry-renewal`, to drop every
+twentieth test-EtherType frame from the middle relay at both receivers throughout
+the continuous streams. The existing leased filter leaves ordinary LAN and
+Internet traffic outside its match. Each direction must deliver at least 90% of
+its originals, with no duplicates or invalid data and missing packets no greater
+than observed dropped frames. The same filters must remain active while successor
+delivery, automatic credit and drop counts all advance. After removal, each
+direction must deliver all 64 fresh recovery packets. Spending limits remain
+unchanged. Counters include control frames and cannot identify the cause of every
+missing payload; this is bounded impaired-link acceptance, not loss attribution.
+
+The diagnostic sender is bounded at 300 seconds, receiver at 360 seconds and
+individual remote send call at 330 seconds. These explicit bounds do not change
+the existing 30-second/60-second probe defaults or the short cadence matrix.
+This finite renewal regression is not a cadence comparison, physical power-loss
+test or maximum-throughput qualification.
+
+The existing status reads also retain up to 800 neighbor observations, bracketed
+by the same host monotonic clock used for traffic dispatch and receiver samples.
+Each observation records the process ID when available, fixture peer labels,
+connection/link identifiers, packet counters and RTT. Backend errors are reduced
+to `provider_unavailable`, `other`, or no error; wallet fields and unknown peer
+identities are omitted. A full capture sets `neighbor_observations_truncated`
+without interrupting status reads or financial cleanup. Polls can miss short gaps
+and do not identify the exact time of a link transition. Focused renewal, rekey,
+retry and link logs are enabled without packet tracing; their router wall-clock
+timestamps are not interchangeable with the host monotonic observation bounds.
+
 ### Paid/free Wi-Fi priority
 
 `sim.wifi_priority` reuses the paid Wi-Fi lifecycle and adds two unfunded
@@ -636,7 +1400,7 @@ Larger RTT workloads fail before setup rather than enlarging financial terms.
 The receiver is explicitly armed with `receive_probe.reflect=true`; the source
 uses `send_probe.measure_round_trip=true`. Defaults remain disabled. Reflection
 accepts only a matching authenticated source, fresh stream and unseen valid
-sequence, and the arm expires after 60 seconds. Replies have a distinct
+sequence, and the arm expires after 60 seconds by default. Replies have a distinct
 application marker and never cause more replies. No route is purchased by the
 diagnostic. Re-arming a receiver while a probe sender runs is rejected.
 
@@ -683,7 +1447,9 @@ route selection, sustained throughput or a latency guarantee.
 
 `sim.remote_mint.RemoteMint` gives routers and a phone one explicit private mint
 URL. The mint host requires Linux, Python with pidfd support, and the supplied
-static ARM64 test-mint binary; the routers do not need Python. Every run uses
+matching ARM64 or x86-64 Linux test-mint binary; the routers do not need Python.
+The harness checks the binary and host architecture before creating remote state.
+Every run uses
 fresh persistent state and an issuance cap of at most 512 test sats. Money
 requests are recorded before submission and never automatically replayed. The
 mint stays running while funds are outstanding; terminal cleanup needs a fresh
@@ -707,13 +1473,13 @@ input without importing it. Use the matching explicit `billing` in the
 The [physical phone acceptance](../../crates/fips-relay/READINESS.md#physical-phone-customer-across-the-wireless-mesh)
 using these composed helpers delivered eight packets, advanced all four paying
 hops, and recovered all 512 test sats after the recorded checker correction.
-The generic CLI wrapper below has focused tests; it has not been rerun on new
-accounts.
+Later runs and their exact source/workload limits are recorded in that readiness
+document; use the matching artifact and private scenario for each run.
 
 `sim.paid_phone` composes these helpers for one acceptance phone and the same
 three-router inventory. Install the verified isolated acceptance APK first,
 leave it foreground and unlocked, and select the guest Wi-Fi yourself. The
-harness checks the installed APK hash and original app's private-file hashes;
+harness checks the installed APK hash and all other installed bench accounts' private-file hashes;
 it neither installs apps nor changes the phone's Wi-Fi selection.
 
 ```sh
@@ -728,13 +1494,186 @@ python3 -m sim.paid_phone \
 The private scenario JSON has `version: 1` and these required objects:
 
 - `phone`: absolute `adb` path, exact `serial`, preserved private `evidence_dir`,
-  and the verified acceptance artifact's `apk_sha256`.
+  and the verified acceptance artifact's `apk_sha256`. Optional `instance` must
+  match the named isolated APK build; omit it for the original acceptance package.
 - `customer`: existing guest `interface`, router address/prefix in `cidr`, unused
   `entry_port`, exact `ssid`, and one to four `denied_tcp` objects containing
   `label`, numeric IPv4 `address`, and `port`. Choose known reachable services
   outside the permitted mint access. No target is inferred from the inventory.
 - `mint`: `address` assigned to the explicit Linux host, plus `ssh_spec` with
   `host`, `state_parent`, and optional `ssh_config`, as used by `RemoteMint`.
+
+Use `--transit` for Cudy → phone → Cudy → Cudy over UDP on the existing LAN.
+Supply `customer.interface` as the entry's management bridge, its existing LAN
+address/prefix as `customer.cidr`, and the phone's current `ssid`. Omit
+`denied_tcp` and add `router_addresses`, mapping `n01`, `n02` and `n03` to their
+distinct numeric addresses on that LAN. The verified APK and router executable
+must both enable `measurements`. This mode uses the same capped mint, durable
+accounts, settlement, collection and router restoration helpers. It makes no
+network configuration changes and does not test public customer isolation.
+
+Transit checks the exact authenticated four-node line, unpaid denial, then
+512 KiB of acknowledged, digest-verified traffic in each direction at 32 KiB/s
+within each 30-second foreground/background window. The phone must earn provider
+credit and buy onward forwarding within its immutable budget. Read-only status
+and journal observations work while the app is hidden; UI and probe mutations
+still require the unlocked foreground app. Add `--screen-off` only with an
+operator available to unlock afterward for settlement. The recorded Android
+state distinguishes sleep from the always-on ambient display. USB/ADB observations
+and process CPU include diagnostic overhead; they do not measure unplugged
+battery life, Android deep idle or payment-specific CPU. Physical results remain
+separate from harness tests.
+
+Use `--compare-transit-rates` with `--transit` to run two healthy background
+windows at 32 then 256 KiB/s per direction. Each offers four MiB per direction
+and lasts five minutes, retaining the original channels, tariffs and spending
+limits. The reduced per-window payload reserves channel capacity for both rates
+and their onward charges. This mode runs separately from fault, renewal,
+screen-off and forced-idle cases.
+
+The fixture records payment and CPU counters for all four participants. After
+the run succeeds, analyze the saved result with:
+
+```sh
+python3 testing/relay-cadence/phone_rates.py /private/results/phone-rates/result.json
+```
+
+The analyzer validates full acknowledged delivery, matched workloads, unchanged
+channel terms and counter epochs, and advancing payments at every paying hop.
+Completion times distinguish achieved throughput from the offered rate. The
+probes keep pumping until the fixed deadline to recover late acknowledgments,
+so full-window CPU includes different idle tails and diagnostic work. One
+ordered pair does not establish a throughput ceiling or an optimization.
+
+Add `--forced-idle` to `--transit` for one controlled Android Doze window.
+It requires an initially active phone and a temporary acceptance app without a
+battery-optimization exemption. After the paid background window, force deep
+idle for at least 45 seconds and require 512 KiB of acknowledged, digest-verified
+delivery in each direction. Verify that Android's network policy allows the
+foreground routing service despite Doze, without a battery exemption. A
+device-side 90-second watchdog restores normal idle policy even if the controller
+disappears. Then require fresh paid
+delivery with the same app process, channel identities, terms and lifetime
+budgets, without another purchase. This mode cannot be combined with
+`--screen-off` or `--sustained-transit`. This finite, USB-powered test measures
+forced-idle continuity; it does not measure natural sleep, battery life or
+recovery from a network outage.
+
+Use `--natural-idle` with `--transit` for a separate off-charge observation.
+Arrange a debugging connection that survives loss of external power, such as
+paired Android wireless debugging, before disconnecting power. An ordinary
+powered USB connection cannot qualify this mode. Keep an operator available to
+unlock afterward for settlement. Disconnect external power before starting;
+the runner refuses charging, simulated
+battery state or a forced idle policy before issuing test funds. It backgrounds
+the temporary app, switches the screen off and waits at most one hour for Android
+to enter deep idle by itself. The app must have no battery-optimization exemption.
+Only then does it open fresh paid channels and require acknowledged, digest-verified
+512 KiB delivery in each direction with the same routing process and Android's
+foreground-service network allowance. Idle, screen-off and off-charge conditions
+must continue for at least 60 seconds. Existing account collection and restoration
+apply. Allow up to 90 minutes overall and keep the phone stationary. Failure to
+observe idle preserves a failed result; it does not force idle or simulate an
+unplugged battery. This mode runs separately from other transit variants and
+does not measure battery life or physical mobility.
+
+Use `--phone-outage` with `--transit` to interrupt the phone's UDP link to the
+middle router after paid background delivery. An exact address/port filter
+blocks both directions under the existing router cleanup lease; normal LAN
+traffic remains allowed. Require fresh zero-delivery probes, real drop counters,
+disconnection at both ends and continued connectivity on the other two links.
+Remove the filter, then require fresh acknowledged traffic without another
+purchase or a process restart. The same channel terms and lifetime budgets must
+survive. This mode runs separately from idle, screen-off and sustained transit;
+it tests a link outage, not physical movement or address changes.
+
+Use `--transit --phone-expiry` to force-stop the paid phone after foreground and
+background transit. Wait for its route quote and the channels it sold to expire,
+then restart the phone while its own buyers remain stopped. Require both of the
+phone's seller reports before reconnecting the original parties. Its buyers
+recover those same reports, while the phone automatically settles its expired
+route before the underlying channel expires. No settlement request or new funding
+is issued by the fixture during recovery. Final collection verifies
+all four accounts and 512 test sats. Only the restarted phone's UDP discovery
+address changes; immutable profiles, funding and lifetime budgets stay intact.
+This mode runs separately from renewal, outage and sustained-load variants.
+
+Use `--phone-renewal` with `--transit` to reconnect Android Wi-Fi during
+automatic expiry renewal. The provider issues 180-second quotes; the phone and
+reverse endpoint renew with the existing 80%/30-second policy. The isolated mint
+holds only the original phone channel's committed close reply, selected by hashes
+of its funding inputs. Other funding and settlement requests continue normally.
+After the successor activates, a USB-controlled Wi-Fi reconnect must change the
+native UDP socket without restarting any paid participant. A device timer restores
+Wi-Fi independently of the controller. Require another MiB of fresh, acknowledged
+traffic in each direction and increased successor payment and provider credit
+while the original refund remains unresolved. Then release the reply, pause
+renewals, settle all six channels and collect all 512 test sats. The original
+identity, terms and lifetime budgets remain unchanged. This workload runs
+separately from other transit variants and tests one reconnect on the configured
+LAN, not arbitrary mobile mesh movement.
+
+Use `--transit --phone-renewal sustained` for two consecutive five-minute
+background TCP/FIPS windows, each carrying nine MiB per direction at 32 KiB/s.
+The middle router issues 300-second quotes; ordinary 80%/30-second renewal also
+applies to the endpoints. Downstream expiry bounds the upstream quote, so the
+three affected buyers must each renew at least twice. Capacity can trigger an
+additional renewal, including on the fourth purchase; each participant may fund
+at most four channels in this bounded workload.
+Each successor must show increasing acknowledged payment and received bytes in
+both directions during the same active stream. Retain the original identities,
+processes, 32-sat channel size, 64-sat lifetime budgets and configured capital
+limits. Restore the app's foreground activity and pause renewals after the
+second window, settle every observed funded channel and
+collect all 512 test sats. This workload changes no network settings and uses no
+mint fault or manual successor purchase. It tests paced LAN transit while the
+app is in the background; saturation, natural Android deep idle and moving-radio
+handover require separate workloads.
+
+Add `--impaired-transit` to `--transit --sustained-transit` for five minutes of
+paid background forwarding with one in twenty UDP packets dropped in each
+direction on the phone-to-middle-router link. The exact address/port rules use
+the same cleanup lease as the outage test. Require complete delivery and ACKs,
+observed matched/drop counters, unchanged processes and original channel terms,
+then fresh paid delivery after removing the filter. This mode runs separately
+from idle, screen-off, outage and renewal workloads. It tests packet loss on the
+existing LAN, not physical radio movement or Android network suspension.
+
+Use `--impaired-transit corrupt` for the same workload with eight consecutive
+established FMP frames corrupted out of every 100 matches in each direction.
+The filter flips a ciphertext bit and disables the IPv4 UDP checksum so native
+AEAD verification sees the damage. Scoped router logs must show an eight-frame
+failure burst without triggering recovery. Both mature peers must retain their
+keys through that first burst; the five-minute window allows normal scheduled
+key rotation but requires unchanged peer identity, link and authentication time.
+Filter counters, full stream delivery, payment progress and cleanup remain
+required. This modifies real peer packets; it does not send spoofed IP packets.
+
+Add `--phone-restart` to split the same eight-packet workload into two cohorts,
+each with two packets in each direction. After the first cohort is delivered
+and paid, the harness records the app process identity, force-stops that exact
+Android package once, verifies process absence and reopens it. Connect resumes
+the saved account; no second Buy or manual payment flush occurs. The second
+cohort must deliver and advance every paying channel on the original terms and
+lifetime budgets, followed by the same settlement and collection checks. An
+uncertain force-stop is retained and never dispatched again. This tests an
+Android process interruption, not physical power loss or traffic during the stop.
+
+Use `--load` instead of `--phone-restart` for three simultaneous bidirectional
+100-second windows at 40 packets/s, with 4,000 originals of 1,000 bytes per
+direction in each window. The middle window drops every twentieth experimental
+EtherType frame from the middle router at each leaf; the surrounding healthy
+and recovery windows require complete delivery. All windows require delivery,
+buyer authorization and provider credit to advance while sending. The existing
+app-private control and native diagnostic sockets are checked on the empty
+account before issuance; they use a non-PTY ADB shell for binary or newline JSON
+input/output. No app or protocol extension is needed. Existing phone and router
+status, routing, transport and session diagnostics
+are retained before and after every window, including failed windows, so loss
+can be investigated after cleanup. Router fees are 1 msat/KiB with 32-MiB quote
+limits; the same channel capacity and lifetime buyer budgets apply. Whole-app
+CPU/RSS observations include control sampling. This finite workload does not measure maximum throughput or
+payment-specific phone CPU cost, and failed originals are never replayed.
 
 Add `--open-mesh` for the existing guarded temporary open profile and late third
 router join. Before issuance, the phone must reach the exact mint before and
@@ -745,7 +1684,7 @@ They do not prove that a denied target's service was listening or establish an
 exhaustive firewall policy.
 
 This fixed fixture issues 128 test sats to each of four fresh accounts, uses
-32-sat channels and 64-sat lifetime buyer budgets, and checks four fresh
+32-sat channels and 64-sat lifetime buyer budgets. The default case checks four fresh
 1,000-byte payloads in each direction along phone → entry → middle → leaf.
 Automatic payments must advance at all four paying hops before settlement.
 The separate journal validator matches original funding operations, buyer and
@@ -758,7 +1697,7 @@ This phone fixture does not add a radio partition or prove general Internet
 access. Its reusable lifecycle/probe/financial tests are:
 
 ```sh
-python3 -m unittest discover -s testing/chaos/tests -p 'test_paid_phone*.py' -v
+python3 -m unittest discover -s testing/chaos/tests -p 'test_*phone*.py' -v
 ```
 
 ## Available Scenarios

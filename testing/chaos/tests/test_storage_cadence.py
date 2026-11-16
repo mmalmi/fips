@@ -64,6 +64,50 @@ def window(name="idle"):
 
 
 class StorageWindowTests(unittest.TestCase):
+    def test_verified_log_alias_does_not_hide_idle_file_errors(self):
+        alias = "/mounted-origin/owned-node/process.log"
+        paths = storage_paths({"device": 3, "inode": 7, "fd_paths": {"1": alias, "2": alias}})
+        record = window()
+        record["storage"]["n01"] = analyze([f'10 write(2<{alias}>, ""..., 334) = 334\n'], paths)
+        self.assertEqual(summarize_window(record)["file_write_bytes"], 0)
+        self.assertEqual(record["storage"]["n01"]["categories"]["process_log"]["write_bytes"], 334)
+        for call in (f'write(2<{alias}>, ""..., 334)', f'fsync(2<{alias}>)'):
+            record["storage"]["n01"] = analyze([f'10 {call} = -1 EIO (Input/output error)\n'], paths)
+            with self.subTest(call=call), self.assertRaisesRegex(RuntimeError, "failed file operation"):
+                summarize_window(record)
+
+    def test_idle_wallet_shared_memory_upkeep_is_counted_without_financial_writes(self):
+        record = window()
+        path = "/tmp/bench-state/wallet/cashu/wallet.sqlite"
+        record["storage"]["n01"] = analyze(
+            [f'10 pwrite64(5<{path}-shm>, ""..., 1, 4095) = 1\n'] * 40, storage_paths())
+        result = summarize_window(record)
+        self.assertEqual(result["file_write_bytes"], 40)
+        self.assertEqual(result["file_write_calls"], 40)
+        self.assertEqual(result["categories"]["wallet_sqlite_shared_memory"]["write_bytes"], 40)
+        self.assertEqual(result["categories"]["wallet_sqlite"]["write_bytes"], 0)
+        self.assertEqual(result["payment_updates"], 0)
+        for suffix in ("", "-wal", "-journal"):
+            record["storage"]["n01"] = analyze(
+                [f'10 pwrite64(5<{path}{suffix}>, ""..., 1, 4095) = 1\n'], storage_paths())
+            with self.assertRaisesRegex(RuntimeError, "funding wallet"):
+                summarize_window(record)
+
+    def test_async_exchange_cpu_does_not_count_as_a_usage_poll(self):
+        record = window("steady")
+        for section in ("payment_previous", "payment_before", "payment_after", "payment_after_detach"):
+            for pass_name in ("guard", "sample"):
+                for value in record[section][pass_name].values():
+                    value["operations"]["payment_exchange"] = dict.fromkeys(COUNTERS, 0)
+                    value["durability"]["payment_exchange"] = dict.fromkeys(DURABILITY, 0)
+                if section in ("payment_after", "payment_after_detach"):
+                    record[section][pass_name]["n01"]["operations"]["payment_exchange"].update(
+                        spans=2, cpu_samples=2, thread_cpu_ns=7000, elapsed_ns=10000)
+        result = summarize_window(record)
+        self.assertEqual(result["partial_payment_cpu_ns_under_trace"], 7000)
+        self.assertEqual(result["payment_updates"], 0)
+        self.assertEqual(result["usage_polls"], 0)
+
     def test_idle_and_prepaid_delivery_allow_zero_storage_work(self):
         for name, delivered in (("idle", 0), ("steady", 3200000)):
             result = summarize_window(window(name))

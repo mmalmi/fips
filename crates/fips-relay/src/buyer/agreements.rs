@@ -11,7 +11,8 @@ impl BuyerAuthorizer {
         advance_msat: u64,
     ) -> Result<(), BuyerError> {
         let capacity = validate_channel(&terms).map_err(|_| BuyerError::InvalidAgreement)?;
-        self.change(|state| {
+        self.change_if_needed(|state| {
+            if state.total_budget_sat == 0 { return Err(BuyerError::Budget); }
             if terms.buyer != state.local || provider == state.local || advance_msat > capacity {
                 return Err(BuyerError::InvalidAgreement);
             }
@@ -20,7 +21,7 @@ impl BuyerAuthorizer {
                     && c.terms == terms
                     && c.advance_msat == advance_msat
                 {
-                    Ok(())
+                    Ok(false)
                 } else {
                     Err(BuyerError::InvalidAgreement)
                 };
@@ -42,6 +43,9 @@ impl BuyerAuthorizer {
             {
                 return Err(BuyerError::InvalidAgreement);
             }
+            if terms.refund_after_unix.is_some() {
+                state.version = state.version.max(3) | REFUND_DEADLINE_VERSION;
+            }
             state.channels.insert(
                 terms.id.clone(),
                 PurchaseChannel {
@@ -51,14 +55,15 @@ impl BuyerAuthorizer {
                     authorized_sat: 0,
                     retired: Some(RetiredRouteEvidence::default()),
                     active: true,
+                    capacity_blocked: false,
                 },
             );
-            Ok(())
+            Ok(true)
         })
     }
 
     pub fn accept_quote(&self, contract: Contract) -> Result<(), BuyerError> {
-        self.change(|state| {
+        self.change_if_needed(|state| {
             let c = state
                 .channels
                 .get(&contract.channel_id)
@@ -72,7 +77,7 @@ impl BuyerAuthorizer {
             }
             if let Some(q) = state.quotes.get(&contract.id) {
                 return if q.contract == contract {
-                    Ok(())
+                    Ok(false)
                 } else {
                     Err(BuyerError::InvalidAgreement)
                 };
@@ -102,7 +107,7 @@ impl BuyerAuthorizer {
                     completed: CompletedEvidence::default(),
                 },
             );
-            Ok(())
+            Ok(true)
         })
     }
 

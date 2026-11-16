@@ -21,7 +21,7 @@ import time
 
 from .paid_faults import capture_probe
 from .paid_relay import eventually, relay_config
-from .wifi_remote import ETHERTYPE, Router, digest
+from .wifi_remote import ETHERTYPE, Router, baseline_restored, digest
 
 
 def free_config(router):
@@ -100,7 +100,7 @@ class WifiRun:
         self.root.mkdir(mode=0o700)
         self.run = secrets.token_hex(6)
         self.open_mesh = "fips-open-" + self.run if getattr(args, "open_mesh", False) else None
-        self.nodes = {f"n{i + 1:02}": Router(spec, self.run, self.root, self.open_mesh)
+        self.nodes = {f"n{i + 1:02}": self.make_router(spec, i)
                       for i, spec in enumerate(specs)}
         self.monitor = ManagementMonitor(self.nodes)
         self.evidence = {"run": self.run, "phases": [], "passed": False,
@@ -113,6 +113,9 @@ class WifiRun:
                          "paid_relay.py", "paid_faults.py")}
         self.original = {}
         self.financial = {}
+
+    def make_router(self, spec, index):
+        return Router(spec, self.run, self.root, self.open_mesh)
 
     def save(self):
         temporary = self.root / "result.json.new"
@@ -131,23 +134,27 @@ class WifiRun:
     def participants(self):
         return self.nodes
 
+    def mesh_peers(self, name, peers):
+        return peers
+
     def ready(self, *, line=False, isolated=False, outage_node="n03"):
-        if isolated and outage_node not in ("n02", "n03"):
-            raise ValueError("outage node must be n02 or n03")
+        if isolated and outage_node not in ("n01", "n02", "n03"):
+            raise ValueError("outage node must be n01, n02 or n03")
         self.monitor.check()
         statuses = {name: self.ctl(name, "status") for name in self.nodes}
         self.evidence["last_peer_observation"] = {name: state["peers"] for name, state in statuses.items()}
         self.save()
         for name, status in statuses.items():
+            candidates = self.mesh_peers(name, status["peers"])
             i = int(name[-1])
             wanted = {other.npub for key, other in self.nodes.items()
                       if key != name and (not (line or isolated) or abs(int(key[-1]) - i) == 1)
                       and not (isolated and outage_node in (name, key))}
             # Require actual removal, not just a stale disconnected peer; native
             # route lookup may retain that direct destination until eviction.
-            if (line or isolated) and any(p["npub"] not in wanted for p in status["peers"]):
+            if (line or isolated) and any(p["npub"] not in wanted for p in candidates):
                 return False
-            peers = [p for p in status["peers"] if p["connected"]]
+            peers = [p for p in candidates if p["connected"]]
             if {p["npub"] for p in peers} != wanted or any(p["transport"] != "ethernet" for p in peers):
                 return False
         return statuses
@@ -161,8 +168,25 @@ class WifiRun:
     def probe(self, source, destination, phase):
         evidence = {"source": source, "destination": destination}
         # Separate physical clocks do not establish one-way latency accuracy.
-        capture_probe(self, source, destination, eventually, evidence, measure_latency=False)
+        try:
+            capture_probe(self, source, destination, eventually, evidence, measure_latency=False)
+        except Exception as error:
+            self.record_probe_failure(phase, error, evidence)
+            raise
         self.phase(phase, **evidence)
+
+    def record_probe_failure(self, phase, error, evidence):
+        if 'failed_probe' in self.evidence:
+            return
+        failed = dict(phase=phase, error=str(error), at=time.monotonic(), **evidence, states={})
+        self.evidence['failed_probe'] = failed
+        self.save()
+        for name in self.participants():
+            try:
+                failed['states'][name] = self.ctl(name, 'status')
+            except Exception as inspection:
+                failed['states'][name] = {'error': str(inspection)}
+        self.save()
 
     def profile_config(self, node):
         return free_config(node)
@@ -224,13 +248,16 @@ class WifiRun:
         self.save()
         announced_and_observed = True
         for name, report in transports.items():
-            adapters = report["data"]["transports"]
-            if (len(adapters) != 1 or adapters[0]["type"] != "ethernet"
-                    or adapters[0]["name"] != self.nodes[name].interface):
-                raise RuntimeError("test node has a non-mesh transport shortcut")
-            if adapters[0]["stats"]["beacons_recv"] == 0 or adapters[0]["stats"]["beacons_sent"] == 0:
+            adapter = self.discovery_adapter(name, report["data"]["transports"])
+            if adapter["stats"]["beacons_recv"] == 0 or adapter["stats"]["beacons_sent"] == 0:
                 announced_and_observed = False
         return transports if announced_and_observed else None
+
+    def discovery_adapter(self, name, adapters):
+        if (len(adapters) != 1 or adapters[0]["type"] != "ethernet"
+                or adapters[0]["name"] != self.nodes[name].interface):
+            raise RuntimeError("test node has a non-mesh transport shortcut")
+        return adapters[0]
 
     def form_line(self):
         eventually("automatic radio triangle discovery", self.ready, 150)
@@ -318,7 +345,7 @@ class WifiRun:
         self.evidence["cleanup_errors"] = errors
         for name, original in self.original.items():
             def restored():
-                return self.nodes[name].baseline() == original
+                return baseline_restored(self.nodes[name].baseline(), original, self.original)
             try:
                 eventually("original router state restored", restored, 100)
             except Exception as error:

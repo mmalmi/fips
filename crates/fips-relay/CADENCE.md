@@ -29,12 +29,22 @@ one initial reconciliation on startup or first use. Subsequently it requests
 usage and, when needed, sends a signed cumulative payment when either:
 
 - Evidence or an unacknowledged signed liability exceeds acknowledged payment
-  by `unpaid_percent` of the channel's agreed grace; or
-- New outstanding liability reaches `max_delay_ms` in age.
+  by `unpaid_percent` of the channel's grace after subtracting its reported crash
+  loss; or
+- New priced usage reaches `max_delay_ms` in age and a higher payment is due.
 
 The first trigger uses monetary value, not a universal byte count. All flows
 sharing the same neighbor channel share the trigger. Whole-sat payment rounding
-can cover later fractional usage, which should not cause another payment.
+can cover later fractional usage. Fully covered usage causes no exchange, but
+retains its age: once that credit runs out, an expired deadline makes the next
+payment immediately eligible instead of starting another delay.
+
+The scheduler retains the largest loss from validated usage replies for that
+channel while running. With 8,000-msat grace, 4,000-msat reported loss and the
+default 50% policy, the early-payment trigger becomes 2,000 msat. The trigger has
+a one-msat floor. Loss only narrows this scheduling hint; it is never added to
+payment evidence or signed liability.
+
 Confirmed idle channels send no payment-control polls. Lost or delayed forwarding
 can leave local send evidence above the provider's supported claim, including
 after a provider crash. Successful exchanges with unchanged evidence and payment
@@ -44,7 +54,8 @@ another packet; the gap is never declared paid or removed from durable evidence.
 Fresh local sends or unacknowledged signed liability restore the normal value/age
 trigger, and payment progress resets the recheck delay. The worker records evidence
 before starting the exchange so a reply cannot hide sends made while it was in
-flight. No new message, configuration field or spending authority is introduced.
+flight, including usage temporarily covered by rounded credit. No new message,
+configuration field or spending authority is introduced.
 
 After a failed exchange the scheduler retries after 500 ms without requiring
 another data packet. Its cache contains no financial authority and is discarded
@@ -61,8 +72,9 @@ channel; queued work rechecks that the channel is still active before signing.
 The wallet and journal writers remain serialized for financial consistency.
 Existing hard credit, window and budget gates can stop forwarding regardless of
 the selected timing.
-The nominal grace threshold also does not model the exact residual allowance
-lost to earlier crash exposure; safe low-credit latency prediction remains work.
+Unreported loss, carried exposure from older channels and actual control/disk
+latency remain outside this scheduling hint. The provider's shared credit gate
+remains authoritative; exact low-credit latency prediction remains work.
 
 Graceful runtime shutdown drains the in-flight exchanges. Forced cancellation
 aborts owned network tasks even if a drain was already waiting; it cannot detach
@@ -70,23 +82,38 @@ them to keep acting after controller ownership is returned. Already-started
 blocking disk work retains its existing locks until completion. Durable financial
 intents still require the existing recovery procedures. The explicit flush visits
 all selected channels before returning; unrelated background workers keep running
-while it waits. Route recovery and renewal are separate workers and do not yet
-have a demonstrated fairness bound under many simultaneous unavailable peers.
+while it waits.
+
+Automatic renewal scans every two seconds independently of route recovery. At
+most one worker per retained channel, and sixteen workers total, can settle and
+replace channels. A slow neighbor's close cannot stop newly due renewals from
+being scheduled for other neighbors. A per-channel claim also excludes concurrent
+manual recovery of the same renewal. Pausing waits for active renewal operations
+before preventing new ones; shutdown drains them and forced cancellation aborts
+owned tasks. Wallet writes remain serialized, so a slow mint operation holding
+the same wallet can still delay new funding. There is no demonstrated fairness
+bound under many simultaneous unavailable peers.
 
 The shared control transport keeps the existing 32 total / four-per-peer TCP
 connection limits. Up to 16 live outgoing requests, including queued requests,
 may wait within the existing 30-second deadline. A full peer's slots do not block
-another peer's connection attempt. Only a pre-connection capacity refusal is
-retried, at most every 50 ms; no transmitted RPC is replayed by this queue.
+another peer's connection attempt. Unsent outgoing requests wait for exhausted
+rate tokens, rechecking every 100 ms within that same queue and deadline.
+Incoming exhausted budgets still reject. Membership, identity capacity and
+admission-slot refusals are not retried. A pre-connection TCP capacity refusal is
+rechecked at most every 50 ms; no transmitted RPC is replayed by this queue.
 Canceled queued requests are discarded before transmission. This also handles
 the short period when successfully closed streams still occupy TCP slots.
 
 ## Independent durable windows
 
 A separate local worker scans saved forwarding windows every 50 ms. Once new
-reservations consume at least half a window, it checkpoints before publishing
-more allowance. No new reservation means no periodic checkpoint write. The
-worker cannot create credit or exceed the existing reservation limit, and a
+reservations consume at least half a window, or a packet that fits a fresh window
+is blocked by its consumed allowance, it checkpoints before publishing more
+allowance. Packets rejected for lack of financial credit or because they exceed
+a full window do not request this earlier checkpoint. No new reservation means
+no periodic checkpoint write. The worker cannot create credit or exceed the
+existing reservation limit, and a
 crash still consumes the unrecorded persisted window as unbilled exposure.
 
 Usage replies still checkpoint before reporting claims, and verified balance
@@ -94,11 +121,64 @@ updates still persist before exposing credit. Those durability requirements are
 independent of the decision to ask for another payment. Forwarding callbacks
 continue using only the previously persisted allowance while disk work runs.
 
+The configured window is a maximum. When retained loss or debt from an older
+channel consumes relationship grace, new checkpoints reserve at most half the
+remaining unpaid allowance, with a one-msat floor. Existing published ceilings
+remain valid until replaced; a checkpoint cannot revoke concurrent admissions.
+For example, with 8,000-msat grace and a 4,000-msat maximum window, three crashes
+of unused windows can retain 4,000, 6,000 and 7,000 msat of cumulative loss instead
+of consuming all grace on the second crash. Loss remains reserved and unbilled.
+
+A valid packet that fits the configured maximum and verified relationship credit
+can request a larger window for its channel. The checkpoint worker persists that
+allowance even when no packet has yet consumed the smaller window. The request
+does not itself reserve bytes or authorize credit; idle and fulfilled requests
+cause no further writes. Smaller windows can increase checkpoint work after
+failures. Repeated failures can still exhaust the finite allowance, and packets
+whose cost exceeds its remaining credit cannot be made live by a checkpoint.
+
 Window and grace must cover the desired bursts and actual control/disk delays
 at the aggregate price. Merely selecting a longer payment interval can exhaust
 credit. There is no automatic increase of unpaid exposure to hide such drops.
+Qualify the actual persistent state filesystem at the intended traffic rate:
+the [storage comparison](CADENCE-RESULTS.md#persistent-storage-comparison--3-october-2026)
+shows queue overflow during long disk stalls with unchanged limits. A RAM-backed
+benchmark cannot establish persistent-storage capacity or crash recovery.
 
 ## Verification and measurement scope
+
+The reported-loss regression in `work/payment-loss-r216` fails on the prior
+worker and passes after its validated response narrows the scheduling hint.
+Seven cadence and three payment-worker checks pass, including consumed grace,
+idle suppression, retained loss and sends racing a reply. Strict lint with and
+without measurements and an ordinary Linux build pass. The existing mixed
+UDP/TCP daemon case passes restart, renewal and retained unbilled exposure,
+conserving all 384 simulated test sats. Source, dependency, artifact and stopped
+process checks pass. The ordinary ARM64 build and existing twelve-stream physical
+restart/loss case also pass in `work/payment-loss-arm-r217` and
+`work/payment-loss-hardware-r218`. Original channels retain 4,000 msat of unbilled
+crash exposure each, automatic payments advance in healthy and impaired cohorts,
+and all 384 test sats return. Original router services/settings and three account
+archives are independently verified. Traffic pauses during the process crash;
+physical power loss and longer impaired traffic remain separate. The same
+candidate also passes the unchanged five-minute physical renewal workload in
+`work/router-sustained-r221`: all 84,000 original packets arrive once, successor
+delivery and automatic credit advance during both live streams, all 384 test
+sats return and all 648 management checks pass. Shared version-three counters
+validate CPU, logical relay journals and local payment streams across renewal,
+with source/artifact custody and three verified recovery archives. See
+[the continuous-run costs](CADENCE-RESULTS.md#current-continuous-router-renewal--7-october-2026).
+This retains the original workload and financial limits, leaving slower renewal
+near expiry, greater pressure and long-run impairment unqualified. The matching
+Android build and five-minute background phone transit pass in
+`work/android-current-r219` and `work/phone-sustained-r220`: all 19 MiB arrive and
+are acknowledged, all four original channels settle, all 512 test sats return
+and all 810 management checks pass. Exact APK/account archives are verified
+before removing the completed test app and its Android data. See
+[the scoped phone costs](CADENCE-RESULTS.md#sustained-background-phone-transit--9-october-2026).
+This finite existing-LAN, USB-powered case does not qualify deep idle, movement,
+renewal or battery cost, and the scheduling hint is not an exact shared-credit
+or latency forecast.
 
 Focused tests cover idle suppression, value-triggered payments, deadlines,
 whole-sat quantization, independent schedules, failed-exchange retries, retained
@@ -149,15 +229,16 @@ library/binary checks, formatting and the source-size gate passed. This was a
 software checkpoint; later physical results are recorded separately in
 [READINESS.md](READINESS.md) and [CADENCE-RESULTS.md](CADENCE-RESULTS.md).
 
-An optimized [guarded clean-link comparison](CADENCE-RESULTS.md) covers all four
-250/500/1000/2000-ms policies with identical terms under idle, burst, steady and
-high-rate workloads. Two opposite-order passes delivered all 285,696 packets and
-settled/collected all 40,960 isolated test sats. Idle payment traffic was zero.
-At high rate, 1 s/2 s policies used 40 balance updates versus 59 at 250 ms; CPU varied
-between repeats, so this does not select a production default or prove a router
-speedup. The 500 ms default remains unchanged.
+The latest optimized [native comparison](CADENCE-RESULTS.md#native-comparison-on-the-current-graph--15-october-2026)
+and [Wi-Fi comparison](CADENCE-RESULTS.md#wi-fi-comparison-on-the-current-graph--15-october-2026)
+cover all four 250/500/1000/2000-ms policies under idle, bursty, steady and high-rate
+workloads, keeping terms and workloads identical within each matrix. Two
+opposite-order passes verify delivery and collection of all test funds. Results
+distinguish zero idle application polling from remaining TCP/FIPS transport traffic
+and report costs with their measurement limits. The 500-ms default remains unchanged.
 
-The optional `measurements` feature exposes synchronous thread CPU spans and
+The optional `measurements` feature exposes scoped thread CPU spans, including
+controller future polls and inherited blocking work, and
 attributed logical journal I/O separately from whole-process CPU and payment
 record counters. See the [measurement boundaries](../../testing/relay-cadence/README.md).
 These diagnostics have no financial authority and compile to no-ops by default.

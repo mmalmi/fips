@@ -32,14 +32,23 @@ def metadata(args):
     relay_sha = digest(args.binary.read_bytes())
     provenance = json.loads(args.provenance.read_text())
     verified = provenance["verification"]
+    command = verified["build"]["command"]
+    profile = verified["build"].get("profile") or {}
+    # Router builds use the size-optimized release profile. Require the
+    # compiler artifact's actual settings rather than trust the profile name.
+    openwrt = (any(command[i:i + 2] == ["--profile", "openwrt"]
+                   for i in range(len(command) - 1))
+               and profile.get("opt_level") == "s"
+               and profile.get("debug_assertions") is False
+               and profile.get("test") is False)
     require(verified["artifact"]["sha256"] == relay_sha
             and verified["build"]["exit_code"] == 0
-            and "--release" in verified["build"]["command"]
+            and ("--release" in command or openwrt)
             and verified["features"] == ["measurements"]
             and verified["target"] == "aarch64-unknown-linux-musl"
             and verified["source_changes_during_build"] == [],
             "supplied relay does not match its optimized measurement build evidence")
-    return {
+    report = {
         "schema": 3, "funded_directions": 2, "optimized": True,
         "nodes": 3, "paid_relays": 1, "active_channels": 2, "repeats": 2,
         "unpaid_percent": 50, "window_msat": 4000, "grace_msat": 8000,
@@ -54,6 +63,7 @@ def metadata(args):
         "link_loss_counters": getattr(args, "link_loss_counters", False),
         "aqm_counters": getattr(args, "aqm_counters", False),
         "payment_service_carrier": True,
+        "service_wire_trace": getattr(args, "service_wire_trace", False),
         "dataplane_drop_log_filter": (DATAPLANE_DROP_LOG_FILTER
                                       if getattr(args, "dataplane_drop_logs", False) else None),
         "mint_connection": "controller_ssh" if args.mint_ssh_forward else "remote_lan",
@@ -61,6 +71,9 @@ def metadata(args):
         "mint_sha256": digest(args.mint_binary.read_bytes()),
         "provenance": provenance,
     }
+    if getattr(args, "prepaid_boundaries", False):
+        report["boundary_accounting"] = "prepaid-usage-v1"
+    return report
 
 
 class CadenceRun(PaidWifiRun):
@@ -70,6 +83,9 @@ class CadenceRun(PaidWifiRun):
         if getattr(args, "dataplane_drop_logs", False):
             for node in self.nodes.values():
                 node.diagnostic_log_filter = DATAPLANE_DROP_LOG_FILTER
+        if getattr(args, "service_wire_trace", False):
+            for node in self.nodes.values():
+                node.diagnostic_log_filter = (node.diagnostic_log_filter or "error") + ",fips_core::service_wire=trace"
         self.evidence.update(trial=trial, max_delay_ms=delay,
                              measurement_acceptance="not_analyzed")
         for name in ("wifi_cadence.py", "cadence_workloads.py", "wifi_measurements.py",
@@ -222,6 +238,10 @@ def main():
                         help="pilot payment age limit; defaults to 250 ms")
     parser.add_argument("--native-counters", action="store_true",
                         help="capture existing native forwarding/drop counters at each boundary")
+    parser.add_argument("--service-wire-trace", action="store_true",
+                        help="retain encrypted service submission fingerprints for independent packet captures")
+    parser.add_argument("--prepaid-boundaries", action="store_true",
+                        help="record every interval and credit-bounded prepaid usage across quiet guards")
     parser.add_argument("--dataplane-drop-logs", action="store_true",
                         help="pin existing dataplane drop logging and capture per-window byte offsets")
     parser.add_argument("--post-gap-probes", action="store_true",

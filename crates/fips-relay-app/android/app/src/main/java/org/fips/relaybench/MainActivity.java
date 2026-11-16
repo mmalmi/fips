@@ -1,11 +1,17 @@
 package org.fips.relaybench;
 
 import android.app.Activity;
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ResultReceiver;
 import android.provider.Settings;
 import android.util.AtomicFile;
 import android.util.Base64;
@@ -17,27 +23,26 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import org.json.JSONObject;
 
-/** Foreground test customer. Intents preview setup only; purchases require a button. */
+/** Test customer controls. Intents preview setup only; purchases require a button. */
 public final class MainActivity extends Activity {
-    private static final ExecutorService WORK = Executors.newSingleThreadExecutor();
     private final List<Button> buttons = new ArrayList<>();
-    private WifiBinding wifi;
+    private BenchClient client;
     private JSONObject profile;
     private String entryIp;
     private JSONObject state = new JSONObject();
     private JSONObject networkEvidence = new JSONObject();
     private long balance = -1;
     private boolean busy;
+    private boolean returnPending;
     private TextView status;
     private TextView details;
     private TextView message;
@@ -46,7 +51,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        wifi = new WifiBinding(getApplicationContext());
+        client = BenchClient.get(this);
         buildView();
         loadSetup(getIntent());
     }
@@ -94,7 +99,7 @@ public final class MainActivity extends Activity {
             if (!new File(getFilesDir(), "funding.json").delete()) throw new IllegalStateException("Funds loaded; funding file cleanup failed");
             refresh();
         }));
-        connect = button(content, R.string.connect, () -> action("start", true, () -> { call(command("start")); refresh(); }));
+        connect = button(content, R.string.connect, this::connect);
         buy = button(content, R.string.buy, () -> action("buy", false, () -> { call(command("buy")); refresh(); }));
         send = button(content, R.string.send, () -> action("send", false, () -> {
             StringBuilder payload = new StringBuilder("FIPS Bench ").append(UUID.randomUUID()).append(' ');
@@ -103,23 +108,9 @@ public final class MainActivity extends Activity {
             refresh();
             showMessage(getString(R.string.queued));
         }));
-        finish = button(content, R.string.finish, () -> action("finish", false, () -> {
-            balance = call(command("finish")).getLong("balance_sat");
-            wifi.unbindAfterStop();
-            refresh(false);
-        }));
-        stop = button(content, R.string.stop, () -> action("stop", false, () -> {
-            call(command("stop")); wifi.unbindAfterStop(); refresh(false);
-        }));
-        export = button(content, R.string.return_funds, () -> action("export", true, () -> {
-            File idFile = new File(getFilesDir(), "return-id");
-            if (!idFile.exists()) writePrivate("return-id", UUID.randomUUID().toString().replace("-", ""));
-            JSONObject result = call(new JSONObject().put("type", "export")
-                .put("id", readPrivate("return-id", 64)).put("amount_sat", balance));
-            writePrivate("fund-return.json", result.toString());
-            refresh();
-            showMessage(getString(R.string.return_prepared));
-        }));
+        finish = button(content, R.string.finish, () -> serviceAction("finish"));
+        stop = button(content, R.string.stop, () -> serviceAction("stop"));
+        export = button(content, R.string.return_funds, () -> action("export", true, this::returnFunds));
         button(content, R.string.refresh, () -> action("status",
             state.optBoolean("configured") && !state.optBoolean("running"), () -> refresh()));
         button(content, R.string.wifi_settings, () -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)));
@@ -130,6 +121,7 @@ public final class MainActivity extends Activity {
     private void loadSetup(Intent intent) {
         action("preview", false, () -> {
             state = call(command("status"));
+            readReturn();
             JSONObject candidate = null;
             if (state.optBoolean("configured")) {
                 candidate = state.getJSONObject("profile");
@@ -161,11 +153,11 @@ public final class MainActivity extends Activity {
         busy = true;
         message.setText("");
         render();
-        WORK.execute(() -> {
+        BenchClient.WORK.execute(() -> {
             try {
                 if (bind) {
                     if (entryIp == null) throw new IllegalStateException(getString(R.string.need_setup));
-                    networkEvidence = wifi.bind(entryIp);
+                    networkEvidence = client.wifi.bind(entryIp);
                 }
                 operation.run();
                 writePrivate("last-action.json", new JSONObject().put("action", name).put("ok", true).toString());
@@ -179,21 +171,113 @@ public final class MainActivity extends Activity {
     }
 
     private JSONObject call(JSONObject command) throws Exception {
-        String result = NativeClient.execute(new File(getFilesDir(), "client").getAbsolutePath(), command.toString());
-        if (result == null) throw new IllegalStateException(getString(R.string.failed));
-        JSONObject response = new JSONObject(result);
-        if (response.has("error")) throw new IllegalStateException(response.getString("error"));
-        return response.getJSONObject("ok");
+        return client.call(command);
     }
 
-    private static JSONObject command(String type) throws Exception { return new JSONObject().put("type", type); }
+    private static JSONObject command(String type) throws Exception { return BenchClient.command(type); }
+
+    private void connect() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 32);
+            return;
+        }
+        serviceAction("start");
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request != 32) return;
+        if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) serviceAction("start");
+        else showMessage(getString(R.string.notifications_needed));
+    }
+
+    private void serviceAction(String name) {
+        if (busy) return;
+        busy = true;
+        message.setText("");
+        render();
+        ResultReceiver reply = new ResultReceiver(new Handler(Looper.getMainLooper())) {
+            @Override protected void onReceiveResult(int code, Bundle data) {
+                if (isDestroyed()) return;
+                busy = false;
+                action(name, false, () -> {
+                    if (code != 0) throw new IllegalStateException(data.getString("error"));
+                    JSONObject response = new JSONObject(data.getString("ok"));
+                    if (response.has("wifi")) networkEvidence = response.getJSONObject("wifi");
+                    if (response.has("balance_sat")) balance = response.getLong("balance_sat");
+                    refresh(false);
+                });
+            }
+        };
+        try {
+            startForegroundService(new Intent(this, RoutingService.class)
+                .putExtra(RoutingService.ACTION, name).putExtra(RoutingService.REPLY, reply));
+        } catch (RuntimeException error) {
+            busy = false;
+            render();
+            showMessage(error.getMessage() == null ? getString(R.string.failed) : error.getMessage());
+        }
+    }
     private void refresh() throws Exception { refresh(true); }
     private void refresh(boolean wallet) throws Exception {
         state = call(command("status"));
+        readReturn();
         if (wallet && state.optBoolean("configured") && !state.optBoolean("running")) {
             balance = call(command("balance")).getLong("balance_sat");
         }
         saveState();
+    }
+
+    private void returnFunds() throws Exception {
+        JSONObject request = readReturn();
+        if (request == null || !returnPending) {
+            // A previous reply may have been saved before the displayed balance refreshed.
+            balance = call(command("balance")).getLong("balance_sat");
+            if (balance <= 0) return;
+            long id = request == null ? 1 : Math.addExact(request.getLong("id"), 1);
+            request = new JSONObject().put("id", id)
+                .put("amount_sat", balance);
+            returnPending = true;
+            writePrivate("fund-return.json", request.toString());
+        }
+        JSONObject result = call(new JSONObject().put("type", "export")
+            .put("id", request.getLong("id")).put("amount_sat", request.getLong("amount_sat")));
+        result.put("id", request.getLong("id"));
+        if (!validateReturn(result) || result.getLong("amount_sat") != request.getLong("amount_sat")) {
+            throw new IllegalStateException("Fund return reply does not match the saved request");
+        }
+        writePrivate("fund-return.json", result.toString());
+        refresh();
+        showMessage(getString(R.string.return_prepared));
+    }
+
+    private JSONObject readReturn() throws Exception {
+        returnPending = hasPrivate("fund-return.json") || hasPrivate("return-id");
+        if (!returnPending) return null;
+        if (!hasPrivate("fund-return.json")) {
+            throw new IllegalStateException("Fund return amount is missing; reconcile the original wallet request");
+        }
+        JSONObject request = new JSONObject(readPrivate("fund-return.json", 8192));
+        returnPending = !validateReturn(request);
+        return request;
+    }
+
+    /** Validate both pending requests and completed summaries before reusing either. */
+    private static boolean validateReturn(JSONObject request) throws Exception {
+        Object amount = request.opt("amount_sat");
+        Object id = request.opt("id");
+        if (!(id instanceof Integer || id instanceof Long) || request.getLong("id") <= 0
+            || !(amount instanceof Integer || amount instanceof Long) || request.getLong("amount_sat") <= 0) {
+            throw new IllegalStateException("Fund return request is incomplete; preserve it for recovery");
+        }
+        if (!request.has("path") && !request.has("operation_id")) return false;
+        for (String field : new String[] {"path", "operation_id"}) {
+            Object value = request.opt(field);
+            if (!(value instanceof String) || ((String) value).isEmpty()) {
+                throw new IllegalStateException("Fund return summary is incomplete; preserve it for recovery");
+            }
+        }
+        return true;
     }
 
     private void saveState() throws Exception {
@@ -214,6 +298,9 @@ public final class MainActivity extends Activity {
         } else {
             String price = String.format(Locale.ROOT, "%.3f", profile.optLong("max_rate_msat_per_kib") / 1000.0);
             String description = getString(R.string.profile_details, profile.optLong("budget_sat"), price);
+            if ("authenticated_adjacent".equals(profile.optString("neighbor_admission"))) {
+                description += "\n" + getString(R.string.relay_enabled);
+            }
             if (running && relay != null) description += "\n" + getString(R.string.spending,
                 profile.optLong("budget_sat") - relay.optLong("remaining_budget_sat"), relay.optLong("locked_sat"));
             else if (balance >= 0) description += "\n" + getString(R.string.balance, balance);
@@ -226,7 +313,8 @@ public final class MainActivity extends Activity {
         send.setVisibility(running && paid ? View.VISIBLE : View.GONE);
         finish.setVisibility(running ? View.VISIBLE : View.GONE);
         stop.setVisibility(running ? View.VISIBLE : View.GONE);
-        export.setVisibility(configured && !running && balance > 0 ? View.VISIBLE : View.GONE);
+        export.setText(returnPending ? R.string.retry_return : R.string.return_funds);
+        export.setVisibility(configured && !running && (returnPending || balance > 0) ? View.VISIBLE : View.GONE);
     }
 
     private TextView text(LinearLayout parent, int size) {
@@ -249,33 +337,33 @@ public final class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void showMessage(String value) { runOnUiThread(() -> { if (!isDestroyed()) message.setText(value); }); }
 
+    private boolean hasPrivate(String name) {
+        return new File(getFilesDir(), name).exists() || new File(getFilesDir(), name + ".bak").exists()
+            || new File(getFilesDir(), name + ".new").exists();
+    }
     private String readPrivate(String name, int limit) throws Exception {
-        File file = new File(getFilesDir(), name);
-        if (file.length() > limit) throw new IllegalStateException("Private input exceeds its limit");
-        byte[] bytes = new AtomicFile(file).readFully();
-        if (bytes.length > limit) throw new IllegalStateException("Private input exceeds its limit");
-        return new String(bytes, StandardCharsets.UTF_8);
+        try (FileInputStream stream = new AtomicFile(new File(getFilesDir(), name)).openRead()) {
+            byte[] bytes = new byte[limit + 1];
+            int size = 0, count;
+            while (size < bytes.length && (count = stream.read(bytes, size, bytes.length - size)) != -1) size += count;
+            if (size > limit) throw new IllegalStateException("Private input exceeds its limit");
+            return new String(bytes, 0, size, StandardCharsets.UTF_8);
+        }
     }
     private void writePrivate(String name, String value) throws Exception {
         AtomicFile file = new AtomicFile(new File(getFilesDir(), name));
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
         FileOutputStream stream = null;
         try {
             stream = file.startWrite();
-            stream.write(value.getBytes(StandardCharsets.UTF_8));
+            stream.write(bytes);
+            stream.getFD().sync();
             file.finishWrite(stream);
+            if (!value.equals(readPrivate(name, bytes.length))) {
+                throw new IllegalStateException("Private state could not be saved");
+            }
         } catch (Exception error) { file.failWrite(stream); throw error; }
     }
 
-    @Override protected void onStop() {
-        super.onStop();
-        WORK.execute(() -> {
-            try {
-                call(command("stop"));
-                wifi.unbindAfterStop();
-                refresh(false);
-            } catch (Exception error) { showMessage(getString(R.string.stop_pending)); }
-        });
-    }
     @Override protected void onRestart() { super.onRestart(); loadSetup(getIntent()); }
-    @Override protected void onDestroy() { wifi.close(); super.onDestroy(); }
 }

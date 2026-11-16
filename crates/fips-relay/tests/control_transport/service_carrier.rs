@@ -8,6 +8,10 @@ use fips_core::{
 use fips_tcp::{MarkerStatus, State};
 use fips_tcp_endpoint::FipsTcpEndpoint;
 
+#[cfg(feature = "measurements")]
+#[path = "stream_probe.rs"]
+mod stream_probe;
+
 const PORT: u16 = 44_743;
 
 struct Network(String);
@@ -19,10 +23,22 @@ impl Drop for Network {
 }
 
 async fn simulated_pair(name: &str) -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
+    simulated_pair_with_identities(name, None).await
+}
+
+async fn simulated_pair_with_identities(
+    name: &str,
+    identities: Option<&[Identity; 2]>,
+) -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
     let mut nodes = Vec::new();
-    for address in ["sender", "receiver"] {
+    for (index, address) in ["sender", "receiver"].into_iter().enumerate() {
         let mut cfg = config();
         cfg.node.identity.persistent = false;
+        if let Some(identities) = identities {
+            cfg.node.identity.nsec = Some(fips_core::encode_nsec(
+                &identities[index].keypair().secret_key(),
+            ));
+        }
         cfg.node.control.enabled = false;
         cfg.transports = Default::default();
         cfg.transports.sim = TransportInstances::Single(SimTransportConfig {
@@ -59,8 +75,8 @@ async fn simulated_pair(name: &str) -> (Arc<FipsEndpoint>, Arc<FipsEndpoint>) {
     (sender, receiver)
 }
 
-fn submitted(snapshot: &ServiceCarrierSnapshot) -> (u64, u64) {
-    assert_eq!(snapshot.service_port, PORT);
+fn submitted(snapshot: &ServiceCarrierSnapshot, port: u16) -> (u64, u64) {
+    assert_eq!(snapshot.service_port, port);
     assert_eq!(snapshot.ambiguous_port_datagrams, 0);
     assert_eq!(snapshot.discarded_outputs, 0);
     for carrier in &snapshot.transports {
@@ -80,18 +96,34 @@ fn submitted(snapshot: &ServiceCarrierSnapshot) -> (u64, u64) {
 
 async fn after_submissions(handle: &ServiceCarrierDiagnostics, packets: u64) -> (u64, u64) {
     loop {
-        let sample = submitted(&handle.snapshot());
+        let sample = submitted(&handle.snapshot(), PORT);
         if sample.0 >= packets {
             assert_eq!(sample.0, packets, "unexpected TCP service transmission");
             // Snapshot fields are separate atomics; wait for the final byte
             // increment as well as the packet increment before comparing.
             tokio::time::sleep(Duration::from_millis(1)).await;
-            if submitted(&handle.snapshot()) == sample {
+            if submitted(&handle.snapshot(), PORT) == sample {
                 return sample;
             }
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+async fn lost_handshake(
+    network: &SimNetwork,
+    carrier: &ServiceCarrierDiagnostics,
+    dropped_before: u64,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while submitted(&carrier.snapshot(), PORT + 1).0 == 0
+            || network.stats().packets_dropped_loss <= dropped_before
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the encrypted handshake segment must reach the lossy carrier");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -176,7 +208,7 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
         assert_eq!(server.read(incoming, 1024, 2_030).await.unwrap(), record);
         assert!(server.read(incoming, 1024, 2_030).await.unwrap().is_empty());
         client.receive(2_040).await.unwrap(); // Receive-window update from read.
-        assert_eq!(submitted(&same_handle.snapshot()), retried);
+        assert_eq!(submitted(&same_handle.snapshot(), PORT), retried);
         let server_after = after_submissions(&server_measured, 3).await;
         assert!(
             server_after.0 > server_before.0,
@@ -188,6 +220,8 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
         // unchanged, despite using the same endpoints and encrypted sessions.
         let baseline_a = measured.snapshot();
         let baseline_b = server_measured.snapshot();
+        let client_handshake = a.enable_service_carrier_diagnostics(PORT + 1).unwrap();
+        let server_handshake = b.enable_service_carrier_diagnostics(PORT + 1).unwrap();
         let (unrelated, _) = ControlTransport::start(a.clone(), PORT + 1, vec![bob], 3)
             .await
             .unwrap();
@@ -196,16 +230,76 @@ async fn service_carrier_counts_actual_tcp_retransmission_without_unrelated_traf
             ControlTransport::start(b.clone(), PORT + 1, vec![alice], 4)
                 .await
                 .unwrap();
-        let response = tokio::spawn(async move {
+        let loss = || {
+            Some(SimLink {
+                loss_probability: 1.0,
+                ..Default::default()
+            })
+        };
+        let dropped_before = network.stats().packets_dropped_loss;
+        network.set_directed_link("sender", "receiver", loss());
+        let handshake = async {
+            lost_handshake(&network, &client_handshake, dropped_before).await;
+            assert_eq!(unrelated.statistics().snapshot().stream_bytes_sent, 0);
+            assert_eq!(responder.statistics().snapshot().requests_received, 0);
+            // Arm the reverse loss before releasing the SYN, so the real
+            // control transport must recover both handshake legs itself.
+            network.set_directed_link("receiver", "sender", loss());
+            let dropped_before = network.stats().packets_dropped_loss;
+            network.set_directed_link("sender", "receiver", None);
+            lost_handshake(&network, &server_handshake, dropped_before).await;
+            assert_eq!(unrelated.statistics().snapshot().stream_bytes_sent, 0);
+            assert_eq!(responder.statistics().snapshot().requests_received, 0);
+            network.set_directed_link("receiver", "sender", None);
+        };
+        let preparation_started = std::time::Instant::now();
+        let (prepared, ()) = tokio::join!(unrelated.prepare(bob), handshake);
+        prepared.unwrap();
+        let preparation_ms = preparation_started.elapsed().as_millis();
+        assert_eq!(unrelated.statistics().snapshot().requests_started, 0);
+        assert_eq!(unrelated.statistics().snapshot().stream_bytes_sent, 0);
+        assert_eq!(responder.statistics().snapshot().requests_received, 0);
+        let response = async {
             let request = requests.recv().await.unwrap();
+            let before = network.stats();
+            network.set_directed_link(
+                "receiver",
+                "sender",
+                Some(SimLink {
+                    loss_probability: 1.0,
+                    ..Default::default()
+                }),
+            );
             request.respond.send(request.body).unwrap();
-        });
-        assert_eq!(unrelated.request(bob, body.clone()).await.unwrap(), body);
-        response.await.unwrap();
+            // The application has finished and the control server has handed
+            // its reply to TCP. Losing it must not strand the closing stream.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while responder.statistics().snapshot().stream_bytes_sent != record.len() as u64
+                    || network.stats().delta_since(&before).packets_dropped_loss == 0
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the first control reply must be sent across the failed link");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(unrelated.statistics().snapshot().stream_bytes_received, 0);
+            network.set_directed_link("receiver", "sender", None);
+            std::time::Instant::now()
+        };
+        let request_started = std::time::Instant::now();
+        let (reply, restored) = tokio::join!(unrelated.request(bob, body.clone()), response);
+        let request_ms = request_started.elapsed().as_millis();
+        let retry_after_recovery_ms = restored.elapsed().as_millis();
+        assert_eq!(reply.unwrap(), body);
+        assert_eq!(responder.statistics().snapshot().requests_received, 1);
         let application = unrelated.statistics().snapshot();
         assert_eq!(application.requests_started, 1);
         assert_eq!(application.stream_bytes_sent, record.len() as u64);
         assert_eq!(application.stream_bytes_received, record.len() as u64);
+        eprintln!(
+            "prepared control carrier recovered lost SYN, SYN/ACK and reply with one application request; preparation_ms={preparation_ms} request_ms={request_ms} retry_after_recovery_ms={retry_after_recovery_ms}"
+        );
         assert_eq!(measured.snapshot(), baseline_a);
         assert_eq!(server_measured.snapshot(), baseline_b);
         drop((unrelated, responder, client, server));

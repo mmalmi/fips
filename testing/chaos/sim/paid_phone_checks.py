@@ -9,17 +9,20 @@ import subprocess
 from urllib.parse import urlsplit
 
 from .paid_settlement import require
-from .phone_customer import PACKAGE, save
+from .phone_customer import acceptance_identity, save
 from .wifi_remote import checked_name
 
 
 ORIGINAL_PACKAGE = "org.fips.relaybench"
 
 
-def scenario(path):
+def scenario(path, *, transit=False):
     value = json.loads(Path(path).read_text())
     require(value.get("version") == 1, "unsupported phone scenario version")
     phone, customer, mint = (value[key] for key in ("phone", "customer", "mint"))
+    acceptance_identity(phone.get("instance"))
+    require(phone.get("original_packages") in (None, []),
+            "original packages may only explicitly select an empty baseline")
     require(all(isinstance(phone.get(key), str) and phone[key] for key in
                 ("adb", "serial", "evidence_dir")), "phone identity and private evidence are required")
     require(Path(phone["adb"]).is_absolute() and Path(phone["evidence_dir"]).is_absolute(),
@@ -35,8 +38,19 @@ def scenario(path):
             "invalid customer entry port")
     require(isinstance(customer["ssid"], str) and 1 <= len(customer["ssid"]) <= 32,
             "operator-selected customer SSID is required")
-    denied = customer["denied_tcp"]
-    require(isinstance(denied, list) and 1 <= len(denied) <= 4, "provide one to four explicit denied targets")
+    if transit:
+        addresses = value.get('router_addresses', {})
+        require(set(addresses) == {'n01', 'n02', 'n03'} and len(set(addresses.values())) == 3,
+                'transit requires three explicit distinct router addresses')
+        require(all(ipaddress.IPv4Address(address) in guest.network
+                    and ipaddress.IPv4Address(address) not in
+                    (guest.network.network_address, guest.network.broadcast_address)
+                    for address in addresses.values()) and addresses['n01'] == str(guest.ip),
+                'transit routers must share the existing phone LAN')
+        require(not customer.get('denied_tcp'), 'LAN transit does not test customer isolation')
+    denied = customer.get("denied_tcp", [])
+    require(isinstance(denied, list) and (transit or 1 <= len(denied) <= 4),
+            "provide one to four explicit denied targets")
     labels, endpoints = set(), set()
     for target in denied:
         label, address, port = target["label"], ipaddress.IPv4Address(target["address"]), target["port"]
@@ -72,7 +86,22 @@ def original_hashes(phone):
     # Do not hide find/sha256sum failures behind a final successful sort process.
     command = ("set -eu; files=$(find files -type f); test -n \"$files\"; "
                "printf '%s\\n' \"$files\" | while IFS= read -r file; do sha256sum \"$file\" || exit; done")
-    data = phone.shell("run-as", ORIGINAL_PACKAGE, "sh", "-c", command)
+    installed = phone.shell('pm', 'list', 'packages', ORIGINAL_PACKAGE).decode().splitlines()
+    pattern = re.escape(ORIGINAL_PACKAGE) + r'(?:\.acceptance(?:\.[a-z][a-z0-9]{0,23})?)?'
+    require(all(row.startswith('package:') and re.fullmatch(pattern, row[8:]) for row in installed),
+            'unexpected bench package inventory')
+    packages = sorted(row[8:] for row in installed if row[8:] != phone.package)
+    if getattr(phone, 'original_packages', None) == []:
+        require(not packages, 'unexpected account on an explicitly empty original baseline')
+    else:
+        require(len(packages) == len(set(packages)) and ORIGINAL_PACKAGE in packages,
+                'original bench account is missing or ambiguous')
+    return b"".join(package.encode() + b"\n" + _account_hashes(phone, package, command)
+                    for package in packages)
+
+
+def _account_hashes(phone, package, command):
+    data = phone.shell("run-as", package, "sh", "-c", command)
     rows = data.splitlines()
     require(bool(rows) and all(re.fullmatch(rb"[0-9a-f]{64}  files/.+", row) for row in rows),
             "original account hashes missing or malformed")
@@ -82,7 +111,7 @@ def original_hashes(phone):
 
 
 def installed_apk_hash(phone, expected):
-    paths = phone.shell("pm", "path", PACKAGE).decode().splitlines()
+    paths = phone.shell("pm", "path", phone.package).decode().splitlines()
     require(len(paths) == 1 and paths[0].startswith("package:/"),
             "acceptance needs the explicit single debug APK")
     path = paths[0][len("package:"):]
@@ -104,6 +133,21 @@ def probe_result(result):
     return code == 0
 
 
+def tcp_probe(phone, source, address, port, output):
+    # Older Android Toybox lacks -z and requires a positive -q delay. Connect
+    # with empty stdin, then close without sending data or retaining banners.
+    command = ["toybox", "nc", "-4", "-n", "-s", source, "-w", "2", "-q", "1",
+               address, str(port)]
+    script = (shlex.join(command) + ' </dev/null >/dev/null; nc_code=$?; '
+              'printf "FIPS_PROBE_EXIT=%s\\n" "$nc_code"; exit 0')
+    phone.check()
+    result = subprocess.run([str(phone.adb_path), "-s", phone.serial, "shell", script],
+                            capture_output=True, timeout=8)
+    save(output, {"adb_exit": result.returncode, "stdout": result.stdout.decode(errors="replace"),
+                  "stderr": result.stderr.decode(errors="replace")})
+    return probe_result(result)
+
+
 def check_customer_access(phone, customer, mint_url, output):
     source, _ = guest_source(phone, customer)
     mint = urlsplit(mint_url)
@@ -113,16 +157,8 @@ def check_customer_access(phone, customer, mint_url, output):
     checks = []
     for target in [allowed, *customer["denied_tcp"], {**allowed, "label": "shared_mint_after"}]:
         expected = target["label"] in ("shared_mint", "shared_mint_after")
-        command = ["toybox", "nc", "-4", "-n", "-z", "-s", source, "-w", "2",
-                   target["address"], str(target["port"])]
-        script = shlex.join(command) + '; nc_code=$?; printf "FIPS_PROBE_EXIT=%s\\n" "$nc_code"; exit 0'
-        phone.check()
-        result = subprocess.run([str(phone.adb_path), "-s", phone.serial, "shell", script],
-                                capture_output=True, timeout=8)
-        save(output / ("network-" + target["label"] + ".json"), {
-            "adb_exit": result.returncode, "stdout": result.stdout.decode(errors="replace"),
-            "stderr": result.stderr.decode(errors="replace")})
-        connected = probe_result(result)
+        connected = tcp_probe(phone, source, target["address"], target["port"],
+                              output / ("network-" + target["label"] + ".json"))
         require(connected == expected, "customer TCP access differs for " + target["label"])
         checks.append({"target": target["label"], "connected": connected, "expected": expected})
     return checks

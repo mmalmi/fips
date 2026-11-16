@@ -38,7 +38,7 @@ impl PaymentControl {
     }
 
     pub(super) async fn open_wallet(&self) -> Result<CashuWalletService, String> {
-        CashuWalletService::open_file_backed(&self.wallet_directory)
+        CashuWalletService::open_existing_file_backed(&self.wallet_directory)
             .await
             .map_err(|e| e.to_string())
     }

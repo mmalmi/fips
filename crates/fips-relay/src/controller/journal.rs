@@ -1,7 +1,23 @@
 //! Validate retained financial intent before resuming service.
 use super::*;
 
+/// A saved history handoff temporarily fences new journal mutations.
+pub const HISTORY_PENDING: &str = "controller history maintenance pending";
+
+impl Store {
+    pub(super) fn ensure_ready(&self) -> Result<(), String> {
+        if !self.ready {
+            return Err("controller journal suspended".into());
+        }
+        if self.journal.history.as_ref().is_some_and(History::pending) {
+            return Err(HISTORY_PENDING.into());
+        }
+        Ok(())
+    }
+}
+
 // Authorization-format fence independent of the existing accounting checkpoints.
+pub(super) const FUNDING_DEADLINES_VERSION: u16 = 0x80;
 pub(super) const RECOVERY_ONLY_VERSION: u16 = 0x100;
 pub(super) const EXPIRY_RECOVERY_VERSION: u16 = 0x200;
 pub(super) const SELECTED_TRIAL_VERSION: u16 = 0x400;
@@ -10,7 +26,8 @@ pub(super) const UNINSTALLED_RETIREMENT_VERSION: u16 = 0x1000;
 pub(super) const FUNDING_CANCELLED_VERSION: u16 = 0x2000;
 pub(super) const RECEIVER_PROOF_RELEASE_VERSION: u16 = 0x4000;
 pub(super) const PREPARED_CANCELLED_VERSION: u16 = 0x8000;
-const FORMAT_FLAGS: u16 = RECOVERY_ONLY_VERSION
+const FORMAT_FLAGS: u16 = FUNDING_DEADLINES_VERSION
+    | RECOVERY_ONLY_VERSION
     | EXPIRY_RECOVERY_VERSION
     | SELECTED_TRIAL_VERSION
     | FUNDING_RECLAIM_VERSION
@@ -48,13 +65,13 @@ impl Controller {
         {
             return Err("invalid controller journal bindings".into());
         }
+        Self::validate_channel_deadlines(j)?;
         Self::validate_recovery_only(j)?;
         Self::validate_funding_reclaims(j)?;
         Self::validate_history(j)?;
         Self::validate_channel_history(j)?;
         Self::validate_seller_history(j)?;
         Self::validate_renewals(j)?;
-        let mut providers = HashSet::new();
         let mut sequences = HashSet::new();
         Self::validate_capital(j)?;
         for (id, f) in &j.funding {
@@ -70,11 +87,9 @@ impl Controller {
                 || (j.history_version() < 4 && channel_history::sequence(j, id).is_some())
                 || id.len() > 128
                 || f.provider == local
-                || (!Self::funding_released(j, f) && !providers.insert(f.provider))
                 || f.capacity_sat == 0
                 || f.capacity_sat > policy.channel_capacity_sat
-                || f.expires_unix <= f.created_unix
-                || f.expires_unix - f.created_unix != policy.channel_lifetime_secs
+                || !f.valid_deadlines(policy)
                 || f.receiver_pubkey_hex.len() != 66
                 || f.grace_msat > f.capacity_sat * 1_000
             {
@@ -85,6 +100,9 @@ impl Controller {
                 if funded.terms.buyer != local
                     || funded.terms.mint_url != policy.mint_url
                     || funded.terms.expires_unix != f.expires_unix
+                    || funded.terms.refund_after_unix != f.refund_after_unix
+                    || (f.refund_after_unix.is_some()
+                        && !f.matches_refund_deadline(&funded.opening))
                     || funded.terms.capacity_sat != f.capacity_sat
                     || funded.terms.grace_msat != f.grace_msat
                     || funded.opening.channel_id != funded.terms.id
@@ -128,6 +146,7 @@ impl Controller {
                 || (!o.retired && j.requested.get(&o.offer.id) != Some(&o.offer))
                 || (o.retired
                     && !Self::changed_route_retires(j, &o.purchase)
+                    && !Self::handover_retires(j, &o.purchase)
                     && !j
                         .buyer_settlements
                         .get(&o.purchase.channel.id)
@@ -139,7 +158,8 @@ impl Controller {
             }
             validate_contract(&o.purchase.contract, &o.purchase.channel)
                 .map_err(|e| e.to_string())?;
-            if o.purchase.contract.price != o.offer.price
+            if o.purchase.contract.bid_msat_per_kib != o.offer.bid_msat_per_kib
+                || o.purchase.contract.price != o.offer.price
                 || o.purchase.contract.billing != o.offer.billing
                 || o.purchase.contract.destination != *o.offer.destination.node_addr()
                 || o.purchase.contract.next_hop != o.offer.next_hop
@@ -154,8 +174,10 @@ impl Controller {
                 || id != &i.contract.id
                 || i.offer.provider != local
                 || i.channel.buyer != i.offer.buyer
-                || i.channel.mint_url != policy.mint_url
+                || !policy.accepts_mint(&i.channel.mint_url)
+                || i.offer.mint_url != i.channel.mint_url
                 || i.verified_paid_msat > i.channel.capacity_sat * 1_000
+                || i.contract.bid_msat_per_kib != i.offer.bid_msat_per_kib
                 || i.contract.price != i.offer.price
                 || i.contract.billing != i.offer.billing
                 || i.contract.destination != *i.offer.destination.node_addr()
@@ -189,7 +211,10 @@ impl Controller {
                 {
                     return Err("invalid onward quote".into());
                 }
-            } else if i.offer.next_hop != *i.offer.destination.node_addr() {
+            } else if i.offer.next_hop != *i.offer.destination.node_addr()
+                && !(policy.receive_only() && i.offer.bid_msat_per_kib > 0
+                    && i.offer.path == [local, i.offer.next_hop])
+            {
                 return Err("missing onward quote".into());
             }
         }

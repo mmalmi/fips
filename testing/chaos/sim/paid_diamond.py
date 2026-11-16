@@ -18,6 +18,7 @@ from .paid_relay import eventually
 from .paid_settlement import require, settle_and_collect
 from .paid_wifi_mint import LocalMint
 from .paid_wifi_forwarding import MintForwards, finish_mint
+from .remote_mint import RemoteMint
 from .wifi_diamond import DiamondRun, parser as topology_parser
 from .wifi_diamond_checks import require_same_process, transitional_adjacency
 from .wifi_diamond_finances import freeze_fixture
@@ -78,9 +79,14 @@ class Accounts:
 
 class PaidDiamondRun(DiamondRun):
     def __init__(self, args):
+        self.remote_mint = bool(getattr(args, "mint_host", None))
+        if self.remote_mint != bool(getattr(args, "mint_address", None)):
+            raise ValueError("--mint-host and --mint-address must be supplied together")
         super().__init__(args)
         self.active_failover = args.active_failover
-        self.mint = LocalMint(args.mint_binary, "127.0.0.1", self.root)
+        self.mint = (RemoteMint(json.loads(args.mint_host.read_text()), args.mint_binary,
+                                self.run, self.root, args.mint_address, max_issued_sat=128)
+                     if self.remote_mint else LocalMint(args.mint_binary, "127.0.0.1", self.root))
         self.forwards = None
         self.accounts = Accounts(self)
         self.fixture = self.journal_anchor = None
@@ -94,6 +100,7 @@ class PaidDiamondRun(DiamondRun):
         self.evidence["active_failover_enabled"] = self.active_failover
         for name in ("paid_diamond.py", "wifi_diamond_finances.py", "wifi_diamond_selection.py",
                      "paid_finances.py", "paid_wifi_mint.py", "paid_wifi_forwarding.py",
+                     "remote_mint.py", "mint_host.py",
                      "wifi_probes.py", "wifi_priority_checks.py"):
             self.evidence["harness_sha256"][name] = digest(Path(__file__).with_name(name).read_bytes())
 
@@ -119,9 +126,14 @@ class PaidDiamondRun(DiamondRun):
     def before_launch(self):
         self.prepare_source()
         self.offline_empty()
-        self.forwards = MintForwards(self.nodes, self.mint_url, self.root)
-        self.evidence["mint_forwards"] = self.forwards.info
-        self.forwards.start()
+        if self.remote_mint:
+            for node in self.nodes.values():
+                node.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null",
+                             self.mint_url + "/v1/info"], timeout=10)
+        else:
+            self.forwards = MintForwards(self.nodes, self.mint_url, self.root)
+            self.evidence["mint_forwards"] = self.forwards.info
+            self.forwards.start()
         self.evidence["source_funding_stage"] = "grant_attempted"
         self.save()
         token = self.mint.grant("source")
@@ -228,6 +240,9 @@ class PaidDiamondRun(DiamondRun):
         transitional_adjacency(states, {name: p.npub for name, p in self.accounts.nodes.items()},
                                self.udp_addresses)
 
+    def send_batch(self, shape, rate):
+        return probes.send(self, "source", "n03", shape, rate)
+
     def drive_route(self, provider, baseline, phase, *, radio=None):
         destination = self.nodes["n03"]
         target = self.nodes[provider]
@@ -257,7 +272,7 @@ class PaidDiamondRun(DiamondRun):
                     self, "source", "n03", shape, workload.rate, radio, cut,
                     verify_route=lambda: self.confirm_pre_cut_route(initial))
             else:
-                sent = probes.send(self, "source", "n03", shape, workload.rate)
+                sent = self.send_batch(shape, workload.rate)
             record["send_finished_at"] = time.monotonic()
             record["sender"] = sent
             self.save()
@@ -305,6 +320,30 @@ class PaidDiamondRun(DiamondRun):
                            export_path=lambda name, relative: self.accounts.nodes[name].state + "/" + relative)
         self.phase("all 128 test sats collected; four test wallets empty")
 
+    def provider_transition(self, before_cut):
+        first = self.nodes["n01"]
+        try:
+            if self.active_failover:
+                self.drive_route("n02", before_cut, "wireless_failover", radio=first)
+            else:
+                first.mesh_down()
+                self.phase("cheaper provider left Wi-Fi; source UDP adjacency must remain")
+            states = eventually("only the cheaper provider wireless edge disappears",
+                                lambda: self.topology(radio_down="n01"), 100)
+            self.phase("provider radio loss observed with client adjacency intact", topology=states)
+            if self.active_failover:
+                self.evidence["active_failover"]["eviction_observed_at"] = time.monotonic()
+            else:
+                self.drive_route("n02", before_cut, "wireless_failover")
+            self.financial_checkpoint(2)
+            before_rejoin = self.ctl("source", "status")
+        finally:
+            if not self.active_failover or self.evidence.get("active_failover", {}).get("cut_attempted", False):
+                first.mesh_up()
+        eventually("original provider radio rejoins", self.topology, 150)
+        self.verify_open_profiles()
+        return before_rejoin
+
     def exercise(self):
         self.form_diamond()
         self.phase("native identities and process epochs bound", processes=self.process_snapshots())
@@ -318,28 +357,7 @@ class PaidDiamondRun(DiamondRun):
                      max_rate_msat_per_kib=PRICE_CEILING)
             self.drive_route("n01", baseline, "initial_cheaper_provider")
             self.financial_checkpoint(1)
-            before_cut = self.ctl("source", "status")
-            first = self.nodes["n01"]
-            try:
-                if self.active_failover:
-                    self.drive_route("n02", before_cut, "wireless_failover", radio=first)
-                else:
-                    first.mesh_down()
-                    self.phase("cheaper provider left Wi-Fi; source UDP adjacency must remain")
-                states = eventually("only the cheaper provider wireless edge disappears",
-                                    lambda: self.topology(radio_down="n01"), 100)
-                self.phase("provider radio loss observed with client adjacency intact", topology=states)
-                if self.active_failover:
-                    self.evidence["active_failover"]["eviction_observed_at"] = time.monotonic()
-                else:
-                    self.drive_route("n02", before_cut, "wireless_failover")
-                self.financial_checkpoint(2)
-                before_rejoin = self.ctl("source", "status")
-            finally:
-                if not self.active_failover or self.evidence.get("active_failover", {}).get("cut_attempted", False):
-                    first.mesh_up()
-            eventually("original provider radio rejoins", self.topology, 150)
-            self.verify_open_profiles()
+            before_rejoin = self.provider_transition(self.ctl("source", "status"))
             self.drive_route("n01", before_rejoin, "recovered_cheaper_provider")
             self.financial_checkpoint(2)
             self.verify_shortcuts(names=("n01", "n02"))
@@ -371,7 +389,13 @@ def parser():
     result = topology_parser()
     result.description = __doc__
     result.add_argument("--mint-binary", type=Path, required=True)
-    result.add_argument("--active-failover", action="store_true",
+    result.add_argument("--mint-host", type=Path,
+                        help="explicit isolated ARM64 Linux mint host specification")
+    result.add_argument("--mint-address", help="private LAN IPv4 of --mint-host")
+    fault = result.add_mutually_exclusive_group()
+    fault.add_argument("--loss-failover", action="store_true",
+                       help="degrade the cheaper wireless path while retaining both connected providers")
+    fault.add_argument("--active-failover", action="store_true",
                         help="cut the selected provider during paid traffic and drive recovery before eviction")
     return result
 
@@ -385,7 +409,11 @@ def main():
 
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(900)
-    PaidDiamondRun(args).execute()
+    if args.loss_failover:
+        from .paid_quality_diamond import QualityDiamondRun
+        QualityDiamondRun(args).execute()
+    else:
+        PaidDiamondRun(args).execute()
 
 
 if __name__ == "__main__":

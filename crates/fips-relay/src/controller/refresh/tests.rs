@@ -68,6 +68,7 @@ async fn controller_with_neighbors(
             endpoint.clone(),
             Arc::new(transport),
             QuotePolicy {
+                additional_receive_mints: vec![],
                 destination_fees: Default::default(),
                 billing: BillingBasis::ForwardingData,
                 mint_url: policy.mint_url.clone(),
@@ -131,6 +132,7 @@ async fn assert_disconnected_watch(restored: bool) {
         billing: offer.billing,
         destination: id.clone(),
         max_rate_msat_per_kib: 8192,
+        bid_msat_per_kib: 0,
         paused: false,
         pending: restored.then(|| offer.clone()),
         selected_trial: None,
@@ -211,6 +213,7 @@ fn authorized_watch(offer: &RouteOffer) -> WatchedRoute {
         billing: offer.billing,
         destination: offer.destination.npub(),
         max_rate_msat_per_kib: 8192,
+        bid_msat_per_kib: 0,
         paused: false,
         pending: None,
         selected_trial: None,
@@ -264,6 +267,40 @@ fn watched_intent_is_atomic_with_initial_and_replacement_reservations() {
             .unwrap();
         super::super::transition_tests::reload(store);
     }
+}
+
+#[test]
+fn retired_cached_offer_cannot_bind_an_authorized_watch() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut store, old) = super::super::transition_tests::fixture(&root.path().join("controller"));
+    let watch = authorized_watch(&old.offer);
+    store
+        .change(|j| {
+            let mut replacement = super::super::transition_tests::change(&old);
+            replacement.prepared = true;
+            j.outgoing
+                .get_mut(&old.purchase.contract.id)
+                .unwrap()
+                .retired = true;
+            j.requested.remove(&old.offer.id);
+            j.requested
+                .insert(replacement.offer.id.clone(), replacement.offer.clone());
+            j.route_changes
+                .insert(replacement.offer.id.clone(), replacement);
+            j.watched_routes
+                .insert(watch.destination.clone(), watch.clone());
+            Ok(())
+        })
+        .unwrap();
+    let before = serde_json::to_value(&store.journal).unwrap();
+    assert_eq!(
+        store
+            .change(|j| Controller::reserve_watched_offer(j, Some(&watch), &old.offer))
+            .unwrap_err(),
+        "purchase authorization retired"
+    );
+    assert!(serde_json::to_value(&store.journal).unwrap() == before);
+    super::super::transition_tests::reload(store);
 }
 
 #[test]

@@ -9,6 +9,72 @@ The binary must be cross-compiled for the selected CPU architecture. The package
 builder checks its ELF machine against the APK architecture. Hardware validation
 currently uses ARM64; other architectures need their own build and runtime check.
 
+## Freedom guest Wi-Fi
+
+The optional [Freedom guest internet package](guest/README.md) sells time passes through a phone checkout. The operator can use local internet, select multiple paid Nostr VPN exits, or delegate selection to an automatic buyer.
+
+The [native FIPS customer entry](../PROTOTYPE-RESULTS.md#acceptance-evidence) is a separate way onto the mesh for compatible clients. An operator can offer that entry alongside the guest checkout and configure free or paid forwarding independently.
+
+## Freedom web interface
+
+The optional `luci-app-freedom` package adds **Services → Freedom** to LuCI.
+It uses the existing `fips-relay` UCI instance and private local controls. Installing
+it refreshes rpcd/LuCI only; it never initializes accounts, funds channels, starts
+the relay, or changes radios, bridges, DHCP or firewall rules.
+
+- Start/stop forwarding and independently enable/disable startup at boot.
+- View connected peers and traffic, outgoing locked funds, remaining payment
+  authority and accepted signed payments. Accepted credit includes retained
+  channel history; it is not settled wallet income or profit. Unavailable data
+  is shown explicitly, never as a zero balance.
+- Before initialization, choose free/paid forwarding, price and spending limits,
+  a trusted mint and an existing mesh interface. Save settings, then explicitly
+  create the account. This enables bounded authenticated adjacent discovery on
+  that interface using the forwarding-data tariff. The page does not create or
+  bridge a radio interface. Fund onward purchases through the existing
+  [wallet workflow](../TESTBENCH.md#fund-a-relay).
+- Existing or partially initialized state makes financial settings read-only.
+  The page never resets budgets, reinitializes accounts, migrates old terms or
+  edits wallets. Zero onward price permits free routes only; free local service
+  with a positive onward ceiling can still consume the configured budget.
+
+The backend exposes only `status`, `configure` and enumerated service actions.
+Separate read/write ACLs protect them; there is no arbitrary file, shell, wallet
+or operator-socket proxy. Settings use a private atomic replacement with a stale
+form check. Polling uses bounded, projected status and never publishes full
+configuration, financial history, keys or tokens. Wallet funding/withdrawal,
+changing established financial terms and destination-specific policies remain
+outside this first web interface.
+
+Build the architecture-independent APK with the same APKv3 tool as the relay:
+
+```sh
+crates/fips-relay/openwrt/build-luci-apk.sh /path/to/apk \
+  0.1.0-r1 REPLACE_WITH_SOURCE_COMMIT /output/luci-app-freedom-0.1.0-r1.apk
+```
+
+Install this locally built unsigned package on an authorized router with
+`apk add --allow-untrusted /path/to/luci-app-freedom-0.1.0-r1.apk`, then open
+**Services → Freedom**. The relay package and LuCI/rpcd/ucode dependencies must
+already be available from that router's package feeds. For SDK builds, copy
+`openwrt/luci/` to `package/luci-app-freedom/` and use its standard LuCI Makefile.
+The normal relay package remains usable without LuCI.
+
+Focused verification uses real OpenWrt UCI, filesystem and process execution in
+an isolated scratch account, plus browser flows through the actual view:
+
+```sh
+ucode testing/openwrt/test_freedom.uc \
+  crates/fips-relay/openwrt/luci/root/usr/share/rpcd/ucode/freedom.uc \
+  crates/fips-relay/service.example.json
+node testing/openwrt/test_freedom_ui.cjs /private/test-output
+```
+
+The browser check requires Playwright; set `FREEDOM_TEST_CHROME` to an installed
+Chrome executable when its bundled browser is unavailable. It covers setup,
+start/stop, boot controls, stale forms, read-only access, escaped peer text and
+precise payment display. Neither test issues money or mutates an operator account.
+
 ## Build
 
 Use the [source-bundle workflow](../FUNDING-COSTS.md#portable-development-source-bundle)
@@ -21,13 +87,10 @@ cargo +1.96.0 zigbuild -p fips-relay --bin fips-relay --offline --locked \
 ```
 
 The size-oriented profile keeps normal panic semantics and builds a static musl
-executable. Inspect the result with `file` before packaging. The accepted ARM64
-build at `f84976ac03` uses Zig 0.15.2 and cargo-zigbuild 0.22.1 and is 23.9 MiB;
-its APK is 11.0 MiB. It passes isolated Linux startup, package-content checks and
-the five [paid TCP/WebSocket/TLS process cases](#tcp-websocket-and-tls-with-the-packaged-executable)
-against the packaged executable, both [customer entry-restart cases](#customer-entry-restart),
-and the wallet-capacity, full-filesystem and channel-expiry cases below. These checks
-do not establish forwarding performance or current-router acceptance; see the [readiness record](../READINESS.md#scope-and-outstanding-acceptance).
+executable. Inspect the result with `file` before packaging. The accepted revision,
+package size, tool versions and isolated Linux results are recorded in the
+[readiness record](../READINESS.md#scope-and-outstanding-acceptance). These checks
+do not establish forwarding performance or current-router acceptance.
 
 Use an APKv3 tool with the `mkpkg` applet. OpenWrt's installed package manager
 may omit that build applet; the SDK host tool or Alpine's full build tool can
@@ -46,7 +109,14 @@ Use the target's `/etc/apk/arch` value. Keep the binary, its source revision and
 the package checksum together. `/usr/share/fips-relay/build.json` records the
 binary hash, size, architecture and supplied source revision. The package contains
 no private identities, wallet state or active service JSON. It declares `procd`,
-`jsonfilter`, `iw`, `uclient-fetch` and `ca-bundle` dependencies.
+`jsonfilter`, `iw` and `ca-bundle` dependencies.
+
+On a Linux build host, a dynamically linked APK tool can also run under
+`fakeroot --` with the same builder command. This records root ownership in the
+archive without granting host privileges. Inspect the resulting package with
+`apk --allow-untrusted adbdump --format=json PACKAGE.apk` and require every file
+and directory ACL to name `root` as both user and group. A statically linked APK
+tool cannot use fakeroot's library interception.
 
 ## Linux paid-routing check
 
@@ -92,6 +162,37 @@ checksum again afterward. This checks Linux execution and simulated routing;
 OpenWrt services, physical links and router performance require separate acceptance.
 
 ### Production executable and storage recovery
+
+The process-based service, customer and funding-cost tests accept
+`FIPS_RELAY_TEST_PROGRAM` as the executable to launch. Without it, they use the
+binary built by Cargo. This lets a native Linux harness exercise a separately
+built candidate.
+
+Wallet-handoff crash tests compiled with `testbench` require a daemon built with
+that feature too. Keep their default Cargo binary, or supply a matching build;
+an ordinary production binary has no crash barriers. Tests without these hooks
+can use the ordinary candidate.
+
+For an ARM64 candidate, use an explicit QEMU launcher:
+
+```sh
+cat > run-relay-arm64 <<'SH'
+#!/bin/sh
+exec /path/to/qemu-aarch64 /absolute/path/to/fips-relay "$@"
+SH
+chmod 0755 run-relay-arm64
+FIPS_RELAY_TEST_PROGRAM="$PWD/run-relay-arm64" \
+  cargo test --offline --locked -p fips-relay --test service \
+  explicit_initialization_cannot_reset_missing_state_or_raise_saved_limits \
+  -- --exact --test-threads=1
+```
+
+Replace both launcher paths with the verified artifacts. Keep `exec` so shutdown
+signals reach the candidate. Build the native harness from the same source bundle
+and retain the candidate's hash; the override does not select a harness version.
+Only the launched daemon and CLI execute under emulation. In-process checks stay
+native, and emulated timings do not establish router performance. The existing
+container recipes below also support running the harness itself on ARM64.
 
 Build `--test funding_costs` with the same all-features Linux test command above.
 Its fixture initializes a local test mint and wallets; the four child relays can
@@ -204,31 +305,46 @@ exhausts and renews paid allowances, crashes/restarts the middle relay and settl
 all original test funds. The three seeded WebSocket cases also drop the physical
 stream while every service keeps running, then require delivery and a new
 cumulative payment through the original channels with preserved spending limits.
+They also restart the middle relay while the carrier rejects reconnects, preserve
+funding identities and budgets during the partition, then recover fresh
+authentication and paid traffic after the carrier returns.
 The TLS cases also check certificate/handshake rejection
 before peer admission or spending. Verify both executables and the source manifest
 afterward. Loopback TLS does not establish remote proxy or radio acceptance.
 
 ### CPU-pressure check
 
-The r18 packaged executable passes two ordered configured-WebSocket/seed pairs
-with a half-CPU limit shared by the test harness and its three relay processes.
-Using the function and binaries above, run both cases in each fresh container:
+The r32 packaged executable passes repeated UDP/TLS renewal and seeded WebSocket
+recovery with a half-CPU limit shared by the harness, local mint and three relays.
+Using the function and binaries above, run each case in a fresh container:
 
 ```sh
 relay_test_cpus=0.5
-for relay_trial in 1 2; do
-  run_relay_case "$service_test_binary" \
-    mixed_transport::mixed_udp_websocket_daemons_preserve_paid_limits_through_exhaustion_and_restart \
-    mixed_transport::mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster || exit
-done
+run_relay_case "$service_test_binary" \
+  mixed_transport::renewal_load::concurrent_bidirectional_renewals_preserve_payment_progress \
+  --ignored || exit
+run_relay_case "$service_test_binary" \
+  mixed_transport::mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websocket_peer_roster || exit
 unset relay_test_cpus
 ```
 
 This retains the ordinary deadlines, retries and payment rules, and stops after
-the first failed pair. All four accepted cases conserve 384 test sats each;
-source and executable hashes remain unchanged. The bounded CPU-pressure check
-does not reproduce or explain the earlier delivery timeout and is not a radio
-performance measurement.
+the first failure. Both cases conserve 384 test sats each; source and executable
+hashes remain unchanged. The accepted run captures `cpu.max`, `cpu.stat`,
+`memory.peak` and `memory.events` inside each container before and after its test.
+The CPU quota remains 50,000 microseconds per 100,000-microsecond period.
+
+| Case | Test duration | CPU time | Throttled periods | Memory peak |
+| --- | ---: | ---: | ---: | ---: |
+| Eight channel replacements | 43.41 s | 7.62 s | 29 | 93.2 MiB |
+| Carrier loss and partitioned restart | 108.08 s | 13.84 s | 26 | 108.5 MiB |
+
+Neither container records a memory-limit or out-of-memory event. CPU time and
+memory are aggregate container measurements, including the test harness, mint,
+relays and filesystem cache. The saved wrapper and records are in
+`work/paid-relay-verification/2026-09-29-arm64-pressure`. This finite check does not
+explain the earlier intermittent stalls or establish sustained router capacity
+or per-byte payment overhead.
 
 ### Customer entry restart
 
@@ -287,8 +403,11 @@ The supervisor waits for all of these before executing the relay:
 - Every configured native interface exists, has carrier, and is neither a bridge
   nor a bridge member. An 802.11s interface must report `mesh_fwding=0` so native
   FIPS performs forwarding. The wrapper changes no radio or bridge settings.
-- The configured mint answers its information endpoint. The relay subsequently
-  performs its own keyset, financial-state and configuration validation.
+
+The wrapper does not probe the mint before launching the relay. The relay owns
+keyset, financial-state and configuration validation, including any recovery or
+purchase that requires a reachable mint. This lets it attempt saved-account
+recovery during a mint outage without an extra HTTP readiness gate.
 
 Waiting consumes no channel funds and does not exhaust procd's crash restart
 counter. A changing wait reason is logged; identical reasons are not repeatedly
@@ -316,10 +435,15 @@ validation work.
 ## Device acceptance checks
 
 Verify the installed package version and executable checksum, preserved account
-identity/limits, and mint/network readiness. Exercise a missing clock marker and
-an unreachable mint: the wrapper must wait without starting the daemon. Exercise
+identity/limits, and network readiness. A missing clock marker must block startup.
+An unreachable mint must not block the wrapper from launching the daemon; verify
+the service preserves its financial limits during recovery. Exercise
 a bridged native interface without changing the live radio configuration.
 Check an upgrade of a running instance preserves its account and budget.
+
+Run the host-side wrapper checks with
+`python3 -m unittest discover -s testing/openwrt`. They substitute the clock marker
+and OpenWrt commands; device startup and outage recovery need separate acceptance.
 
 Reboot one test router at a time. Compare boot IDs to prove an actual reboot,
 then verify that NTP, native interface isolation, the relay control socket and

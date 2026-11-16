@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Freedom — Free or paid mesh routing</title>
+  <meta name="description" content="Freedom is router software for forwarding encrypted traffic between FIPS devices. Run a free mesh or charge for forwarding. Read what works and how to set it up.">
+  <link rel="canonical" href="https://freedom.iris.to/">
+  <meta property="og:title" content="Freedom — Free or paid mesh routing">
+  <meta property="og:description" content="What Freedom does, what you can use it for, and how to set it up on OpenWrt.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://freedom.iris.to/">
+  <meta property="og:image" content="https://freedom.iris.to/social.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#f7f7ef">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header wrap">
+  <a class="brand" href="/" aria-label="Freedom home"><img src="/favicon.svg" width="30" height="30" alt="">freedom</a>
+  <nav aria-label="Main navigation">
+    <a href="/" aria-current="page">Overview</a>
+    <a href="/setup/">Setup guide</a>
+    <a href="https://github.com/mmalmi/fips">Source</a>
+  </nav>
+</header>
+<main id="main" class="overview wrap">
+  <div class="intro">
+    <h1>Router software for free or paid mesh networks</h1>
+    <p class="lede">Freedom forwards encrypted data between devices running <a href="https://fips.network/">FIPS</a>. Several routers can pass the data along, so the sender and receiver do not need a direct connection.</p>
+    <p>You can offer forwarding for free, or charge according to the amount of traffic. On a paid route, each router automatically pays the next router.</p>
+    <p><strong>For internet access, use an exit.</strong> <a href="https://nostrvpn.org/">Nostr VPN</a> provides internet exits through a trusted device or a paid provider. <a href="#internet-access">See how it fits with Freedom.</a></p>
+    <p class="availability"><strong>Current status:</strong> developer software tested on OpenWrt routers and Android phones. It requires compatible clients and manual setup. It is not yet a ready-to-use paid Wi-Fi internet hotspot.</p>
+    <a class="button primary" href="/setup/">OpenWrt setup instructions</a>
+  </div>
+
+  <section id="uses">
+    <h2>What can I do with it?</h2>
+    <ul class="use-list">
+      <li><strong>Connect devices through several routers.</strong> For example, a device outside your direct Wi-Fi range can be reached through intermediate routers, provided there is a working chain of links.</li>
+      <li><strong>Forward traffic for free.</strong> Set the forwarding price to zero. If the whole route is free, it needs no payment channels.</li>
+      <li><strong>Charge for forwarding.</strong> Set a price for carrying other devices’ traffic. Test automatic payments to each router along the route using test funds.</li>
+      <li><strong>Combine different kinds of connections.</strong> A route can include Wi-Fi, Ethernet and links over the existing internet.</li>
+      <li><strong>Manage a router in OpenWrt.</strong> The optional <strong>Services → Freedom</strong> page shows peers, traffic and payment credit, and lets you start or stop the service.</li>
+    </ul>
+    <p>Freedom transports data. It does not include a chat or file-sharing app; the devices need compatible FIPS software to send and receive it.</p>
+  </section>
+
+  <section id="how-it-works">
+    <h2>How does data get from one device to another?</h2>
+    <p>Here is one possible route. Both phones run compatible FIPS software. The routers pass the encrypted data onward without reading its contents.</p>
+    <figure class="message-route" aria-labelledby="message-route-title">
+      <figcaption id="message-route-title">Example: sending a message through two routers</figcaption>
+      <ol class="message-hops">
+        <li><strong>Your phone</strong><span>Encrypts and sends the message.</span></li>
+        <li><strong>Nearby router</strong><span>Forwards it over Wi-Fi to the next router.</span></li>
+        <li><strong>Next router</strong><span>Forwards it to your friend’s phone.</span></li>
+        <li><strong>Your friend’s phone</strong><span>Decrypts and reads the message.</span></li>
+      </ol>
+    </figure>
+    <p>A mesh can have more links and alternative paths. FIPS discovers peers and routes data between them. Nearby Wi-Fi peers must still have compatible radio settings; installing Freedom alone does not connect arbitrary routers.</p>
+  </section>
+
+  <section id="freedom">
+    <h2>How does paid forwarding work?</h2>
+    <p>The sender agrees to a route price and spending limit. Each router quotes its own fee plus the cost of forwarding through the next router.</p>
+    <div class="payment-example">
+      <h3>Example price for a two-router route</h3>
+      <p>Suppose router A charges 1 sat per MiB and router B charges 2 sats per MiB. A sat is a small unit of bitcoin; a MiB is 1,048,576 bytes.</p>
+      <table>
+        <caption>Sender → router A → router B → destination</caption>
+        <thead><tr><th scope="col">Payment</th><th scope="col">Per MiB of billable traffic</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Sender pays A</th><td>3 sats</td></tr>
+          <tr><th scope="row">A pays B</th><td>2 sats</td></tr>
+          <tr><th scope="row">A retains its forwarding fee</th><td>1 sat</td></tr>
+        </tbody>
+      </table>
+      <p class="caption">Illustrative prices, not a live offer. These forwarding fees exclude funding costs and are not a profit estimate.</p>
+    </div>
+    <p>Payments accumulate across many packets using reusable payment channels between neighbors. Each router needs funds for its onward payments. You do not manually pay every router for every packet.</p>
+    <ul>
+      <li><strong>Payment system:</strong> Cashu, using Spilman payment channels. The Cashu mint is the service that issues and redeems the payment tokens; participants must trust it.</li>
+      <li><strong>Limits:</strong> you set the maximum route price, lifetime spending and funds committed to channels.</li>
+      <li><strong>Return traffic:</strong> replies need their own payment authorization, unless a free route or explicit return allowance applies.</li>
+      <li><strong>Delivery:</strong> paying for forwarding does not prove that the destination received the data. An application may need to retry.</li>
+    </ul>
+    <p>Public real-money operation has not been validated. The setup guide uses test funds.</p>
+  </section>
+
+  <section id="internet-access">
+    <h2>How do I get internet access?</h2>
+    <p>An <strong>internet exit</strong> connects your traffic to ordinary websites and other internet services. Freedom carries traffic between mesh nodes; an exit provides the connection beyond the mesh.</p>
+    <p><strong><a href="https://nostrvpn.org/">Nostr VPN</a> provides client apps and internet exits.</strong> You can use a trusted device as your exit or buy bandwidth from an independent provider. You can also run an exit and set a price for its traffic. Paid exits are experimental.</p>
+    <p>The setup guide here configures Freedom relays. It does not yet configure or verify Nostr VPN over a paid Freedom route; that connection needs separate integration and testing.</p>
+    <p>Joining a Freedom router’s Wi-Fi does not automatically provide internet access or make a phone a paying client. Freedom does not include a hotspot sign-in or payment page.</p>
+  </section>
+
+  <section id="requirements">
+    <h2>What do I need to try it?</h2>
+    <ul>
+      <li><strong>Compatible OpenWrt hardware.</strong> The package targets OpenWrt 25.12 or newer. Testing used ARM64 Cudy TR3000 v1 routers. Other models need their own compatibility and resource checks.</li>
+      <li><strong>A link between devices.</strong> Start with a dedicated Wi-Fi mesh interface or Ethernet interface, while keeping your normal management network available.</li>
+      <li><strong>Matching software builds and a compatible client.</strong> The Android <strong>FIPS Bench</strong> app has been built and tested on phones. It is a developer test tool, available as source, rather than an everyday VPN app.</li>
+      <li><strong>Build and configuration work.</strong> There is no public signed one-click Freedom release or standard package-feed install yet. The current relay requires matched development dependencies.</li>
+    </ul>
+    <p>Start with two nodes to check connectivity, then use at least three to test forwarding through an intermediate node. Add payments after the free route works.</p>
+    <p><a href="/setup/">Read the OpenWrt setup guide</a> · <a href="https://github.com/mmalmi/fips/blob/master/crates/fips-relay-app/README.md">Android FIPS Bench instructions</a></p>
+  </section>
+
+  <section id="status">
+    <h2>What has been tested?</h2>
+    <p>Controlled tests on Linux, three OpenWrt routers and Android phones running the test client cover paid forwarding, spending limits, route changes and recovery from selected failures.</p>
+    <p>That does not establish public real-money readiness, compatibility across different software versions, support for every OpenWrt router, or uninterrupted service while routers move around.</p>
+    <p><a href="https://github.com/mmalmi/fips/blob/master/crates/fips-relay/READINESS.md">Detailed test evidence and known limits</a></p>
+  </section>
+
+  <section id="fips">
+    <h2>What is the difference between Freedom and FIPS?</h2>
+    <p><strong><a href="https://fips.network/">FIPS</a></strong> is the underlying encrypted routing system. It gives devices cryptographic identities and routes traffic across different links.</p>
+    <p><strong>Freedom</strong> is FIPS with optional payments for forwarding traffic. You can run a free mesh or charge for the data your device forwards.</p>
+    <p><a href="https://github.com/mmalmi/fips">Iris FIPS implementation</a> · <a href="https://github.com/jmcorgan/fips">Original FIPS project</a></p>
+  </section>
+</main>
+<footer class="footer wrap"><span>Freedom · Open-source software built on <a href="https://fips.network/">FIPS</a></span><div><a href="/setup/">Setup guide</a><a href="https://github.com/mmalmi/fips">Source</a><a href="https://iris.to">Iris</a></div></footer>
+</body>
+</html>

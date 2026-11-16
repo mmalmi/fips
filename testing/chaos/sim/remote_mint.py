@@ -14,19 +14,27 @@ from .wifi_remote import checked_name, checked_path
 
 
 class RemoteMint(SshCommands):
-    def __init__(self, spec, binary, run, root, address, max_issued_sat=512):
+    def __init__(self, spec, binary, run, root, address, max_issued_sat=512, *, receiver_history=False):
         if not re.fullmatch(r"[0-9a-f]{12}", run):
             raise ValueError("invalid mint run identity")
         ip = ipaddress.IPv4Address(address)
         if not ip.is_private or ip.is_loopback or ip.is_unspecified or ip.is_multicast:
             raise ValueError("mint requires an assigned private LAN address")
-        if type(max_issued_sat) is not int or not 1 <= max_issued_sat <= 512:
+        if type(receiver_history) is not bool:
+            raise ValueError('receiver history profile must be explicit')
+        if receiver_history and max_issued_sat != 3072:
+            raise ValueError('receiver history requires exactly 3072 test sats')
+        if type(max_issued_sat) is not int or not 1 <= max_issued_sat <= (3072 if receiver_history else 512):
             raise ValueError("phone acceptance issuance is capped at 512 test sats")
+        port = spec.get('port', 0)
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError('mint port must be an integer in 0..65535')
         self.spec, self.host = spec, checked_name(spec["host"])
         self.source = Path(binary).resolve(strict=True)
         header = self.source.read_bytes()[:20]
-        if header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\xb7\x00":
-            raise ValueError("mint binary must be Linux ELF64 AArch64")
+        self.architecture = {b"\xb7\x00": b"aarch64", b"\x3e\x00": b"x86_64"}.get(header[18:20])
+        if header[:6] != b"\x7fELF\x02\x01" or self.architecture is None:
+            raise ValueError("mint binary must be Linux ELF64 AArch64 or x86-64")
         self.root = checked_path(spec["state_parent"]) + "/phone-" + run
         self.temporary = "/tmp/fips-mint-" + run
         self.binary = self.temporary + "/fips-relay-test-mint"
@@ -36,14 +44,17 @@ class RemoteMint(SshCommands):
         state = self.root + "/mint-state"
         if len((state + "/control.sock").encode()) > 100:
             raise ValueError("mint control socket path is too long")
-        self.settings = {"state_directory": state, "bind": f"{ip}:0",
+        self.settings = {"state_directory": state, "bind": f"{ip}:{port}",
                          "max_issued_sat": max_issued_sat}
+        if receiver_history:
+            self.settings['receiver_history_keyset'] = True
         self.info = {"host": self.host, "binary": self.binary, "config": self.config,
                      "address": str(ip), "binary_sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}
         self.output = root / "mint-host"
         self.output.mkdir(mode=0o700)
         self.attempted = False
         self.url = None
+        self.stall_attempted = False
 
     def write(self, path, content):
         self.remote("umask 077; set -C; cat > " + shlex.quote(path), content, timeout=90)
@@ -54,8 +65,8 @@ class RemoteMint(SshCommands):
         self.attempted = True
         write_json(self.output / "intent.json", self.info)
         # No service/network configuration changes; refuse another host/address.
-        if self.remote(["uname", "-m"]).strip() != b"aarch64":
-            raise RuntimeError("mint host is not AArch64 Linux")
+        if self.remote(["uname", "-m"]).strip() != self.architecture:
+            raise RuntimeError("mint host architecture differs from the supplied binary")
         addresses = json.loads(self.remote(["ip", "-j", "-4", "addr", "show"]))
         if not any(item.get("local") == self.info["address"]
                    for link in addresses for item in link.get("addr_info", [])):
@@ -88,6 +99,26 @@ class RemoteMint(SshCommands):
     def grant(self, name):
         payment = self.request({"type": "issue", "id": name, "amount_sat": 128})
         return payment["token"]
+
+    def stall(self):
+        if self.stall_attempted:
+            raise RuntimeError('mint stall was already attempted; never repeat it')
+        self.stall_attempted = True
+        self.remote(f'nohup python3 {self.helper} stall {self.owner} '
+                    f'>{self.root}/stall.log 2>&1 </dev/null &')
+        return eventually('owned mint suspended with a local recovery deadline', self.stall_status, 10)
+
+    def stall_status(self):
+        return json.loads(self.remote(['python3', self.helper, 'stall-status', self.owner]))
+
+    def release_stall(self):
+        self.remote(['python3', self.helper, 'stall-release', self.owner])
+
+        def resumed():
+            result = self.stall_status()
+            return result if result['phase'] == 'resumed' else None
+
+        return eventually('original mint resumed', resumed, 15)
 
     def finish(self):
         result = json.loads(self.remote(["python3", self.helper, "finish", self.owner], timeout=120))

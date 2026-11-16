@@ -1,4 +1,4 @@
-//! Lose one already-applied payment reply, then observe the real scheduler.
+//! Lose updates before application and replies after it, using the real scheduler.
 use super::*;
 use fips_relay::{
     controller::Purchase,
@@ -10,8 +10,15 @@ use tokio::sync::oneshot;
 #[derive(Default)]
 struct Observation {
     channel: Option<String>,
-    capture: Option<oneshot::Sender<Applied>>,
+    capture: Option<(LossPoint, oneshot::Sender<HeldUpdate>)>,
+    captures: u8,
     requests: Vec<Request>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LossPoint {
+    BeforeApply,
+    AfterApply,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,18 +32,37 @@ pub(super) struct ReplyGate {
     task: tokio::task::JoinHandle<()>,
 }
 
-struct Applied {
+struct HeldUpdate {
     balance: u64,
-    discard: oneshot::Sender<()>,
+    expired: oneshot::Receiver<Duration>,
+}
+
+impl HeldUpdate {
+    async fn wait_for_expiry(&mut self) {
+        let elapsed = tokio::time::timeout(Duration::from_secs(35), &mut self.expired)
+            .await
+            .expect("silent payment request must expire")
+            .unwrap();
+        assert!(
+            elapsed >= Duration::from_secs(25),
+            "request canceled before its deadline"
+        );
+        eprintln!(
+            "silent payment update expired after {:.3}s",
+            elapsed.as_secs_f64()
+        );
+    }
 }
 
 impl ReplyGate {
-    fn arm(&self, channel: &str) -> oneshot::Receiver<Applied> {
+    fn arm(&self, channel: &str, point: LossPoint) -> oneshot::Receiver<HeldUpdate> {
         let (capture, applied) = oneshot::channel();
         let mut state = self.observation.lock().unwrap();
-        assert!(state.channel.is_none(), "one bounded lost reply per gate");
+        assert!(state.captures < 2 && state.capture.is_none());
+        assert!(state.channel.as_ref().is_none_or(|old| old == channel));
         state.channel = Some(channel.into());
-        state.capture = Some(capture);
+        state.captures += 1;
+        state.capture = Some((point, capture));
         applied
     }
 
@@ -49,6 +75,30 @@ impl Drop for ReplyGate {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+async fn discard_reply(
+    capture: oneshot::Sender<HeldUpdate>,
+    balance: u64,
+    mut respond: oneshot::Sender<Vec<u8>>,
+) {
+    let started = tokio::time::Instant::now();
+    let (expired, expiry) = oneshot::channel();
+    assert!(
+        capture
+            .send(HeldUpdate {
+                balance,
+                expired: expiry
+            })
+            .is_ok()
+    );
+    // Keep both the unapplied request and the applied response silent until
+    // the production transport deadline releases their original waiter.
+    tokio::time::timeout(Duration::from_secs(35), respond.closed())
+        .await
+        .unwrap();
+    let _ = expired.send(started.elapsed());
+    drop(respond);
 }
 
 pub(super) fn proxy(
@@ -83,7 +133,7 @@ pub(super) fn proxy(
                         state
                             .capture
                             .take()
-                            .map(|capture| (capture, channel_id, payment.balance))
+                            .map(|(point, capture)| (point, capture, channel_id, payment.balance))
                     }
                     Ok(PaymentRequest::Usage { channel_id })
                         if state.channel.as_ref() == Some(&channel_id) =>
@@ -97,12 +147,16 @@ pub(super) fn proxy(
             } else {
                 None
             };
-            let Some((capture, channel_id, balance)) = captured else {
+            let Some((point, capture, channel_id, balance)) = captured else {
                 if send.send(request).await.is_err() {
                     return;
                 }
                 continue;
             };
+            if point == LossPoint::BeforeApply {
+                replies.spawn(discard_reply(capture, balance, request.respond));
+                continue;
+            }
             let (respond, response) = oneshot::channel();
             send.send(IncomingRequest {
                 peer: request.peer,
@@ -127,15 +181,7 @@ pub(super) fn proxy(
                 };
                 assert_eq!(actual, channel_id);
                 assert_eq!(usage.paid_msat, balance * 1_000);
-                let (discard, release) = oneshot::channel();
-                assert!(capture.send(Applied { balance, discard }).is_ok());
-                tokio::time::timeout(Duration::from_secs(20), release)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                // No response bytes reach TCP/FIPS. Its real cancellation path
-                // fails this exchange, so recovery must come from the scheduler.
-                drop(request.respond);
+                discard_reply(capture, balance, request.respond).await;
             });
         }
     });
@@ -152,6 +198,11 @@ async fn acknowledged(controller: &Controller, channel: &str, minimum: u64) {
             let progress = controller.payment_progress().await.unwrap();
             let state = &progress[channel];
             if state.acknowledged_msat.is_some_and(|paid| paid >= minimum) && !state.in_flight {
+                assert_eq!(
+                    serde_json::to_value(state).unwrap().get("pending"),
+                    Some(&serde_json::Value::Null),
+                    "harvested acknowledgment clears the pending observation"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -161,7 +212,7 @@ async fn acknowledged(controller: &Controller, channel: &str, minimum: u64) {
     .expect("automatic scheduler must acknowledge the retained payment");
 }
 
-pub(super) async fn accepted_update_reply_loss_recovers_automatically(
+pub(super) async fn lost_updates_and_replies_recover_automatically(
     root: &Path,
     traffic: &mut Traffic<'_>,
     gate: &ReplyGate,
@@ -187,9 +238,12 @@ pub(super) async fn accepted_update_reply_loss_recovers_automatically(
     let budget = controller.funding_budget().await.unwrap();
     let prior = buyer.authorized_sat(channel).unwrap();
     acknowledged(&controller, channel, prior * 1_000).await;
-    let applied = gate.arm(channel);
+    #[cfg(unix)]
+    let mut rekey =
+        controller_support::RekeyObservation::start_pair(root, traffic.peers, 2, slow).await;
+    let applied = gate.arm(channel, LossPoint::AfterApply);
     traffic.send(if slow == 1 { 4 } else { 0 }, 170).await;
-    let applied = tokio::time::timeout(Duration::from_secs(10), applied)
+    let mut applied = tokio::time::timeout(Duration::from_secs(10), applied)
         .await
         .unwrap()
         .unwrap();
@@ -220,9 +274,6 @@ pub(super) async fn accepted_update_reply_loss_recovers_automatically(
             .is_none_or(|paid| paid < applied.balance * 1_000)
     );
 
-    traffic
-        .paid_bursts(healthy, &purchases[1], sellers, buyer, 173)
-        .await;
     assert_eq!(
         buyer.authorized_sat(channel),
         Some(applied.balance),
@@ -234,8 +285,30 @@ pub(super) async fn accepted_update_reply_loss_recovers_automatically(
         funding
     );
     let requests_before = gate.observed().len();
-    applied.discard.send(()).unwrap();
+    // A 15-second quiescence check can expire after payment was durably
+    // accepted, while the original control request is still within its budget.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), &mut applied.expired)
+            .await
+            .is_err()
+    );
+    let progress = controller.payment_progress().await.unwrap();
+    assert!(progress[channel].in_flight);
+    assert_eq!(buyer.authorized_sat(channel), Some(applied.balance));
+    assert_eq!(
+        sellers[slow].channel_usage(channel).unwrap().paid_msat,
+        applied.balance * 1_000
+    );
+    assert_eq!(gate.observed().len(), requests_before);
+    applied.wait_for_expiry().await;
     acknowledged(&controller, channel, applied.balance * 1_000).await;
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert_eq!(
+        progress[channel]["last_failure_stage"], "update_request",
+        "a successful retry must retain the failed exchange stage for diagnosis"
+    );
+    #[cfg(unix)]
+    rekey.observe(root, traffic.peers).await;
     let requests = gate.observed();
     assert_eq!(
         requests.get(requests_before),
@@ -288,14 +361,88 @@ pub(super) async fn accepted_update_reply_loss_recovers_automatically(
         "retained lifetime authority cannot exceed its original cap"
     );
 
+    let held = gate.arm(channel, LossPoint::BeforeApply);
     traffic.send(if slow == 1 { 4 } else { 0 }, 177).await;
+    let mut held = tokio::time::timeout(Duration::from_secs(10), held)
+        .await
+        .unwrap()
+        .unwrap();
+    // An earlier exchange can finish before the gate is armed. Sample credit
+    // only after this update is held, when the channel worker cannot sign again.
+    let previous_credit = sellers[slow].channel_usage(channel).unwrap().paid_msat;
+    assert!(previous_credit < held.balance * 1_000);
+    assert!(held.balance > authorized);
+    assert_eq!(buyer.authorized_sat(channel), Some(held.balance));
+    assert_eq!(
+        journal(root, "buyer-2/buyer.json")["channels"][channel]["authorized_sat"],
+        held.balance
+    );
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert!(progress[channel]["in_flight"].as_bool().unwrap());
+    assert_eq!(progress[channel]["pending"]["stage"], "update_request");
+    let held_elapsed_ms = progress[channel]["pending"]["elapsed_ms"].as_u64().unwrap();
+    assert_eq!(
+        sellers[slow].channel_usage(channel).unwrap().paid_msat,
+        previous_credit
+    );
+    let captured_evidence = buyer.evidence_msat(channel).unwrap();
+    let requests_before = gate.observed().len();
+    #[cfg(unix)]
+    rekey.observe(root, traffic.peers).await;
+    traffic
+        .paid_bursts(healthy, &purchases[1], sellers, buyer, 173)
+        .await;
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert_eq!(progress[channel]["pending"]["stage"], "update_request");
+    let elapsed_ms = progress[channel]["pending"]["elapsed_ms"].as_u64().unwrap();
+    assert!(
+        elapsed_ms > held_elapsed_ms,
+        "held update age increases while another neighbor makes payments"
+    );
+    assert_eq!(buyer.authorized_sat(channel), Some(held.balance));
+    assert_eq!(
+        sellers[slow].channel_usage(channel).unwrap().paid_msat,
+        previous_credit
+    );
+    assert_eq!(controller.funding_budget().await.unwrap(), budget);
+    // Keep the responder alive without applying the update or canceling it.
+    // Only the production request deadline may wake the automatic retry.
+    held.wait_for_expiry().await;
     let due = buyer.evidence_msat(channel).unwrap().div_ceil(1_000) * 1_000;
     assert!(due > authorized * 1_000);
     acknowledged(&controller, channel, due).await;
+    let progress = serde_json::to_value(controller.payment_progress().await.unwrap()).unwrap();
+    assert_eq!(
+        progress[channel]["last_failure_stage"], "update_request",
+        "a successful retry must retain the failed exchange stage for diagnosis"
+    );
+    let requests = gate.observed();
+    assert_eq!(requests.get(requests_before), Some(&Request::Usage));
+    let resent: Vec<_> = requests[requests_before..]
+        .iter()
+        .filter_map(|request| match request {
+            Request::Update(balance) => Some(*balance),
+            Request::Usage => None,
+        })
+        .collect();
+    assert!(
+        !resent.is_empty(),
+        "unapplied credit requires a real update retry"
+    );
+    assert!(resent.iter().all(|balance| *balance >= held.balance));
+    if buyer.evidence_msat(channel) == Some(captured_evidence) {
+        assert_eq!(resent, vec![held.balance]);
+    }
+    assert!(sellers[slow].channel_usage(channel).unwrap().paid_msat >= due);
     assert_eq!(controller.purchases().await.unwrap(), purchases);
     assert_eq!(controller.funding_budget().await.unwrap(), budget);
     assert_eq!(
         journal(root, "controller-2/controller.json")["funding"],
         funding
     );
+    #[cfg(unix)]
+    {
+        rekey.observe(root, traffic.peers).await;
+        rekey.assert_rotated("lost payment recovery");
+    }
 }

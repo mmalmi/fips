@@ -1,6 +1,8 @@
 //! Opt-in experiment over real service processes and isolated simulated money.
 #![cfg(all(unix, feature = "measurements"))]
 
+#[path = "cadence_benchmark/forwarding.rs"]
+mod forwarding;
 #[path = "cadence_benchmark/idle.rs"]
 mod idle;
 mod process_support;
@@ -19,18 +21,38 @@ use fips_relay::{
 use process_support::*;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsStr,
     fs::OpenOptions,
     io::Write,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const FUNDING: u64 = 1_024;
 
+fn benchmark_amount(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(value) => value.parse().expect("numeric benchmark amount"),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => panic!("invalid benchmark amount {name}: {error}"),
+    }
+}
+
+fn allowance_settings() -> (u64, u8, u64) {
+    let grace_msat = benchmark_amount("FIPS_CADENCE_GRACE_MSAT", 8_000);
+    let window_msat = benchmark_amount("FIPS_CADENCE_WINDOW_MSAT", 4_000);
+    assert!(matches!(grace_msat, 8_000 | 16_000));
+    assert!(matches!(window_msat, 4_000 | 8_000));
+    // Keep the debt trigger at 4,000 msat while varying available allowance.
+    (grace_msat, (400_000 / grace_msat) as u8, window_msat)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrialMode {
     Matrix,
     IdleControl,
+    ForwardingDrops,
 }
 
 async fn sample(configs: &[ServiceConfig]) -> Vec<Value> {
@@ -70,6 +92,7 @@ async fn stream(
                 packet_count: count,
                 payload_bytes: 1_000,
                 measure_one_way_latency: true,
+                lifetime_secs: None,
                 reflect: false,
             },
         },
@@ -86,6 +109,7 @@ async fn stream(
                 payload_bytes: 1_000,
                 packets_per_second: rate,
                 measure_round_trip: false,
+                max_duration_secs: None,
             },
         },
     )
@@ -104,6 +128,11 @@ async fn stream(
 }
 
 async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u64) -> Value {
+    let clock_started = Instant::now();
+    let started_unix_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
     let before_guard = sample(configs).await;
     let before = sample(configs).await;
     let started = Instant::now();
@@ -130,14 +159,32 @@ async fn workload(configs: &[ServiceConfig], npubs: &[String], name: &str, id: u
     // sequential status pass. A second full pass must show no deferred work,
     // including after the final workload where there is no next gap check.
     let after_guard = sample(configs).await;
+    let finished_unix_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let clock_span_us = clock_started.elapsed().as_micros();
     json!({"workload":name, "offered_elapsed_ms":offered_elapsed_ms,
+        "started_unix_us":started_unix_us, "finished_unix_us":finished_unix_us,
+        "clock_span_us":clock_span_us,
         "observation_elapsed_ms":observation_elapsed_ms,
         "before_guard":before_guard, "before":before, "after":after,
         "after_guard":after_guard, "probes":probes})
 }
 
 async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: TrialMode) {
-    let root = tempfile::tempdir().unwrap();
+    let root = match std::env::var_os("FIPS_CADENCE_ARTIFACTS") {
+        Some(directory) => {
+            let mut root = tempfile::Builder::new()
+                .prefix(&format!("trial-{trial_id}-"))
+                .tempdir_in(directory)
+                .unwrap();
+            // Preserve traces and financial evidence even if a trial fails.
+            root.disable_cleanup(true);
+            root
+        }
+        None => tempfile::tempdir().unwrap(),
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -155,14 +202,17 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     let mut paths = Vec::new();
     let mut npubs = Vec::new();
     let mut reservations = Vec::new();
+    let (grace_msat, unpaid_percent, window_msat) = allowance_settings();
     for i in 0..5 {
         let directory = root.path().join(format!("n{i}"));
         std::fs::create_dir(&directory).unwrap();
         let mut cfg = config(&directory, mint.url());
         cfg.payment_cadence = PaymentCadence {
             max_delay_ms: delay,
-            unpaid_percent: 50,
+            unpaid_percent,
         };
+        cfg.terms.grace_msat = grace_msat;
+        cfg.terms.window_msat = window_msat;
         cfg.terms.billing = BillingBasis::ForwardingAttempt;
         cfg.terms.controller.channel_capacity_sat = 256;
         cfg.terms.controller.max_locked_sat = 512;
@@ -213,7 +263,26 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     drop(reservations);
     let mut children = Vec::new();
     for path in &paths {
-        children.push(start(path).await);
+        let child = if mode == TrialMode::ForwardingDrops {
+            start_with_env(
+                path,
+                &[
+                    ("RUST_LOG", OsStr::new(forwarding::log_filter())),
+                    (
+                        "FIPS_LOG_UPTIME",
+                        OsStr::new(if forwarding::trace_admission() {
+                            "1"
+                        } else {
+                            "0"
+                        }),
+                    ),
+                ],
+            )
+            .await
+        } else {
+            start(path).await
+        };
+        children.push(child);
     }
     ready(&configs, &paths, &npubs, &mut children).await;
     let purchase = request(
@@ -265,7 +334,17 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
             .into_iter()
             .enumerate()
         {
-            let data = workload(&configs, &npubs, name, (index as u64 + 1) * 100).await;
+            let forwarding_before = if mode == TrialMode::ForwardingDrops {
+                Some(forwarding::snapshot(&configs).await)
+            } else {
+                None
+            };
+            let mut data = workload(&configs, &npubs, name, (index as u64 + 1) * 100).await;
+            if let Some(before) = forwarding_before {
+                data["forwarding"] = json!({
+                    "before": before, "after": forwarding::snapshot(&configs).await,
+                });
+            }
             writeln!(
                 output,
                 "{}",
@@ -287,7 +366,16 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
         stop(child).await;
     }
     if mode == TrialMode::IdleControl {
-        idle::retain_logs(&paths);
+        retain_logs(
+            &paths,
+            &PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap()),
+            65_536,
+        );
+    } else if mode == TrialMode::ForwardingDrops {
+        let directory = PathBuf::from(std::env::var_os("FIPS_CADENCE_DIAGNOSTIC_DIR").unwrap())
+            .join(format!("trial-{trial_id}"));
+        std::fs::create_dir(&directory).unwrap();
+        retain_logs(&paths, &directory, forwarding::log_limit());
     }
     let redeemed = root.path().join("redeemed");
     let mut total = 0;
@@ -334,6 +422,51 @@ async fn trial(delay: u64, trial_id: usize, output: &mut std::fs::File, mode: Tr
     output.flush().unwrap();
 }
 
+fn retain_logs(paths: &[PathBuf], directory: &Path, max_bytes: u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    for (node, path) in paths.iter().enumerate() {
+        let mut input = std::fs::File::open(path.with_extension("log")).unwrap();
+        let bytes = input.metadata().unwrap().len();
+        let omitted = bytes.saturating_sub(max_bytes);
+        input.seek(SeekFrom::Start(omitted)).unwrap();
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(directory.join(format!("node-{node}.log")))
+            .unwrap();
+        writeln!(
+            output,
+            "# original_bytes={bytes} omitted_prefix_bytes={omitted}"
+        )
+        .unwrap();
+        std::io::copy(&mut input.take(max_bytes), &mut output).unwrap();
+    }
+}
+
+#[test]
+fn diagnostic_log_retention_keeps_a_bounded_private_tail() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.json");
+    let mut log = vec![b'x'; 70_000];
+    log.extend_from_slice(b"\nlast forwarding error\n");
+    std::fs::write(config.with_extension("log"), &log).unwrap();
+    retain_logs(&[config], root.path(), 65_536);
+    let path = root.path().join("node-0.log");
+    let saved = std::fs::read(&path).unwrap();
+    assert!(saved.starts_with(b"# original_bytes=70023 omitted_prefix_bytes=4487\n"));
+    assert_eq!(saved.len(), 65_536 + 49);
+    assert!(saved.ends_with(b"\nlast forwarding error\n"));
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 fn new_report() -> std::fs::File {
     use std::os::unix::fs::OpenOptionsExt;
     let path = std::env::var_os("FIPS_CADENCE_REPORT").expect("set a new output JSONL path");
@@ -349,10 +482,11 @@ fn new_report() -> std::fs::File {
 #[ignore = "matched multi-process measurement; run alone with --release and FIPS_CADENCE_REPORT"]
 async fn matched_cadence_matrix() {
     let mut output = new_report();
+    let (grace_msat, unpaid_percent, window_msat) = allowance_settings();
     writeln!(output, "{}", json!({"schema":2, "optimized":!cfg!(debug_assertions),
         "platform":std::env::consts::OS, "architecture":std::env::consts::ARCH,
         "nodes":5, "paid_relays":3, "funded_directions":2, "transport":"UDP loopback",
-        "repeats":2, "unpaid_percent":50, "window_msat":4_000, "grace_msat":8_000,
+        "repeats":2, "unpaid_percent":unpaid_percent, "window_msat":window_msat, "grace_msat":grace_msat,
         "channel_capacity_sat":256, "fee_msat_per_kib":1,
         "payment_service_carrier":true,
         "boundary_accounting":"prepaid-usage-v1",

@@ -1,6 +1,7 @@
 //! An explicit, immutable test-customer purchase policy.
 use super::*;
 use crate::{
+    control_transport::NeighborAdmission,
     controller::{ControllerPolicy, RenewalPolicy},
     ledger::BillingBasis,
     service::ServiceTerms,
@@ -20,12 +21,20 @@ pub struct CustomerProfile {
     pub entry_address: SocketAddr,
     pub destination_npub: String,
     pub mint_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_mesh: Option<crate::mint_mesh::MintMesh>,
     pub budget_sat: u64,
     pub channel_capacity_sat: u64,
+    /// Explicit logical wallet limit, saved unchanged with the account terms.
+    pub wallet_capacity_bytes: u64,
     pub max_rate_msat_per_kib: u64,
     /// Immutable route tariff. Missing saved values retain the original mode.
     #[serde(default = "original_billing")]
     pub billing: BillingBasis,
+    /// Opt in to offering paid forwarding to authenticated adjacent peers.
+    /// This does not grant free traffic or expand the account's spending limits.
+    #[serde(default)]
+    pub neighbor_admission: NeighborAdmission,
 }
 
 fn original_billing() -> BillingBasis {
@@ -41,6 +50,9 @@ fn local_address(ip: IpAddr) -> bool {
 
 impl CustomerProfile {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(mesh) = &self.mint_mesh {
+            mesh.target(&self.mint_url)?;
+        }
         if !matches!(
             self.billing,
             BillingBasis::ForwardingAttempt | BillingBasis::ForwardingData
@@ -58,11 +70,15 @@ impl CustomerProfile {
             || self.budget_sat > 512
             || !(8..=128).contains(&self.channel_capacity_sat)
             || self.channel_capacity_sat > self.budget_sat
+            || self.wallet_capacity_bytes == 0
+            || self.wallet_capacity_bytes > i64::MAX as u64
             || !(1..=8192).contains(&self.max_rate_msat_per_kib)
             || !local_address(self.entry_address.ip())
             || self.entry_address.port() == 0
         {
-            return Err("invalid test profile identities, local entry or spending limits".into());
+            return Err(
+                "invalid test profile identities, local entry, spending or wallet limits".into(),
+            );
         }
         let mint = url::Url::parse(&self.mint_url).map_err(|_| "invalid test mint URL")?;
         let ip = match mint.host() {
@@ -103,32 +119,41 @@ impl CustomerProfile {
                 ..Default::default()
             },
             customer_network: None,
-            neighbor_admission: Default::default(),
+            mint_export: None,
+            neighbor_admission: self.neighbor_admission,
+            max_peers: None,
+            neighbor_rotation: None,
             destination_fees: Default::default(),
             return_allowance: false,
+            return_bandwidth: None,
+            public_free_transit: false,
             free_bandwidth: None,
             price_selection: None,
             payment_cadence: Default::default(),
+            funding_request_budget: None,
             neighbors: vec![PeerConfig::new(
                 &self.entry_npub,
                 "udp",
                 self.entry_address.to_string(),
             )],
             terms: ServiceTerms {
+                local_mint: None,
                 billing: self.billing,
+                mint_mesh: self.mint_mesh.clone(),
                 controller: ControllerPolicy {
+                    additional_receive_mints: vec![],
                     mint_url: self.mint_url.clone(),
                     channel_capacity_sat: self.channel_capacity_sat,
                     max_locked_sat: self.channel_capacity_sat * 2,
                     max_funding_overhead_sat: 0,
                     max_wallet_spend_sat: self.budget_sat,
-                    channel_lifetime_secs: 7200,
+                    channel_lifetime_secs: ControllerPolicy::DEFAULT_CHANNEL_LIFETIME_SECS,
                     renewal: Some(RenewalPolicy {
                         at_capacity_percent: 80,
                         before_expiry_secs: 30,
                     }),
                 },
-                wallet_capacity_bytes: None,
+                wallet_capacity_bytes: Some(self.wallet_capacity_bytes),
                 buyer_budget_sat: self.budget_sat,
                 window_msat: 4000,
                 grace_msat: 8000,

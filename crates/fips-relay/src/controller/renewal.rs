@@ -2,6 +2,11 @@
 
 use super::*;
 use crate::ledger::ChannelUsage;
+use fips_core::node::ForwardingPolicy;
+
+mod handover;
+mod preopening;
+use preopening::Preopening;
 
 #[cfg(test)]
 #[path = "renewal_admission_tests.rs"]
@@ -9,8 +14,8 @@ mod admission_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenewalPolicy {
-    /// Renew near capacity using local submissions or the provider's retained
-    /// crash exposure. Neither renewal hint authorizes a payment.
+    /// Renew near capacity using local submissions, authorized payments or the
+    /// provider's retained crash exposure. These hints never authorize a payment.
     pub at_capacity_percent: u8,
     pub before_expiry_secs: u64,
 }
@@ -20,13 +25,26 @@ impl RenewalPolicy {
         &self,
         purchase: &Purchase,
         evidence_msat: u64,
+        authorized_sat: u64,
         observed_units: u64,
         timestamp: u64,
     ) -> bool {
-        let nearing = timestamp.saturating_add(self.before_expiry_secs);
+        // Preserve saved renewal settings, but keep the lead below the shorter
+        // service window of newly funded channels.
+        let lead = purchase
+            .channel
+            .refund_after_unix
+            .map_or(self.before_expiry_secs, |refund| {
+                self.before_expiry_secs
+                    .min(refund.saturating_sub(purchase.channel.expires_unix) / 2)
+            });
+        let nearing = timestamp.saturating_add(lead);
         purchase.channel.expires_unix <= nearing
             || purchase.contract.expires_unix <= nearing
-            || self.capacity_due(&purchase.channel, evidence_msat)
+            || self.capacity_due(
+                &purchase.channel,
+                evidence_msat.max(authorized_sat.saturating_mul(1_000)),
+            )
             || u128::from(observed_units) * 100
                 >= u128::from(purchase.contract.max_units) * u128::from(self.at_capacity_percent)
     }
@@ -80,6 +98,10 @@ impl Store {
 pub(super) struct Renewal {
     pub(super) previous: Vec<Outgoing>,
     replacements: Option<Vec<RouteOffer>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) preopening: Option<Preopening>,
+    #[serde(default)]
+    handover: bool,
     completed: bool,
 }
 
@@ -109,6 +131,7 @@ pub(super) fn same_service(previous: &RouteOffer, next: &RouteOffer) -> bool {
         && previous.destination.node_addr() == next.destination.node_addr()
         && previous.next_hop == next.next_hop
         && previous.path == next.path
+        && previous.bid_msat_per_kib == next.bid_msat_per_kib
         && previous.price == next.price
         && previous.billing == next.billing
         && previous.trial == next.trial
@@ -131,7 +154,10 @@ impl Controller {
         if journal.renewals.len() > MAX_CHANNELS {
             return Err("renewal history capacity".into());
         }
+        Self::validate_funding_neighbors(journal)?;
         for (id, renewal) in &journal.renewals {
+            Self::validate_preopening(journal, id, renewal)?;
+            Self::validate_handover(journal, id, renewal)?;
             if !renewal.completed && Self::route_change_pending_on(journal, id) {
                 return Err("conflicting route and renewal intents".into());
             }
@@ -154,10 +180,11 @@ impl Controller {
                 return Err("invalid retained renewal purchase".into());
             }
             if let Some(offers) = &renewal.replacements {
-                if !journal
-                    .buyer_settlements
-                    .get(id)
-                    .is_some_and(|s| s.refunded)
+                if (!renewal.handover
+                    && !journal
+                        .buyer_settlements
+                        .get(id)
+                        .is_some_and(|s| s.refunded))
                     || offers.len() != renewal.previous.len()
                     || offers.iter().zip(&renewal.previous).any(|(offer, old)| {
                         !same_service(&old.offer, offer)
@@ -195,7 +222,7 @@ impl Controller {
     /// Wait for current renewal work before preventing new automatic purchases.
     /// Keep incomplete intents for explicit recovery; never discard funding.
     pub async fn pause_renewals(&self) -> Result<(), String> {
-        let _work = self.renewal_work.lock().await;
+        let _work = self.renewal_work.write().await;
         self.change(|j| {
             j.renewals_paused = true;
             Ok(())
@@ -204,7 +231,7 @@ impl Controller {
     }
 
     pub async fn resume_renewals(&self) -> Result<(), String> {
-        let _work = self.renewal_work.lock().await;
+        let _work = self.renewal_work.write().await;
         self.change(|j| {
             j.renewals_paused = false;
             Ok(())
@@ -228,7 +255,13 @@ impl Controller {
             .buyer
             .observed_units(&purchase.contract.id)
             .unwrap_or(0);
-        policy.due(purchase, evidence, observed, timestamp)
+        let authorized = self
+            .services
+            .buyer
+            .authorized_sat(&purchase.channel.id)
+            .unwrap_or(0);
+        self.services.buyer.capacity_blocked(&purchase.channel.id)
+            || policy.due(purchase, evidence, authorized, observed, timestamp)
     }
 
     pub(super) fn reserve_renewal(j: &mut Journal, id: String) -> Result<(), String> {
@@ -267,6 +300,8 @@ impl Controller {
             Renewal {
                 previous,
                 replacements: None,
+                preopening: None,
+                handover: false,
                 completed: false,
             },
         );
@@ -274,10 +309,20 @@ impl Controller {
     }
 
     pub(super) async fn maintain_renewals(&self) -> Result<(), String> {
-        let _work = self.renewal_work.lock().await;
+        let (pending, mut first_error) = self.pending_renewals().await?;
+        for id in pending {
+            if let Err(error) = self.resume_renewal(&id).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    pub(super) async fn pending_renewals(&self) -> Result<(Vec<String>, Option<String>), String> {
+        let _work = self.renewal_work.read().await;
         let snapshot = self.snapshot().await?;
         if snapshot.renewals_paused {
-            return Ok(());
+            return Ok((Vec::new(), None));
         }
         let mut first_error = None;
         if let Some(policy) = &self.policy.renewal {
@@ -303,29 +348,114 @@ impl Controller {
                 }
             }
         }
-        let snapshot = self.snapshot().await?;
-        for (id, renewal) in snapshot.renewals {
-            if !renewal.completed
-                && let Err(error) = self.advance_renewal(&id, renewal).await
-            {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
-    // renewal_work excludes another replacement worker and orderly pausing.
-    // Settlement takes the payment mutex only for its own final balance/refund.
-    async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
-        if !self
+        let pending = self
             .snapshot()
             .await?
-            .buyer_settlements
-            .get(id)
-            .is_some_and(|s| s.kind == SettlementKind::Expiry && s.refunded)
-        {
-            self.settle_channel(id).await?;
+            .renewals
+            .into_iter()
+            .filter_map(|(id, renewal)| (!renewal.completed).then_some(id))
+            .collect();
+        Ok((pending, first_error))
+    }
+
+    pub(super) async fn resume_renewal(&self, id: &str) -> Result<(), String> {
+        // Readers allow independent channels to progress. An orderly pause
+        // waits for them all before persisting the gate against new work.
+        let _work = self.renewal_work.read().await;
+        let claim = format!("renew/{id}");
+        if !self.accepting.lock().unwrap().insert(claim.clone()) {
+            return Ok(());
         }
+        let _claim = AcceptGuard {
+            claims: &self.accepting,
+            id: claim,
+        };
+        let renewal = {
+            let mut snapshot = self.snapshot().await?;
+            if snapshot.renewals_paused {
+                return Ok(());
+            }
+            snapshot.renewals.remove(id)
+        };
+        if let Some(renewal) = renewal
+            && !renewal.completed
+        {
+            self.advance_renewal(id, renewal).await?;
+        }
+        Ok(())
+    }
+
+    // The caller owns this renewal's claim and a shared pause guard. Settlement
+    // separately serializes payment and closure of this particular channel.
+    async fn advance_renewal(&self, id: &str, mut renewal: Renewal) -> Result<(), String> {
+        renewal = self.prepare_renewal_funding(id, renewal).await?;
+        let snapshot = self.snapshot().await?;
+        let active = renewal.handover
+            && renewal.replacements.as_ref().is_some_and(|offers| {
+                offers.iter().all(|offer| {
+                    snapshot
+                        .outgoing
+                        .values()
+                        .any(|o| o.accepted && o.offer == *offer && o.purchase.channel.id != id)
+                })
+            });
+        // An accepted successor must keep forwarding while recovery retries the
+        // old mint operation, even when no further spending budget remains.
+        if active {
+            let _channel = self.channel_work(id)?.lock_owned().await;
+            self.refund_purchase(id, false).await?;
+            return self.complete_renewal(id).await;
+        }
+        let handover = renewal.handover
+            || (Self::funded_successor(&snapshot, &renewal).is_some()
+                && snapshot
+                    .buyer_settlements
+                    .get(id)
+                    .is_none_or(|s| s.kind == SettlementKind::Cooperative && !s.refunded));
+        // Prepare streams while the previous allowance still carries traffic.
+        // Waiting for a prior payment's channel guard also precedes the pause.
+        let previous = renewal.previous.first().ok_or("renewal purchase missing")?;
+        let peer = self.neighbor(previous.purchase.provider).await?;
+        self.services.acceptance.prepare(peer).await?;
+        if handover {
+            self.services.payments.prepare(peer).await?;
+        }
+        let _channel = self.channel_work(id)?.lock_owned().await;
+        let admission_pause = self
+            .services
+            .buyer
+            .pause_for_renewal(
+                renewal.previous.iter().map(|old| &old.purchase.contract),
+                self.services.seller.admission_notify(),
+            )
+            .map_err(|error| error.to_string())?;
+        let started = std::time::Instant::now();
+        let progress = |phase| {
+            tracing::debug!(target: "fips_relay::controller::renewal",
+            channel_id = id, phase, elapsed_us = started.elapsed().as_micros(),
+            "Renewal pause progress")
+        };
+        progress("paused");
+        let timing = TransitionTiming::new("refund", id);
+        let deferred_refund = if handover {
+            let old = self.prepare_refund(id, false, &timing).await?;
+            if !renewal.handover && !old.refunded {
+                self.acknowledge_final_payment(&old).await?;
+            }
+            Some(old)
+        } else {
+            if !self
+                .snapshot()
+                .await?
+                .buyer_settlements
+                .get(id)
+                .is_some_and(|s| s.kind == SettlementKind::Expiry && s.refunded)
+            {
+                self.refund_purchase(id, false).await?;
+            }
+            None
+        };
+        progress("previous_ready");
         if self
             .services
             .buyer
@@ -335,8 +465,16 @@ impl Controller {
             return Err("lifetime spending budget exhausted; no replacement funded".into());
         }
         if renewal.replacements.is_none() {
-            let mut offers = Vec::new();
-            for old in &renewal.previous {
+            let mut offers = renewal
+                .preopening
+                .as_ref()
+                .map(|p| p.offers.clone())
+                .unwrap_or_default();
+            for old in renewal
+                .previous
+                .iter()
+                .filter(|_| renewal.preopening.is_none())
+            {
                 let offer = self.services.quotes.renewal_offer(&old.offer).await?;
                 if !same_service(&old.offer, &offer) {
                     return Err(
@@ -345,51 +483,30 @@ impl Controller {
                 }
                 offers.push(offer);
             }
-            let previous = renewal.previous.clone();
             let saved = offers.clone();
             let channel_id = id.to_string();
-            self.change(move |j| {
-                if !j
-                    .buyer_settlements
-                    .get(&channel_id)
-                    .is_some_and(|s| s.refunded)
-                {
-                    return Err("previous channel refund incomplete".into());
-                }
-                for old in &previous {
-                    j.outgoing
-                        .get_mut(&old.purchase.contract.id)
-                        .ok_or("old purchase missing")?
-                        .retired = true;
-                    j.requested.remove(&old.offer.id);
-                }
-                for offer in &saved {
-                    if j.requested.len() >= MAX_ROUTES
-                        || j.requested.contains_key(&offer.id)
-                        || j.requested.values().any(|o| {
-                            o.provider == offer.provider
-                                && o.destination.node_addr() == offer.destination.node_addr()
-                        })
-                    {
-                        return Err("replacement request capacity or identity conflict".into());
-                    }
-                    j.requested.insert(offer.id.clone(), offer.clone());
-                }
-                j.renewals
-                    .get_mut(&channel_id)
-                    .ok_or("renewal intent missing")?
-                    .replacements = Some(saved);
-                Ok(())
-            })
-            .await?;
+            self.change(move |j| Self::replace_renewal_routes(j, &channel_id, saved, handover))
+                .await?;
             renewal.replacements = Some(offers);
         }
+        progress("replacements_ready");
         for offer in renewal.replacements.ok_or("replacement offers missing")? {
             let purchase = self.purchase_offer(offer).await?;
             if purchase.channel.id == id {
                 return Err("replacement reused closed funding".into());
             }
         }
+        drop(admission_pause);
+        progress("resumed");
+        if let Some(old) = deferred_refund {
+            self.finish_refund(old, &timing).await?;
+        }
+        self.complete_renewal(id).await
+    }
+
+    async fn complete_renewal(&self, id: &str) -> Result<(), String> {
+        #[cfg(feature = "testbench")]
+        wallet_barrier::hold(&self.services.wallet_directory, id, "renewal-complete").await?;
         let id = id.to_string();
         self.change(move |j| {
             j.renewals
@@ -399,117 +516,5 @@ impl Controller {
             Ok(())
         })
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn offer() -> RouteOffer {
-        let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-        let provider = NodeAddr::from_bytes([2; 16]);
-        RouteOffer {
-            trial: false,
-            billing: Default::default(),
-            id: "offer".into(),
-            buyer: NodeAddr::from_bytes([1; 16]),
-            provider,
-            destination,
-            next_hop: *destination.node_addr(),
-            path: vec![provider, *destination.node_addr()],
-            price: crate::ledger::BytePrice {
-                msat: 1_024,
-                per_bytes: 1_024,
-            },
-            expires_unix: 500,
-            max_units: 30_000,
-            mint_url: "http://127.0.0.1:1234".into(),
-            receiver_pubkey_hex: format!("02{}", "11".repeat(32)),
-            capacity_sat: 16,
-            grace_msat: 8_000,
-        }
-    }
-
-    #[test]
-    fn renewal_does_not_silently_change_resale_price_route_or_limits() {
-        let old = offer();
-        assert!(same_service(&old, &old));
-        let mutations: Vec<fn(&mut RouteOffer)> = vec![
-            |o| o.billing = crate::ledger::BillingBasis::ForwardingAttempt,
-            |o| o.price.msat += 1,
-            |o| o.provider = NodeAddr::from_bytes([3; 16]),
-            |o| o.next_hop = NodeAddr::from_bytes([4; 16]),
-            |o| o.path.push(NodeAddr::from_bytes([5; 16])),
-            |o| o.trial = !o.trial,
-            |o| o.mint_url = "http://127.0.0.1:5678".into(),
-            |o| o.max_units -= 1,
-        ];
-        for mutate in mutations {
-            let mut changed = old.clone();
-            mutate(&mut changed);
-            assert!(!same_service(&old, &changed));
-        }
-    }
-
-    #[test]
-    fn renewal_triggers_at_local_capacity_byte_limit_and_service_expiry() {
-        let offer = offer();
-        let mut purchase = Purchase {
-            provider: offer.provider,
-            channel: ChannelTerms {
-                id: "channel".into(),
-                buyer: offer.buyer,
-                mint_url: offer.mint_url.clone(),
-                capacity_sat: 16,
-                grace_msat: 8_000,
-                expires_unix: 600,
-            },
-            contract: Contract {
-                billing: Default::default(),
-                id: "contract".into(),
-                channel_id: "channel".into(),
-                destination: *offer.destination.node_addr(),
-                next_hop: offer.next_hop,
-                price: offer.price,
-                max_units: 30_000,
-                expires_unix: 500,
-            },
-        };
-        let policy = RenewalPolicy {
-            at_capacity_percent: 100,
-            before_expiry_secs: 30,
-        };
-        assert!(!policy.due(&purchase, 15_999, 29_999, 469));
-        assert!(policy.due(&purchase, 16_000, 0, 100));
-        assert!(policy.due(&purchase, 0, 30_000, 100));
-        assert!(policy.due(&purchase, 0, 0, 470));
-        purchase.contract.expires_unix = 600;
-        assert!(!policy.due(&purchase, 0, 0, 569));
-        assert!(policy.due(&purchase, 0, 0, 570));
-    }
-
-    #[test]
-    fn renewal_policy_rejects_unbounded_or_immediate_expiry_cycles() {
-        let mut policy = ControllerPolicy {
-            mint_url: "http://127.0.0.1:1234".into(),
-            channel_capacity_sat: 16,
-            max_locked_sat: 32,
-            max_funding_overhead_sat: 0,
-            max_wallet_spend_sat: 1024,
-            channel_lifetime_secs: 600,
-            renewal: Some(RenewalPolicy {
-                at_capacity_percent: 100,
-                before_expiry_secs: 30,
-            }),
-        };
-        Controller::validate_policy(&policy).unwrap();
-        policy.renewal.as_mut().unwrap().at_capacity_percent = 0;
-        assert!(Controller::validate_policy(&policy).is_err());
-        policy.renewal.as_mut().unwrap().at_capacity_percent = 101;
-        assert!(Controller::validate_policy(&policy).is_err());
-        policy.renewal.as_mut().unwrap().at_capacity_percent = 100;
-        policy.renewal.as_mut().unwrap().before_expiry_secs = 301;
-        assert!(Controller::validate_policy(&policy).is_err());
     }
 }

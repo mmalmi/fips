@@ -1,5 +1,6 @@
 """Exercise guard ownership and expired-lease behavior before a hardware outage."""
 
+import copy
 import json
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -142,6 +143,18 @@ class GuardTests(unittest.TestCase):
                 return process
             time.sleep(0.02)
         self.fail("guard did not acknowledge readiness")
+
+    def test_failed_fault_restore_cannot_mark_cleanup_complete(self):
+        restored = self.remote / 'fault-restored'
+        self.node.guard_restore_command = lambda: f'test -f {restored}'
+        self.guard.write_bytes(self.node.guard_script())
+        self.start_guard()
+        with self.assertRaises(RuntimeError):
+            self.local(['sh', str(self.guard), 'cleanup'])
+        self.assertFalse((self.remote / 'guard-cleaned').exists())
+        restored.touch()
+        self.local(['sh', str(self.guard), 'cleanup'])
+        self.assertTrue((self.remote / 'guard-cleaned').exists())
 
     def test_pinned_diagnostic_filter_reaches_the_owned_candidate(self):
         self.start_guard()
@@ -406,6 +419,93 @@ class GuardTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_guard_startup_accepts_integer_only_sleep_and_requires_ack(self):
+        class Prepared(Exception):
+            pass
+
+        for acknowledge in (False, True):
+            with self.subTest(acknowledge=acknowledge), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                spec = {"host": "lab1", "interface": "mesh0", "management_interface": "br-lan",
+                        "original_binary": "/usr/sbin/original", "original_config": "/etc/original.json",
+                        "state_parent": "/etc/bench"}
+                node = Router(spec, "123456789abc", root)
+                node.temporary = str(root)
+                node.write = Mock()
+                node.guard_script = Mock(return_value=b"")
+                node.guarded = Mock()
+                sleeper = root / "sleep"
+                sleeper.write_text('#!/bin/sh\ncase "$1" in *[!0-9]*|"") exit 2;; esac\n'
+                                   '[ "$ACK" != 1 ] || touch "$READY"\n')
+                sleeper.chmod(0o700)
+                env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"],
+                           ACK=str(int(acknowledge)), READY=str(root / "guard-ready"))
+
+                def remote(command, *args, **kwargs):
+                    if isinstance(command, str) and "guard-ready" in command:
+                        result = subprocess.run(["sh", "-c", command], env=env, capture_output=True)
+                        if result.returncode:
+                            raise RuntimeError("guard readiness failed")
+                    elif command == ["chmod", "700", node.binary]:
+                        raise Prepared()
+                    return b""
+
+                node.remote = remote
+                with patch("sim.wifi_remote.mesh_helpers", return_value=""):
+                    with self.assertRaises(Prepared if acknowledge else RuntimeError):
+                        node.stage_runtime(b"binary")
+                self.assertEqual(node.guard_ready, acknowledge)
+                self.assertEqual(node.guarded.call_count, int(acknowledge))
+
+    def test_restoration_allows_known_mesh_links_without_losing_saved_state(self):
+        old_boot = '00000000-0000-0000-0000-000000000001'
+        new_boot = '00000000-0000-0000-0000-000000000002'
+        original = {
+            name: {'identity': name, 'hashes': 'saved config and accounts',
+                   'boot_id': old_boot,
+                   'remaining_budget_sat': 64, 'connected_peers': [],
+                   'mesh_runtime': {'mac': f'02:00:00:00:00:0{index}', 'ifindex': 6}}
+            for index, name in enumerate(('n01', 'n02', 'n03'), 1)
+        }
+        existing = ('n03', 'ethernet', '020000000003')
+        recovered = ('n02', 'ethernet', '020000000002')
+        original['n01']['connected_peers'] = [existing]
+        cases = [({}, True), ({'connected_peers': [existing, recovered]}, True),
+                 ({'connected_peers': [recovered]}, False),
+                 ({'connected_peers': [existing, ('unknown', *recovered[1:])]}, False),
+                 ({'connected_peers': [existing, ('n02', 'udp', recovered[2])]}, False),
+                 ({'connected_peers': [existing, ('n02', 'ethernet', '020000000004')]}, False),
+                 ({'hashes': 'changed'}, False), ({'remaining_budget_sat': 63}, False)]
+        reindexed = {**original['n01']['mesh_runtime'], 'ifindex': 8}
+        cases += [({'boot_id': new_boot, 'mesh_runtime': reindexed}, True),
+                  ({'mesh_runtime': reindexed}, False),
+                  ({'boot_id': 'invalid', 'mesh_runtime': reindexed}, False),
+                  ({'boot_id': new_boot, 'mesh_runtime': reindexed, 'hashes': 'changed'}, False),
+                  ({'boot_id': new_boot, 'mesh_runtime': {**reindexed, 'mac': 'changed'}}, False)]
+
+        def observe(_label, predicate, _timeout):
+            if not predicate():
+                raise RuntimeError('baseline not restored')
+
+        for changes, accepted in cases:
+            with self.subTest(changes=changes):
+                run = object.__new__(WifiRun)
+                run.original = copy.deepcopy(original)
+                current = copy.deepcopy(original)
+                current['n01'].update(changes)
+                run.nodes = {name: Mock(baseline=Mock(return_value=value))
+                             for name, value in current.items()}
+                run.evidence, run.save = {'passed': True}, Mock()
+                run.monitor = SimpleNamespace(samples=[], errors=[], close=Mock())
+                with patch('sim.wifi_discovery.eventually', observe):
+                    if accepted:
+                        run.finish()
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'restoration incomplete'):
+                            run.finish()
+                self.assertEqual(run.evidence['passed'], accepted)
+                self.assertEqual(run.original, original)
+
     def test_false_trial_marker_may_be_omitted_but_true_or_paid_is_rejected(self):
         validate_free_offer({"price": {"msat": 0}})
         validate_free_offer({"price": {"msat": 0}, "trial": False})
@@ -518,7 +618,7 @@ class AcceptanceTests(unittest.TestCase):
         run = object.__new__(WifiRun)
         run.ctl = Mock()
         with self.assertRaisesRegex(ValueError, "outage node"):
-            run.ready(line=True, isolated=True, outage_node="n01")
+            run.ready(line=True, isolated=True, outage_node="n04")
         run.ctl.assert_not_called()
 
 

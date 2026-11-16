@@ -63,6 +63,13 @@ impl ReturnAllowance {
             budget: UnpaidBudget::for_returns(),
         }
     }
+    pub(crate) fn with_bandwidth(
+        mut self,
+        policy: &crate::free_routes::FreeBandwidthPolicy,
+    ) -> Self {
+        self.budget = UnpaidBudget::for_free(policy);
+        self
+    }
     pub(crate) fn earn(&mut self, request: &ForwardingRequest<'_>) {
         self.earn_at(request, Instant::now());
     }

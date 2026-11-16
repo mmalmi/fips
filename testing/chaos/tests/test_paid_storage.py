@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
 
@@ -27,6 +28,17 @@ def captures():
 
 
 class StorageAcceptanceTests(unittest.TestCase):
+    def test_verified_log_alias_is_literal_and_does_not_hide_other_files(self):
+        alias = "/mounted[copy]*/node?/process.log"
+        identity = {"device": 3, "inode": 7, "fd_paths": {"1": alias, "2": alias}}
+        paths = storage_paths(identity)
+        other = "/mountedc-extra/node1/process.log"
+        result = analyze([f'10 write(2<{path}>, ""..., 334) = 334\n'
+                          for path in (alias, other)], paths)["categories"]
+        self.assertEqual(result["process_log"]["write_bytes"], 334)
+        self.assertEqual(result["unmatched"]["write_bytes"], 334)
+        self.assertEqual(paths["wallet_sqlite"], storage_paths()["wallet_sqlite"])
+
     def test_both_senders_and_receiver_are_observed_without_funding_writes(self):
         summaries, lifecycles = captures()
         validate_storage(summaries, lifecycles)
@@ -43,6 +55,8 @@ class StorageAcceptanceTests(unittest.TestCase):
             lambda s, l: s["n02"]["categories"]["receiver_sqlite"].update(sync_errors=1),
             lambda s, l: s["n01"]["categories"]["directory_syncs"].update(sync_errors=1),
             lambda s, l: s["n03"]["categories"]["wallet_sqlite"].update(write_calls=1),
+            lambda s, l: s["n03"]["categories"]["wallet_sqlite"].update(sync_calls=1),
+            lambda s, l: s["n03"]["categories"]["wallet_sqlite_shared_memory"].update(write_errors=1),
         )
         for edit in edits:
             with self.subTest(edit=edit):
@@ -93,7 +107,7 @@ class PaymentBoundaryTests(unittest.TestCase):
             finances[node] = {"signed": dict.fromkeys(channels, 1)}
             statuses[node] = {
                 "last_error": None, "payment_progress": channels,
-                "measurements": {"version": 1, "process_id": index, "operations": {
+                "measurements": {"version": 2, "process_id": index, "operations": {
                     name: dict.fromkeys(COUNTERS, 1) for name in OPERATIONS}},
                 "control_traffic": [{"service_port": 44743, "counters": dict.fromkeys((
                     "stream_bytes_sent", "stream_bytes_received", "requests_started", "requests_received"), 1)}],
@@ -133,11 +147,21 @@ class PaymentBoundaryTests(unittest.TestCase):
 
     def test_strict_boundary_samples_each_node_twice_without_retry(self):
         run, statuses, finances = self.fixture()
-        run.ctl = Mock(side_effect=lambda node, _kind: statuses[node])
+        rendezvous = Barrier(3, timeout=2)
+        calls = []
+
+        def status(node, _kind):
+            calls.append(node)
+            rendezvous.wait()
+            return statuses[node]
+
+        run.ctl = status
         with patch("sim.paid_storage.eventually") as retry:
             result = run.boundary(finances, wait=False)
         retry.assert_not_called()
-        self.assertEqual(run.ctl.call_count, 6)
+        self.assertEqual(len(calls), 6)
+        for round_calls in (calls[:3], calls[3:]):
+            self.assertCountEqual(round_calls, run.nodes)
         self.assertEqual(result["guard"], result["sample"])
 
     def test_strict_boundary_retains_background_usage_with_unchanged_credit(self):
@@ -153,7 +177,9 @@ class PaymentBoundaryTests(unittest.TestCase):
         result = run.boundary(finances, wait=False)
         self.assertEqual(result["guard"]["n01"]["progress"]["evidence_msat"], 999)
         self.assertEqual(result["sample"]["n01"]["progress"]["evidence_msat"], 1000)
-        self.assertEqual(calls, list(run.nodes) * 2)
+        self.assertEqual(len(calls), 6)
+        for round_calls in (calls[:3], calls[3:]):
+            self.assertCountEqual(round_calls, run.nodes)
 
     def test_strict_boundary_rejects_unreconciled_or_changed_double_sample(self):
         for pending in (False, True):
@@ -174,7 +200,9 @@ class PaymentBoundaryTests(unittest.TestCase):
                 with patch("sim.paid_storage.eventually") as retry, self.assertRaises(RuntimeError):
                     run.boundary(finances, wait=False)
                 retry.assert_not_called()
-                self.assertEqual(calls, list(run.nodes) * 2)
+                self.assertEqual(len(calls), 6)
+                for round_calls in (calls[:3], calls[3:]):
+                    self.assertCountEqual(round_calls, run.nodes)
 
     def test_strict_boundary_includes_durable_work_in_every_operation_bucket(self):
         for operation in ("other", "window_checkpoint"):
@@ -192,7 +220,9 @@ class PaymentBoundaryTests(unittest.TestCase):
                 run.ctl = status
                 with self.assertRaises(RuntimeError):
                     run.boundary(finances, wait=False)
-                self.assertEqual(calls, list(run.nodes) * 2)
+                self.assertEqual(len(calls), 6)
+                for round_calls in (calls[:3], calls[3:]):
+                    self.assertCountEqual(round_calls, run.nodes)
 
     def test_durability_requires_all_original_operation_buckets_and_natural_counters(self):
         run, _, finances = self.fixture()
@@ -243,7 +273,11 @@ class TraceContextTests(unittest.TestCase):
                         else "/tmp/bench-state/wallet/.cashu-private-example")
                 (output / "storage.trace").write_text(
                     "" if empty else f'10 write(4<{path}>, ""..., 16) = 16\n')
-                (output / "storage.ready.json").write_text(json.dumps({"threads_attached": 2}))
+                alias = f"/mounted-origin/{node}/process.log"
+                process_log = {"device": 3, "inode": 7, "fd_paths": {"1": alias, "2": alias}}
+                (output / "storage.process-log.json").write_text(json.dumps(process_log))
+                (output / "storage.ready.json").write_text(json.dumps(
+                    {"threads_attached": 2, "process_log": process_log}))
 
             def wait(description, condition, _seconds):
                 if description == "bounded tracer detach":
@@ -283,6 +317,20 @@ class TraceContextTests(unittest.TestCase):
                                  [0, 0, 0])
                 self.assertTrue(all((run.root / node / f"storage-{capture}" / "storage.stop").exists()
                                     for node in run.nodes))
+
+    def test_capture_uses_each_workers_verified_log_alias_and_saves_the_same_map(self):
+        with self.fixture(empty=True) as (run, launched):
+            record = {}
+            with run.trace(record, capture="idle", require_activity=False):
+                for node, output in zip(run.nodes, launched):
+                    identity = record["trace_ready"][node]["process_log"]
+                    self.assertEqual(json.loads((output / "storage-paths.json").read_text()),
+                                     storage_paths(identity))
+                    (output / "storage.trace").write_text(
+                        f'10 write(2<{identity["fd_paths"]["2"]}>, ""..., 334) = 334\n')
+            for summary in record["storage"].values():
+                self.assertEqual(summary["categories"]["process_log"]["write_bytes"], 334)
+                self.assertEqual(summary["categories"]["unmatched"]["write_bytes"], 0)
 
     def test_legacy_empty_capture_still_rejects_when_activity_is_optional(self):
         with self.fixture(empty=True) as (run, _), self.assertRaises(ValueError):

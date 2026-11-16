@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuoteRequest {
+    /// Optional exact issuer for a voluntary bid. Never a URL to fetch on trust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_mint: Option<String>,
+    /// Voluntary local rate offered to each forwarding hop, in msat per KiB.
+    #[serde(default, skip_serializing_if = "crate::route_quotes::zero_bid")]
+    pub bid_msat_per_kib: u64,
     #[serde(with = "peer_identity")]
     pub destination: PeerIdentity,
     #[serde(with = "node_addrs")]
@@ -23,6 +29,9 @@ pub struct QuoteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteOffer {
+    /// Voluntary local rate offered to each forwarding hop, in msat per KiB.
+    #[serde(default, skip_serializing_if = "crate::route_quotes::zero_bid")]
+    pub bid_msat_per_kib: u64,
     /// A quota-limited trial cannot be renewed automatically without re-selection.
     #[serde(default, skip_serializing_if = "is_false")]
     pub trial: bool,
@@ -37,7 +46,8 @@ pub struct RouteOffer {
     pub destination: PeerIdentity,
     #[serde(with = "node_addr")]
     pub next_hop: NodeAddr,
-    /// Provider through final destination; descriptive, not a delivery proof.
+    /// Negotiated hops and their final next hop. A bid may end at a receive-only
+    /// seed's next hop, with ordinary native forwarding beyond that point.
     #[serde(with = "node_addrs")]
     pub path: Vec<NodeAddr>,
     pub price: BytePrice,

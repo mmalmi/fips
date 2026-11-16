@@ -134,22 +134,32 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(steady["mean_latency_us"], 80)
 
     def test_current_counters_require_their_complete_versioned_operation_set(self):
-        rows = complete_report()
-        for node in all_snapshots(rows):
-            node["measurements"]["version"] = 2
-            for name in ("payment_open", "payment_stop"):
-                node["measurements"]["operations"].pop(name)
-        self.assertEqual(len(self.run_report(rows)[1]), 32)
-        for operation in ("other", "window_checkpoint", "payment_update"):
-            incomplete = copy.deepcopy(rows)
-            for node in all_snapshots(incomplete):
-                node["measurements"]["operations"].pop(operation)
-            with self.subTest(operation=operation), self.assertRaises(ValueError):
-                self.run_report(incomplete)
-        # A restart/version transition cannot be combined into one interval.
-        workload(rows)["after"][0]["measurements"]["version"] = 1
-        with self.assertRaises(ValueError):
-            self.run_report(rows)
+        for version in (2, 3):
+            rows = complete_report()
+            for node in all_snapshots(rows):
+                value = node["measurements"]
+                value["version"] = version
+                for name in ("payment_open", "payment_stop"):
+                    value["operations"].pop(name)
+                if version == 3:
+                    value["operations"]["payment_exchange"] = copy.deepcopy(value["operations"]["payment_sign"])
+            grouped = self.run_report(rows)[2]
+            steady = grouped[("steady", 250)][0]
+            self.assertAlmostEqual(steady["payment_cpu_ms"], .02 if version == 3 else .015)
+            self.assertEqual((steady["signs"], steady["usage_polls"], steady["updates"]), (5, 5, 5))
+            required = ("other", "window_checkpoint", "payment_update")
+            if version == 3:
+                required += ("payment_exchange",)
+            for operation in required:
+                incomplete = copy.deepcopy(rows)
+                for node in all_snapshots(incomplete):
+                    node["measurements"]["operations"].pop(operation)
+                with self.subTest(version=version, operation=operation), self.assertRaises(ValueError):
+                    self.run_report(incomplete)
+            # A restart/version transition cannot be combined into one interval.
+            workload(rows)["after"][0]["measurements"]["version"] = 1
+            with self.assertRaises(ValueError):
+                self.run_report(rows)
 
     def test_reordering_is_recorded_without_rejecting_complete_delivery(self):
         rows = complete_report()

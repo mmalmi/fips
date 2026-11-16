@@ -106,13 +106,87 @@ FIPS_CADENCE_DIAGNOSTIC_DIR=/absolute/new-idle-logs \
   -- --ignored --exact --test-threads=1 --nocapture
 ```
 
-The report and log directory must not already exist. Source traces identify
+The report and log directory must not already exist. Each private node log
+retains its final 64 KiB, with a header identifying its original size and any
+omitted prefix. Source traces identify
 control type/body length and tracked reservation bytes/token/completion; the
 snapshots retain buyer evidence and payment counters. Status reads are not
 atomic packet captures, so use the trace to identify actual submitted controls.
 Periodic native upkeep is billable session traffic under the negotiated tariff,
 even when it creates no new payment. Do not alter its timers to obtain a quiet
 benchmark boundary.
+
+### Native forwarding-drop diagnostic
+
+The existing native `show_status` API distinguishes forwarding-policy refusals
+from route, MTU and send errors. This ignored diagnostic records those counters
+before and after each unchanged workload in two 500-ms trials:
+
+```sh
+FIPS_CADENCE_REPORT=/absolute/new-forwarding-drops.jsonl \
+FIPS_CADENCE_DIAGNOSTIC_DIR=/absolute/new-forwarding-logs \
+  cargo test -p fips-relay --release --features measurements \
+  --test cadence_benchmark forwarding::observe_forwarding_drops \
+  -- --ignored --exact --test-threads=1 --nocapture
+```
+
+The report and log directory must not already exist. The diagnostic enables
+`warn,fips_core::forwarding_error=debug`, retaining each node's final 64 KiB of
+logs in a private file under `trial-0` or `trial-1` after shutdown. Each file
+states its original byte count and any omitted prefix; a retained tail is not
+a complete event history. Successful forwards remain outside that debug target.
+The logs survive later report-validation failures, but an interrupted trial
+may end before retention. Funding, workload rates, durable windows,
+spending limits, tails and settlement use the normal trial implementation.
+Each workload's `forwarding.before` and `forwarding.after` arrays contain the
+process identity and cumulative native counters for all five nodes. Compare
+only matching processes without counter resets. Their sampling interval also
+includes the existing service snapshots and can contain protocol traffic;
+these are not application-only packet counts. The extra observations make this
+a diagnostic, not a matched cadence-cost comparison. Its metadata explicitly
+sets `comparison_complete: false`; the cadence analyzer must not accept it as
+a complete matrix.
+
+Validate and summarize this fixed diagnostic separately:
+
+```sh
+python3 testing/relay-cadence/forwarding_diagnostic.py /absolute/new-forwarding-drops.jsonl
+```
+
+This reports probe loss and native queue-full packets/bytes separately. Equal
+totals do not prove that the queue dropped those probes; different totals do not
+identify a control message. The diagnostic may remain valid with high-rate loss
+or queue congestion, but `clean_link_accepted` stays false. Lower-rate loss,
+unexpected native errors, incomplete payments and failed settlement reject it.
+Any high-rate usage exceeding acknowledged credit is retained explicitly in
+`evidence_deficits`; signed liability must always be acknowledged. A successful
+command validates the diagnostic, not production readiness or a cadence matrix.
+
+Instrumented relays also expose cumulative `measurements.admission_denials`
+counters for `credit_limit` and `durable_window`. These count failed admission
+attempts; a fallback can attempt admission more than once for one packet.
+Credit is checked first and includes channel capacity and relationship credit.
+A window refusal can mean delayed checkpoint progress or a packet whose cost
+exceeds the configured window. Other rejection reasons remain unclassified.
+Compare matching process identities and sampling intervals before relating
+these counters to native policy refusals; they have no accounting authority.
+
+For queue timing, add `FIPS_CADENCE_ADMISSION_TRACE=1` to the forwarding
+diagnostic command. It selects `warn,fips_admission=trace`, monotonic process
+log timestamps (`FIPS_LOG_UPTIME=1`) and a private 4-MiB log limit per node.
+The normal logging mode and forwarding behavior remain unchanged. Analyze with:
+
+```sh
+python3 testing/relay-cadence/admission_timing.py /absolute/new-forwarding-drops.jsonl /absolute/new-forwarding-logs
+```
+
+The timing reader rejects truncated logs and reports allowance-persistence
+duration and queue residence until readmission, before transport submission.
+Persistence includes serialization, disk I/O and publication of the new ceiling.
+Durations use monotonic clocks; approximate workload alignment uses local wall
+clocks and excludes a margin around boundaries. Wakeups coalesce, so these logs
+do not prove a one-to-one causal refill-to-packet latency. Logging adds overhead;
+delivery, financial conservation and cost-boundary validation remain separate.
 
 ## Hardware report contract (schema 3)
 
@@ -141,7 +215,10 @@ The mint-host JSON supplies `host`, `state_parent`, and optional `ssh_config` fo
 the existing guarded `RemoteMint` adapter. Its assigned LAN address must be
 reachable from every router. The release provenance must bind the supplied
 binary digest to a successful, unchanged-source ARM64 musl build with
-`--release` and the `measurements` feature. The runner retains this provenance,
+`--release` or `--profile openwrt`, and the `measurements` feature. For the
+OpenWrt profile, `verification.build.profile` must retain the compiler artifact's
+`opt_level: "s"`, `debug_assertions: false` and `test: false` settings.
+The runner retains this provenance,
 platform/load information and exact harness hashes beside private evidence.
 
 Alternatively, run the mint on the controller: replace `--mint-host` and its
@@ -212,6 +289,17 @@ runs after collection, so rejected measurements still retain financial evidence.
 completed trials, accepted measurements and a completed policy comparison.
 
 Schema 3 retains the same workload/boundary row structure, with these changes:
+
+For a new hardware run, `sim.wifi_cadence --prepaid-boundaries` declares
+`boundary_accounting: "prepaid-usage-v1"` before starting any trial. It reuses
+the native interval accounting described above, binding each counter to its
+host, node identity, PID and process start time. Already-paid usage may increase
+across a guard only within unchanged acknowledged credit. Payments, financial
+state changes, durable writes, process changes and missing Ethernet evidence
+still reject the report. Every guard/inter-workload interval and complete trial
+cost is retained and reconciled using integers. The option leaves historical
+reports strict; do not change the metadata of a finished run to accept it.
+Use JSON output because the comparison table omits those complete intervals.
 
 - High rate offers **8,000** packets at 4,000 packets/s. Idle, bursty and steady
   counts and rates remain as above. Every one of the eight bursts includes its
@@ -412,6 +500,36 @@ loss counts. The extra station read and short queue-lock hold add observation
 overhead; this diagnostic neither changes delivery acceptance nor establishes
 where an individual FIPS packet was lost.
 
+### Extended router load and process recovery
+
+`sim.wifi_restart_load` reuses the guarded three-router inventory, fresh
+384-test-sat mint, persistent profiles and existing probes. It sends six rounds
+of 4,000 × 1,000-byte payloads in each direction at 200 packets/s. Each finite
+stream lasts twenty seconds and is submitted once; observations separate the
+streams. After round three, it kills only the ownership-checked middle relay,
+reads its stopped journal and restarts the same profile. Fresh delivery and
+automatic payments must continue on the original channels. The test checks the
+exact recovered unbilled exposure against the stopped durable ceilings, then
+settles and collects all funds even after a workload failure when recovery is
+possible.
+
+```sh
+PYTHONPATH=testing/chaos python3 -m sim.wifi_restart_load \
+  --inventory /private/routers.json --binary /private/verified/fips-relay \
+  --mint-binary /private/verified/fips-relay-test-mint \
+  --mint-host /private/mint-host.json --mint-address <private-mint-address> \
+  --output /private/new-restart-load-run
+```
+
+Use a verified ARM64 measurements build. Channel capacity, wallet and buyer
+budgets, grace and durable windows retain the original paid Wi-Fi fixture limits.
+The declared tariff is one msat/KiB and the quote permits at most 32 MiB. The
+workload deadline is fifteen minutes; financial recovery retains its existing
+per-operation bounds. This is a finite 48-MB workload with process recovery,
+not physical power loss, maximum throughput, uninterrupted traffic across the
+restart, or a matched cadence comparison. Raw failed streams remain evidence;
+only the separately recorded session warmup can try fresh probes.
+
 ## Measurement boundaries
 
 Build the relay with the optional `measurements` feature. The private local
@@ -453,6 +571,20 @@ clock semantics are documented in the [Linux manual](https://man7.org/linux/man-
 `payment_progress` is an optional read-only observation of the scheduler and
 current buyer state. It is neither an atomic financial snapshot nor payment
 authority. Unknown state stays unknown after scheduler teardown or restart.
+`last_failure_stage` retains the latest failed automatic exchange's local stage,
+including after a successful retry. It contains a fixed label, never error text
+or payment material. Request and response labels distinguish transport/request
+work from validation of the peer's reply; they do not establish the root cause.
+Use acknowledged credit and `in_flight` for current progress. While an automatic
+payment is in flight, `pending` contains a fixed `stage` and monotonic `elapsed_ms`
+since that phase began. `scheduled` means the worker has been queued,
+`channel_lock` means it is waiting for another operation on that channel, and
+`awaiting_harvest` means the exchange finished but the scheduler has not collected
+its result. Exchange stages distinguish preparation, requests, response validation,
+signing and reconciliation. The age resets at each transition; it is not an
+end-to-end deadline or a delivery receipt. Harvesting or dropping the worker clears
+`pending`, including when canceled work finishes dropping later. A null failure
+stage means no failure was observed by this scheduler, or its state is unavailable.
 Snapshots bracket a quiescent workload; they do not freeze packet processing.
 Normalized payment CPU, journal bytes and record bytes use delivered application
 bytes. CPU per update includes usage polls and signing in the same window, not
@@ -464,18 +596,28 @@ and checkpoint instrumentation uses non-overlapping spans.
 
 ## Remaining comparison work
 
-This matrix provides the repeatable clean-link baseline. It does not fulfill
-the full production-readiness benchmark. Still required: impaired links using
-the existing FIPS simulation/chaos facilities, payment-specific complete carrier
-bytes, impaired-link and long-running storage comparisons, profiler attribution outside
-the synchronous spans, and complete controlled ARM64/router/phone comparisons.
-The guarded three-router 250-ms pilot passed all four workloads and financial
-recovery. The subsequent eight-trial hardware matrix collected all windows and
-recovered all funds, but its strict clean-link gate rejected three missing
-packets out of 93,696 submitted. The failed result remains failed; the saved
-evidence does not establish the loss cause. Performance changes
-need a matched baseline with instrumentation cost held constant. No production
-default is selected solely from this loopback experiment.
+Use the [readiness checklist](../../crates/fips-relay/READINESS.md#acceptance-checklist)
+for the current candidate and outstanding acceptance. The r613 native and
+three-router comparisons qualify the untraced CPU, logical journal and local
+payment-carrier counters on runtime `1b948a688`. Both eight-trial matrices deliver
+every payload and independently conserve their original test funds. Earlier
+rejected runs remain rejected; they do not describe the latest candidate.
+
+Independent packet captures and storage syscall comparisons remain separate
+from those counters. The accepted r214 physical capture and r202 virtual Ethernet
+storage results use older runtimes; reconcile them against the final candidate
+using the existing capture drivers below. Reuse the same policies, workloads,
+financial terms and strict boundary checks. Do not repeat the untraced CPU
+matrix merely to obtain a traced measurement, or use traced CPU as its replacement.
+
+The r615 controlled phone transit check qualifies delivery and accounting through
+foreground, background and forced Doze, not a current phone cost comparison.
+Physical mobility, natural idle, power loss and the remaining resource/fault
+acceptance retain their separate requirements. Report shared CPU work and
+unattributed packets explicitly: partial counters cannot establish complete
+payment cost, physical airtime, flash wear or a throughput ceiling. Performance
+changes need a matched baseline with instrumentation cost held constant. No
+production default is selected solely from this loopback experiment.
 
 For ordinary cumulative payments, signing rewrites the SDK's client snapshot;
 receiver updates use Spilman's SQLite database. Both execute synchronously inside
@@ -524,6 +666,46 @@ Every adjacent interval is counted once. An idle window can therefore show
 transport bytes with zero new payment records. Existing payment, storage,
 delivery and financial-conservation acceptance rules still apply; carrier
 diagnostics cannot turn a failed workload into an accepted comparison.
+
+### Independent payment packet captures
+
+Enable `fips_core::service_wire=trace` for the diagnostic run and retain complete
+daemon logs. The physical workload command `sim.wifi_cadence` accepts
+`--service-wire-trace`; it combines this target with any selected drop logging.
+Capture only outgoing packets on each experiment interface with
+full packet lengths (`tcpdump -Q out -s 0`), keeping the final capture statistics.
+Use classic Ethernet PCAP. Capture routers separately: process numbers belong
+to each host, and the same number on two routers does not identify one process.
+Keep accounts and financial recovery evidence through collection and closure.
+Linux loopback suppresses outgoing capture duplicates: use `-Q in` inside an
+isolated test namespace for that matrix. Disable GSO, GRO, TSO and UDP segmentation
+there so captures retain individual submitted packets; aggregated/offloaded
+records cannot establish packet attribution. Loopback Ethernet headers are
+synthetic, and changing offloads changes execution cost.
+
+The existing workload analyzer remains the acceptance gate. This command also
+requires zero kernel capture drops, matches encrypted submission fingerprints,
+and reconciles counter ordinals with workload, setup and guard boundaries:
+
+```sh
+python3 -B testing/relay-cadence/wire_intervals.py \
+  /private/measurements.jsonl /private/outgoing.pcap /private/daemon.log \
+  --capture-stats /private/tcpdump.log --host n01 --pilot
+```
+
+For the native UDP matrix, omit `--host` and provide all daemon logs. For a
+router capture, pass exactly that host's logs and repeat the analysis for every
+captured host. `--pilot` accepts one policy's existing finite workload sequence;
+omit it for the full policy comparison. Keep separate trial captures and pass
+`--trial N` when process numbers repeat between trials; the complete original
+report still passes workload and financial validation before selecting that
+trial's packets. Do not combine independent captures or host logs before
+attribution. Late settlement/shutdown packets, other service
+ports and opaque/shared packets remain outside measured payment windows and
+visible in unattributed capture totals. Captured Ethernet bytes include the
+observed link header and padding; physical framing and radio airtime remain
+unavailable. Trace hashing and capture activity alter execution cost, so these
+runs do not replace untraced CPU or timing measurements.
 
 ### Separate storage syscall diagnostics
 
@@ -611,8 +793,12 @@ reports usage before its workload and after its final sample; the next window
 starts from the post-detachment sample to avoid counting the same gap twice.
 No payment or storage cost is subtracted. Every payload must arrive, and source
 usage must cover at least its payload-derived tariff. Prepaid traffic need not cause another signature, but
-must still advance usage. Idle windows require no payment or tracked storage
-work; zero-write traces still require verified attachment and clean detachment.
+must still advance usage. Idle windows require no payment activity, financial
+file writes or syncs. Wallet upkeep may reopen SQLite and touch its transient
+`wallet.sqlite-shm` index; those successful syscall bytes and calls are separately
+reported and remain included in total file cost. Main database, WAL and rollback
+journal writes remain forbidden in every ordinary payment window. Zero-write
+traces still require verified attachment and clean detachment.
 Idle metered usage can advance without an application probe or another payment;
 that background usage remains reported and is never subtracted from other windows.
 Unmatched file operations, including failed operations, reject the window.
@@ -620,8 +806,11 @@ An explicitly detached eight-byte event-counter write may lack a return value;
 after verified tracer shutdown, it is counted separately without inventing
 successful bytes. Incomplete file writes and unknown descriptors still reject.
 
-Summaries separate SDK snapshots, receiver SQLite, funding-wallet files, relay
-journals and directory syncs. CPU counters collected under tracing are labeled
+Summaries separate SDK snapshots, receiver SQLite, funding-wallet database files,
+the funding wallet's shared-memory index, relay journals and directory syncs.
+SQLite's [WAL index](https://sqlite.org/walformat.html) contains transient shared
+state; this capture does not measure memory-mapped changes or physical media
+writes. CPU counters collected under tracing are labeled
 partial and unsuitable for timing comparisons. Successful syscall bytes are
 not physical media writes. A pilot validates one policy only; it cannot establish
 which payment cadence is preferable.

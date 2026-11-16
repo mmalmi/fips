@@ -31,6 +31,16 @@ Example mint configuration:
 }
 ```
 
+Small fragmentation fixtures may set `"fragmented_channel_keyset": true` with
+`max_issued_sat` at most 512. This creates a keyset with denominations 1, 64 and
+128 before any wallet is opened. A 128-sat grant remains compact; ordinary 32-sat channel
+funding and refunds retain one-sat coins with little test value. Fragmented-history
+fixtures collect in transfers of at most 32 sats to respect the ordinary wallet's
+output and recovery-record limits after repeated refunds.
+The setting defaults to false. The guarded Wi-Fi
+[retirement exercise](../../testing/chaos/README.md#controller-reads-during-wallet-retirement)
+uses it to test paid forwarding during cleanup of original refund history.
+
 Create the parent directory, then run:
 
 ```sh
@@ -40,7 +50,8 @@ fips-relay-test-mint run /absolute/path/mint.json
 For a hardware bench, choose an assigned private LAN address reachable from the
 routers. Wildcard, multicast and public binds are rejected. The TCP proxy has a
 fixed loopback CDK upstream, at most 32 active connections, and a 45-second
-connection limit. Funding controls use a separate private Unix socket. All
+inactivity limit. Active HTTP connections can carry successive refund requests.
+Funding controls use a separate private Unix socket. All
 participants must use the same advertised mint URL, including its port.
 
 Each mint process requires a new state directory. The simulated Lightning
@@ -48,6 +59,227 @@ network has in-memory state; existing directories are neither reset nor silently
 resumed. Keep this mint process alive across the relay restart tests. Settle and
 collect the run's balances before ending it. SIGTERM/Ctrl-C ends the fixture;
 this tool does not claim production mint restart support.
+
+Before startup succeeds, each mint saves a private `recovery.json` containing
+its seed, original URL, database path and public keyset. Preserve this record
+with the original mint database and wallets after interruption; it supports
+reviewed recovery of existing funds, not reissuance or restoration of the
+simulator's in-memory Lightning state.
+
+The r620 ARM64 musl build also passes one unfunded startup, metadata/report and
+graceful shutdown check on an OpenWrt router. The private recovery record matches
+the original database identity and live mint keys; copies of all three original
+SQLite sets pass integrity checks and contain no financial operations. The
+configured ceiling is one test sat, with zero issued. Normal services on all
+three routers remain intact. This qualifies ARM startup, not paid operation,
+mint restart or physical power-loss recovery. Source/artifact bindings and saved
+originals remain in `work/measurement-reconciliation-r620/arm-mint`.
+
+### Interrupt a committed mint reply
+
+The private administrator socket can hold the next successful swap response
+after the real mint commits it. This reuses the SDK's response barrier; no fault
+controls are exposed through mint HTTP or a normal relay build. Send these
+requests through `fips-relay-test-mint ctl`:
+
+```json
+{"type":"fault","command":{"action":"arm_swap_reply"}}
+{"type":"fault","command":{"action":"status"}}
+{"type":"fault","command":{"action":"release","generation":1}}
+```
+
+Use the generation returned by the arm request. Status reports `idle`, `armed`,
+`held` or `released`, plus cumulative swap-attempt, successful-swap and restore
+counters. Interrupt the link only after `held`, then release that generation
+and restore the link. This distinguishes a committed response lost in transit
+from a request that never reached the mint.
+
+Only one barrier can be active. Issuance and collection are refused while it is
+armed or held; status remains available. Release before `held` or with another
+generation fails. Releasing the same completed generation again is harmless.
+After an interrupted test, preserve the original mint and financial operation
+until recovery and collection finish. Do not issue replacement funds.
+
+## Mint HTTP over FIPS
+
+The relay library exposes `mint_mesh::MeshMintBridge`: `serve`
+connects one FIPS service port to a fixed loopback mint socket; `connect` binds
+a loopback client listener to that server's authenticated FIPS identity. It
+carries ordinary HTTP bytes over existing TCP/FIPS, without HTTP request replay,
+new payment messages, remote proxy destinations or access to the issuance socket.
+Each adapter has eight connection slots, four TCP connections per peer, 16 KiB
+buffers per direction and a 45-second inactivity limit. Useful byte progress
+extends that limit; empty packets do not. Local sockets wait
+up to three seconds for a TCP slot before any request bytes are read.
+The bridge does not parse HTTP methods, paths or bodies; the mint retains API
+authorization. A progressing stream can outlast the inactivity limit, so these
+are buffer and connection bounds, not a whole-request size or duration limit.
+Wallet HTTP clients enforce their own response limits and request deadlines.
+Shutdown explicitly resets retained streams before stopping the native endpoint,
+so reopening the same identity does not inherit abandoned TCP connections.
+
+The adapter grants no forwarding exemption. An operator must explicitly arrange
+bounded bootstrap access using existing route pricing and free-bandwidth
+controls. An empty customer wallet must be able to reach the
+mint before buying paid service. A client requests a zero-price route when an
+HTTP connection arrives, through the existing bounded quote cache. It never
+opens a paid channel to obtain mint access and does not poll for routes while
+idle. The focused native check is:
+
+```sh
+cargo test -p fips-relay --features testbench --lib mesh_mint_tests:: -- --test-threads=1
+```
+
+The case restarts the mint gateway after a committed funding reply is lost.
+During settlement, it removes the transit relay after the close swap commits,
+then starts a different relay while the original stays offline. At both losses,
+it also kills the CDK mint subprocess and reopens its original SQLite database
+and keys behind the same URL. Background recovery must activate the original
+channel, then finish its payout and refund through the replacement path without
+another swap or wallet spend. All 16 originally issued test sats must reach the
+collector. The subprocess fixture permits no new simulated funding after a
+restart; it covers Cashu proof-state durability, not recovery of a Lightning
+backend. The hardware test mint still requires a new directory per process.
+
+The handover cases keep all nodes alive while the provider's mint route moves
+through its former customer. They cover a disconnected edge and persistent
+packet loss in either direction of an enabled edge. Simulated discovery also
+suppresses advertisements in the fully lossy direction. The failed direction
+stays broken throughout recovery. Superseded cached free quotes are refetched
+without reviving their old allowances; no additional
+swap or wallet spend is allowed during recovery. After normal workers settle the
+original channel, the fixture redeems all 16 test sats through the remaining
+mint-side FIPS endpoint. Fixed identities and a checked customer-root baseline
+keep the routing arrangement reproducible. See the bounded evidence in
+[READINESS.md](READINESS.md).
+
+### Client configuration and wallet lifetime
+
+Configure fresh accounts before initialization:
+
+| Setting | Meaning |
+| --- | --- |
+| `terms.controller.mint_url` | Fixed numeric loopback HTTP URL, such as `http://127.0.0.1:3338`. |
+| `terms.mint_mesh.npub` | Authenticated FIPS identity of the mint's adapter. |
+| `terms.mint_mesh.service_port` | Its FIPS service port; `44745` is available for this experiment. |
+
+The mint identity and port are saved with the immutable financial terms. Customer
+profiles accept the same `mint_mesh` object alongside `mint_url`. Omit it to keep
+ordinary mint access. Mesh access requires forwarding-data billing; reserved
+relay service ports, non-loopback URLs and an occupied local listener are refused.
+
+While running, the mint adapter uses the relay's native endpoint. Import/export
+under the stopped wallet's exclusive root lock temporarily opens a mint-only
+endpoint with the **same** FIPS identity and configured links. It negotiates only
+free routes and rejects all transit. Balance reads and export-history
+acknowledgments do not start networking. Normal shutdown closes the adapter and
+endpoint before releasing the root lock; an active paid service still prevents
+offline wallet commands.
+
+The mint and every client's adapter must use the same wallet URL. A test mint can
+bind its own loopback port and clients can use that same loopback port locally,
+with TCP/FIPS connecting them. Do not rewrite a saved wallet's mint URL to adopt
+another adapter.
+
+### Mint host configuration
+
+A fresh forwarding-data service can run its own Cashu mint. Install the Unix
+`cashu-service-mint` helper (built with `local-mint-cln`) beside `fips-relay`.
+Set `terms.controller.mint_url` to a fixed numeric loopback address and add
+this field under `terms` before `fips-relay init`.
+
+```json
+"local_mint": { "cln_socket": "/path/to/lightning-rpc" }
+```
+
+Normal relay startup now brings up the mint and exports the Cashu API on its
+authenticated FIPS endpoint at port 44745. Clients use the pinned mint host's
+npub in `terms.mint_mesh`. A Lightning deposit buys transferable service sats.
+A separate new profile can opt into Lightning withdrawals with `"redeemable":
+true` inside `local_mint`. The helper pins the node identity, network and
+redemption policy. It requires an existing Core Lightning node. Back up the
+whole stopped mint directory and the node's separate Lightning state.
+
+Run `python3 crates/fips-relay/tests/managed_mint.py /path/to/fips-relay` to check
+the two installed binaries with an isolated Core Lightning RPC fixture.
+
+
+Run the test mint on its own loopback listener, for example `127.0.0.1:3338`.
+The ordinary relay daemon on that host can expose it using this top-level field
+in its existing service configuration:
+
+```json
+"mint_export": {
+  "backend": "127.0.0.1:3338",
+  "service_port": 44745
+}
+```
+
+Initialize a fresh relay account, then run it normally. Its saved FIPS identity
+is the `terms.mint_mesh.npub` that clients pin. Use forwarding-data billing and
+the same `http://127.0.0.1:3338` mint URL; omit `terms.mint_mesh` on the mint host.
+Client and server adapters cannot be enabled together. The export accepts only
+a fixed loopback TCP backend and a distinct, non-reserved FIPS service port. It
+shares the relay endpoint and its shutdown; the mint's private issuance socket
+is never exported. No additional proxy process or mint protocol is needed.
+Service-port registrations last for the native endpoint's lifetime; restart the
+complete relay service to restart an adapter, preserving its saved account.
+
+This configuration does not grant bootstrap traffic automatically. Give the mint
+destination a zero-price offer with bounded `free_bandwidth` on forwarding
+relays. Enable `return_allowance` on those relays to let admitted requests earn
+small replies along the reverse path. No client-specific tariff or mint-side
+return watch is then needed. The adapter uses small TCP segments so
+acknowledgments can sustain that earned credit. The default 1,024-unit/s neighbor
+reply budget is intended for small replies; the full mint lifecycle can exceed
+metadata request deadlines at that rate. For this bench, explicitly configure:
+
+```json
+"return_allowance": true,
+"return_bandwidth": {
+  "global_bytes_per_second": 32768,
+  "global_burst_bytes": 65536,
+  "peer_bytes_per_second": 8192,
+  "peer_burst_bytes": 16384
+}
+```
+
+This changes only operator-selected rate/burst limits. [Earned credit, path
+binding, state bounds and paid-route precedence](RETURN-ALLOWANCE.md) stay fixed.
+It is still a bounded bootstrap tier, without a delivery or fairness guarantee
+under contention. A changed or asymmetric response path needs matching
+forward admission on its edges; this does not establish general mobile bootstrap.
+
+Fresh router accounts pass the complete mint lifecycle over UDP and over two
+discovered open Wi-Fi mesh hops, without known-client return entries. The native
+case also recovers lost committed funding and settlement replies; the routers
+complete settlement after an interrupted radio path rejoins, without another
+mint swap. Saved hardware accounts retain their original mint URLs; Android
+mint integration remains pending. Current acceptance and its limits are recorded in
+[READINESS.md](READINESS.md).
+
+The recorded live-edge handover now also passes: the provider reaches the mint
+through its former customer while the old edge stays blocked. Its original
+administrative request times out; background recovery completes the saved
+settlement without another swap, and all test funds are collected. This specific
+symmetric topology change does not establish arbitrary or asymmetric mobility.
+The subsequent device case with persistent loss only in the old edge's return
+direction fails to recover settlement within its bounded window, even after
+the replacement topology appears. Its original funds are recovered separately
+on the original path. Preserve failed accounts for recovery; do not bypass a
+failure by granting unlimited mint forwarding or issuing new funds.
+A later instrumented run passes on the unchanged runtime and collects all its
+original funds over the replacement path. Its different routing identities and
+passing result do not establish that the earlier failure is fixed.
+
+A reduced routing regression subsequently finds a direct path suppressed by an
+unrelated neighbor with no usable alternative route. The fix retains that direct
+path only as a last resort, while preserving restrictions on stale links and
+unanswered payload. All three fixed-identity native handover cases then pass.
+The updated router runtime also passes the persistent return-loss case with the
+original log level and no periodic observer: ordinary settlement recovers, all
+16 test sats are collected, and original device settings are restored. This
+accepts the recorded topology changes; broader mobile bootstrap remains open.
 
 ## Fund a relay
 
@@ -74,6 +306,9 @@ fips-relay wallet /absolute/path/relay.json
 The request shape is `{"type":"import","token":"ENCODED_TOKEN"}`. This command
 accepts only sat tokens from the relay's saved mint. It acquires the same
 exclusive state lock as the service, so it refuses to race a running relay.
+While the original receive receipt is retained, retrying the same token returns
+the original result without redeeming it again. Its returned amount is not new
+wallet credit.
 Adding wallet funds does not change the lifetime spending budget, signed
 evidence, existing channel limits or seller credit. Never initialize a new
 relay directory as a substitute for reconciling an existing account.
@@ -85,16 +320,33 @@ stop the relay. Query and export its remaining wallet balance:
 
 ```sh
 printf '%s\n' '{"type":"balance"}' | fips-relay wallet /absolute/path/relay.json
-printf '%s\n' '{"type":"export","id":"return-1","amount_sat":512}' |
+printf '%s\n' '{"type":"export","id":1,"amount_sat":512}' |
   fips-relay wallet /absolute/path/relay.json
 ```
 
-Use the actual balance rather than the example amount. Export writes a new
-private file inside the saved state directory; the result contains only its
-path, amount and operation ID. Reusing the ID returns the existing export.
-A reserved export without a completed file fails closed; inspect the Cashu
-activity and saga journals before any recovery action. It is not automatically
-reissued as another spend.
+Use the actual balance rather than the example amount. Export IDs are positive
+integers: keep the number for retries and increase it for each new return. This
+is a fresh-profile protocol; old named export requests are not converted.
+Export writes a new private file inside the saved state directory; the result
+contains only its
+path, amount and operation ID. Reusing the ID checks the saved export against
+the original SDK result through a read-only lookup. A cached file without a
+completed result for its exact request, or with conflicting payment fields, is
+refused and preserved for reconciliation. Validation never starts or recovers
+a wallet send. If the file is missing, the SDK resumes the
+original wallet request and publishes its token atomically; it never substitutes
+a new send. A changed amount or mint is refused. Keep the saved wallet evidence
+and retry with the original ID, rather than inventing another ID.
+
+Export requests retain their original identity and result in the shared SDK send
+journal, which permits at most 128 retained requests and 4 MiB, with a 64 KiB
+limit per record. Other pending sends use the same capacity; these are upper
+bounds, not a guarantee of 128 exports. The private export directory also permits
+128 retained files; unknown files consume capacity and are preserved. Capacity
+exhaustion refuses a new request before sending.
+Do not delete the journal to reclaim space. An older `.intent` reservation
+also requires reconciliation of the original wallet activity: that marker
+cannot identify a recoverable SDK request.
 
 Send `{"type":"collect","token":"ENCODED_TOKEN"}` to the mint's private
 control socket to redeem each return. `{"type":"report"}` reports reserved
@@ -104,17 +356,86 @@ actual funding, and each router's final balance includes its positive net
 forwarding margin before collection. Conservation alone is not evidence that
 traffic used the intended wireless path.
 
+After collecting every export through a given number, or durably retaining their
+complete tokens in another trusted wallet workflow, release that prefix locally:
+
+```sh
+printf '%s\n' '{"type":"acknowledge_exports","through":1}' |
+  fips-relay wallet /absolute/path/relay.json
+```
+
+This is a custody acknowledgement, not a delivery receipt or peer message.
+It permanently closes **every** number through the supplied value, including
+unused numbers. Never acknowledge tokens that exist only in the export directory.
+The SDK refuses unfinished sends, retains cumulative gross amounts and fees, and
+commits the retired-number limit before files are deleted. Conflicting cached
+results are preserved and refused. If cleanup is interrupted, retry the same
+acknowledgement; totals are not counted twice. A new export also completes cleanup
+of already acknowledged files. Old numbers cannot spend again, even with changed
+terms or missing files. Unknown files are never deleted. No spending limit resets.
+This bounds export cache and send-request retention; it does not establish bounded
+lifetime storage for every other native wallet record.
+
+Offline acknowledgement does not contact the mint to reconcile the last send.
+Its native pending record and acknowledged custody references can remain after
+collection. With the relay stopped, reconcile existing wallet operations explicitly:
+
+```sh
+printf '%s\n' '{"type":"recover"}' | fips-relay wallet /absolute/path/relay.json
+```
+
+Recovery resumes pre-existing sends, receives, funded mint quotes and melts; it
+creates no new quote, send or channel. It uses the same exclusive owner lock,
+saved wallet-capacity checks and configured mint access as other offline wallet
+commands. The optional `funding_request_budget` applies to offline import, export
+and recovery as well as channel opening; omission retains CDK's pacing defaults.
+The response contains numeric recovery counts, `warning_count` and
+`recovery_pass_complete`. That flag means the pass reported no failed or pending
+recovery steps and no warnings; still-unspent exported tokens remain live.
+After successful recovery, repeat the original custody
+acknowledgement to release eligible originals; financial terms and costs remain.
+Retain the original mint and collector evidence when distinguishing that local
+bookkeeping from an uncollected token.
+
 ## Verification
+
+The regular `bench` suite uses three real exports to check custody, capacity,
+interrupted cleanup, cumulative costs and replay refusal. The opt-in case retains
+128 real exports at once, refuses another export without changing spending state,
+then acknowledges the full cache and exports the remaining balance. It checks
+131 completed requests and closes an unused number too, preserving lifetime
+costs and replay refusal. Run it separately with the accepted dependency
+configuration:
+
+```sh
+cargo test --locked --profile openwrt -p fips-relay \
+  --no-default-features --features testbench --test bench \
+  acknowledged_exports_outlive_the_request_limit_without_reusing_spends \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+`EXPORT_PRESSURE` reports the entire local wallet reopen and acknowledgement,
+including validation and cleanup. Sequential export/collection setup retains the
+default mint-request pacing and can take about 26 minutes on the recorded Linux
+fixture; that setup time is separate from the acknowledgement measurement.
+Both export cases retain their printed temporary directory on success or failure,
+including the original wallets, mint database, private recovery record and relay
+configuration. Audit and reconcile those originals before removing them; never
+replace an interrupted grant with a new issuance. The saved mint seed does not
+reconstruct the simulator's in-memory Lightning state.
 
 ```sh
 cargo test -p fips-relay --features testbench --test bench
 ```
 
-Tests exercise real mint funding, wallet import/replay rejection, an active
+Tests exercise real mint funding, wallet import retries without double credit, an active
 relay's exclusive lock, retained spending state, private idempotent export and
-redemption, issuance bounds, refused public binds, and both command-line tools
-through the private mint control socket. These supplement the native paid
-forwarding tests; they do not replace hardware path or customer-flow checks.
+redemption, lost-file recovery without another debit, issuance bounds, refused
+public binds, and both command-line tools through the private mint control socket.
+The command-line fixture also recovers a lost export file across separate process
+invocations and verifies that the wallet was debited only once. These supplement
+the native paid forwarding tests; they do not replace hardware path or
+customer-flow checks.
 
 ## Holding a committed acceptance response
 

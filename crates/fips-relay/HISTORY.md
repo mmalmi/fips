@@ -28,6 +28,11 @@ prefixes and their before/after totals. It then commits buyer and seller rollups
 and finally removes the matching controller route, request and completed
 replacement/renewal records. An idle pass writes no journals.
 
+Runtime upkeep releases the controller journal lock while checking and committing
+the buyer and seller rollups, so unrelated controller reads remain available.
+Before finalizing, it reacquires the lock and requires the store to be ready with
+the exact saved intent still present.
+
 An interrupted intent resumes before normal startup reconciliation. During an
 unfinished intent, other controller mutations stop; an already completed
 accounting prefix is recognized by its exact durable totals and absence of the
@@ -64,6 +69,12 @@ exact offer as `recovery_only` and let source selection consider another provide
 This withdraws routing permission, not financial liability: original funding IDs,
 pending wallet operations, channel terms, debits and lifetime limits remain.
 An eventual successful acceptance is retained without restoring that permission.
+
+Upkeep also withdraws a purchase when its accepted service expires, even if the
+quote remains valid for longer. A still-usable purchase of the same offer, a live
+incoming route or an unfinished route change or renewal prevents this withdrawal.
+Expired service therefore enters the existing settlement workflow without waiting
+for quote expiry. Funding and lifetime spending evidence remain unchanged.
 
 The controller persists this disposition before closing local quote authority.
 Quote installation shares the same lock, and startup repairs an interrupted
@@ -157,6 +168,15 @@ intent resumes before ordinary funding recovery. Wallet ownership spans the
 blocking operation even if the async caller is cancelled. This performs local
 journal cleanup only and introduces no network message.
 
+Sender and receiver wallet retirement run outside the controller journal lock.
+Controller reads remain available while the wallet is busy; the persisted intent
+still suspends journal changes, and the wallet owner still excludes funding.
+Completion revalidates the exact pending plan before removing any evidence.
+Receiver planning also releases the journal lock before consulting the wallet;
+it rechecks current reports and competing intents before saving its plan, without
+overwriting unrelated changes made while planning was in progress. This does not
+bound wallet operation duration or the controller's own journal write time.
+
 For an abandoned wallet send, the SDK also acknowledges its exact original refund
 receipt before discarding the operation identity. Its saved channel intent retains
 the verified net refund and original token cost through the wallet's durable
@@ -186,22 +206,45 @@ completed handoffs write neither buyer nor controller journals.
 
 The payment controller pairs its receiver with the original wallet directory.
 Automatic acceptance verifies the agreement and uses SDK wallet admission.
-When native capacity accounting is enabled, the
-SDK reserves the complete payout and shared bookkeeping before retaining funding.
+Services require native capacity accounting, so the SDK reserves the complete
+payout, shared bookkeeping and worst-case cleanup queue slots before retaining
+funding.
 Updates and final settlement require the original complete funding record; they
 cannot reconstruct it from a later signed payment. Ordinary updates do not open
 the wallet. Admission, payout import and retirement share the controller's wallet
 owner; automatic acceptance acquires it before the journal lock and releases it
 before onward purchase or peer-control waits.
 
-Settlement imports the SDK's original closed payout through its original wallet
-allowance, including a zero payout, before saving the controller report. Retrying
-an interrupted import does not credit coins twice. Authenticated receiver retirement
-removes the corresponding wallet admission only after the original payout handoff.
-These are logical storage reservations. Fresh services can explicitly configure
+Payment control requires the initialized wallet's original database and seed for
+funding admission, payout import and retirement. Missing files fail recovery
+without creating a replacement wallet or losing the saved capacity policy.
+Restore the original files before retrying.
+
+Settlement imports the SDK's original closed payout, including a zero payout,
+before saving the controller report. For payouts already spent at the mint,
+original wallet coin records are required even without a storage limit. The mint's
+spent status alone does not prove that this wallet received the payout. Missing
+those records leaves settlement unfinished; restoring the originals permits retry
+without crediting spent coins again.
+Conflicting mint, currency or value also prevents completion and preserves the
+retained records. Restore the original evidence before retrying. Signed proof
+reconstruction retains its existing repair of signatures and spending authorization.
+When capacity accounting is enabled, import also requires the original wallet
+allowance and queue reservation. Preparation and first retirement verify these
+records before deleting receiver evidence. Final admission removal and unused
+slot release commit together after the original payout handoff. Completed retries
+still verify exact queue custody for retained payout coins; missing recovery
+records cannot silently finish an unqueued payout.
+These are logical storage reservations. Fresh services must explicitly configure
 native wallet capacity before initialization; [service setup](SERVICE.md) describes
 the fixed policy. Other wallet paths/stores and physical recovery still need
 separate deployment acceptance.
+
+A provider can complete settlement at service expiry before a cooperative
+request arrives. A later request from the original buyer for the same channel
+and signed balance returns that saved report without applying another payment.
+Settlement state is read while holding the channel's settlement claim, including
+when expiry completes concurrently with the request.
 
 After the buyer has durably recovered its refund, it sends one
 `ReleaseSettlement { channel_id }` request over the existing authenticated
@@ -283,15 +326,17 @@ operator intervention after enough distinct unpaid peers. Active, unexpired,
 pending, legacy or otherwise unresolved records also retain slots.
 The controller and ledger's channel bounds now count retained records on both sides.
 
-**Remaining history work:** unreleased spent proof records, unreleased or unrelated
+**Retained owners and scope:** unreleased spent proof records, unreleased or unrelated
 transactions, mint/melt records and orphaned legacy receiver records remain.
 Completed CDK recovery operations remove their saga records after any required
 owner acknowledgment; unfinished creating and spending operations must retain
 their original coins. Spent proof
 evidence also supports the SDK's receiver-custody checks. Proof cleanup must
 coordinate all of those owners, not merely observe a spent state or completed
-spending operation. This is not yet a bound on total router database size or proof
-of indefinite operation under hostile identity churn.
+spending operation. Logical storage limits and finite retirement checks do not
+bound total physical database size or prove indefinite operation under hostile
+identity churn. The accepted finite router pressure/resource workload is recorded
+in [the completion sequence](READINESS.md#completion-sequence).
 
 The SDK provides an explicit local proof-release queue for that handoff.
 Its caller must durably release every external owner before adding the original
@@ -301,9 +346,17 @@ unspent value, local recovery/send/receipt owners and the lifetime retired count
 FIPS seller-channel retirement supplies its saved original receiver payouts only
 after custody checks and receiver retirement finish.
 
-The version-3 queue stores compact authenticated references. Original coins remain
-in the wallet until native full-record comparison and deletion, committed in the
-same SQLite transaction as the authenticated queue and count update. A failure
+Receiver admission counts queued coins and outstanding promises against the same
+1,024 slots. Generic releases respect those promises; each new payout reference
+consumes its own slot, while queued or already collected retries consume none.
+Unspent payouts remain spendable and queued, so further admissions may require
+spending and collecting earlier payouts. The existing 128-coin batch limit stays
+unchanged.
+
+The version-4 queue stores compact authenticated references and payout slot
+reservations. Original coins remain in the wallet until native full-record
+comparison and deletion in the same SQLite transaction as the authenticated
+queue and count update. A failure
 rolls back both records and storage charges; there is no separate deletion redo
 log. An admitted eligible queue batch can reclaim full native payload capacity
 without growing a recovery intent first. Ordinary wallet reads remain available
@@ -315,6 +368,39 @@ Collection reads originals incrementally, with a soft 4 MiB batch budget and one
 oversized original allowed to progress alone. Neither queue references nor its
 checkpoint duplicate complete proof payloads. Older queue formats require fresh
 profiles.
+
+SDK `f8bc962` exposed a sender completion-capacity failure: capture reserved native
+space during retirement, after refund allowances could be released. Ordinary
+writes refilled the original 16 MiB wallet limit after refund recovery, and the
+saved handoff then failed the native capacity check. The regression finishes the
+funding claim before filling capacity, so later receipt deletion cannot mask the
+missing reservation. SDK `1770996` closes this gap with the native-send and refund
+custody reservations described below. The unchanged-runtime failure remains in
+`work/sender-handoff/red-1`; the corrected full-capacity handoff and shared-admission
+checks pass. Physical storage pressure remains separate from these logical limits.
+
+## Acknowledged wallet exports
+
+The local export acknowledgement hands off native send coin history through the
+SDK's `retire_owned_send_requests` API. The caller must first retain the complete
+tokens elsewhere or collect them, and finish any other external obligation that
+needs the original wallet records. Conflicting cached results and unfinished
+sends refuse the handoff.
+
+The SDK saves one authenticated intent and captures original identities before
+removing send owners. The permanent export-number cutoff and gross costs commit
+before archive acknowledgement or cached-token deletion. Retrying the
+acknowledgement, or preparing a later export, resumes that exact intent. Previously
+acknowledged and skipped numbers cannot create another payment. Unknown files
+remain untouched and count against the existing export-cache limit.
+
+An acknowledged token can still be redeemed later. Native claim tracking retains
+its own coin ownership until recovery completes, and collection preserves all
+unspent value, other send/receipt owners and imported originals without a separate
+release. The handoff runs bounded collection; it does not query the mint or
+pretend an unclaimed token has been spent. This adds no peer messages or changes
+to the export command fields. Remaining wallet workflows and total storage bounds
+still require separate acceptance.
 
 ## Proof custody storage
 
@@ -339,6 +425,13 @@ must still finish separately. Sender retirement plans use SDK format version 11;
 completed refunds still require
 the original refund proofs, including an explicit empty list for a zero refund.
 No additional FIPS journal or wire message is introduced.
+
+After checking expiry, settlement and original costs, the SDK completes any
+remaining native claim for the exact original funding send. This handles fully
+paid channels with no refund import to trigger claim recovery. Pending claims
+require the mint to confirm that every original token proof was spent; failure
+retains the records for retry. Already-terminal sends need no mint contact.
+Unrelated wallet operations are not recovered by this step.
 
 A cancelled preparation retains its exact operation identity until ordinary
 numbered-prefix retirement, using SDK client-store version 12 for the original
@@ -378,29 +471,62 @@ Initial swap admission and native send/receive/reclaim completion admission also
 reuse the bounded proof comparator. Completion sizing uses the verified originals
 already held by the caller instead of another decoded batch. Duplicate identities,
 operation ownership, full typed equality and atomic storage claims remain checked.
-This does not bound the initial operation or receipt reads used during admission.
+Ordinary service limits also cover initial exact operation and receipt lookups;
+the comparator alone does not bound other admission queries.
+
+Ordinary exact wallet invoice reads and atomic quote comparisons share a 4 MiB
+stored-payload limit before SQL projection and decoding. New quote writes and
+atomic issue/melt admission reserve later scalar/owner growth and the existing
+64 KiB payment-proof maximum within that limit. Refusal preserves original quotes
+and recovery owners; restoring the original evidence permits retry. Unconfigured
+native stores keep their previous behavior. Ordinary exact receipt reads also
+use the existing 4 MiB indexed batch query on every service open, including native
+completion and reclaim recovery. Oversized stored fields fail before projection
+or decoding and retain the original evidence. This closes a read-policy bypass
+without adding a smaller admission limit. The internal original-receipt reload
+during reclaim storage reservation uses the same bounded reader, through both
+ordinary saga updates and atomic output preparation. Rejection preserves the
+original receipt, saga, coins, allowance, output keys and derivation counter;
+restoring the original fields allows reclaim completion. Legacy bulk quote APIs,
+remaining wallet queries, aggregate memory and physical storage remain separate
+bounds.
 
 Output preparation also bounds cached mint-key comparison before SQL driver
 projection and decoding. The ceiling is 4 MiB or the larger caller-owned original,
 measured with the production key encoder. Full typed equality and keyset identity
 checks remain; rejection preserves keys, metadata, counters, recovery records and
-storage allowances. This does not bound ordinary initial key-cache loads.
+storage allowances. Separate service-configured metadata limits bound ordinary
+initial key-cache reads before SQL projection and check the cumulative cache size
+as each keyset is loaded.
 
-The version-4 custody registry caps retained pages plus unfinished capture
-reservations at 64 MiB by default. Before copying a new capture, the SDK pages the
-original owners to reserve its full serialized proof size plus 16 KiB per nonempty
-page. Appending transfers that allowance to retained pages; retries use the same
-reservation, and acknowledgment releases unused allowance only after the client
-financial commit. Older archives and unfinished redo logs require a fresh profile.
+The version-6 custody registry caps retained pages, unfinished captures and promised
+future custody at 64 MiB by default. Capacity-enabled wallets reserve native send
+custody before a saved plan authorizes spending, and a separate refund component
+before channel funding. Both use the existing authenticated registry and native
+storage owner. Older archives and unfinished redo logs require a fresh profile.
 `CashuWalletService::configure_proof_archive_capacity` persists a different limit
 but rejects shrinking below retained and reserved usage. It never evicts evidence.
 
-On pressure, retirement visits at most one previously acknowledged page before
-rejecting a new capture. Repeated retries can therefore free eligible spent
-history even when retirement precedes ordinary upkeep collection. Unspent or
-otherwise owned coins remain charged. The original plan and native owners remain
-until the complete capture fits and is sealed. The same transaction commits page
-changes and byte counters, checking every original record before replacement.
+Capture atomically converts only the exact prefix's native and refund promises
+into its measured page reservation. Original request bindings, proof ownership and
+the native storage owner must match. Missing or changed admission refuses completion;
+retry does not create another allowance. Unrelated writes cannot consume reserved
+space, including after refund import releases its separate completion allowance.
+Scope metadata, future checkpoints and maximum escaped cursors are reserved too.
+Ordinary send acknowledgment releases only native custody; channel refunds keep
+their own promise. Proven cancellation releases only its unused components.
+
+Appending transfers the capture allowance to retained pages. Acknowledgment releases
+unused space only after the client financial commit; unspent or otherwise owned
+coins remain charged. The same transaction commits page changes, exact custody and
+byte counters, checking original records before replacement. New work can refuse
+admission while already admitted handoffs finish at full logical capacity.
+
+Unbounded wallets retain best-effort admission at retirement, including token
+funding without an existing capacity-enabled wallet. That path visits at most one
+previously acknowledged page before refusing a capture that cannot fit. Enabling
+capacity after funding does not retroactively reserve old obligations. These are
+logical payload reservations, not reserved filesystem blocks.
 
 This is a logical page limit. Registry metadata has its separate 1 MiB bound and
 each page is limited to 4 MiB plus 16 KiB. Encoding reserves bounded whitespace
@@ -470,6 +596,15 @@ older custody redo logs are rejected without decoding their payload. These
 individual read limits do not reserve total storage or bound other wallet queries; see the
 [accepted scope and checks](READINESS.md#recovery-record-read-bounds).
 
+The wallet service also checks encoded payment tokens and imported proof JSON
+against a 4-MiB UTF-8 byte limit before decoding. The file-backed convenience
+entry points reject oversized inputs before opening or creating the wallet;
+service calls reject before mint registration or network activity. Payout
+verification uses the same guard. Inputs are never truncated, and an exactly
+fitting representation still reaches normal parsing. Existing completed channel
+refund and payout-retirement evidence already has that byte ceiling. This bounds
+input decoding, not total process memory or the complete database.
+
 Before submitting new swap, mint or melt-change outputs, the native wallet requires
 durable issuing keys and keyset metadata. A failed optional cache write cannot
 substitute for that requirement. Send confirmation, receive, reclaim and preparatory
@@ -486,9 +621,10 @@ see the [accepted wallet scope](READINESS.md#scope-and-outstanding-acceptance).
 SQLite single-value writes finish their statement before returning, so a
 `RETURNING` value cannot hide a late commit failure.
 The SDK reserves logical completion space for channel refunds and abandoned
-funding. Fresh services may opt into a fixed native-wallet limit; that policy does
-not accept every other wallet path or store. Logical allowances do not reserve
-physical disk.
+funding. Every relay service requires a positive fixed native-wallet limit before
+initialization or recovery, as specified in [service operation](SERVICE.md).
+That policy does not accept every other wallet path or store. Logical allowances
+do not reserve physical disk.
 
 For incoming tokens, locally unfamiliar coins require one NUT-07 state query
 before native acquisition. Spent, pending, malformed or unavailable results leave
@@ -538,6 +674,13 @@ Expiry starts recovery; it is not evidence of settlement or refund. Missing or
 conflicting original evidence retains the financial reservation. Report release
 remains part of cooperative cleanup, while verified expiry recovery does not
 require a peer acknowledgment. Neither path may fabricate one.
+
+Refund recovery with retained wallet ownership requires the original file-backed
+wallet database and seed before opening the wallet. A missing profile cannot become
+a fresh empty wallet or release the controller's financial reservation. The same
+file check serves funding restore and abandoned-funding recovery. Restoring original
+files allows the retained operation to resume; it does not authorize replacement
+funding or revive spent refund outputs.
 
 ## Journal compatibility and checks
 
@@ -601,6 +744,61 @@ cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-feature
 cargo test --config /path/to/local-dependencies.toml -p fips-relay --all-features --test funding_costs
 ```
 
+The opt-in fragmented-retirement case uses three ordinary processes and a local
+mint with one-sat denominations. It settles 15 channels, retaining 480 refund
+coins, then buys a separate active channel before the old refund deadlines.
+`ForwardingData` permits the bounded session handshake in both directions; a
+single original packet establishes delivery before contention begins.
+An external SQLite writer holds retirement without changing rows. The test
+requires paid delivery while that writer is held, releases it, and observes new
+provider credit and destination deliveries while the same retirement plan is
+still pending. It finally checks retirement, the unchanged active funding record,
+lifetime debits and conservation of all 384 test sats.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay \
+  --no-default-features --features measurements --test funding_costs \
+  retirement::live::ordinary_payments_progress_during_fragmented_sender_retirement \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+This Unix fixture requires Python 3 with SQLite and waits for six-minute real
+expiry times, with a 15-minute overall limit. Its owned mint uses the existing
+[funding request budget](FUNDING-COSTS.md#funding-request-pacing); financial limits
+remain enforced. Original wallets, mint and observations remain in the printed
+recovery directory even after failure. Pending-plan overlap measures liveness
+during retirement, not uninterrupted native execution or isolated CPU cost.
+
+The Linux spent-payout case gives a relay 1,023 one-sat coins through a genuine
+incoming settlement. Thirty subsequent channels spend 960 of those originals;
+another active channel still owns 32, and 31 remain spendable. At the incoming
+channel's real expiry, a held wallet writer must preserve the original settlement
+and coins while both forwarding hops continue earning payment. Releasing the
+writer permits eight cleanup batches to remove the 960 eligible spent coins,
+preserving the active channel's originals until its own retirement and keeping
+the 31 spendable coins unchanged. All 3,072 original test sats must be conserved.
+
+```sh
+cargo test --config /path/to/local-dependencies.toml -p fips-relay \
+  --no-default-features --features measurements --test funding_costs \
+  retirement::live::receiver::spent_receiver_payout_retires_during_paid_forwarding \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+This case also requires Python 3 with SQLite, waits for twelve-minute real expiry
+and has a twenty-minute limit. Its retained `spent-payout.json` reports delivery,
+both hops' payment authorization and provider credit across the live stream.
+All five counters must advance, with no observed gap above two seconds, and the
+stream must cover complete cleanup. The existing 500 ms payment cadence stays
+unchanged; the gap limit is this workload's acceptance criterion, not a protocol
+guarantee or packet-latency measurement. Financial settlement finishes before
+these progress assertions are checked.
+
+Whole-process CPU/RSS measurement ends when cleanup finishes. Progress between
+two unfinished-cleanup samples is reported separately: fast cleanup may finish
+between payment updates. These observations neither isolate cleanup cost nor
+establish maximum-history capacity.
+
 Seller tests cycle 64 completed channels through a single retained slot and
 restart after each cleanup. They verify exact debt, crash-window retention,
 non-netting of unrelated overpayments, buyer/mint isolation, bounds under distinct
@@ -626,7 +824,7 @@ These coordinator tests do not establish whole-wallet storage bounds or physical
 power-loss recovery. Exact proof-history collection has the separate ownership
 and recovery requirements described above.
 
-The current paged-custody revision passes the complete 336-test SDK workspace
+The paged-custody revision recorded in `13717d0ff8` passes the complete 336-test SDK workspace
 suite, 290 relay library tests and all nine funding process scenarios. Feature
 matrix, strict lint, formatting and source-size checks pass with matching source
 and dependency fingerprints. This verifies the tested custody and recovery paths;

@@ -127,7 +127,7 @@ def validate_effect(kind, evidence):
         raise RuntimeError("configured reordering was not observed by the receiver")
 
 
-def validate_finances(before, after, *, wallet=True):
+def validate_finances(before, after, *, wallet=True, quote_max_units=30_000):
     signed = {key: value for state in after.values() for key, value in state["signed"].items()}
     credited = {key: value for state in after.values() for key, value in state["credited"].items()}
     if len(signed) != 2 or set(signed) != set(credited):
@@ -168,7 +168,7 @@ def validate_finances(before, after, *, wallet=True):
             if set(state[key]) != set(old[key]):
                 raise RuntimeError("data fault replaced its original route agreement")
             for quote, units in state[key].items():
-                if not old[key][quote] <= units <= 30_000:
+                if not old[key][quote] <= units <= quote_max_units:
                     raise RuntimeError("billable units decreased or exceeded the original quote")
 
 
@@ -192,7 +192,8 @@ def financial_sample(run, before, evidence, *, wallet=True):
         evidence["financial_sample_finished"] = time.monotonic()
     evidence["last_financial_observation"] = current
     try:
-        validate_finances(before, current, wallet=wallet)
+        validate_finances(before, current, wallet=wallet,
+                          quote_max_units=getattr(run, 'quote_max_units', 30_000))
     except RuntimeError as error:
         # Validation messages are fixed local strings, with no request bodies.
         evidence["last_financial_validation_error"] = str(error)

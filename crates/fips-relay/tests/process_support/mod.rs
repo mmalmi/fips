@@ -13,21 +13,38 @@ use tokio::process::{Child, Command};
 mod transports;
 pub use transports::{udp_bind, udp_transports};
 
+#[allow(dead_code)] // Shared fixtures compile into separate integration test targets.
+pub fn retained_tempdir() -> tempfile::TempDir {
+    let mut root = tempfile::tempdir().unwrap();
+    root.disable_cleanup(true);
+    eprintln!("test recovery directory: {}", root.path().display());
+    root
+}
+
 pub fn config(root: &Path, mint: &str) -> ServiceConfig {
     ServiceConfig {
         state_directory: root.join("state"),
         transports: udp_transports("127.0.0.1:0".parse().unwrap()),
         customer_network: None,
+        mint_export: None,
         neighbor_admission: Default::default(),
+        max_peers: None,
+        neighbor_rotation: None,
         destination_fees: Default::default(),
         return_allowance: false,
+        return_bandwidth: None,
+        public_free_transit: false,
         free_bandwidth: None,
         price_selection: None,
         payment_cadence: Default::default(),
+        funding_request_budget: None,
         neighbors: vec![],
         terms: ServiceTerms {
+            local_mint: None,
             billing: Default::default(),
+            mint_mesh: None,
             controller: ControllerPolicy {
+                additional_receive_mints: vec![],
                 mint_url: mint.into(),
                 channel_capacity_sat: 32,
                 max_locked_sat: 64,
@@ -36,7 +53,7 @@ pub fn config(root: &Path, mint: &str) -> ServiceConfig {
                 channel_lifetime_secs: 600,
                 renewal: None,
             },
-            wallet_capacity_bytes: None,
+            wallet_capacity_bytes: Some(ServiceTerms::DEFAULT_WALLET_CAPACITY_BYTES),
             buyer_budget_sat: 64,
             window_msat: 4_000,
             grace_msat: 8_000,
@@ -52,9 +69,14 @@ pub async fn start(path: &Path) -> Child {
     start_with_env(path, &[]).await
 }
 
+pub fn relay_program() -> std::ffi::OsString {
+    std::env::var_os("FIPS_RELAY_TEST_PROGRAM")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_fips-relay").into())
+}
+
 pub async fn start_with_env(path: &Path, environment: &[(&str, &OsStr)]) -> Child {
     let log = std::fs::File::create(path.with_extension("log")).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+    Command::new(relay_program())
         .arg("run")
         .arg(path)
         .stdout(Stdio::null())
@@ -90,6 +112,17 @@ pub async fn stop(child: &mut Child) {
 }
 
 pub fn has_line_peers(status: &serde_json::Value, npubs: &[String], index: usize) -> bool {
+    has_peers(
+        status,
+        npubs
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| index.abs_diff(*j) == 1)
+            .map(|(_, p)| p.as_str()),
+    )
+}
+
+fn has_peers<'a>(status: &serde_json::Value, expected: impl Iterator<Item = &'a str>) -> bool {
     let actual = status["peers"]
         .as_array()
         .unwrap()
@@ -97,13 +130,7 @@ pub fn has_line_peers(status: &serde_json::Value, npubs: &[String], index: usize
         .filter(|p| p["connected"] == true)
         .map(|p| p["npub"].as_str().unwrap())
         .collect::<std::collections::BTreeSet<_>>();
-    let expected = npubs
-        .iter()
-        .enumerate()
-        .filter(|(j, _)| index.abs_diff(*j) == 1)
-        .map(|(_, p)| p.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    actual == expected
+    actual == expected.collect::<std::collections::BTreeSet<_>>()
 }
 
 pub async fn ready(
@@ -111,6 +138,30 @@ pub async fn ready(
     paths: &[PathBuf],
     npubs: &[String],
     children: &mut [Child],
+) {
+    ready_with(configs, paths, children, |i, status| {
+        has_line_peers(status, npubs, i)
+    })
+    .await;
+}
+
+#[allow(dead_code)] // Shared fixtures compile into separate integration test targets.
+pub async fn ready_configured(
+    configs: &[ServiceConfig],
+    paths: &[PathBuf],
+    children: &mut [Child],
+) {
+    ready_with(configs, paths, children, |i, status| {
+        has_peers(status, configs[i].neighbors.iter().map(|p| p.npub.as_str()))
+    })
+    .await;
+}
+
+async fn ready_with(
+    configs: &[ServiceConfig],
+    paths: &[PathBuf],
+    children: &mut [Child],
+    peers_match: impl Fn(usize, &serde_json::Value) -> bool,
 ) {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -123,7 +174,7 @@ pub async fn ready(
                     );
                 }
                 if let Ok(status) = request(cfg, &AdminRequest::Status).await
-                    && has_line_peers(&status, npubs, i)
+                    && peers_match(i, &status)
                 {
                     ready_nodes += 1;
                 }
@@ -135,11 +186,11 @@ pub async fn ready(
         }
     })
     .await
-    .expect("all processes should establish exactly the intended line peers");
+    .expect("all processes should establish exactly the intended peers");
 }
 
 pub async fn command(path: &Path, action: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_fips-relay"))
+    Command::new(relay_program())
         .arg(action)
         .arg(path)
         .output()

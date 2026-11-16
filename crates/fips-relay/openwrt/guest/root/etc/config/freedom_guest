@@ -1,0 +1,28 @@
+config hotspot 'main'
+	option mode 'off'
+	option address '192.168.79.1'
+	option price_sat '10'
+	option minutes '30'
+	option state '/etc/freedom-guest/passes.json'
+	option wallet '/usr/libexec/freedom-merchant'
+	# Set an accepted mint and a dedicated Nostr VPN merchant configuration.
+	# option mint 'https://mint.example'
+	# option nvpn_config '/etc/freedom-guest/merchant.toml'
+	# Both payment methods require a certificate trusted by guest devices.
+	# option tls_name 'guest.example.org'
+	# option tls_cert '/etc/freedom-guest/fullchain.pem'
+	# option tls_key '/etc/freedom-guest/key.pem'
+
+config uplink 'direct'
+	option device 'wan'
+	# Set the next hop on a broadcast uplink.
+	# option gateway '192.0.2.1'
+
+# Each paid profile is a dedicated tunnel to an isolated Nostr VPN buyer.
+# The peer forwards guest traffic exclusively to its selected paid exit.
+# config uplink 'office'
+#	option device 'wg-freedom1'
+# config uplink 'automatic'
+#	option device 'wg-freedom2'
+# Select multiple named profiles, in failover order, for mode 'selected'.
+#	list provider 'office'  # belongs in config hotspot 'main'

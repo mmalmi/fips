@@ -1,8 +1,147 @@
 use super::*;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn funding_requires_original_wallet_and_recovers_without_another_debit() {
+    use cashu_service::{
+        CashuWalletService, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
+        create_topup_quote, load_wallet_overview,
+        simulation::{IssuerMode, LocalMint, PaymentNetwork, VirtualClock},
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let network = PaymentNetwork::new(917, 0, Arc::new(VirtualClock::new(now().unwrap())));
+    let mint = LocalMint::start(
+        root.path(),
+        network.clone(),
+        "purchase-wallet-recovery",
+        IssuerMode::ClosedLoop,
+    )
+    .await
+    .unwrap();
+    let mut policy = unresolved_journal().policy;
+    policy.mint_url = mint.url().into();
+    policy.channel_lifetime_secs = 24 * 60 * 60;
+    let controller = refresh::tests::disconnected_controller_with_policy(root.path(), policy).await;
+    let directory = &controller.services.wallet_directory;
+    const MAXIMUM: u64 = 16 * 1024 * 1024;
+    drop(
+        CashuWalletService::create_file_backed_with_capacity(directory, MAXIMUM)
+            .await
+            .unwrap(),
+    );
+    let quote = create_topup_quote(directory, mint.url(), 64).await.unwrap();
+    network
+        .orchestrator_funding()
+        .settle_external(&quote.payment_request)
+        .unwrap();
+    assert!(
+        load_wallet_overview(directory, true)
+            .await
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
+    let receiver = FileSpilmanPaymentReceiver::load(
+        &root.path().join("provider"),
+        FileSpilmanPaymentReceiverConfig::new([mint.url().to_string()]),
+    )
+    .unwrap();
+    let (_, old) = transition_tests::fixture(&root.path().join("fixture"));
+    let mut offer = old.offer;
+    offer.buyer = *controller.services.endpoint.node_addr();
+    offer.mint_url = mint.url().into();
+    offer.receiver_pubkey_hex = receiver.receiver_pubkey_hex().into();
+    let saved = offer.clone();
+    controller
+        .change(move |j| {
+            j.requested.insert(saved.id.clone(), saved);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Let SQLite close its sidecars before moving each original independently.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for original in [
+        cashu_service::cashu_wallet_seed_path(directory),
+        cashu_service::cashu_wallet_db_path(directory),
+        directory.clone(),
+    ] {
+        let saved = root.path().join("original-wallet-evidence");
+        std::fs::rename(&original, &saved).unwrap();
+        assert!(controller.fund(&offer).await.is_err());
+        assert!(
+            !original.exists(),
+            "funding must not recreate missing wallet evidence"
+        );
+        std::fs::rename(saved, original).unwrap();
+    }
+    let (id, funded) = controller.fund(&offer).await.unwrap();
+    let saved: Journal = serde_json::from_slice(
+        &std::fs::read(root.path().join("controller/controller.json")).unwrap(),
+    )
+    .unwrap();
+    let intent = &saved.funding[&id];
+    assert_eq!(
+        funded.terms.expires_unix,
+        intent.created_unix + 12 * 60 * 60
+    );
+    let refund_at = intent.created_unix + 24 * 60 * 60;
+    assert_eq!(
+        intent.wallet_request(&saved.policy).unwrap().expiry_unix,
+        refund_at
+    );
+    assert_eq!(
+        funded.opening.params.as_ref().unwrap()["expiry_timestamp"],
+        refund_at
+    );
+    let (repeated_id, repeated) = controller.fund(&offer).await.unwrap();
+    assert_eq!(id, repeated_id);
+    assert!(funded == repeated);
+    // Recover the original wallet opening after losing its controller commit.
+    let lost = id.clone();
+    controller
+        .change(move |j| {
+            j.funding.get_mut(&lost).unwrap().funded = None;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    controller.recover_funding().await.unwrap();
+    let recovered = controller.snapshot().await.unwrap().funding[&id]
+        .funded
+        .clone()
+        .unwrap();
+    assert_eq!(recovered.terms, funded.terms);
+    assert_eq!(recovered.opening.params, funded.opening.params);
+    let wallet = CashuWalletService::open_existing_file_backed(directory)
+        .await
+        .unwrap();
+    assert_eq!(
+        wallet
+            .storage_capacity()
+            .await
+            .unwrap()
+            .unwrap()
+            .maximum_bytes,
+        MAXIMUM
+    );
+    assert_eq!(
+        wallet
+            .load_mint_balance(mint.url())
+            .await
+            .unwrap()
+            .balance_sat,
+        32
+    );
+    assert_eq!(controller.snapshot().await.unwrap().funding.len(), 1);
+    controller.services.endpoint.shutdown().await.unwrap();
+}
+
 pub(super) fn unresolved_journal() -> Journal {
     let local = NodeAddr::from_bytes([1; 16]);
     let policy = ControllerPolicy {
+        additional_receive_mints: vec![],
         mint_url: "http://127.0.0.1:1234".into(),
         channel_capacity_sat: 32,
         max_locked_sat: 32,
@@ -20,6 +159,7 @@ pub(super) fn unresolved_journal() -> Journal {
         grace_msat: 8_000,
         created_unix: 100,
         expires_unix: 700,
+        refund_after_unix: None,
         funded: None,
         reclaim: None,
     };
@@ -52,6 +192,7 @@ fn repurchase_rejects_unfinished_refunds_stale_offers_and_competing_renewal() {
     let mut journal = unresolved_journal();
     let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let terms = ChannelTerms {
+        refund_after_unix: None,
         id: "closed".into(),
         buyer: journal.local,
         mint_url: journal.policy.mint_url.clone(),
@@ -60,6 +201,7 @@ fn repurchase_rejects_unfinished_refunds_stale_offers_and_competing_renewal() {
         expires_unix: now().unwrap() + 600,
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: Default::default(),
         id: "old-offer".into(),

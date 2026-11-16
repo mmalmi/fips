@@ -14,6 +14,7 @@ pub(super) enum Scenario {
     AutomaticDelay,
     QualityChurn,
     Mobility,
+    PendingFundingMobility,
     InterruptedMobility { lose_settlement: bool },
     RecoveryTiming,
     MergeSplit,
@@ -31,7 +32,7 @@ impl Scenario {
             // Loss must change the delivered-cost ranking, not trip the ceiling.
             Self::Loss | Self::AutomaticLoss | Self::QualityChurn => policy.max_loss_percent = 80,
             Self::Delay | Self::AutomaticDelay => policy.max_rtt_ms = 150,
-            Self::Mobility | Self::InterruptedMobility { .. } => {
+            Self::Mobility | Self::PendingFundingMobility | Self::InterruptedMobility { .. } => {
                 policy.retry_after_ms = policy.feedback_timeout_ms;
             }
             _ => {}

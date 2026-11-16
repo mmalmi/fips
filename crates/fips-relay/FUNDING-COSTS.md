@@ -23,6 +23,156 @@ The existing `buyer_budget_sat` separately bounds cumulative relay payment
 signatures. It does not include wallet/mint fees. Set all limits explicitly.
 Zero funding overhead allows only funding that needs no value above capacity.
 
+## Funding request pacing
+
+Channel opening uses CDK's persistent per-origin HTTP request budget. The pinned
+CDK default permits a burst of 20 requests and replenishes 20 requests per minute.
+CDK persists pacing state on a best-effort basis across wallet reopenings. Small
+channels renewed often can therefore pause forwarding while settlement and
+replacement funding finish.
+Channel capacity, traffic price and the mint's permitted request rate must suit
+the intended workload; a payment interval does not bound renewal latency.
+
+An operator may set the top-level service option `funding_request_budget` for a
+mint whose request allowance they know. For example, the disposable local-mint
+renewal test uses:
+
+```json
+"funding_request_budget": {"burst": 128, "requests_per_minute": 60000}
+```
+
+Both values must be positive. Omission retains CDK's defaults. This is a local
+runtime setting, outside the saved financial terms; it cannot increase capital,
+spending or forwarding allowances. Service startup reapplies it on reload.
+Library callers use `Controller::with_funding_request_budget` after creation or
+loading. It applies to CDK HTTP requests during wallet-backed channel opening,
+including recovery of that opening through the purchase path. Separate Spilman
+settlement/refund clients and wallet recovery helpers keep their own behavior.
+CDK preserves pacing state when reconfigured, so an already scheduled wait may
+still apply. Do not infer permission to exceed a public mint's limits from this
+test configuration.
+
+In an instrumented five-node run, a 30-second delivery timeout at renewal round
+12 coincided with 17.830 seconds of deliberate CDK rate waits during the last
+18.265 seconds of unfinished replacement funding. With only the opening budget
+changed through the SDK API, all 36 delivery batches completed; the longest wait
+was 12.018 seconds and recorded pacing sleeps were below one millisecond.
+Financial limits, channel sizes, retry intervals and delivery deadlines were
+unchanged. This identifies the cause of that reproduced funding stall. It does
+not explain the separate historical delivery/payment failures or establish
+latency under slow mints, physical power loss or current router workloads.
+
+The configuration regression fails before this option and passes afterward.
+All 302 relay unit tests, all seven controller cases, the existing renewal case
+with optional features disabled, and strict all-target relay lint pass on the
+matching source graph. The renewal case reapplies the owned mint's budget after
+restart and retains the original channel, payment and lifetime spending limits;
+other controller scenarios retain default pacing. Formatting and source-size
+checks also pass. No SDK/CDK source, dependency, financial record or wire message
+changed. The accepted r22 package predates this setting.
+
+## Slow renewal isolation
+
+The six-node renewal regression holds a successful replacement-funding reply
+from the real isolated mint after the previous channel has been refunded. While
+that reply is held, the same router sends 36 fresh payloads through its other
+paid neighbor. That neighbor's credit advances from 2,000 to 6,000 msat before
+the response is released or times out; the final credit observation takes
+0.461 seconds with all features and 0.410 seconds without optional features,
+after the traffic batches. These are controlled observations, not latency bounds.
+
+The pending 64-sat reservation, 128-sat locked-capital total, 256-sat lifetime
+spending cap, funding sequence and net exposure stay unchanged throughout the
+held interval.
+After release, the replacement retains the original wallet operation and funding
+authority, the healthy channel is reused, and both routes deliver fresh payloads.
+All channels settle and all 1,536 test sats collect, including earlier renewal
+payouts and refunds. The test uses the default wallet request pacing and reuses
+the existing mesh, mint-response gate, healthy-payment probe and wallet collector.
+
+This covers the final funding wait during renewal. It does not establish service
+continuity on the renewing route, arbitrary mint latency, earlier preparation
+waits, mint failure/timeout recovery, interrupted renewal transitions or physical
+router acceptance. The slow-renewal regression itself adds no runtime behavior.
+
+## Withdrawal before provider acceptance
+
+A funded purchase can lose its connection before the provider accepts the
+channel. The held-opening mesh regression reproduced an automatic recovery bug:
+withdrawal began cooperative closure despite unconfirmed acceptance, then kept
+receiving settlement rejection because the provider did not know the channel.
+That durable closure prevented the unpaused Watch from reusing its recovered
+funding after rejoin, even though quotes and controller requests were delivered.
+
+Automatic withdrawal recovery requires a withdrawn purchase and confirmed provider
+knowledge of that exact channel before reserving cooperative closure. An earlier
+acceptance establishes that knowledge. If its reply was lost, recovery sends the
+existing authenticated `StopRoute` request for the retained contract. The provider
+acknowledges only the correct payer and matching installed channel accounting.
+The buyer records that confirmation without reviving the withdrawn route.
+
+Unknown, uninstalled or unresponsive accounts remain available to a fresh authorized
+purchase or recovery at their original expiry; they are not treated as refunded or
+released. A genuine late acceptance also enables ordinary closure. Existing shared
+channel fences, capital and lifetime spending limits remain in force, with no new
+message, journal field or dependency.
+
+The existing late-acceptance regression fails before the guard and passes after
+it. The six-node held-opening reproduction then recovers the original Watch,
+wallet operation and channel after rejoin; healthy payments advance while the
+mint response is held, all final streams deliver, and all 1,536 test sats collect.
+This corrects the reproduced unconfirmed-purchase closure. Other historical
+delivery and payment timeouts remain separate unresolved cases.
+
+The earlier acceptance guard passed all 302 relay unit tests, all seven controller
+cases, held-opening rejoin and slow-renewal isolation with and without optional
+features, strict all-target relay lint, formatting and source-size checks. SDK
+and native CDK sources are unchanged. The r22 package predates this correction;
+current-device and physical power-loss acceptance remain outstanding.
+
+That guard also left lost acceptance replies unreconciled. The existing mobile
+lost-acceptance test reproduces the failure on the base source; stopped-route
+confirmation restores automatic refund after authenticated rejoin. The final
+lost-settlement case also preserves its exact report through another departure,
+reloads and collects all 259 test sats. Wrong payers, missing installed accounting
+and changed or live purchases cannot establish recovery authority. Current
+verification is recorded in [readiness](READINESS.md#scope-and-outstanding-acceptance).
+
+## Shared-channel withdrawal after an interrupted upgrade
+
+A channel can already be known to the provider through an earlier accepted
+purchase, even when a replacement purchase's acceptance reply is lost. Recovery
+now recognizes that earlier acceptance on the same channel. The original
+withdrawal fence and checks for other eligible routes, new reservations, pending
+route changes and renewal still apply in the mutation that reserves closure.
+No accepted purchase on another channel can authorize this closure. This changes
+no message, financial record, dependency or spending allowance.
+
+The existing interrupted-promotion test reproduces the gap after reloading the
+controller and selector: the original trial is retired, the full purchase remains
+unconfirmed, and the watched route stalls after rejoin. The live-controller
+variant passes before the fix and permits a delayed acceptance to arrive.
+With the fix, the reload variant recovers automatically, advances payment and
+settles both original and replacement channels, collecting all 259 test sats.
+The original funding evidence, consumed trial allowance and spending limits remain
+checked throughout. This reload keeps native sessions, transport and wallet
+accounting alive; it does not establish physical power-loss recovery.
+
+The existing shared-channel journal regression now covers both direct withdrawal
+and withdrawal of an unconfirmed replacement after earlier acceptance. It fails
+before the fix and passes afterward, including validation after journal reload
+and rejection while another route or reservation still needs the channel.
+The independent rejection of wholly unconfirmed channel closure remains covered.
+
+The final source graph passes all 302 relay unit tests, all seven controller
+scenarios, interrupted promotion with and without controller reload under both
+feature profiles, held-opening rejoin under both profiles, and strict all-target
+relay lint. Formatting and source-size checks also pass. SDK and native CDK
+sources are unchanged. The accepted r22 package predates this correction;
+unrelated historical timeouts and current-device acceptance remain open.
+
+## Interrupted funding
+
 Recovery reads the original wallet cost even if its quote has expired or the route
 is paused. For a persisted channel opening, the SDK restores its exact mint outputs
 without creating another opening, sending wallet funds or falling back to a mint
@@ -201,12 +351,12 @@ the journal or supply invented zero fees. Legacy reconciliation and migration ar
 outside this greenfield milestone. Fresh test profiles must explicitly configure
 the two new policy fields. Settlement peers need the same updated report format.
 
-This source requires the unreleased local cashu-service, CDK, Spilman and TCP/FIPS changes;
-the published dependency pins cannot build the funding adapter yet. Use the
-cashu-service development override example, adding the local `cashu-service`
-crate path to `[patch.crates-io]`. Keep machine-specific overrides outside the
-repository and record exact revisions. Dependency release/version updates remain
-necessary before distribution. No device deployment is implied by these tests.
+The [wallet workspace](../../paid-routing/Cargo.toml) pins the Cashu SDK, CDK,
+Spilman channels and Bitcoin RPC client by full Git revision. Its
+[lockfile](../../paid-routing/Cargo.lock) records the qualified graph. Use
+`cargo build --manifest-path paid-routing/Cargo.toml --locked -p fips-relay`
+from the repository root. The corresponding crates.io versions lack some of
+the funding and refund APIs used here.
 
 The wallet's incoming-receipt reader now requires CDK's indexed
 `get_transactions_page` API and the matching SQL scope/cursor index. Its SDK API
@@ -215,15 +365,10 @@ still have more history. This bounds receipt enumeration without truncating the
 independent checks that protect coin and receipt ownership. Use matched SDK/CDK
 sources; the published versions do not provide this storage contract.
 
-The TCP stack and endpoint override must include `set_connection_reservation`.
-Override both `nvpn-fips-tcp` and `nvpn-fips-tcp-endpoint`; this workspace still
-pins stack 0.2.2 and endpoint 0.2.16, whose FIPS core requirement is 0.4.81. Use
-the matching development checkout with the reservation change (verified TCP/FIPS
-revision `491b11209aba`). Endpoint 0.2.17
-requires core 0.4.82 and cannot silently replace this graph. Shared Rust/TypeScript
-admission vectors and live interoperability checks cover the new local policy;
-the wire encoding is unchanged. Dependency version alignment remains a distribution
-requirement, separate from these matching-graph development tests.
+The relay uses `nvpn-fips-core` 0.4.123 with the published
+`nvpn-fips-tcp` 0.2.6 and `nvpn-fips-tcp-endpoint` 0.2.57 packages. The
+wallet workspace resolves both the relay and the TCP adapter against the same
+local core through its Cargo patch. The FIPS wire encoding is unchanged.
 
 ### Portable development source bundle
 
@@ -264,8 +409,12 @@ The current development graph also patches the eight CDK packages `cashu`, `cdk`
 `cdk-axum`, `cdk-common`, `cdk-http-client`, `cdk-signatory`, `cdk-sql-common` and
 `cdk-sqlite` from their corresponding `crates/<package>` directories; Spilman's
 `cdk-spilman` from `crates/cdk-spilman`; `bitreq` from `bitreq`; and
-`nvpn-fips-tcp`/`nvpn-fips-tcp-endpoint` from `rust/fips-tcp`/`rust/fips-tcp-endpoint`.
-Each repository gets one dependency entry with its exact audited revision. The
+`nvpn-fips-tcp-endpoint` from `rust/fips-tcp-endpoint`.
+Earlier portable bundles also carried TCP and endpoint source siblings. The
+current qualified TCP sibling is the unmodified 0.2.4 registry archive; preserve
+that source identity when reproducing the accepted graph, whether vendored or
+resolved from the registry. Keep endpoint 0.2.23 matched to the workspace core.
+Each local repository gets one dependency entry with its exact audited revision. The
 generated manifest records those revisions and the tested lock digest without
 copying the private input paths or specification.
 

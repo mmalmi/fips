@@ -1,0 +1,258 @@
+"""Real sockets distinguish rejection from the slot leak the bench detects."""
+
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import socket
+import sys
+import threading
+import time
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from sim.carrier_pressure import RECORDS, rejected
+from sim.wifi_carrier_pressure import WifiCarrierPressureRun
+from sim.wifi_carrier_owner import WifiCarrierOwnerRun
+from sim.udp_pressure import UdpPressure
+
+try:
+    from websockets.exceptions import ConnectionClosed
+    from websockets.sync.server import serve
+    from sim.websocket_pressure import PRELUDES, REQUEST, RESPONSE, expired_prelude
+except ImportError:
+    serve = None
+
+
+class CarrierPressureTests(unittest.TestCase):
+    def test_udp_pressure_paces_real_datagrams_and_closes_all_sources(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind(('127.0.0.1', 0))
+            receiver.settimeout(2)
+            pressure = UdpPressure(receiver.getsockname(), rate=2000, duration=2)
+            received = []
+            pressure.start()
+            try:
+                while len(received) < 512:
+                    received.append(receiver.recvfrom(2048))
+                self.assertGreaterEqual(pressure.observe()['sent'], 512)
+            finally:
+                pressure.finish()
+            sent = sum(row['sent'] for row in pressure.rows[0])
+            while len(received) < sent:
+                received.append(receiver.recvfrom(2048))
+            self.assertEqual({source[1] for _, source in received}, set(pressure.ports))
+            self.assertEqual(len(pressure.ports), 64)
+            self.assertEqual(sum(len(data) for data, _ in received),
+                             sum(row['bytes'] for row in pressure.rows[0]))
+            self.assertEqual({data[0] for data, _ in received}, {0, 1, 2})
+            self.assertGreaterEqual(pressure.ended - pressure.started, (sent / 2000) - 0.02)
+            for port in pressure.ports:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reused:
+                    reused.bind(('0.0.0.0', port))
+            with self.assertRaisesRegex(RuntimeError, 'cannot be replayed'):
+                pressure.start()
+
+    def test_udp_worker_deadline_and_partial_paid_progress_cannot_pass(self):
+        from copy import deepcopy
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind(('127.0.0.1', 0))
+            pressure = UdpPressure(receiver.getsockname(), rate=100, duration=1)
+            pressure.start()
+            with self.assertRaisesRegex(TimeoutError, 'finite window'):
+                pressure.job.result(timeout=3)
+            with self.assertRaises(TimeoutError):
+                pressure.finish()
+        pressure = UdpPressure(('127.0.0.1', 14970), rate=2000)
+        pressure.started, pressure.ended, pressure.ports = 0, 20, list(range(64))
+        snapshot = {'host_process': dict(pid=12, start_ticks=34, peak_rss_kib=20000),
+                    'native': {'status': {'data': dict(peer_count=2, connection_count=0)}}}
+        row = {'before': snapshot, 'after': snapshot,
+               'carrier_before': {'packets_recv': 0}, 'carrier_after': {'packets_recv': 39000},
+               'rejections': [dict(kind=kind, sent=13000) for kind in RECORDS],
+               'samples': [dict(bridge=snapshot, pressure={'sent': count},
+                                endpoints={name: {'received_bytes': count} for name in ('n01', 'n03')})
+                           for count in (1000, 10000, 20000)]}
+        pressure.validate(row)
+        for failure in ('no_ingress', 'stalled_paid', 'restarted', 'excess_memory', 'extra_peer'):
+            bad = deepcopy(row)
+            if failure == 'no_ingress':
+                bad['carrier_after']['packets_recv'] = 0
+            elif failure == 'stalled_paid':
+                bad['samples'][-1]['endpoints']['n01']['received_bytes'] = 10000
+            else:
+                bad['after'] = deepcopy(snapshot)
+                if failure == 'extra_peer':
+                    bad['after']['native']['status']['data']['peer_count'] = 3
+                else:
+                    key, value = ('pid', 99) if failure == 'restarted' else ('peak_rss_kib', 70000)
+                    bad['after']['host_process'][key] = value
+            with self.subTest(failure=failure), self.assertRaises(RuntimeError):
+                pressure.validate(bad)
+        pressure.finish()
+
+    def test_closed_records_pass_but_a_retained_socket_or_response_fails(self):
+        for mode in ('close', 'hold', 'response'):
+            with self.subTest(mode=mode), socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0))
+                listener.listen()
+                listener.settimeout(2)
+                release = threading.Event()
+
+                def server():
+                    with listener.accept()[0] as client:
+                        client.settimeout(2)
+                        wire = b''
+                        while len(wire) < len(RECORDS['msg2']):
+                            chunk = client.recv(1024)
+                            self.assertTrue(chunk)
+                            wire += chunk
+                        self.assertEqual(wire, RECORDS['msg2'])
+                        if mode == 'hold':
+                            self.assertTrue(release.wait(2))
+                        elif mode == 'response':
+                            client.sendall(b'x')
+
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    job = pool.submit(server)
+                    try:
+                        if mode == 'hold':
+                            with self.assertRaises(socket.timeout):
+                                rejected(listener.getsockname(), RECORDS['msg2'], timeout=0.1)
+                        elif mode == 'response':
+                            with self.assertRaisesRegex(RuntimeError, 'unexpected response'):
+                                rejected(listener.getsockname(), RECORDS['msg2'])
+                        else:
+                            self.assertGreater(rejected(listener.getsockname(), RECORDS['msg2']), 0)
+                    finally:
+                        release.set()
+                        job.result(timeout=2)
+
+    def test_extra_transport_cannot_hide_a_mesh_shortcut(self):
+        run = object.__new__(WifiCarrierPressureRun)
+        from types import SimpleNamespace
+        run.nodes = {'n02': SimpleNamespace(interface='mesh0')}
+        mesh = {'type': 'ethernet', 'name': 'mesh0'}
+        for transport, opened, closed in (('tcp', 'pool_inbound', 'pool_outbound'),
+                                          ('websocket', 'connections_opened', 'connections_closed')):
+            run.transport_type = transport
+            carrier = {'type': transport, 'name': 'rejections', 'stats': {opened: 0, closed: 0}}
+            self.assertIs(run.discovery_adapter('n02', [mesh, carrier]), mesh)
+            for extra in ([mesh, carrier, {'type': 'udp'}], [mesh, carrier, carrier],
+                          [mesh, {**carrier, 'stats': {opened: 1, closed: 0}}]):
+                with self.subTest(extra=extra), self.assertRaises(RuntimeError):
+                    run.discovery_adapter('n02', extra)
+
+    def test_known_tcp_owner_cannot_hide_another_radio_or_carrier_route(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        run = object.__new__(WifiCarrierOwnerRun)
+        run.owner = SimpleNamespace(npub='owner')
+        run.owner_started = True
+        run.nodes = {name: SimpleNamespace(npub=name) for name in ('n01', 'n02', 'n03')}
+        run.monitor = SimpleNamespace(check=lambda: None)
+        run.evidence, run.save = {}, lambda: None
+        peer = lambda name, transport='ethernet': dict(npub=name, transport=transport, connected=True)
+        baseline = {'n01': {'peers': [peer('n02')]},
+                    'n02': {'peers': [peer('n01'), peer('n03'), peer('owner', 'tcp')]},
+                    'n03': {'peers': [peer('n02')]}}
+        statuses = deepcopy(baseline)
+        run.ctl = lambda name, _kind: statuses[name]
+        self.assertTrue(run.ready(line=True))
+        self.assertEqual(len(run.evidence['last_peer_observation']['n02']), 3)
+        for node, extra in (('n02', peer('stranger', 'tcp')), ('n01', peer('n03'))):
+            statuses = deepcopy(baseline)
+            statuses[node]['peers'].append(extra)
+            self.assertFalse(run.ready(line=True))
+        for owner in ([], [peer('owner', 'udp')], [dict(peer('owner', 'tcp'), connected=False)]):
+            statuses = deepcopy(baseline)
+            statuses['n02']['peers'] = statuses['n02']['peers'][:2] + owner
+            with self.assertRaisesRegex(RuntimeError, 'original TCP owner'):
+                run.ready(line=True)
+
+    def test_owner_window_requires_fresh_authenticated_liveness_without_replacement(self):
+        from unittest.mock import Mock, patch
+        before = dict(npub='owner', link_id=1, authenticated_at_ms=10,
+                      our_session_index='12345678', last_seen_ms=100)
+        for changes, accepted in (({'last_seen_ms': 200}, True), ({}, False),
+                                  ({'last_seen_ms': 200, 'our_session_index': '87654321'}, False)):
+            with self.subTest(changes=changes):
+                run = object.__new__(WifiCarrierOwnerRun)
+                run.owner_started, run.evidence, run.save = True, {'owner_windows': []}, Mock()
+                run.owner_session = Mock(side_effect=[before, {**before, **changes}])
+                with patch.object(WifiCarrierPressureRun, 'window'):
+                    if accepted:
+                        run.window('pressure')
+                        run.save.assert_called_once()
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            run.window('pressure')
+
+    @unittest.skipUnless(serve, 'WebSocket bench requires websockets 15.x')
+    def test_responsive_preludes_expire_but_early_close_or_retained_slot_fails(self):
+        cases = [(kind, 'expire') for kind in PRELUDES]
+        cases += [('ping', mode) for mode in ('early', 'hold', 'data', 'bad_hint')]
+        for kind, mode in cases:
+            with self.subTest(kind=kind, mode=mode), socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0))
+                listener.listen()
+                release, done = threading.Event(), threading.Event()
+                errors = []
+
+                def handler(client):
+                    try:
+                        self.assertEqual(client.recv(timeout=1), REQUEST)
+                        client.send(b'wrong' if mode == 'bad_hint' else RESPONSE)
+                        if mode == 'hold':
+                            self.assertTrue(release.wait(2))
+                        elif mode == 'data':
+                            client.send(b'unexpected application data')
+                        elif mode == 'expire':
+                            until = time.monotonic() + 0.25
+                            while time.monotonic() < until:
+                                try:
+                                    data = client.recv(timeout=0.02)
+                                    self.assertIn(data, (REQUEST, RESPONSE))
+                                    if data == REQUEST:
+                                        client.send(RESPONSE)
+                                except TimeoutError:
+                                    pass
+                    except ConnectionClosed:
+                        pass
+                    except BaseException as error:
+                        errors.append(error)
+                    finally:
+                        done.set()
+
+                with serve(handler, sock=listener, ping_interval=None, close_timeout=0.2) as server:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        job = pool.submit(server.serve_forever)
+                        try:
+                            probe = lambda: expired_prelude(listener.getsockname(), kind,
+                                                             minimum=0.15, timeout=0.6)
+                            if mode == 'expire':
+                                self.assertTrue(probe()['hint_verified'])
+                            else:
+                                error = TimeoutError if mode == 'hold' else RuntimeError
+                                with self.assertRaises(error):
+                                    probe()
+                        finally:
+                            release.set()
+                            server.shutdown()
+                            job.result(timeout=2)
+                            self.assertTrue(done.wait(2))
+                        self.assertFalse(errors, errors)
+
+    def test_discovery_stats_reject_unexpected_fips_records_or_admission_failures(self):
+        run = object.__new__(WifiCarrierPressureRun)
+        run.transport_type = 'websocket'
+        before = dict.fromkeys(('connections_opened', 'connections_closed', 'connections_rejected',
+                                'invalid_frames', 'frames_received', 'frames_sent'), 0)
+        after = dict(before, connections_opened=4, connections_closed=4)
+        row = {'carrier_before': before, 'carrier_after': after, 'rejections': [None] * 4}
+        run.validate_rejections(row)
+        for key in after:
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                run.validate_rejections({**row, 'carrier_after': {**after, key: after[key] + 1}})
+
+
+if __name__ == '__main__':
+    unittest.main()

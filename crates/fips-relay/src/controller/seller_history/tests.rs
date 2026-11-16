@@ -1,10 +1,15 @@
 use super::*;
 use crate::ledger::{ChannelUsage, Limits};
+mod liveness;
 mod recovery;
 mod support;
 use support::{prepare_sales, resume_sales, retire_sales};
 
 fn fixture(root: &Path) -> (Store, DurableRelay, ChannelTerms) {
+    fixture_with_channels(root, 1)
+}
+
+fn fixture_with_channels(root: &Path, max_channels: usize) -> (Store, DurableRelay, ChannelTerms) {
     let (mut store, old) = super::super::transition_tests::fixture(&root.join("controller"));
     store.journal.funding.clear();
     store.journal.outgoing.clear();
@@ -16,7 +21,7 @@ fn fixture(root: &Path) -> (Store, DurableRelay, ChannelTerms) {
     let seller = DurableRelay::create(
         &root.join("seller"),
         Limits {
-            max_channels: 1,
+            max_channels,
             ..Limits::default()
         },
         1000,
@@ -35,6 +40,10 @@ fn append(
     let mut t = template.clone();
     t.id = format!("sale-{n}");
     t.expires_unix += n;
+    if let Some(refund) = &mut t.refund_after_unix {
+        *refund += n;
+        store.journal.version |= journal::FUNDING_DEADLINES_VERSION;
+    }
     seller.open_channel_verified(t.clone(), 0).unwrap();
     seller.seal_channel(&t.id).unwrap();
     let h = store.journal.history.as_mut().unwrap();
@@ -102,11 +111,16 @@ fn reload(store: Store) -> Store {
 #[test]
 fn controller_recycles_acknowledged_sales_and_keeps_cumulative_settlement_fees() {
     let root = tempfile::tempdir().unwrap();
-    let (mut store, mut seller, t) = fixture(root.path());
+    let (mut store, mut seller, mut t) = fixture(root.path());
+    t.refund_after_unix = Some(t.expires_unix + 600);
     for n in 1..=64 {
         let t = append(&mut store, &seller, &t, n, true);
         assert_eq!(
             retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+            0
+        );
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.refund_deadline().unwrap() + 1).unwrap(),
             1
         );
         let h = store.journal.history.as_ref().unwrap();
@@ -121,6 +135,10 @@ fn controller_recycles_acknowledged_sales_and_keeps_cumulative_settlement_fees()
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert_eq!(
             retire_sales(&mut store, &seller, t.expires_unix + 61).unwrap(),
+            0
+        );
+        assert_eq!(
+            retire_sales(&mut store, &seller, t.refund_deadline().unwrap() + 1).unwrap(),
             0
         );
         assert_eq!(

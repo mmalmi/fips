@@ -59,9 +59,12 @@ impl PaymentControl {
         self
     }
 
-    pub(crate) async fn prepare_funding(&self) -> Result<(), String> {
+    pub(crate) async fn prepare_funding(
+        &self,
+        payment: &CashuSpilmanPayment,
+    ) -> Result<(), String> {
         if let Some(refresh) = &self.keysets {
-            refresh.prepare(self.receiver.receiver_pubkey_hex()).await?;
+            refresh.prepare(&self.receiver, payment).await?;
         }
         Ok(())
     }
@@ -74,7 +77,8 @@ impl PaymentControl {
 
     /// The controller installs verified bindings in the durable ledger;
     /// usage and payment requests use those same immutable terms.
-    /// Keep the paired wallet directory for the receiver's complete lifetime.
+    /// Initialize the paired wallet first and retain its original directory
+    /// for the receiver's complete lifetime.
     pub fn new(
         receiver: FileSpilmanPaymentReceiver,
         wallet_directory: PathBuf,
@@ -92,10 +96,10 @@ impl PaymentControl {
     /// Performs validation and durable I/O; call from a Tokio blocking worker.
     pub fn handle(&self, peer: PeerIdentity, body: &[u8]) -> PaymentResponse {
         if body.len() > crate::control_transport::MAX_RECORD_BYTES {
-            return PaymentResponse::Rejected;
+            return Self::rejected("record");
         }
         let Ok(request) = serde_json::from_slice::<PaymentRequest>(body) else {
-            return PaymentResponse::Rejected;
+            return Self::rejected("record");
         };
         let operation = match request {
             PaymentRequest::Update { .. } => Operation::PaymentUpdate,
@@ -103,43 +107,51 @@ impl PaymentControl {
         };
         measure(operation, || {
             self.handle_inner(peer, request)
-                .unwrap_or(PaymentResponse::Rejected)
+                .unwrap_or_else(Self::rejected)
         })
+    }
+
+    // Fixed local labels distinguish failure boundaries without logging remote
+    // input, signatures, wallet errors or identities. The wire reply stays generic.
+    fn rejected(stage: &'static str) -> PaymentResponse {
+        tracing::debug!(stage, "Payment request rejected");
+        PaymentResponse::Rejected
     }
 
     fn handle_inner(
         &self,
         peer: PeerIdentity,
         request: PaymentRequest,
-    ) -> Result<PaymentResponse, String> {
+    ) -> Result<PaymentResponse, &'static str> {
         let id = match &request {
             PaymentRequest::Update { channel_id, .. } | PaymentRequest::Usage { channel_id } => {
                 channel_id
             }
         };
-        let terms = self.ledger.channel_terms(id).ok_or("agreement missing")?;
+        let terms = self.ledger.channel_terms(id).ok_or("agreement")?;
         if peer.node_addr() != &terms.buyer {
-            return Err("wrong buyer".into());
+            return Err("buyer");
         }
-        match &request {
+        let usage = match &request {
             PaymentRequest::Update { payment, .. } => {
                 if self.ledger.channel_usage(id).is_none() {
-                    return Err("channel not opened".into());
+                    return Err("agreement");
                 }
-                let credit = self.verify_existing(&terms, peer, payment)?;
+                let credit = self
+                    .verify_existing(&terms, peer, payment)
+                    .map_err(|_| "verification")?;
                 self.ledger
                     .apply_verified_balance(id, credit.paid_msat)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| "credit")?
             }
-            PaymentRequest::Usage { .. } => {}
-        }
-        let usage = self
-            .ledger
-            .checkpoint()
-            .map_err(|e| e.to_string())?
-            .get(id)
-            .copied()
-            .ok_or("channel not opened")?;
+            PaymentRequest::Usage { .. } => self
+                .ledger
+                .checkpoint()
+                .map_err(|_| "checkpoint")?
+                .get(id)
+                .copied()
+                .ok_or("agreement")?,
+        };
         Ok(PaymentResponse::Status {
             channel_id: id.clone(),
             usage,
@@ -175,16 +187,20 @@ impl PaymentServer {
                         request
                     }
                 };
-                let handler = Arc::clone(&control);
-                let result = tokio::task::spawn_blocking(move || {
-                    handler.handle(request.peer, &request.body)
+                crate::measurements::measure_async(Operation::PaymentExchange, async {
+                    let handler = Arc::clone(&control);
+                    let result =
+                        tokio::task::spawn_blocking(crate::measurements::inherit(move || {
+                            handler.handle(request.peer, &request.body)
+                        }))
+                        .await;
+                    if let Ok(reply) = result {
+                        let _ = request.respond.send(
+                            serde_json::to_vec(&reply).expect("serializable payment response"),
+                        );
+                    }
                 })
                 .await;
-                if let Ok(reply) = result {
-                    let _ = request
-                        .respond
-                        .send(serde_json::to_vec(&reply).expect("serializable payment response"));
-                }
             }
         });
         Self { task, stopping }

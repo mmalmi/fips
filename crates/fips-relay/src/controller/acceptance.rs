@@ -5,6 +5,7 @@ impl Controller {
     pub async fn handle(&self, peer: PeerIdentity, body: &[u8]) -> ControllerResponse {
         match self.handle_inner(peer, body).await {
             Ok(response) => response,
+            Err(error) if error == HISTORY_PENDING => ControllerResponse::Pending,
             Err(error) => {
                 *self.last_error.lock().unwrap() = Some(error);
                 ControllerResponse::Rejected
@@ -42,7 +43,8 @@ impl Controller {
                     payment,
                 } => return self.handle_settle(peer, &channel_id, *payment).await,
             };
-        if channel.buyer != *peer.node_addr() || channel.mint_url != self.policy.mint_url {
+        let timing = TransitionTiming::new("accept_incoming", &channel.id);
+        if channel.buyer != *peer.node_addr() || !self.policy.accepts_mint(&channel.mint_url) {
             return Err("wrong upstream payer or mint".into());
         }
         let state = self.snapshot().await?;
@@ -112,9 +114,15 @@ impl Controller {
             replacement_retired: false,
             replaces,
         };
-        self.services.payment_control.prepare_funding().await?;
+        timing.mark("route_ready");
+        self.services
+            .payment_control
+            .prepare_funding(&payment)
+            .await?;
+        timing.mark("mint_keys_ready");
         let payments = self.services.payment_control.clone();
         let wallet_guard = self.wallet.clone().lock_owned().await;
+        timing.mark("wallet_ready");
         // Keep the admission owner through receiver persistence and the journal
         // commit, so another acceptance cannot take the last route slot.
         let (incoming, wallet_guard) = self
@@ -128,7 +136,9 @@ impl Controller {
             })
             .await?;
         drop(wallet_guard);
+        timing.mark("funding_verified");
         self.activate(incoming).await?;
+        timing.mark("active");
         Ok(ControllerResponse::Accepted {
             purchase: Box::new(Purchase {
                 provider: *self.services.endpoint.node_addr(),
@@ -145,6 +155,9 @@ impl Controller {
     ) -> Result<Incoming, String> {
         Self::check_incoming(j, &saved)?;
         saved.verified_paid_msat = verify(&saved.channel)?;
+        if saved.channel.refund_after_unix.is_some() {
+            j.version |= journal::FUNDING_DEADLINES_VERSION;
+        }
         if !j.incoming.contains_key(&saved.contract.id) {
             if let Some(previous) = &saved.replaces {
                 j.incoming
@@ -231,6 +244,7 @@ impl Controller {
                     .paid_msat;
                 seller
                     .apply_verified_balance(&terms.id, paid.max(previous))
+                    .map(|_| ())
                     .map_err(|e| e.to_string())
             } else {
                 seller

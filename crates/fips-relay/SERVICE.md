@@ -4,10 +4,11 @@
 Spilman receiver, quotes and autonomous controller in one Unix process. Isolated
 ARM64 Linux and macOS process tests cover UDP, native TCP and WebSocket, including
 ordinary TLS and explicit FIPS-authenticated self-signed TLS. Earlier builds
-earned test payments over native Wi-Fi links on three OpenWrt routers.
-See [TESTBENCH.md](TESTBENCH.md) for the
-historical hardware evidence and [PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for
-the completed bounded customer demonstration and current limits.
+earned test payments over native Wi-Fi links on three OpenWrt routers. The
+[readiness assessment](READINESS.md#scope-and-outstanding-acceptance) records the
+current router and Pixel checks and outstanding deployment requirements.
+See [TESTBENCH.md](TESTBENCH.md) for the bench setup and
+[PROTOTYPE-RESULTS.md](PROTOTYPE-RESULTS.md) for the earlier customer demonstration.
 
 The example selects `terms.billing: "forwarding_attempt"` for fresh accounts.
 It retains totals and unfinished sends instead of every completed packet.
@@ -40,9 +41,9 @@ initializes accounts or enables boot startup. Procd bounds crash respawns and
 allows 65 seconds for orderly shutdown.
 
 The wrapper requires persistent account storage and waits for a valid NTP event,
-unbridged native interfaces with carrier, disabled mesh forwarding where relevant,
-and the configured mint. Waiting does not consume financial allowance or the crash
-restart budget. Query the actual relay's private control socket to establish
+unbridged native interfaces with carrier, and disabled mesh forwarding where
+relevant. Mint reachability does not block startup. Waiting does not consume
+financial allowance or the crash restart budget. Query the actual relay's private control socket to establish
 readiness; a running wrapper alone is insufficient. The package changes no radio,
 bridge, DHCP or firewall configuration. Firmware sysupgrade and older opkg/IPK
 packaging remain separate work.
@@ -54,13 +55,17 @@ to a private local configuration file and replace its example mint address with
 the local test mint. Direct service startup
 loads local receiver state without contacting the mint; new paid funding refreshes
 mint keys before verification. Funding and settlement remain mint-dependent.
-The OpenWrt readiness wrapper separately still waits for the mint. Create the
+The OpenWrt readiness wrapper does not require a reachable mint before launch.
+Create the
 parent of the chosen state directory, but leave that state directory absent.
 See [destination pricing](DESTINATION-PRICING.md) for free local destinations,
 explicit route opening and configuration compatibility.
 For fresh forwarding-data service, `return_allowance: true` enables the
 [bounded reverse-path policy](RETURN-ALLOWANCE.md). It defaults to false and
 does not enable an unrestricted reverse route or authorize wallet spending.
+Optional `return_bandwidth` selects bounded local reply rates for that policy;
+omission preserves its small default. See [mesh-mint bootstrap](TESTBENCH.md#mint-host-configuration)
+for a mint configuration that works before a client has paid credit.
 Optional `price_selection` compares source offers using native end-to-end quality
 and capped trials on forwarding-data accounts. See [PRICE-SELECTION.md](PRICE-SELECTION.md)
 for defaults, watch authority, peer compatibility and current limitations.
@@ -68,23 +73,32 @@ for defaults, watch authority, peer compatibility and current limitations.
 Run `fips-relay init /absolute/path/config.json` once. It prints the new public
 FIPS identity. Init creates private keys and empty accounts; it never overwrites
 existing or partially initialized state. Run never performs initialization.
+The customer profile and final service manifest are published only after their
+complete contents are synced, without replacing existing files. This prevents
+failed writes from publishing truncated configuration; it does not make the
+whole multi-file initialization resumable. Preserve partial accounts for recovery.
 Keep the whole state directory together when backing up or restoring it.
 On OpenWrt, use persistent storage; `/tmp` and `/var` may disappear on reboot.
 Restored forwarding remains gated until all service components have loaded and
 validated, so a failed startup cannot briefly expose an old allowance.
 
-For an explicitly limited fresh wallet, set `terms.wallet_capacity_bytes` before
-initialization (for example, `16777216` selects 16 MiB). The limit covers native
+Every service requires a positive `terms.wallet_capacity_bytes` before
+initialization (the example uses `20971520`, or 20 MiB). The limit covers native
 SQLite logical records and reserved completion space for admitted operations.
 It does not reserve filesystem/WAL space or bound the separate controller and
-channel files. Omission leaves native wallet capacity unconfigured.
+channel files. Missing limits are rejected before initialization or recovery;
+there is no implicit capacity or automatic conversion of uncapped accounts.
+Receiver admission includes one shared 4 MiB proof-history allowance per wallet;
+a node that also funds outgoing channels needs room for both roles' reservations.
 
 The maximum is saved with the account terms and in the wallet. Startup and offline
 wallet commands require both to agree; changing or removing the configured limit
 cannot resize or convert an existing account. A too-small limit can reject
 initialization or new work; retain partial state and existing financial evidence.
+An older uncapped account needs its original compatible executable for recovery;
+this service does not change its saved terms or database policy.
 See [readiness](READINESS.md) for the tested workloads and remaining deployment
-requirements. A 16 MiB test setting is not a measured router sizing recommendation.
+requirements. A 20 MiB test setting is not a measured router sizing recommendation.
 
 Add each adjacent peer to `neighbors` using its printed public identity and
 explicit transport address. For a native interface the form is:
@@ -172,6 +186,21 @@ certificate and a mismatched name; a forged handshake signature is rejected
 before admission or spending. These are local checks; remote TLS proxy deployment
 remains unverified.
 
+The generated-CA fixture requires `test-native-roots` on both the harness and
+relay executable. This opt-in test build reads the child process's `SSL_CERT_FILE`;
+default production builds keep bundled Web PKI roots. It does not rely on another
+dependency enabling native trust. Run the unchanged issuer/name rejection and
+paid-path assertions with:
+
+```sh
+cargo test -p fips-relay --features test-native-roots --test service mixed_udp_websocket_tls
+```
+
+Without that feature the CA-specific test is explicitly ignored. The self-signed
+FIPS-authentication and repeated-renewal cases use the ordinary production trust
+configuration and retain their forged-signature rejection check. If supplying
+`FIPS_RELAY_TEST_PROGRAM`, build that executable with the same fixture feature.
+
 An optional `customer_network` subnet enables bounded incoming quote/payment
 control from authenticated direct UDP customers without preconfiguring their
 identities. It requires a specific UDP bind address inside that subnet. In the
@@ -181,6 +210,31 @@ customer-subnet peers remain inbound-only unless explicitly configured as
 neighbors. These admission rules do not authorize spending by themselves. See
 [CUSTOMER-ENTRY.md](CUSTOMER-ENTRY.md) for admission limits and bootstrap, and
 [the acceptance report](PROTOTYPE-RESULTS.md) for the physical customer checks.
+
+Optional top-level `max_peers` and `neighbor_rotation` settings control the native
+neighbor roster. For a small changing neighborhood, for example:
+
+```json
+{
+  "max_peers": 2,
+  "neighbor_rotation": { "idle_secs": 2, "interval_secs": 2 }
+}
+```
+
+`max_peers` is a total limit including configured peers. It must cover the
+configured list and be in `1..=24`, the existing maximum of eight configured
+neighbors plus sixteen extra slots. Omitting it preserves the existing limits;
+enabling rotation alone uses sixteen extra slots plus the configured list.
+Rotation is disabled when omitted. When enabled, it uses the existing
+[native replacement policy](../../docs/design/fips-configuration.md#optional-neighbor-rotation-nodeneighbor_rotation):
+configured peers and peers with recent application demand stay protected, and a
+new candidate must authenticate before replacing an eligible idle neighbor.
+Both timing values must be positive. A shorter idle window permits quicker
+replacement of quiet neighbors as well as faster exploration.
+
+These local settings take effect on the next service start and can change
+without reinitializing saved accounts. They do not enable link discovery,
+change `neighbor_admission`, authorize purchases or alter financial terms.
 
 Financial terms are saved at initialization. Changing prices, capital, lifetime
 budget or exposure settings afterward stops startup for explicit reconciliation.
@@ -272,14 +326,15 @@ back to a funding swap, accept a quote or activate a route. Missing or conflicti
 evidence keeps its capital reservation; preserve the entire state directory for
 reconciliation.
 
-A fully identified, never-used channel whose funding is exclusively withdrawn
-from routing can then recover its refund after the original wallet expiry. This
-also covers channels with no accepted route. The controller saves an expiry
-intent before refunding, fences delayed route installation and records the SDK's
-actual recovered amount without inventing provider usage or acceptance. Used or
-shared channels are ineligible for this automatic expiry path. Missing or
-conflicting funding evidence and used/shared-channel unilateral recovery still
-require separate reconciliation; see [recovery acceptance](READINESS.md#earlier-funding-recovery-after-quote-expiry).
+After the original wallet expiry, automatic refund recovery covers both unused
+funding exclusively withdrawn from routing and used channels, including channels
+shared across destinations. It requires the original funding and buyer evidence,
+closes local forwarding authority and preserves the highest signed payment.
+The controller saves an expiry intent before contacting the mint and releases
+capital only after the SDK verifies the original refund outputs. Missing or
+conflicting evidence stays unresolved; a disconnected provider alone does not
+authorize a refund. See [expiry recovery and retained obligations](HISTORY.md#withdrawn-routing-and-retained-recovery)
+for the buyer and seller rules.
 
 `settle` pauses route watches and renewals, seals outgoing channels, completes mint closure and
 recovers refunds. `pause_renewals` and `resume_renewals` control replacement work
@@ -365,7 +420,53 @@ links as immediate route readiness. It does not promise seamless recovery.
 
 For failed-test diagnostics, set `FIPS_RELAY_TEST_LOG=fips_core::node=debug` and
 `FIPS_RELAY_TEST_LOG_DIR` to an existing private directory. Failed tests save only
-node logs there. Normal test wallets and account state remain temporary.
+node logs in that directory. The mixed-carrier lifecycle, newcomer, one-way
+bootstrap and free/paid contention fixtures also print their private temporary
+recovery directories and retain the original mint, wallets and daemon accounts
+when setup, traffic or settlement fails. Successful fixtures remove
+their temporary state after checking final test-fund conservation. Keep failed
+financial owners intact until recovery is completed or explicitly retained;
+rerunning a test creates separate accounts and does not settle the failed ones.
+
+The opt-in [sustained carrier cases](tests/service/mixed_transport/sustained_loss.rs)
+send 42,000 one-kilobyte packets per direction at 140 packets/second while dropping
+every twentieth carrier frame. They check actual delivery, paid-neighbor
+continuity, key rotation, channel renewal and final conservation:
+
+```sh
+cargo test -p fips-relay --test service \
+  mixed_transport::sustained_loss::sustained_udp_loss_keeps_renewing_paid_neighbors_live \
+  -- --exact --ignored --nocapture
+```
+
+The corresponding `sustained_ethernet_loss_keeps_discovered_paid_neighbors_live`
+case needs Linux, `ip`, `nft` and a fresh network namespace containing only an
+enabled loopback interface. Run the compiled test executable in that namespace;
+the fixture refuses the host namespace and creates its own disposable interfaces.
+Its initial discovery topology changes before the paid workload starts, so a pass
+does not establish route failover during paid traffic or physical movement.
+
+## Payment-store write failures
+
+The existing mixed UDP/TCP lifecycle can inject two directory-permission faults:
+a failed buyer signature save, and a failed seller credit save after the receiver
+accepts the payment. Run unprivileged so the permission changes are effective.
+The second case uses the existing debug rejection stage to prove the failure
+boundary, denies transit even after permissions are repaired, and reuses the
+existing middle-daemon restart. Recovery must reconcile cumulative payments with
+supported usage, including priced session-control traffic, and debit each buyer's
+budget only by the authorization increase. Automatic renewal and final settlement
+then proceed through the same lifecycle.
+
+```sh
+FIPS_TEST_SIGNER_WRITE_FAILURE=1 FIPS_TEST_SELLER_WRITE_FAILURE=1 \
+FIPS_RELAY_TEST_LOG=warn,fips_relay::payment_control=debug \
+cargo test -p fips-relay --features measurements --test service \
+  mixed_transport::mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart \
+  -- --exact --test-threads=1 --nocapture
+```
+
+These are failed-write/process-recovery checks, not physical power-loss tests.
 
 ## Filesystem exhaustion regression
 
@@ -374,9 +475,23 @@ money. One transit relay lives on a disposable filesystem. It fills that volume
 with real writes, requires ENOSPC from a controller journal write and SQLite's
 disk-full error from a wallet write, then interrupts the relay. Restart must fail
 while the volume is full. After removing only the test ballast, the shared
-recovery scenario resumes paid traffic, settles the original channels and checks
+SQLite check retries the identical write, reads it back and removes it. All wallet
+proof records and logical storage charges must remain unchanged after rollback
+and after removing the recovered probe. The recovery scenario resumes paid traffic,
+settles the original channels and checks
 balances and lifetime spending limits. This tests failed writes and process
 recovery, not power loss or physical flash behavior.
+
+The physical Wi-Fi storage fixture can also run the smaller ignored
+`filesystem_exhaustion::sqlite_full::funded_wallet_write_recovers_after_filesystem_full`
+test from the `funding_costs` executable. It uses the same transaction checks with
+a 256 KiB value on the stopped, funded test wallet, before paid routing starts.
+The fixture initializes the ordinary service's 64 MiB logical wallet allowance;
+the much smaller test filesystem provides the physical storage fault.
+The controller supplies the marked wallet mount and `FIPS_TEST_STORAGE_WALLET`;
+the test refuses an empty wallet or a different wallet path. This executable is
+test tooling with development features, separate from the ordinary relay binary.
+See [router storage acceptance](../../testing/chaos/README.md#router-wallet-snapshot-failure).
 
 Use a dedicated mounted 32–128 MiB filesystem. The test rejects the parent
 filesystem and requires a matching marker and token; it never creates a mount.

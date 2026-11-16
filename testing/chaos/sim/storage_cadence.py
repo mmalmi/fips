@@ -13,11 +13,12 @@ from .paid_relay import write_json
 from .paid_settlement import require
 from .paid_storage import DURABILITY_COUNTERS as DURABILITY, StorageRun, quiet_usage, validate_storage
 from .wifi_remote import digest
-from validation import (COUNTERS, OPERATIONS, PAYMENT_OPERATIONS, reconciled_payment, unsigned,
+from validation import (COUNTERS, OPERATIONS, CURRENT_OPERATIONS, PAYMENT_CPU_OPERATIONS, reconciled_payment, unsigned,
                         validate_hardware_schedule, validate_probe)
 
 NODES = {"n01", "n02", "n03"}
-FILES = ("sdk_private_snapshot", "receiver_sqlite", "wallet_sqlite", "relay_journals")
+WALLET_SHARED_MEMORY = "wallet_sqlite_shared_memory"
+FILES = ("sdk_private_snapshot", "receiver_sqlite", "wallet_sqlite", WALLET_SHARED_MEMORY, "relay_journals")
 CONTROL = {"stream_bytes_sent", "stream_bytes_received", "requests_started", "requests_received"}
 MAX_SAMPLING_MS = 2000
 
@@ -32,14 +33,14 @@ def boundary_sample(record):
             require(value["progress"] is None, "forwarder acquired unexpected buyer authority")
         else:
             reconciled_payment(value["progress"])
-        require(set(value["operations"]) == set(PAYMENT_OPERATIONS)
+        require(set(value["operations"]) == set(value["durability"]) & set(PAYMENT_CPU_OPERATIONS)
                 and set(value["control"]) == CONTROL, "payment measurements changed shape")
-        require(set(value["durability"]) == OPERATIONS, "durability operations changed shape")
+        require(set(value["durability"]) in (OPERATIONS, CURRENT_OPERATIONS), "durability operations changed shape")
         for operation, counters in value["durability"].items():
             require(set(counters) == set(DURABILITY), "durability counters are missing")
             for key, amount in counters.items():
                 unsigned(amount)
-                if operation in PAYMENT_OPERATIONS:
+                if operation in PAYMENT_CPU_OPERATIONS:
                     require(amount == value["operations"][operation][key],
                             "payment and durability evidence disagree")
         for counters in value["operations"].values():
@@ -91,10 +92,12 @@ def summarize_window(record):
         control = difference(old["control"], new["control"])
         record_bytes += control["stream_bytes_sent"]
         changed |= any(control.values())
-        for operation in OPERATIONS:
+        require(old["durability"].keys() == new["durability"].keys()
+                and old["operations"].keys() == new["operations"].keys(), "measurement schema changed")
+        for operation in old["durability"]:
             changed |= any(difference(old["durability"][operation],
                                       new["durability"][operation]).values())
-        for operation in PAYMENT_OPERATIONS:
+        for operation in old["operations"]:
             delta = difference(old["operations"][operation], new["operations"][operation])
             require(delta["cpu_samples"] == delta["spans"], "payment CPU samples are missing")
             partial_cpu_ns += delta["thread_cpu_ns"]
@@ -103,7 +106,7 @@ def summarize_window(record):
                 updates += delta["spans"]
             elif operation == "payment_sign":
                 signs += delta["spans"]
-            else:
+            elif operation == "payment_usage":
                 usage += delta["spans"]
         if old["progress"] is not None:
             difference(
@@ -120,7 +123,11 @@ def summarize_window(record):
     writes = sum(categories[k]["write_bytes"] for k in FILES)
     syncs = sum(value["sync_calls"] for value in categories.values())
     if name == "idle":
-        require(not changed and not any(value for category in categories.values() for value in category.values()),
+        # Opening the upkeep wallet may touch SQLite's transient WAL index.
+        # Count those syscalls without treating them as a financial DB write.
+        require(not changed and syncs == 0
+                and not any(value for kind, category in categories.items()
+                            if kind != WALLET_SHARED_MEMORY for value in category.values()),
                 "idle payment/storage work did not quiesce")
     delivered = sum(expected) * 1000
     usage_msat = after["n01"]["progress"]["evidence_msat"] - before["n01"]["progress"]["evidence_msat"]

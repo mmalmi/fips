@@ -26,11 +26,32 @@ def configure_stopped(profile, **changes):
 
 
 class RelayCommands:
-    def control(self, kind, original=False, action="ctl", **fields):
+    def control(self, kind, original=False, action="ctl", operation_timeout=45, **fields):
+        if type(operation_timeout) is not int or not 1 <= operation_timeout <= 330:
+            raise ValueError("control operation timeout must be an integer in 1..330 seconds")
         binary = self.original_binary if original else self.binary
         config = self.original_config if original else self.config
         return json.loads(self.remote([binary, action, config],
-                                     json.dumps({"type": kind, **fields}).encode(), timeout=45))
+                                     json.dumps({"type": kind, **fields}).encode(), timeout=operation_timeout))
+
+    def export_saved(self, number, amount_sat):
+        """Run the ordinary export and read its exact saved token in one SSH call."""
+        expected = self.state + f"/exports/{number}.json"
+        command = ("set -eu\nstatus=0\nreply=$("
+                   + shlex.join([self.binary, "wallet", self.config]) + ") || status=$?\n"
+                   + "printf '%s\\n' \"$reply\"\n[ \"$status\" -eq 0 ] || exit \"$status\"\n"
+                   + "test \"$(jsonfilter -q -s \"$reply\" -e '@.path')\" = "
+                   + shlex.quote(expected) + "\n" + shlex.join(["cat", expected]))
+        raw = self.remote(command, json.dumps(dict(type="export", id=number, amount_sat=amount_sat)).encode(),
+                          timeout=330)
+        try:
+            sent, original = raw.split(b"\n", 1)
+            return json.loads(sent), json.loads(original)
+        except ValueError:
+            evidence = self.output / f"export-{number}-reply.error"
+            if not evidence.exists():
+                evidence.write_bytes(raw)
+            raise RuntimeError("invalid original export reply; private bytes retained") from None
 
     def native(self, command):
         return json.loads(self.remote([self.binary, "native", self.config],
@@ -64,6 +85,9 @@ class AuxiliaryProfile(RelayCommands):
 
     def remote(self, *args, **kwargs):
         return self.owner.remote(*args, **kwargs)
+
+    def stop(self):
+        self.owner.stop(self)
 
     def prepare(self, config):
         if config["state_directory"] != self.state:
@@ -112,25 +136,30 @@ candidates_running() {{
   [ "$candidates_alive" = 1 ]
 }}
 signal_candidate() {{
+  if [ -n "$stop_config" ] && [ "$stop_config" != "$2" ]; then return 0; fi
   if owned_candidate "$@"; then kill -"$signal" "$pid" || :; fi
 }}
 stop_candidate() {{
+  stop_config=${{1:-}}
+  if [ -n "$stop_config" ]; then
+    candidates_running "$stop_config" || [ "$candidate_known" = 1 ] || return 1
+  fi
   # Signal every profile before waiting; all share one bounded shutdown window.
   signal=TERM
   each_candidate signal_candidate
   for attempt in $(seq 1 {stop_seconds}); do
-    candidates_running || return 0
+    candidates_running "$stop_config" || return 0
     sleep 1
   done
-  if candidates_running; then
+  if candidates_running "$stop_config"; then
     touch {t}/candidate-forced-stop
     signal=KILL
     each_candidate signal_candidate
     for attempt in $(seq 1 5); do
-      candidates_running || return 0
+      candidates_running "$stop_config" || return 0
       sleep 1
     done
   fi
-  if candidates_running; then touch {t}/candidate-stop-failed; fi
+  if candidates_running "$stop_config"; then touch {t}/candidate-stop-failed; fi
 }}
 """

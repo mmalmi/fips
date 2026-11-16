@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Run beside the dedicated Nostr VPN merchant wallet, locally or over a pinned private transport."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import subprocess
+import sys
+
+def wallet(config, action, args, token=None):
+    result = subprocess.run(["nvpn", "paid-exit", "wallet", "--config", str(config), "--json",
+                             action, *args], input=token, capture_output=True, text=True, timeout=16)
+    if result.returncode:
+        raise ValueError("wallet operation unconfirmed")
+    return json.loads(result.stdout)
+
+def proof_y(seed):
+    # NUT-00 hash-to-curve. Only public input identifiers are needed to locate
+    # the CDK receipt. CDK and the mint handle signatures and redemption.
+    field = 2**256 - 2**32 - 977
+    for counter in range(65536):
+        xbytes = hashlib.sha256(seed + counter.to_bytes(4, "little")).digest()
+        x = int.from_bytes(xbytes, "big")
+        if x < field and pow((pow(x, 3, field) + 7) % field, (field - 1)//2, field) == 1:
+            return b"\x02" + xbytes
+    raise ValueError("invalid proof identifier")
+
+def receipt(db, mint, amount, ys):
+    # Match every original input, amount, mint, unit and final direction/state.
+    # A spent token or unrelated balance change is insufficient.
+    rows = db.execute("""SELECT ys FROM transactions WHERE direction='Incoming' AND status='completed'
+        AND mint_url=? AND unit='sat' AND amount=? AND payment_method IS NULL
+        AND length(ys)=? AND instr(ys,?)>0""", (mint, amount, 33*len(ys), ys[0]))
+    return any(sorted(blob[i:i+33] for i in range(0,len(blob),33)) == ys for (blob,) in rows)
+
+def redeem(config, req):
+    order, mint, amount = req["order"], req["mint"], req["amount"]
+    seeds, token = req["seeds"], req["token"]
+    if not re.fullmatch("[a-f0-9]{40}",order) or type(amount) is not int or not 0 < amount <= 1000001:
+        raise ValueError("invalid payment order")
+    if not 1 <= len(seeds) <= 128 or len(set(seeds)) != len(seeds) or not all(re.fullmatch("[a-f0-9]{64}",s) for s in seeds):
+        raise ValueError("invalid input identifiers")
+    ys = sorted(proof_y(bytes.fromhex(s)) for s in seeds)
+    database = Path(os.environ.get("FREEDOM_WALLET_DB", config.parent / "cashu/wallet.sqlite")).resolve()
+    journal = database.parent / "freedom-orders.sqlite"
+    with (database.parent / "freedom-orders.lock").open("a") as lock, sqlite3.connect(journal) as claims, \
+            sqlite3.connect(database.as_uri()+"?mode=ro",uri=True) as db:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        claims.execute("CREATE TABLE IF NOT EXISTS inputs (mint TEXT, y BLOB, owner TEXT NOT NULL, PRIMARY KEY(mint,y))")
+        existing = [claims.execute("SELECT owner FROM inputs WHERE mint=? AND y=?",(mint,y)).fetchone() for y in ys]
+        if any(existing):
+            if any(row != (order,) for row in existing):
+                raise ValueError("inputs already assigned")
+        else:
+            if not token or receipt(db,mint,amount,ys):
+                raise ValueError("no new payment for this order")
+            claims.executemany("INSERT INTO inputs VALUES(?,?,?)",[(mint,y,order) for y in ys])
+            claims.commit()
+        if not receipt(db,mint,amount,ys):
+            if not token:
+                raise ValueError("payment unconfirmed")
+            preview = wallet(config,"inspect",["--token-stdin"],token)["token_preview"]
+            if preview["mint_url"] != mint or preview["unit"] != "sat":
+                raise ValueError("unaccepted mint or unit")
+            try:
+                wallet(config,"receive",["--token-stdin"],token)
+            except (ValueError,subprocess.TimeoutExpired):
+                pass  # The original transaction may already have committed.
+            if not receipt(db,mint,amount,ys):
+                raise ValueError("payment unconfirmed")
+    return {"received":{"mint_url":mint,"unit":"sat","amount_sat":amount}}
+
+def main():
+    args=sys.argv[1:]
+    if len(args) == 3 and args[0] == "--stdio":
+        config = Path(args[1]).resolve(strict=True)
+        mint = args[2]
+        operation = sys.stdin.buffer.readline(32)
+        if operation == b"receive\n":
+            data = sys.stdin.buffer.read(65537)
+            if len(data) <= 65536:
+                req = json.loads(data)
+                if req["mint"] == mint:
+                    return redeem(config, req)
+        topup = re.fullmatch(rb"topup ([0-9]{1,7})\n", operation)
+        if topup and 0 < int(topup[1]) <= 1000000:
+            return {"quote": wallet(config, "topup", [topup[1].decode(), "--mint", mint])["quote"]}
+        raise ValueError("invalid remote merchant request")
+    if len(args)<6 or args[:3]!=["paid-exit","wallet","--config"] or args[4]!="--json":
+        raise ValueError("invalid merchant operation")
+    config=Path(args[3]).resolve(strict=True)
+    action=args[5]
+    if action=="topup" and len(args)==9 and args[7]=="--mint" and 0<int(args[6])<=1000000:
+        return {"quote":wallet(config,"topup",args[6:])["quote"]}
+    if action=="freedom-receive" and len(args)==6:
+        data=sys.stdin.buffer.read(65537)
+        if len(data)<=65536:
+            return redeem(config,json.loads(data))
+    raise ValueError("invalid merchant operation")
+
+if __name__=="__main__":
+    os.umask(0o077)
+    try:
+        print(json.dumps(main()))
+    except Exception:
+        # Never print a bearer token, invoice or private wallet response.
+        sys.exit("Merchant could not confirm the request.")

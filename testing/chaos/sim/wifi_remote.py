@@ -19,6 +19,15 @@ ETHERTYPE = 0x88B5
 # A lost-peer quote can take 30 seconds; controller shutdown drains that work.
 CANDIDATE_STOP_SECONDS = 65
 CLEANUP_TIMEOUT_SECONDS = 180
+BOOT_ID = '/proc/sys/kernel/random/boot_id'
+BOOT_ID_PATTERN = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+
+
+def boot_id(node):
+    value = node.remote(['cat', BOOT_ID], timeout=10).decode().strip()
+    if not BOOT_ID_PATTERN.fullmatch(value):
+        raise RuntimeError('invalid router boot identity')
+    return value
 
 
 def checked_name(value):
@@ -55,6 +64,31 @@ def original_ethernet(config):
         raise RuntimeError("invalid original Ethernet configuration")
     return [{**item, "ethertype": 0x2121 if item.get("ethertype") is None else item["ethertype"]}
             for item in entries]
+
+
+def baseline_restored(current, original, originals):
+    """Keep saved state and links; allow known original routers to rediscover."""
+    rebooted = (all(isinstance(state.get('boot_id'), str)
+                    and BOOT_ID_PATTERN.fullmatch(state['boot_id'])
+                    for state in (current, original))
+                and current['boot_id'] != original['boot_id'])
+
+    def fixed(state):
+        fields = {key: value for key, value in state.items() if key != 'connected_peers'}
+        if rebooted:
+            # The kernel may assign a different interface index after a reboot.
+            fields.pop('boot_id')
+            fields['mesh_runtime'] = {key: value for key, value in state['mesh_runtime'].items()
+                                      if key != 'ifindex'}
+        return fields
+
+    if fixed(current) != fixed(original):
+        return False
+    before = {tuple(peer) for peer in original['connected_peers']}
+    after = {tuple(peer) for peer in current['connected_peers']}
+    known = {(state['identity'], 'ethernet', state['mesh_runtime']['mac'].replace(':', ''))
+             for state in originals.values() if state['identity'] != original['identity']}
+    return before <= after <= before | known
 
 
 class Router(RelayCommands, SshCommands):
@@ -158,12 +192,12 @@ class Router(RelayCommands, SshCommands):
                 raise RuntimeError("an original access point is unavailable")
             aps.extend(item["ifname"] for item in interfaces)
         self.management_check(heartbeat=False)
-        self.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null", "https://openwrt.org"], timeout=10)
+        self.remote(["uclient-fetch", "-q", "-T", "5", "-O", "/dev/null", "https://example.com"], timeout=10)
         return {"hashes": hashes, "identity": status["npub"], "history": status["history"],
                 "remaining_budget_sat": status["remaining_budget_sat"],
                 "purchases": status["purchases"], "locked_sat": status["locked_sat"],
                 "watched_routes": status["watched_routes"], "access_points_up": sorted(aps),
-                "https_and_dns": True, "mesh_runtime": self.mesh,
+                "https_and_dns": True, "mesh_runtime": self.mesh, "boot_id": boot_id(self),
                 "connected_peers": sorted((p["npub"], p["transport"], p["address"])
                                           for p in status["peers"] if p["connected"])}
 
@@ -177,6 +211,10 @@ class Router(RelayCommands, SshCommands):
                         f"cut -d . -f 1 /proc/uptime >{self.temporary}/heartbeat.new; "
                         f"mv {self.temporary}/heartbeat.new {self.temporary}/heartbeat; fi")
         self.remote("set -eu; " + command, timeout=10)
+
+    def guard_restore_command(self):
+        """Optional leased fault restoration; it must be safe to repeat."""
+        return ":"
 
     def guard_script(self):
         # Independent remote expiry restores an owned outage even if SSH/the runner dies.
@@ -210,7 +248,9 @@ cleanup() {{
   if [ ! -f {t}/open-armed ]; then
     remove_owned_table {self.original_table} {t}/original-isolated
   fi
+  {self.guard_restore_command()} || echo 'fault restoration pending process shutdown' >&2
   stop_candidate
+  {self.guard_restore_command()}
   touch {t}/guard-cleaned
   flock -u 9
   exec 9>&-
@@ -228,7 +268,7 @@ case "${{1:-}}" in
 esac
 [ "${{1:-}}" != cleanup ] || {{ cleanup; exit 0; }}
 # The caller holds operation.lock and checks the live lease for this path.
-[ "${{1:-}}" != stop ] || {{ stop_candidate; exit 0; }}
+[ "${{1:-}}" != stop ] || {{ [ "$#" -le 2 ]; stop_candidate "${{2:-}}"; exit 0; }}
 [ "${{1:-}}" != stopped ] || {{ ! candidates_running; exit $?; }}
 if [ "${{1:-}}" = can-start ]; then
   [ "$#" = 2 ] && [ -n "$2" ] || exit 1
@@ -284,8 +324,8 @@ test "$age" -le 35
                    + logging + shlex.join(["exec", self.binary, "run", profile.config]) + "\n")
         return ("#!/bin/sh\n" + self.guarded_script(command)).encode()
 
-    def prepare(self, binary, config):
-        # Persistent accounts and RAM-backed executable have distinct fresh owned paths.
+    def stage_runtime(self, binary):
+        """Stage a fresh RAM guard and executable without touching any account."""
         self.remote(["mkdir", "-m", "700", self.temporary])
         self.created = True
         mesh_script = mesh_helpers(self.interface, self.mesh)
@@ -299,37 +339,44 @@ test "$age" -le 35
                     f"cut -d . -f 1 /proc/uptime >{self.temporary}/heartbeat; "
                     f"setsid sh {self.temporary}/guard.sh </dev/null "
                     f">{self.temporary}/guard.log 2>&1 &")
-        self.remote(f"set -eu; for attempt in $(seq 1 10); do "
-                    f"[ ! -f {self.temporary}/guard-ready ] || break; sleep 0.1; done; "
+        self.remote(f"set -eu; if [ ! -f {self.temporary}/guard-ready ]; then sleep 1; fi; "
                     f"test -f {self.temporary}/guard-ready")
         self.guarded(":")
         self.guard_ready = True
+        self.write(self.binary, binary)
+        self.remote(["chmod", "700", self.binary])
+        if self.remote(["sha256sum", self.binary]).decode().split()[0] != digest(binary):
+            raise RuntimeError("staged binary checksum differs")
+        self.write(self.temporary + "/start.sh", self.start_script())
+
+    def prepare(self, binary, config):
+        # Persistent accounts and RAM-backed executable have distinct fresh owned paths.
+        self.stage_runtime(binary)
         self.remote(["mkdir", "-m", "700", self.parent])
         filesystem = self.remote(["df", "-PT", self.parent]).decode().splitlines()[-1].split()[1]
         if filesystem in ("tmpfs", "ramfs", "squashfs"):
             raise RuntimeError("test accounts require writable persistent storage")
         self.write(self.config, json.dumps(config).encode())
-        self.write(self.binary, binary)
-        self.remote(["chmod", "700", self.binary])
-        if self.remote(["sha256sum", self.binary]).decode().split()[0] != digest(binary):
-            raise RuntimeError("staged binary checksum differs")
         self.npub = self.remote([self.binary, "init", self.config], timeout=45).decode().strip()
-        self.write(self.temporary + "/start.sh", self.start_script())
 
-    def stop(self):
+    def stop(self, profile=None):
         # Preserve the guard, executable and profiles for offline wallet collection.
+        if profile is not None and profile not in self.profiles():
+            raise ValueError('cannot stop an unregistered profile')
         t = self.temporary
-        self.guarded(f"sh {t}/guard.sh stop; test ! -f {t}/candidate-stop-failed; "
+        selected = '' if profile is None else ' ' + shlex.quote(profile.config)
+        self.guarded(f"sh {t}/guard.sh stop{selected}; test ! -f {t}/candidate-stop-failed; "
                      f"test ! -f {t}/candidate-forced-stop", timeout=CLEANUP_TIMEOUT_SECONDS)
 
-    def install_filter(self, excluded_mac):
-        if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", excluded_mac):
+    def install_filter(self, excluded_mac=None):
+        if excluded_mac is not None and not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", excluded_mac):
             raise ValueError("invalid excluded mesh address")
         # Collision refusal and creation are one nft transaction; existing rules are untouched.
         rules = (f'create table netdev {self.table} {{ comment "{self.table_owner}"; }}\n'
                  f'add chain netdev {self.table} ingress {{ type filter hook ingress '
-                 f'device "{self.interface}" priority -500; policy accept; }}\n'
-                 f'add rule netdev {self.table} ingress ether type 0x{ETHERTYPE:x} '
+                 f'device "{self.interface}" priority -500; policy accept; }}\n')
+        if excluded_mac is not None:
+            rules += (f'add rule netdev {self.table} ingress ether type 0x{ETHERTYPE:x} '
                  f'ether saddr {excluded_mac} counter drop\n')
         return self.install_owned_table(self.table, "table-created", rules)
 

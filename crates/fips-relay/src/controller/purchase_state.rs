@@ -26,9 +26,11 @@ impl Controller {
             || j.funding.values().any(|f| {
                 f.provider == offer.provider
                     && !Self::funding_released(j, f)
-                    && f.funded
-                        .as_ref()
-                        .is_some_and(|funded| j.buyer_settlements.contains_key(&funded.terms.id))
+                    && f.funded.as_ref().is_some_and(|funded| {
+                        j.buyer_settlements.contains_key(&funded.terms.id)
+                            && Self::handover_for(j, offer)
+                                .is_none_or(|(old, _)| old != funded.terms.id)
+                    })
             })
         {
             return Err("provider channel is settling or closed".into());
@@ -53,6 +55,7 @@ impl Controller {
                 && old.destination.node_addr() == offer.destination.node_addr()
         }) {
             if old.price != offer.price
+                || old.bid_msat_per_kib != offer.bid_msat_per_kib
                 || old.next_hop != offer.next_hop
                 || old.billing != offer.billing
                 || old.path != offer.path
@@ -82,6 +85,7 @@ impl Controller {
         }) {
             if old.purchase.channel != saved.purchase.channel
                 || old.offer.price != saved.offer.price
+                || old.offer.bid_msat_per_kib != saved.offer.bid_msat_per_kib
                 || old.offer.billing != saved.offer.billing
                 || old.offer.next_hop != saved.offer.next_hop
                 || old.offer.path != saved.offer.path

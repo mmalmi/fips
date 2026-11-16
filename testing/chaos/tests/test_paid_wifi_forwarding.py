@@ -95,10 +95,10 @@ class ForwardingTests(unittest.TestCase):
         for call in self.popen.call_args_list:
             args = call.args[0]
             for setting in ("BatchMode=yes", "ConnectTimeout=5", "ControlMaster=no",
-                            "ControlPath=none", "ExitOnForwardFailure=yes", "ServerAliveInterval=5",
+                            "ControlPath=none", "ExitOnForwardFailure=yes", "ServerAliveInterval=2",
                             "ServerAliveCountMax=3", "ForkAfterAuthentication=no",
                             "ForwardAgent=no", "ForwardX11=no"):
-                self.assertIn(setting, args)
+                self.assertEqual(args.count(setting), 1)
             self.assertEqual(args[args.index("-F") + 1], str(self.config.resolve()))
             self.assertEqual(args[args.index("-R") + 1], f"127.0.0.1:{PORT}:127.0.0.1:{PORT}")
             self.assertTrue(call.kwargs["start_new_session"])
@@ -134,6 +134,10 @@ class ForwardingTests(unittest.TestCase):
         node = Mock()
         node.remote.return_value = sockets(["00000000"], PORT + 1) + sockets(LOOPBACKS)
         self.assertEqual(listeners(node, PORT), sorted(LOOPBACKS))
+        node.remote.return_value = sockets(LOOPBACKS).replace(b' 0A ', b' 07 ')
+        self.assertEqual(listeners(node, PORT), [])
+        self.assertEqual(listeners(node, PORT, 'udp'), sorted(LOOPBACKS))
+        node.remote.assert_called_with(['cat', '/proc/net/udp', '/proc/net/udp6'])
 
     def test_partial_start_failure_cleans_only_the_owned_child_when_zero_issued(self):
         def spawn_once(args, **kwargs):

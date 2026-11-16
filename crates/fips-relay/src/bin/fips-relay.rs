@@ -1,13 +1,28 @@
 #[cfg(unix)]
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
-    tracing_subscriber::fmt()
+    let logging = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
+        );
+    if std::env::var("FIPS_LOG_UPTIME").as_deref() == Ok("1") {
+        let epoch = std::time::Instant::now();
+        let epoch_unix_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_micros() as u64;
+        let uncertainty_us = epoch.elapsed().as_micros() as u64;
+        logging
+            .with_timer(tracing_subscriber::fmt::time::Uptime::from(epoch))
+            .init();
+        tracing::trace!(target: "fips_admission", event = "clock",
+            epoch_unix_us, uncertainty_us,
+            "Process clock anchor");
+    } else {
+        logging.init();
+    }
     if let Err(error) = run().await {
         eprintln!("fips-relay: {error}");
         std::process::exit(1);
@@ -19,9 +34,9 @@ async fn run() -> Result<(), String> {
     use fips_relay::service::{AdminRequest, RelayService, ServiceConfig, native_request, request};
     use std::{io::Read, path::Path};
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 3 {
+    if args.len() != 3 && !(args.len() == 4 && args[1] == "wallet") {
         return Err(
-            "usage: fips-relay <init|run|ctl|native|wallet> <config.json>; ctl/native/wallet read one JSON request from stdin"
+            "usage: fips-relay <init|run|ctl|native|wallet> <config.json> [wallet-mint-url]; ctl/native/wallet read one JSON request from stdin"
                 .into(),
         );
     }
@@ -72,7 +87,7 @@ async fn run() -> Result<(), String> {
                 return Err("wallet request too large".into());
             }
             let command = serde_json::from_slice(&bytes).map_err(|_| "invalid wallet JSON")?;
-            let result = fips_relay::wallet_tools::offline_wallet(&config, command).await?;
+            let result = fips_relay::wallet_tools::offline_wallet_at_mint(&config, command, args.get(3).unwrap_or(&config.terms.controller.mint_url)).await?;
             println!(
                 "{}",
                 serde_json::to_string(&result).map_err(|e| e.to_string())?

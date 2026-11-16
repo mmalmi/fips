@@ -1,0 +1,16 @@
+{
+  "name": "freedom-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4178 --strictPort",
+    "build": "vite build && node scripts/build-assets.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 4178 --strictPort",
+    "test": "node --test tests/build.test.mjs",
+    "deploy": "npm run build && npm test && wrangler deploy"
+  },
+  "devDependencies": {
+    "vite": "^6.4.5"
+  }
+}

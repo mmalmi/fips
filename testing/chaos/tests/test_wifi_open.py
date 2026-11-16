@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim import wifi_mesh
 from sim.wifi_discovery import WifiRun
 from sim.wifi_open import helpers, snapshot
+from sim.wifi_channel import change_frequency
 from sim.wifi_remote import original_ethernet
 from tests import test_wifi_discovery as base
 from tests.wifi_open_support import UBUS, IW, IP
@@ -96,6 +97,31 @@ class OpenGuardTests(unittest.TestCase):
         self.assertNotIn('RECONFIGURE', commands)
         self.assertNotIn('GET_NETWORK 2 psk', commands)
         self.assertNotIn('SET_NETWORK 2', commands)
+
+    def test_channel_handover_preserves_saved_profile_and_guard_restores_it(self):
+        self.begin()
+        change_frequency(self.node, 5745)
+        self.node.verify_open_mesh()
+        self.assertEqual(self.state()['networks']['3']['frequency'], '5745')
+        self.assertEqual(self.state()['networks']['2'], self.saved['networks']['2'])
+        self.node.mesh_down()
+        self.node.mesh_up()
+        self.assertEqual(self.state()['networks']['3']['frequency'], '5745')
+        self.cleanup()
+        self.assert_restored()
+        self.assertFalse((self.remote / 'open-frequency').exists())
+
+    def test_interrupted_channel_change_can_restore_without_a_joined_radio(self):
+        self.begin()
+        self.env['OPEN_FAIL_BEFORE'] = 'SET_NETWORK 3 frequency 5745'
+        with self.assertRaises(RuntimeError):
+            change_frequency(self.node, 5745)
+        self.assertIsNone(self.state()['current'])
+        del self.env['OPEN_FAIL_BEFORE']
+        change_frequency(self.node, 5180)
+        self.node.verify_open_mesh()
+        self.cleanup()
+        self.assert_restored()
 
     def test_original_isolation_is_installed_before_the_first_network_mutation(self):
         self.start_guard()

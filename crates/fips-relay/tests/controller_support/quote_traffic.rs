@@ -30,6 +30,7 @@ pub(super) async fn exercise(
         })
         .collect();
     let body = serde_json::to_vec(&QuoteRequest {
+        preferred_mint: None,
         destination: peers[3],
         ancestors: vec![*peers[0].node_addr()],
         deadline_unix: SystemTime::now()
@@ -38,6 +39,7 @@ pub(super) async fn exercise(
             .as_secs()
             + 10,
         reuse_unchanged: true,
+        bid_msat_per_kib: 0,
         requested_max_units: None,
     })
     .unwrap();

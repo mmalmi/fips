@@ -13,10 +13,11 @@ fn buyer() -> PeerIdentity {
 
 fn channel() -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: Some(u64::MAX),
         id: "neighbor".into(),
         buyer: *buyer().node_addr(),
         mint_url: "http://127.0.0.1:1234".into(),
-        expires_unix: u64::MAX,
+        expires_unix: u64::MAX - 60,
         capacity_sat: 1,
         grace_msat: 30,
     }
@@ -24,12 +25,13 @@ fn channel() -> ChannelTerms {
 
 fn contract() -> Contract {
     Contract {
+        bid_msat_per_kib: 0,
         billing: Default::default(),
         id: "quote".into(),
         channel_id: "neighbor".into(),
         destination: NodeAddr::from_bytes([9; 16]),
         next_hop: NodeAddr::from_bytes([2; 16]),
-        expires_unix: u64::MAX,
+        expires_unix: u64::MAX - 60,
         price: BytePrice {
             msat: 1,
             per_bytes: 1,
@@ -53,6 +55,184 @@ fn start(path: &std::path::Path) -> DurableRelay {
     relay.open_channel_verified(channel(), 0).unwrap();
     relay.add_contract(contract()).unwrap();
     relay
+}
+
+fn take_admission_wake(relay: &DurableRelay) -> bool {
+    use std::{
+        future::Future,
+        task::{Context, Waker},
+    };
+    let notify = relay.admission_notify().unwrap();
+    std::pin::pin!(notify.notified())
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_ready()
+}
+
+fn crash_profile(path: &std::path::Path) -> DurableRelay {
+    let relay = DurableRelay::create(path, Limits::default(), 4_000).unwrap();
+    let mut terms = channel();
+    terms.capacity_sat = 32;
+    terms.grace_msat = 8_000;
+    relay.open_channel_verified(terms, 0).unwrap();
+    let mut quote = contract();
+    quote.billing = fips_relay::ledger::BillingBasis::ForwardingAttempt;
+    quote.max_units = 32 * 1024;
+    quote.price = BytePrice {
+        msat: 1_000,
+        per_bytes: 1_024,
+    };
+    relay.add_contract(quote).unwrap();
+    relay
+}
+
+#[test]
+fn repeated_crashes_preserve_loss_and_leave_room_for_postpaid_traffic() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("relay");
+    let mut relay = crash_profile(&path);
+    for (index, loss) in [4_000, 6_000, 7_000].into_iter().enumerate() {
+        drop(relay);
+        relay = DurableRelay::load(&path).unwrap();
+        let before = relay.channel_usage("neighbor").unwrap();
+        assert_eq!(before.lost_msat, loss);
+        assert_eq!(before.submitted_msat, index as u64 * 1_000);
+        assert_eq!(before.paid_msat, before.submitted_msat);
+        assert!(
+            !relay.checkpoint_if_due().unwrap(),
+            "idle recovery must not write"
+        );
+        let bytes = [0; 1_024];
+        let mut admission = relay.admit(&request(&bytes));
+        if admission.is_none() {
+            assert!(relay.checkpoint_if_due().unwrap());
+            admission = relay.admit(&request(&bytes));
+        }
+        relay.complete(
+            admission.expect("original channel still forwards"),
+            ForwardingOutcome::Submitted,
+        );
+        let submitted = (index as u64 + 1) * 1_000;
+        relay.apply_verified_balance("neighbor", submitted).unwrap();
+        let after = relay.channel_usage("neighbor").unwrap();
+        assert_eq!(after.submitted_msat, submitted);
+        assert_eq!(
+            after.lost_msat, loss,
+            "payment cannot forgive crash exposure"
+        );
+        assert_eq!(after.reserved_msat, submitted + loss);
+        assert!(!relay.checkpoint_if_due().unwrap());
+    }
+}
+
+#[test]
+fn a_fresh_reduced_window_can_grow_for_one_valid_large_packet() {
+    for renewed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("relay");
+        drop(crash_profile(&path));
+        let relay = DurableRelay::load(&path).unwrap();
+        let id = if renewed {
+            relay.seal_channel("neighbor").unwrap();
+            let mut terms = channel();
+            terms.id = "next".into();
+            terms.capacity_sat = 32;
+            terms.grace_msat = 8_000;
+            relay.open_channel_verified(terms, 0).unwrap();
+            let mut quote = contract();
+            quote.id = "next-quote".into();
+            quote.channel_id = "next".into();
+            quote.max_units = 32 * 1_024;
+            quote.price = BytePrice {
+                msat: 1_000,
+                per_bytes: 1_024,
+            };
+            relay.add_contract(quote).unwrap();
+            "next"
+        } else {
+            "neighbor"
+        };
+        let bytes = [0; 3_072];
+        assert_eq!(
+            relay.decide(&request(&bytes)),
+            fips_core::node::ForwardingDecision::Retry
+        );
+        let prior = relay.channel_usage(id).unwrap();
+        assert_eq!(prior.submitted_msat, 0);
+        assert!(
+            relay.checkpoint_if_due().unwrap(),
+            "a fresh window can grow before any admission"
+        );
+        assert!(
+            !relay.checkpoint_if_due().unwrap(),
+            "a fulfilled request cannot cause idle writes"
+        );
+        let token = relay.admit(&request(&bytes)).unwrap();
+        relay.complete(token, ForwardingOutcome::Submitted);
+        let usage = relay.channel_usage(id).unwrap();
+        assert_eq!(usage.submitted_msat, 3_000);
+        assert_eq!(usage.paid_msat, 0);
+        assert_eq!(usage.lost_msat, prior.lost_msat);
+        assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 4_000);
+        assert!(
+            relay.admit(&request(&[0; 4_097])).is_none(),
+            "configured maximum remains enforced"
+        );
+    }
+}
+
+#[test]
+fn temporary_admission_wait_never_reserves_or_overrides_permanent_denial() {
+    use fips_core::node::ForwardingDecision;
+    let root = tempfile::tempdir().unwrap();
+    let relay = start(&root.path().join("relay"));
+    assert!(take_admission_wake(&relay));
+    assert!(!take_admission_wake(&relay));
+    for value in 1..=3 {
+        let bytes = [value; 8];
+        if value > 1 {
+            let before = relay.channel_usage("neighbor").unwrap();
+            assert_eq!(relay.decide(&request(&bytes)), ForwardingDecision::Retry);
+            assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
+            assert!(relay.checkpoint_if_due().unwrap());
+            assert!(take_admission_wake(&relay));
+        }
+        let token = relay.decide(&request(&bytes)).admission().unwrap().token;
+        relay.complete(token, ForwardingOutcome::Submitted);
+    }
+    let before = relay.channel_usage("neighbor").unwrap();
+    assert_eq!(before.submitted_msat, 24);
+    assert_eq!(
+        relay.decide(&request(&[5; 11])),
+        ForwardingDecision::Reject,
+        "insufficient credit must not hide a permanently oversized packet"
+    );
+    assert_eq!(relay.decide(&request(&[4; 8])), ForwardingDecision::Retry);
+    assert_eq!(relay.channel_usage("neighbor").unwrap(), before);
+    // A checkpoint alone cannot replenish unpaid credit.
+    relay.checkpoint().unwrap();
+    assert!(take_admission_wake(&relay));
+    relay.checkpoint().unwrap();
+    assert!(
+        !take_admission_wake(&relay),
+        "unchanged allowance must stay quiet"
+    );
+    assert_eq!(relay.decide(&request(&[4; 8])), ForwardingDecision::Retry);
+    relay.apply_verified_balance("neighbor", 1_000).unwrap();
+    assert!(take_admission_wake(&relay));
+    let token = relay.decide(&request(&[4; 8])).admission().unwrap().token;
+    relay.complete(token, ForwardingOutcome::Submitted);
+    assert_eq!(relay.channel_usage("neighbor").unwrap().submitted_msat, 32);
+    assert_eq!(
+        relay.decide(&request(&[5; 11])),
+        ForwardingDecision::Reject,
+        "a packet larger than the durable window cannot wait for that window"
+    );
+    relay.seal_channel("neighbor").unwrap();
+    assert_eq!(
+        relay.decide(&request(&[5; 8])),
+        ForwardingDecision::Reject,
+        "previously waiting packets cannot reopen a sealed agreement"
+    );
 }
 
 #[test]
@@ -86,6 +266,7 @@ fn session_setup_and_first_data_share_the_same_durable_window() {
             let token = relay.admit(&request(&[0; 128])).unwrap();
             relay.complete(token, ForwardingOutcome::Submitted);
         }
+        assert!(!relay.checkpoint_due().unwrap());
         let data = [0; 1_060];
         let mut token = relay.admit(&request(&data));
         if window == 4_000 {
@@ -94,7 +275,12 @@ fn session_setup_and_first_data_share_the_same_durable_window() {
                 relay.channel_usage("neighbor").unwrap().reserved_msat,
                 1_536
             );
+            assert!(
+                relay.checkpoint_due().unwrap(),
+                "a blocked data packet must wake the local checkpoint worker"
+            );
             relay.checkpoint().unwrap();
+            assert!(!relay.checkpoint_due().unwrap());
             token = relay.admit(&request(&data));
         }
         relay.complete(
@@ -238,7 +424,13 @@ fn windows_are_durable_before_admission_and_crashes_never_reset_grace() {
     assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 20);
     drop(relay);
     let relay = DurableRelay::load(&path).unwrap();
-    assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 30);
+    assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, 25);
+    let mut relay = relay;
+    for expected in [27, 28, 29, 30] {
+        drop(relay);
+        relay = DurableRelay::load(&path).unwrap();
+        assert_eq!(relay.channel_usage("neighbor").unwrap().lost_msat, expected);
+    }
     assert!(
         relay.admit(&request(b"x")).is_none(),
         "repeated restarts exhaust the same allowance"
@@ -334,17 +526,25 @@ fn exclusive_owner_corruption_and_failed_persistence_fail_closed() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("relay");
     let relay = start(&path);
+    assert!(take_admission_wake(&relay));
+    let token = relay.admit(&request(b"x")).unwrap();
+    relay.complete(token, ForwardingOutcome::Submitted);
     assert!(DurableRelay::load(&path).is_err());
     assert!(DurableRelay::create(&path, Limits::default(), 10).is_err());
     // Making the destination a directory makes the atomic replace fail.
     std::fs::remove_file(path.join("ledger.json")).unwrap();
     std::fs::create_dir(path.join("ledger.json")).unwrap();
     assert!(relay.checkpoint().is_err());
+    assert!(
+        !take_admission_wake(&relay),
+        "failed persistence must not wake admission"
+    );
     assert!(relay.admit(&request(b"x")).is_none());
     assert!(
         relay.checkpoint().is_err(),
         "a failed writer requires restart/recovery"
     );
+    assert!(relay.checkpoint_if_due().is_err());
     drop(relay);
     assert!(DurableRelay::load(&path).is_err());
     std::fs::remove_dir(path.join("ledger.json")).unwrap();
@@ -412,23 +612,53 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
     let directory = root.path().join("seller");
     let relay = start(&directory);
     assert!(!relay.checkpoint_due().unwrap());
-    let first = relay.admit(&request(b"abcde")).unwrap();
+    let first = relay.admit(&request(b"abc")).unwrap();
     relay.complete(first, ForwardingOutcome::Submitted);
+    assert!(!relay.checkpoint_due().unwrap());
+    assert!(relay.admit(&request(b"abcdefghijk")).is_none());
+    assert!(
+        !relay.checkpoint_due().unwrap(),
+        "a packet larger than a fresh window cannot benefit from a checkpoint"
+    );
+    assert!(relay.admit(&request(b"abcdefghij")).is_none());
     assert!(relay.checkpoint_due().unwrap());
-    let usage = relay.checkpoint().unwrap()["neighbor"];
-    assert_eq!(usage.submitted_msat, 5);
+    assert!(relay.checkpoint_if_due().unwrap());
+    let usage = relay.channel_usage("neighbor").unwrap();
+    assert_eq!(usage.submitted_msat, 3);
     assert_eq!(usage.paid_msat, 0);
     assert!(!relay.checkpoint_due().unwrap());
     // The persisted window advanced locally despite there being no payment.
     let second = relay.admit(&request(b"abcdefghij")).unwrap();
     relay.complete(second, ForwardingOutcome::Submitted);
     assert!(relay.checkpoint_due().unwrap());
+    // A usage/payment checkpoint can finish after the scheduler's hint but
+    // before its window job acquires the writer. That job must not write again.
     relay.checkpoint().unwrap();
+    #[cfg(unix)]
+    let journal_inode = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(directory.join("ledger.json"))
+            .unwrap()
+            .ino()
+    };
+    let checkpointed = relay.checkpoint_if_due().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(directory.join("ledger.json"))
+                .unwrap()
+                .ino(),
+            journal_inode,
+            "a superseded window job must not replace the durable journal"
+        );
+    }
+    assert!(!checkpointed);
     assert!(!relay.checkpoint_due().unwrap());
     drop(relay);
     let restored = DurableRelay::load(&directory).unwrap();
     let usage = restored.channel_usage("neighbor").unwrap();
-    assert_eq!(usage.submitted_msat, 15);
+    assert_eq!(usage.submitted_msat, 13);
     assert_eq!(
         usage.lost_msat, 10,
         "crash still consumes the persisted window"
@@ -438,4 +668,12 @@ fn local_checkpoint_cadence_reopens_windows_without_payment_or_idle_writes() {
         "local checkpoints do not invent payment"
     );
     assert!(!restored.checkpoint_due().unwrap());
+    let last = restored.admit(&request(b"x")).unwrap();
+    restored.complete(last, ForwardingOutcome::Submitted);
+    assert!(!restored.checkpoint_due().unwrap());
+    assert!(restored.admit(&request(b"abcdefg")).is_none());
+    assert!(
+        !restored.checkpoint_due().unwrap(),
+        "financial exhaustion cannot request a new window"
+    );
 }

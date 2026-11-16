@@ -203,6 +203,7 @@ fn explicit_link_discovery_is_independent_of_control_and_purchase_authority() {
             assert_eq!(config.terms, original.terms);
             assert_discovery_disabled(&native);
             if mode == NeighborAdmission::AuthenticatedAdjacent {
+                assert!(native.node.neighbor_rotation.is_none());
                 assert_eq!(native.node.limits.max_peers, 16);
                 assert_eq!(native.node.limits.max_connections, 32);
                 assert_eq!(native.node.limits.max_links, 32);
@@ -212,6 +213,79 @@ fn explicit_link_discovery_is_independent_of_control_and_purchase_authority() {
             let initializing = config.network(&Identity::generate(), true);
             assert!(initializing.transports.ethernet.is_empty());
         }
+    }
+}
+
+#[test]
+fn discovered_neighbor_limits_and_rotation_preserve_payment_authority() {
+    let mut original = configured(json!({"tcp": {"bind_addr": "127.0.0.1:0"}}));
+    original.neighbors.push(PeerConfig::new(
+        Identity::generate().npub(),
+        "tcp",
+        "127.0.0.1:2121",
+    ));
+    let mut value = serde_json::to_value(&original).unwrap();
+    value["max_peers"] = json!(2);
+    value["neighbor_rotation"] = json!({"idle_secs": 2, "interval_secs": 2});
+    for (limit, rotating) in [(Some(2), true), (None, true), (Some(2), false)] {
+        let mut settings = value.clone();
+        settings["max_peers"] = json!(limit);
+        if !rotating {
+            settings["neighbor_rotation"] = Value::Null;
+        }
+        let config: ServiceConfig = serde_json::from_value(settings)
+            .expect("relay must accept bounded native neighbor rotation");
+        config.validate().unwrap();
+        let native = config.network(&Identity::generate(), false);
+        assert_eq!(
+            native
+                .node
+                .neighbor_rotation
+                .as_ref()
+                .map(|r| (r.idle_secs, r.interval_secs)),
+            rotating.then_some((2, 2))
+        );
+        let peers = limit.unwrap_or(original.neighbors.len() + 16);
+        assert_eq!(native.node.limits.max_peers, peers);
+        assert_eq!(native.node.limits.max_connections, peers * 2);
+        assert_eq!(native.node.limits.max_links, peers * 2);
+        assert_eq!(native.node.limits.max_pending_inbound, 16);
+        assert_eq!(native.node.limits.max_sessions, 128);
+        assert_eq!(native.peers[0].npub, original.neighbors[0].npub);
+        assert_eq!(config.neighbor_admission, original.neighbor_admission);
+        assert_eq!(config.terms, original.terms);
+        assert_discovery_disabled(&native);
+    }
+
+    for limit in [0, 25] {
+        let mut invalid = value.clone();
+        invalid["max_peers"] = json!(limit);
+        let config: ServiceConfig = serde_json::from_value(invalid).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "unbounded or unsupported peer limit"
+        );
+    }
+    let mut too_small = value.clone();
+    too_small["max_peers"] = json!(1);
+    too_small["neighbors"].as_array_mut().unwrap().push(
+        serde_json::to_value(PeerConfig::new(
+            Identity::generate().npub(),
+            "tcp",
+            "127.0.0.1:2122",
+        ))
+        .unwrap(),
+    );
+    let config: ServiceConfig = serde_json::from_value(too_small).unwrap();
+    assert!(config.validate().is_err(), "configured peers need capacity");
+    for (idle, interval) in [(0, 2), (2, 0)] {
+        let mut invalid = value.clone();
+        invalid["neighbor_rotation"] = json!({"idle_secs": idle, "interval_secs": interval});
+        let config: ServiceConfig = serde_json::from_value(invalid).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "native rotation validation must apply"
+        );
     }
 }
 

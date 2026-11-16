@@ -19,6 +19,8 @@ mod idle;
 mod process_support;
 #[path = "process_support/quality.rs"]
 mod quality;
+#[path = "bootstrap_service/rekey.rs"]
+mod rekey;
 use process_support::*;
 
 async fn statuses(configs: &[ServiceConfig]) -> Vec<Value> {
@@ -86,8 +88,8 @@ async fn native_quality_reports_return_from_an_unfunded_recipient() {
 }
 
 async fn one_way(return_allowance: bool) {
-    tokio::time::timeout(Duration::from_secs(240), async {
-        let root = tempfile::tempdir().unwrap();
+    let mut root = retained_tempdir();
+    tokio::time::timeout(Duration::from_secs(330), async {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -109,6 +111,11 @@ async fn one_way(return_allowance: bool) {
             let mut cfg = config(&directory, mint.url());
             cfg.terms.billing = BillingBasis::ForwardingData;
             cfg.return_allowance = return_allowance;
+            if return_allowance {
+                // One purchase covers the rotation timer, post-drain probe and restart.
+                // Total buyer budget and original wallet funding stay fixed.
+                cfg.terms.controller.channel_capacity_sat = cfg.terms.buyer_budget_sat;
+            }
             let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             cfg.transports = udp_transports(socket.local_addr().unwrap());
             reservations.push(socket);
@@ -205,6 +212,18 @@ async fn one_way(return_allowance: bool) {
             quality::assert_quality(&configs[0], &npubs[4]).await;
         }
         idle::assert_idle(&configs).await;
+        let rekey = if return_allowance {
+            Some(rekey::after_drain(&configs, &npubs).await)
+        } else {
+            None
+        };
+        if let Some(observation) = &rekey {
+            std::fs::write(
+                root.path().join("one-way-rekey.json"),
+                serde_json::to_vec_pretty(observation).unwrap(),
+            )
+            .unwrap();
+        }
         let before = statuses(&configs).await;
         for child in &mut children {
             stop(child).await;
@@ -283,7 +302,26 @@ async fn one_way(return_allowance: bool) {
         }
         assert_eq!(total, 1_024);
         assert!(network.accounting().unwrap().is_conserved());
+        eprintln!("one-way bootstrap: all 1024 test sats conserved");
+        if let Some(mut observation) = rekey {
+            observation["financial_closure"] = serde_json::json!({
+                "settled_channels": settled,
+                "wallet_total_sat": total,
+                "conserved": true,
+            });
+            std::fs::write(
+                root.path().join("one-way-rekey.json"),
+                serde_json::to_vec_pretty(&observation).unwrap(),
+            )
+            .unwrap();
+            eprintln!("one-way rekey observation: {observation}");
+            assert_eq!(
+                observation["passed"], true,
+                "one-way paid delivery must survive rekey using bounded replies: {observation}"
+            );
+        }
     })
     .await
     .expect("one-way bootstrap test deadline");
+    root.disable_cleanup(false);
 }

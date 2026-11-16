@@ -1,8 +1,19 @@
 //! Record local sends and couple onward purchases to upstream admission.
 use super::*;
 
+mod credit;
+pub use credit::PeerCreditForwarder;
+
 impl OriginatedSessionObserver for BuyerAuthorizer {
     fn prepare(&self, intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
+        self.prepare_with_retry(intent)
+            .unwrap_or(OriginatedSessionAdmission::Reject)
+    }
+
+    fn prepare_with_retry(
+        &self,
+        intent: &OriginatedSessionIntent,
+    ) -> Result<OriginatedSessionAdmission, OriginatedSessionRetry> {
         self.prepare_intent(intent)
     }
     fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64> {
@@ -55,6 +66,15 @@ pub struct PaidForwarder {
 }
 
 impl PaidForwarder {
+    /// Add explicitly negotiated peer-credit windows without bypassing onward
+    /// purchase authorization or changing any existing Cashu relationship.
+    pub fn with_peer_credit(
+        self,
+        credit: Arc<fips_credit::CreditForwarder>,
+    ) -> PeerCreditForwarder {
+        PeerCreditForwarder::new(self, credit)
+    }
+
     pub fn new(seller: Arc<DurableRelay>, buyer: Arc<BuyerAuthorizer>) -> Self {
         Self::for_billing(seller, buyer, BillingBasis::UniqueSessionEnvelope)
     }
@@ -92,11 +112,27 @@ impl PaidForwarder {
     }
 
     /// Optional complimentary replies, separate from existing paid agreements.
-    pub fn with_return_allowance(mut self) -> Result<Self, String> {
+    pub fn with_return_allowance(self) -> Result<Self, String> {
+        self.with_returns(crate::return_allowance::ReturnAllowance::new())
+    }
+
+    /// Operator-selected reply rates; earned credit and path bounds stay fixed.
+    pub fn with_return_bandwidth(
+        self,
+        policy: crate::free_routes::FreeBandwidthPolicy,
+    ) -> Result<Self, String> {
+        policy.validate()?;
+        self.with_returns(crate::return_allowance::ReturnAllowance::new().with_bandwidth(&policy))
+    }
+
+    fn with_returns(
+        mut self,
+        allowance: crate::return_allowance::ReturnAllowance,
+    ) -> Result<Self, String> {
         if self.bootstrap.is_none() {
             return Err("return allowance requires forwarding-data billing".into());
         }
-        self.returns = Some(Mutex::new(crate::return_allowance::ReturnAllowance::new()));
+        self.returns = Some(Mutex::new(allowance));
         Ok(self)
     }
 
@@ -109,15 +145,20 @@ impl PaidForwarder {
             returns.lock().unwrap().earn(request);
         }
     }
-}
 
-impl ForwardingPolicy for PaidForwarder {
-    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
-        self.admit_classified(request)
-            .map(|admission| admission.token)
-    }
-
-    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+    fn admit_with_seller(
+        &self,
+        request: &ForwardingRequest<'_>,
+        refusal: &mut fips_core::node::ForwardingDecision,
+        bid: &mut u64,
+    ) -> Option<ForwardingAdmission> {
+        let mut admit_seller = || match self.seller.decide_with_bid(request, bid) {
+            fips_core::node::ForwardingDecision::Admit(admission) => Some(admission.token),
+            decision => {
+                *refusal = decision;
+                None
+            }
+        };
         let handshake = crate::bootstrap::is_handshake(
             request.session_payload,
             request.source,
@@ -164,16 +205,16 @@ impl ForwardingPolicy for PaidForwarder {
             });
         }
         let (seller_token, buyer_token) = if request.next_hop == request.destination {
-            (self.seller.admit(request)?, None)
+            (admit_seller()?, None)
         } else if let Some(token) = self.free.onward(
             request.next_hop,
             request.destination,
             request.session_payload.len(),
-            || self.seller.admit(request),
+            &mut admit_seller,
         ) {
             (token, None)
         } else {
-            let (buyer_token, seller_token) = self.buyer.begin_admitted(
+            let (buyer_token, seller_token) = match self.buyer.begin_admitted(
                 &OriginatedSessionRequest {
                     source: request.source,
                     destination: request.destination,
@@ -181,8 +222,26 @@ impl ForwardingPolicy for PaidForwarder {
                     session_payload: request.session_payload,
                 },
                 false,
-                || self.seller.admit(request),
-            )?;
+                admit_seller,
+                || {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .is_ok_and(|now| {
+                            self.seller.has_active_route(
+                                *request.ingress.node_addr(),
+                                request.destination,
+                                now.as_secs(),
+                            )
+                        })
+                },
+            ) {
+                Ok(admission) => admission,
+                Err(fips_core::node::ForwardingDecision::Retry) => {
+                    *refusal = fips_core::node::ForwardingDecision::Retry;
+                    return None;
+                }
+                Err(_) => return None,
+            };
             (seller_token, Some(buyer_token))
         };
         self.pending
@@ -199,6 +258,34 @@ impl ForwardingPolicy for PaidForwarder {
             },
         })
     }
+}
+
+impl ForwardingPolicy for PaidForwarder {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.seller.admission_notify()
+    }
+
+    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        self.admit_classified(request)
+            .map(|admission| admission.token)
+    }
+
+    fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        self.decide(request).admission()
+    }
+
+    fn decide(&self, request: &ForwardingRequest<'_>) -> fips_core::node::ForwardingDecision {
+        self.decide_with_bid(request, &mut 0)
+    }
+
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid: &mut u64) -> fips_core::node::ForwardingDecision {
+        *bid = 0;
+        use fips_core::node::ForwardingDecision;
+        let mut refusal = ForwardingDecision::Reject;
+        self.admit_with_seller(request, &mut refusal, bid)
+            .map_or(refusal, ForwardingDecision::Admit)
+    }
+
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
         if token == 0 {
             return;
@@ -222,13 +309,21 @@ pub struct RouteObserver {
 
 impl OriginatedSessionObserver for RouteObserver {
     fn prepare(&self, intent: &OriginatedSessionIntent) -> OriginatedSessionAdmission {
+        self.prepare_with_retry(intent)
+            .unwrap_or(OriginatedSessionAdmission::Reject)
+    }
+
+    fn prepare_with_retry(
+        &self,
+        intent: &OriginatedSessionIntent,
+    ) -> Result<OriginatedSessionAdmission, OriginatedSessionRetry> {
         match self
             .free
             .prepare_onward(intent.next_hop, intent.destination, intent.session_bytes)
         {
-            Some(true) => OriginatedSessionAdmission::Untracked,
-            Some(false) => OriginatedSessionAdmission::Reject,
-            None => self.buyer.prepare(intent),
+            Some(true) => Ok(OriginatedSessionAdmission::Untracked),
+            Some(false) => Ok(OriginatedSessionAdmission::Reject),
+            None => self.buyer.prepare_with_retry(intent),
         }
     }
     fn observe(&self, request: &OriginatedSessionRequest<'_>) -> Option<u64> {

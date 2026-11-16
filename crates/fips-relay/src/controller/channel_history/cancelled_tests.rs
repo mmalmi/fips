@@ -39,8 +39,7 @@ fn cancelled_prefixes_stay_bounded_without_wallet_sends_or_buyer_channels() {
         assert_eq!(sdk.send.requests, 0);
         assert_eq!(sdk.cancelled_requests, n);
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk))
                 .unwrap(),
             1
         );
@@ -54,9 +53,10 @@ fn cancelled_prefixes_stay_bounded_without_wallet_sends_or_buyer_channels() {
         assert!(store.journal.funding.is_empty() && store.journal.buyer_settlements.is_empty());
         store = reload(store);
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| panic!("duplicate SDK retirement"))
-                .unwrap(),
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| panic!(
+                "duplicate SDK retirement"
+            ))
+            .unwrap(),
             0
         );
         let mut replay = store.journal.clone();
@@ -109,8 +109,7 @@ fn mixed_cancellation_retirement_requires_exact_zero_cost_sdk_evidence() {
             _ => sdk.refund_sat += 1,
         }
         assert!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk))
                 .is_err()
         );
         assert_eq!(store.journal.funding.len(), 3);
@@ -118,9 +117,7 @@ fn mixed_cancellation_retirement_requires_exact_zero_cost_sdk_evidence() {
     }
     let sdk = ack(&p, &store.journal.policy.mint_url);
     assert_eq!(
-        store
-            .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
-            .unwrap(),
+        Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk)).unwrap(),
         3
     );
     assert_eq!(Controller::capital(&store.journal).unwrap(), budget);

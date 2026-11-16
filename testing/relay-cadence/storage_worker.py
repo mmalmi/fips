@@ -6,13 +6,15 @@ import os
 from pathlib import Path
 import select
 import signal
+import stat
 import subprocess
 import time
 
-from storage_trace import trace_options
+from storage_trace import categories, trace_options
 
 
 ROOT = Path("/run/bench")
+PROC = Path("/proc")
 EXPECTED = b"/opt/bench/fips-relay\0run\0/run/bench/config.json\0"
 CAPTURES = ("idle", "bursty", "steady", "high_rate")
 
@@ -49,6 +51,28 @@ def target_alive(pid, descriptor):
             and (proc / "cmdline").read_bytes() == EXPECTED)
 
 
+def process_log_identity(pid):
+    """Bind decoded stdout/stderr aliases to the owned regular log file."""
+    log = ROOT / "process.log"
+    expected = log.stat()
+    identity = (expected.st_dev, expected.st_ino)
+    if not stat.S_ISREG(expected.st_mode):
+        raise RuntimeError("process log is not a regular file")
+    paths = {}
+    for number in ("1", "2"):
+        descriptor = PROC / str(pid) / "fd" / number
+        before = descriptor.stat()
+        paths[number] = os.readlink(descriptor)
+        after = descriptor.stat()
+        if any((value.st_dev, value.st_ino) != identity for value in (before, after)):
+            raise RuntimeError("descriptor differs from the owned process log")
+    current = log.stat()
+    if (current.st_dev, current.st_ino) != identity:
+        raise RuntimeError("process log changed during verification")
+    categories({"process_log": list(paths.values())})
+    return {"device": expected.st_dev, "inode": expected.st_ino, "fd_paths": paths}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", nargs="?", choices=CAPTURES)
@@ -64,6 +88,8 @@ def main(argv=None):
         descriptor = os.pidfd_open(pid)
         if not target_alive(pid, descriptor) or any(tracers(pid)):
             raise RuntimeError("target identity or initial tracing state differs")
+        process_log = process_log_identity(pid)
+        save(directory, "storage.process-log.json", process_log)
         trace = directory / "storage.trace"
         # Refuse reuse before strace opens its output with truncation semantics.
         with trace.open("x"):
@@ -80,7 +106,7 @@ def main(argv=None):
                     raise RuntimeError("tracer did not attach to every thread")
                 time.sleep(0.05)
             save(directory, "storage.ready.json", {"target_pid": pid, "tracer_pid": tracer.pid,
-                                                   "threads_attached": len(attached)})
+                "threads_attached": len(attached), "process_log": process_log})
             deadline = time.monotonic() + 90
             while not (directory / "storage.stop").exists():
                 if (tracer.poll() is not None or not target_alive(pid, descriptor)
@@ -94,10 +120,12 @@ def main(argv=None):
         result.update(target_alive=target_alive(pid, descriptor),
                       detached=bool(attached) and not any(attached),
                       stderr_empty=(directory / "storage.stderr").stat().st_size == 0,
+                      process_log_unchanged=process_log_identity(pid) == process_log,
                       trace_bytes=trace.stat().st_size)
         result["accepted"] = (result["tracer_exit"] in (0, -signal.SIGINT)
                               and result["target_alive"] and result["detached"]
                               and result["stderr_empty"]
+                              and result["process_log_unchanged"]
                               and (result["trace_bytes"] > 0 or args.capture is not None)
                               and result["trace_bytes"] <= 64 * 1024 * 1024)
     except Exception as error:

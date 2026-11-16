@@ -1,0 +1,67 @@
+//! Classify temporary allowance shortages without creating a reservation.
+use super::*;
+
+impl ForwardingPolicy for DurableRelay {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.admission_changed.clone())
+    }
+
+    fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
+        self.decide(request)
+            .admission()
+            .map(|admission| admission.token)
+    }
+
+    fn decide(&self, request: &ForwardingRequest<'_>) -> fips_core::node::ForwardingDecision {
+        self.decide_with_bid(request, &mut 0)
+    }
+
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid: &mut u64) -> fips_core::node::ForwardingDecision {
+        *bid = 0;
+        use fips_core::node::{ForwardingAdmission, ForwardingClass, ForwardingDecision};
+        // Never wait for the disk-writing controller on the native node loop.
+        let Ok(windows) = self.windows.read() else {
+            return ForwardingDecision::Reject;
+        };
+        if !windows.ready {
+            return ForwardingDecision::Reject;
+        }
+        let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            return ForwardingDecision::Reject;
+        };
+        let Some(admission) = self.ledger.admit_with_windows(
+            request,
+            now.as_secs(),
+            Some((&windows.ceilings, self.window_msat)),
+        ) else {
+            return ForwardingDecision::Reject;
+        };
+        match admission {
+            Admission::Granted {token, bid_msat_per_kib} => {
+                *bid = bid_msat_per_kib;
+                ForwardingDecision::Admit(ForwardingAdmission {token, class: ForwardingClass::Unspecified})
+            },
+            Admission::CreditExhausted => ForwardingDecision::Retry,
+            Admission::WindowExhausted {
+                channel_id,
+                cost_msat,
+            } => {
+                crate::measurements::admission_denied(
+                    crate::measurements::AdmissionDenial::DurableWindow,
+                );
+                let Ok(mut blocked) = self.blocked_windows.lock() else {
+                    return ForwardingDecision::Reject;
+                };
+                let requested = blocked.entry(channel_id).or_default();
+                *requested = (*requested).max(cost_msat);
+                ForwardingDecision::Retry
+            }
+        }
+    }
+
+    fn complete(&self, token: u64, outcome: ForwardingOutcome) {
+        // Completion never needs the controller gate. A pending outcome captured
+        // before this completion remains conservatively unconfirmed on recovery.
+        self.ledger.complete(token, outcome);
+    }
+}

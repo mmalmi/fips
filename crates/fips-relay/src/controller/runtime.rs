@@ -1,6 +1,7 @@
 //! Resume retained work and supervise control and payment workers.
 use super::cadence::SCAN_INTERVAL;
 use super::payments::PaymentWorkers;
+use super::renewal_workers::RenewalWorkers;
 use super::*;
 use crate::measurements::{Operation, measure};
 
@@ -9,6 +10,14 @@ impl Controller {
     /// allocate a new funding identity or another channel. Expired/changed routes
     /// remain stopped until a separate replacement agreement is authorized.
     pub async fn resume_pending(&self) -> Result<(), String> {
+        let mut error = self.resume_recovery().await.err();
+        if let Err(reason) = self.maintain_renewals().await {
+            error.get_or_insert(reason);
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    pub(super) async fn resume_recovery(&self) -> Result<(), String> {
         self.withdraw_expired_purchases().await?;
         self.retire_unfunded_reservations().await?;
         self.withdraw_disconnected_purchases().await?;
@@ -94,14 +103,17 @@ impl Controller {
             drop(claim);
         }
         for offer in snapshot.requested.into_values().filter(|offer| {
-            let paused = snapshot.renewals_paused
-                && snapshot.renewals.values().any(|r| r.requests(&offer.id))
-                || paused_offers.contains(&offer.id);
+            // The renewal worker resumes its replacement offers after restart.
+            // Recovery must not race the same funding and acceptance work.
+            let renewal_owned = snapshot
+                .renewals
+                .values()
+                .any(|r| !r.is_completed() && r.requests(&offer.id));
             let accepted = snapshot
                 .outgoing
                 .values()
                 .any(|o| o.offer.id == offer.id && o.accepted);
-            !(paused || accepted)
+            !(renewal_owned || paused_offers.contains(&offer.id) || accepted)
         }) {
             if let Err(error) = self.purchase_offer(offer).await {
                 first_error.get_or_insert(error);
@@ -111,9 +123,6 @@ impl Controller {
             first_error.get_or_insert(error);
         }
         if let Err(error) = self.resume_settlements().await {
-            first_error.get_or_insert(error);
-        }
-        if let Err(error) = self.maintain_renewals().await {
             first_error.get_or_insert(error);
         }
         if let Err(error) = self.retire_history().await {
@@ -131,6 +140,7 @@ pub struct ControllerTasks {
     payments: JoinHandle<()>,
     checkpoints: JoinHandle<()>,
     recovery: JoinHandle<()>,
+    renewals: JoinHandle<()>,
     refresh: JoinHandle<()>,
     stopping: watch::Sender<bool>,
 }
@@ -150,6 +160,7 @@ impl ControllerTasks {
         let mut stop_payments = stop_requests.clone();
         let mut stop_checkpoints = stop_requests.clone();
         let mut stop_recovery = stop_requests.clone();
+        let mut stop_renewals = stop_requests.clone();
         let mut stop_refresh = stop_requests.clone();
         let handler = controller.clone();
         let requests = tokio::spawn(async move {
@@ -169,8 +180,7 @@ impl ControllerTasks {
                         let handler = handler.clone();
                         jobs.spawn(async move {
                             let _permit = permit;
-                            let response = handler.handle(request.peer, &request.body).await;
-                            let _ = request.respond.send(serde_json::to_vec(&response).expect("serializable"));
+                            respond(request.respond, handler.handle(request.peer, &request.body)).await;
                         });
                     }
                     _ = jobs.join_next(), if !jobs.is_empty() => {}
@@ -212,7 +222,7 @@ impl ControllerTasks {
                             Ok(true) => {
                                 let seller = checkpoint_controller.services.seller.clone();
                                 blocking(move || measure(Operation::WindowCheckpoint, || {
-                                    seller.checkpoint().map(|_| ()).map_err(|e| e.to_string())
+                                    seller.checkpoint_if_due().map(|_| ()).map_err(|e| e.to_string())
                                 })).await
                             },
                             Ok(false) => Ok(()),
@@ -243,6 +253,25 @@ impl ControllerTasks {
                 }
             }
         });
+        let renewer = controller.clone();
+        let renewals = tokio::spawn(async move {
+            let mut workers = RenewalWorkers::default();
+            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stop_renewals.changed() => break,
+                    _ = ticker.tick() => {
+                        if let Err(error) = workers.tick(&renewer).await {
+                            *renewer.last_error.lock().unwrap() = Some(error);
+                        }
+                    }
+                }
+            }
+            if let Err(error) = workers.drain().await {
+                *renewer.last_error.lock().unwrap() = Some(error);
+            }
+        });
         let recovery = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(2));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -250,7 +279,7 @@ impl ControllerTasks {
                 tokio::select! {
                     _ = stop_recovery.changed() => break,
                     _ = ticker.tick() => {
-                        if let Err(error) = controller.resume_pending().await {
+                        if let Err(error) = controller.resume_recovery().await {
                             *controller.last_error.lock().unwrap() = Some(error);
                         }
                     }
@@ -262,6 +291,7 @@ impl ControllerTasks {
             payments,
             checkpoints,
             recovery,
+            renewals,
             refresh,
             stopping,
         })
@@ -274,16 +304,78 @@ impl ControllerTasks {
         let _ = (&mut self.payments).await;
         let _ = (&mut self.checkpoints).await;
         let _ = (&mut self.recovery).await;
+        let _ = (&mut self.renewals).await;
         let _ = (&mut self.refresh).await;
         incoming
     }
 }
+
+async fn respond(
+    responder: tokio::sync::oneshot::Sender<Vec<u8>>,
+    operation: impl std::future::Future<Output = ControllerResponse>,
+) {
+    tokio::pin!(operation);
+    let response = tokio::time::timeout(Duration::from_secs(5), &mut operation).await;
+    let finished = response.is_ok();
+    let _ = responder.send(
+        serde_json::to_vec(&response.unwrap_or(ControllerResponse::Pending)).expect("serializable"),
+    );
+    if !finished {
+        // Reply before the control RPC expires, retaining the original work
+        // and its worker slot. Duplicate requests use the controller's claims.
+        operation.await;
+    }
+}
+
 impl Drop for ControllerTasks {
     fn drop(&mut self) {
         self.requests.abort();
         self.payments.abort();
         self.checkpoints.abort();
         self.recovery.abort();
+        self.renewals.abort();
         self.refresh.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn pending_reply_retains_the_original_operation_and_worker_slot() {
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = slots.clone().acquire_owned().await.unwrap();
+        let (release, released) = oneshot::channel();
+        let (responder, reply) = oneshot::channel();
+        let job = tokio::spawn(respond(responder, async move {
+            let _permit = permit;
+            released.await.unwrap();
+            ControllerResponse::Rejected
+        }));
+        let bytes = tokio::time::timeout(Duration::from_secs(6), reply)
+            .await
+            .expect("slow work must reply before the control request expires")
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_slice(&bytes).unwrap(),
+            ControllerResponse::Pending
+        ));
+        assert!(!job.is_finished());
+        assert_eq!(slots.available_permits(), 0);
+        release.send(()).unwrap();
+        job.await.unwrap();
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn immediate_replies_preserve_the_handler_result() {
+        let (responder, reply) = oneshot::channel();
+        respond(responder, async { ControllerResponse::Rejected }).await;
+        assert!(matches!(
+            serde_json::from_slice(&reply.await.unwrap()).unwrap(),
+            ControllerResponse::Rejected
+        ));
     }
 }

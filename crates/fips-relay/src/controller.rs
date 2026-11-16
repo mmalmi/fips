@@ -25,7 +25,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::{Mutex as AsyncMutex, Semaphore, mpsc, watch},
+    sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock, Semaphore, mpsc, watch},
     task::{JoinHandle, JoinSet},
 };
 
@@ -40,21 +40,28 @@ mod capital;
 mod channel_history;
 mod control_obligations;
 pub(crate) use control_obligations::{ControlObligations, MAX_CONTROL_OBLIGATIONS};
+mod channel_timing;
+mod transition_timing;
+use transition_timing::TransitionTiming;
 mod funding;
 mod funding_ownership;
 #[cfg(feature = "testbench")]
 mod wallet_barrier;
 pub use capital::FundingBudget;
 mod journal;
+pub use journal::HISTORY_PENDING;
 mod retirement;
 use retirement::History;
 #[cfg(feature = "measurements")]
 mod payment_progress;
 mod payments;
 #[cfg(feature = "measurements")]
-pub use payment_progress::PaymentProgress;
+pub use payment_progress::{PaymentProgress, PendingPayment};
+#[cfg(feature = "measurements")]
+pub use payments::PaymentStage;
 mod purchase_state;
 mod purchases;
+pub use purchases::FundingRequestBudget;
 mod recovery_only;
 mod runtime;
 mod source_selection;
@@ -71,6 +78,7 @@ pub use settlement::SettlementReport;
 use settlement::{BuyerSettlement, SellerSettlement, SettlementKind};
 
 mod renewal;
+mod renewal_workers;
 use renewal::Renewal;
 pub use renewal::RenewalPolicy;
 
@@ -80,20 +88,8 @@ use routes::RouteChange;
 mod refresh;
 pub use refresh::WatchedRoute;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ControllerPolicy {
-    pub mint_url: String,
-    pub channel_capacity_sat: u64,
-    /// Bounds unresolved reservations and actual wallet debits. Confirmed local
-    /// wallet refund recovery releases the channel's locked capital.
-    pub max_locked_sat: u64,
-    /// Maximum token reserve, rounding and wallet fees above channel capacity.
-    pub max_funding_overhead_sat: u64,
-    /// Lifetime wallet debits minus verified refunds, including pending reservations.
-    pub max_wallet_spend_sat: u64,
-    pub channel_lifetime_secs: u64,
-    pub renewal: Option<RenewalPolicy>,
-}
+mod policy;
+pub use policy::ControllerPolicy;
 
 #[derive(Clone)]
 pub struct ControllerServices {
@@ -143,6 +139,8 @@ struct FundingIntent {
     grace_msat: u64,
     created_unix: u64,
     expires_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refund_after_unix: Option<u64>,
     funded: Option<Funded>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reclaim: Option<FundingReclaim>,
@@ -230,13 +228,6 @@ impl Store {
         Ok(result)
     }
 
-    fn ensure_ready(&self) -> Result<(), String> {
-        if !self.ready || self.journal.history.as_ref().is_some_and(History::pending) {
-            return Err("controller journal suspended".into());
-        }
-        Ok(())
-    }
-
     fn persist(&mut self) -> Result<(), String> {
         self.ready = false;
         let obligations = self.control_obligations.prepare(&self.journal)?;
@@ -303,10 +294,11 @@ pub struct Controller {
     store: Arc<Mutex<Store>>,
     control_obligations: ControlObligations,
     wallet: Arc<AsyncMutex<()>>,
+    funding_request_budget: Option<FundingRequestBudget>,
     channel_work: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
     #[cfg(feature = "measurements")]
     payment_progress: payment_progress::ProgressRegistry,
-    renewal_work: AsyncMutex<()>,
+    renewal_work: AsyncRwLock<()>,
     route_work: AsyncMutex<()>,
     refresh_work: AsyncMutex<()>,
     refresh_checks: Mutex<BTreeMap<String, refresh::RefreshCheck>>,
@@ -324,7 +316,7 @@ fn now() -> Result<u64, String> {
 async fn blocking<T: Send + 'static>(
     job: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::task::spawn_blocking(job)
+    tokio::task::spawn_blocking(crate::measurements::inherit(job))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -432,10 +424,11 @@ impl Controller {
             control_obligations: store.control_obligations.clone(),
             store: Arc::new(Mutex::new(store)),
             wallet,
+            funding_request_budget: None,
             channel_work: Mutex::new(BTreeMap::new()),
             #[cfg(feature = "measurements")]
             payment_progress: Default::default(),
-            renewal_work: AsyncMutex::new(()),
+            renewal_work: AsyncRwLock::new(()),
             route_work: AsyncMutex::new(()),
             refresh_work: AsyncMutex::new(()),
             refresh_checks: Mutex::new(BTreeMap::new()),
@@ -454,14 +447,19 @@ impl Controller {
         }) {
             return Err("invalid renewal policy".into());
         }
+        let mut seen = HashSet::from([&policy.mint_url]);
+        if policy.additional_receive_mints.len() > 2 || policy.additional_receive_mints.iter().any(|mint| {
+            mint.len() > 512 || mint.ends_with('/') || !seen.insert(mint) ||
+            !cashu_service::normalize_mint_url(mint).is_ok_and(|url| url == *mint)
+        }) { return Err("invalid additional receiving mints".into()); }
         if policy.channel_capacity_sat == 0
             || policy.channel_capacity_sat.checked_mul(1_000).is_none()
-            || policy.max_locked_sat < policy.channel_capacity_sat
-            || policy
-                .channel_capacity_sat
+            || (policy.receive_only() && (policy.max_funding_overhead_sat != 0 || policy.renewal.is_some()))
+            || (!policy.receive_only() && policy.channel_capacity_sat
                 .checked_add(policy.max_funding_overhead_sat)
-                .is_none_or(|max| max > policy.max_locked_sat || max > policy.max_wallet_spend_sat)
-            || !(60..=86_400).contains(&policy.channel_lifetime_secs)
+                .is_none_or(|max| max > policy.max_locked_sat || max > policy.max_wallet_spend_sat))
+            || !(60..=ControllerPolicy::DEFAULT_CHANNEL_LIFETIME_SECS)
+                .contains(&policy.channel_lifetime_secs)
             || policy.mint_url.is_empty()
             || policy.mint_url.len() > 512
             || policy.mint_url.ends_with('/')
@@ -483,16 +481,23 @@ impl Controller {
         .await
     }
 
-    async fn snapshot(&self) -> Result<Journal, String> {
+    async fn read<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(&Journal) -> T + Send + 'static,
+    ) -> Result<T, String> {
         let store = self.store.clone();
         blocking(move || {
             let store = store.lock().map_err(|_| "controller state poisoned")?;
             if !store.ready {
                 return Err("controller journal suspended".into());
             }
-            Ok(store.journal.clone())
+            Ok(read(&store.journal))
         })
         .await
+    }
+
+    async fn snapshot(&self) -> Result<Journal, String> {
+        self.read(Clone::clone).await
     }
 
     async fn neighbor(&self, address: NodeAddr) -> Result<PeerIdentity, String> {
@@ -510,19 +515,21 @@ impl Controller {
     }
 
     pub async fn purchases(&self) -> Result<Vec<Purchase>, String> {
-        let snapshot = self.snapshot().await?;
-        Ok(snapshot
-            .outgoing
-            .values()
-            .filter(|o| {
-                o.accepted
-                    && Self::routing_eligible(&snapshot, o)
-                    && !snapshot
-                        .buyer_settlements
-                        .contains_key(&o.purchase.channel.id)
-            })
-            .map(|o| o.purchase.clone())
-            .collect())
+        self.read(|journal| {
+            journal
+                .outgoing
+                .values()
+                .filter(|o| {
+                    o.accepted
+                        && Self::routing_eligible(journal, o)
+                        && !journal
+                            .buyer_settlements
+                            .contains_key(&o.purchase.channel.id)
+                })
+                .map(|o| o.purchase.clone())
+                .collect()
+        })
+        .await
     }
 
     /// Quiesce upstream service without erasing the funded accounts. Payment
@@ -542,11 +549,13 @@ impl Controller {
                 Ok(ids)
             })
             .await?;
-        for incoming in self.snapshot().await?.incoming.values() {
-            self.services.quotes.stop_reusing(&incoming.offer.id)?;
-        }
+        let incoming = self.snapshot().await?.incoming;
+        let quotes = self.services.quotes.clone();
         let seller = self.services.seller.clone();
         blocking(move || {
+            for incoming in incoming.values() {
+                quotes.retire_offer(&incoming.offer.id)?;
+            }
             for id in channels {
                 if seller.channel_terms(&id).is_some() {
                     seller.close_channel(&id).map_err(|e| e.to_string())?;

@@ -94,8 +94,7 @@ fn repeated_abandoned_prefixes_preserve_cost_without_buyer_channels() {
         assert_eq!(p.after.signed_sat, 0);
         let sdk = ack(&p, &store.journal.policy.mint_url);
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk))
                 .unwrap(),
             1
         );
@@ -111,9 +110,10 @@ fn repeated_abandoned_prefixes_preserve_cost_without_buyer_channels() {
         replay.funding.insert(id, old);
         assert!(Controller::validate_journal(&replay, &replay.policy, replay.local).is_err());
         assert_eq!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| panic!("duplicate wallet retirement"))
-                .unwrap(),
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| panic!(
+                "duplicate wallet retirement"
+            ))
+            .unwrap(),
             0
         );
         let mut unsupported = store.journal.clone();
@@ -169,8 +169,7 @@ fn mixed_prefix_requires_exact_shared_sdk_totals_and_replays_after_reload() {
             _ => sdk.capacity_sat += 32,
         }
         assert!(
-            store
-                .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
+            Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk))
                 .is_err()
         );
         assert_eq!(store.journal.funding.len(), 2);
@@ -178,9 +177,7 @@ fn mixed_prefix_requires_exact_shared_sdk_totals_and_replays_after_reload() {
     }
     let sdk = ack(&p, &store.journal.policy.mint_url);
     assert_eq!(
-        store
-            .resume_channel_retirement(&buyer, |_, _| Ok(sdk))
-            .unwrap(),
+        Store::resume_channel_retirement(&Mutex::new(&mut store), &buyer, |_, _| Ok(sdk)).unwrap(),
         2
     );
     assert_eq!(Controller::capital(&store.journal).unwrap(), budget);

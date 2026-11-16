@@ -1,6 +1,12 @@
 use super::*;
 use std::{sync::mpsc, time::Duration};
 
+#[cfg(all(
+    feature = "measurements",
+    any(target_os = "linux", target_os = "android", target_os = "macos")
+))]
+mod authorization;
+
 #[test]
 fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
     let root = tempfile::tempdir().unwrap();
@@ -19,6 +25,7 @@ fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
         .accept_channel(
             provider,
             ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: local,
                 mint_url: "http://test.invalid".into(),
@@ -31,6 +38,7 @@ fn packet_evidence_does_not_wait_for_the_disk_or_signer_worker() {
         .unwrap();
     buyer
         .accept_quote(Contract {
+            bid_msat_per_kib: 0,
             billing: Default::default(),
             id: "quote".into(),
             channel_id: "channel".into(),
@@ -84,6 +92,7 @@ fn suspended_writer_still_closes_exact_packet_authority() {
         .accept_channel(
             provider,
             ChannelTerms {
+                refund_after_unix: None,
                 id: "channel".into(),
                 buyer: local,
                 mint_url: "http://test.invalid".into(),
@@ -100,6 +109,7 @@ fn suspended_writer_still_closes_exact_packet_authority() {
     ] {
         buyer
             .accept_quote(Contract {
+                bid_msat_per_kib: 0,
                 billing: BillingBasis::ForwardingData,
                 id: id.into(),
                 channel_id: "channel".into(),
@@ -128,7 +138,7 @@ fn suspended_writer_still_closes_exact_packet_authority() {
             next_hop: provider,
             session_bytes: 20,
         }),
-        OriginatedSessionAdmission::Reject
+        Ok(OriginatedSessionAdmission::Reject)
     );
     assert_eq!(buyer.remaining_budget_sat(), Some(10));
 }

@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sim.paid_phone_finances import validate_settled, check_mint
+from sim.paid_phone_finances import validate_settled, check_mint, validate_reopened
 
 EDGES = [('phone', 'n01'), ('n01', 'n02'), ('n03', 'n02'), ('n02', 'n01')]
 
@@ -66,7 +66,89 @@ def fixture():
     return after, before, balances, mint, copy.deepcopy(EDGES)
 
 
+def renewed_fixture():
+    after, before, balances, mint, edges = fixture()
+    owner, provider = edges[0]
+    old = 'channel-' + owner
+    # The predecessor is refunded before final settlement of its successor.
+    before[owner]['controller']['buyer_settlements'][old] = copy.deepcopy(
+        after[owner]['controller']['buyer_settlements'][old])
+    before[provider]['controller']['seller_settlements'][old] = copy.deepcopy(
+        after[provider]['controller']['seller_settlements'][old])
+    before[owner]['buyer']['channels'][old] = copy.deepcopy(after[owner]['buyer']['channels'][old])
+    next(row for row in before[provider]['seller']['ledger']['channels']
+         if row['terms']['id'] == old)['usage']['paid_msat'] = 2000
+    channel = old + '-successor'
+    for state, authorized in [(before, 1), (after, 3)]:
+        intent = copy.deepcopy(state[owner]['controller']['funding']['fund-' + owner])
+        intent['id'] += '-successor'
+        intent['funded']['terms']['id'] = channel
+        intent['funded']['opening']['channel_id'] = channel
+        intent['funded']['wallet_operation_id'] += '-successor'
+        state[owner]['controller']['funding'][intent['id']] = intent
+        state[owner]['buyer']['channels'][channel] = {
+            'terms': intent['funded']['terms'], 'provider': address(provider), 'authorized_sat': authorized}
+        state[provider]['seller']['ledger']['channels'].append({
+            'terms': intent['funded']['terms'], 'usage': {'paid_msat': authorized * 1000}})
+    refund = copy.deepcopy(after[owner]['controller']['buyer_settlements'][old])
+    refund['channel'] = after[owner]['buyer']['channels'][channel]['terms']
+    refund['payment'] = {'channel_id': channel, 'balance': 3}
+    refund['report'].update(channel_id=channel, paid_sat=3, refunded_sat=29)
+    refund['wallet_refund_sat'] = 29
+    after[owner]['controller']['buyer_settlements'][channel] = refund
+    after[provider]['controller']['seller_settlements'][channel] = {
+        key: copy.deepcopy(refund[key]) for key in ('channel', 'usage', 'payment', 'report', 'released')}
+    balances[owner] -= 3
+    balances[provider] += 3
+    return (after, before, balances, mint, edges), {name: 1 + (name == owner) for name in before}
+
+
 class PaidPhoneFinanceTests(unittest.TestCase):
+    def test_renewal_closure_counts_each_debit_refund_and_signature_once(self):
+        args, counts = renewed_fixture()
+        result = validate_settled(*args, channel_counts=counts)
+        self.assertEqual(len(result['settlements']), 5)
+        self.assertEqual(result['accounts']['phone']['authorized_sat'], 5)
+        self.assertEqual(result['accounts']['phone']['funding_budget']['wallet_debited_sat'], 64)
+        self.assertEqual(result['accounts']['phone']['wallet_balance_sat'], 123)
+        with self.assertRaises(RuntimeError):
+            validate_settled(*args)
+
+    def test_renewal_refuses_budget_reset_double_refund_and_changed_closed_history(self):
+        for kind in ('budget', 'refund', 'history', 'count'):
+            with self.subTest(kind=kind):
+                args, counts = renewed_fixture()
+                if kind == 'budget':
+                    for state in args[:2]:
+                        state['phone']['buyer']['total_budget_sat'] = 4
+                elif kind == 'refund':
+                    args[2]['phone'] += 30
+                    args[2]['n01'] -= 30
+                elif kind == 'history':
+                    args[1]['phone']['controller']['buyer_settlements']['channel-phone']['payment']['balance'] += 1
+                else:
+                    counts['phone'] = 3
+                with self.assertRaises(RuntimeError):
+                    validate_settled(*args, channel_counts=counts)
+
+    def test_reopen_keeps_original_channels_and_lifetime_authority(self):
+        _, before, _, mint, edges = fixture()
+        current = copy.deepcopy(before)
+        current['phone']['buyer']['channels']['channel-phone']['authorized_sat'] += 1
+        validate_reopened(current, before, mint['url'], edges)
+        for section, field, value in (
+            ('buyer', 'total_budget_sat', 128),
+            ('controller', 'policy', {'max_wallet_spend_sat': 128}),
+            ('controller', 'buyer_settlements', {'unexpected': {}}),
+        ):
+            changed = copy.deepcopy(current)
+            changed['phone'][section][field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                validate_reopened(changed, before, mint['url'], edges)
+        current['phone']['buyer']['channels']['channel-phone']['authorized_sat'] = 0
+        with self.assertRaises(RuntimeError):
+            validate_reopened(current, before, mint['url'], edges)
+
     def test_complete_four_account_roundtrip(self):
         args = fixture()
         result = validate_settled(*args)
@@ -76,6 +158,24 @@ class PaidPhoneFinanceTests(unittest.TestCase):
         self.assertEqual(result['accounts']['n01']['seller_received_sat'], 7)
         self.assertEqual(result['accounts']['n02']['seller_received_sat'], 7)
         self.assertNotIn('payment', repr(result))
+
+    def test_expiry_requires_the_independently_observed_report_and_signed_balance(self):
+        args = fixture()
+        channel = 'channel-phone'
+        sale = args[0]['n01']['controller']['seller_settlements'][channel]
+        sale['report']['signed_sat'] = sale['report']['paid_sat']
+        sale['payment'] = None
+        reports = {channel: copy.deepcopy(sale['report'])}
+        self.assertEqual(validate_settled(*args, expiry_reports=reports)['total_wallet_sat'], 512)
+        with self.assertRaises(RuntimeError):
+            validate_settled(*args)
+        for changed in ({'unknown': reports[channel]}, {channel: {**reports[channel], 'paid_sat': 1}},
+                        {channel: {**reports[channel], 'signed_sat': 1}}):
+            with self.subTest(reports=changed), self.assertRaises(RuntimeError):
+                validate_settled(*args, expiry_reports=changed)
+        sale['report']['signed_sat'] = 1
+        with self.assertRaises(RuntimeError):
+            validate_settled(*args, expiry_reports={channel: copy.deepcopy(sale['report'])})
 
     def test_normalized_ledger_and_distinct_original_budgets(self):
         args = fixture()

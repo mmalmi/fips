@@ -1,0 +1,5 @@
+iifname "br-freedom" meta nfproto ipv4 udp dport 2053 accept
+iifname "br-freedom" meta nfproto ipv4 tcp dport 2053 accept
+iifname "br-freedom" meta nfproto ipv4 udp sport 68 udp dport 67 accept
+iifname "br-freedom" meta nfproto ipv4 tcp dport { 2080, 2443 } accept
+iifname "br-freedom" drop

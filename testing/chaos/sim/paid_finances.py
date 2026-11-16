@@ -1,18 +1,42 @@
 """Shared paid-route observations from individually atomic local journals."""
 
 
+class FinancialObservationChanged(RuntimeError):
+    """Individually atomic observations disagree across a live transition."""
+
+
+def consistent_observation(condition, reason):
+    if not condition:
+        raise FinancialObservationChanged(reason)
+
+
+def account_journals(run):
+    """Keep raw wallet authority in memory; callers emit only monetary summaries."""
+    return {name: {kind: run.state_json(name, relative) for kind, relative in (
+        ("controller", "controller/controller.json"), ("buyer", "buyer/buyer.json"),
+        ("seller", "seller/ledger.json"))} for name in run.nodes}
+
+
 def financial_snapshot(run, *, wallet):
     """Read live accounting; pass None when a live wallet snapshot is unavailable."""
-    result = {}
+    return financial_observation(run, wallet=wallet)[1]
+
+
+def financial_observation(run, *, wallet):
+    """Return the exact journal reads behind the summary, with later liability."""
+    journals, result = {}, {}
     for node in run.nodes:
         status = run.ctl(node, "status")
         buyer = run.state_json(node, "buyer/buyer.json")
         controller = run.state_json(node, "controller/controller.json")
-        seller = run.state_json(node, "seller/ledger.json")["ledger"]
+        seller_journal = run.state_json(node, "seller/ledger.json")
+        seller = seller_journal["ledger"]
+        journals[node] = {"buyer": buyer, "controller": controller, "seller": seller_journal}
         authorized = sum(channel["authorized_sat"] for channel in buyer["channels"].values())
-        if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized:
+        retired = (buyer.get("history") or {}).get("authorized_sat", 0)
+        if status["remaining_budget_sat"] != buyer["total_budget_sat"] - authorized - retired:
             # Journals and status are individually atomic, not one snapshot.
-            raise RuntimeError("financial observation changed during sampling")
+            raise FinancialObservationChanged("financial observation changed during sampling")
         funding = {key: (item["funded"]["terms"]["id"], item["funded"]["wallet_operation_id"])
                    for key, item in controller["funding"].items() if item["funded"] is not None}
         result[node] = {
@@ -34,7 +58,7 @@ def financial_snapshot(run, *, wallet):
         buyer = run.state_json(node, "buyer/buyer.json")
         result[node]["signed_after"] = {
             key: item["authorized_sat"] for key, item in buyer["channels"].items()}
-    return result
+    return journals, result
 
 
 def payments_credited(current):

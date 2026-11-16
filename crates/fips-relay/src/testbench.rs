@@ -5,11 +5,13 @@
 use crate::{
     durable::write_private_journal,
     service::{read_json, read_record, write_record},
-    wallet_tools::{checked_token, export_path, export_payment, private_new, valid_id},
+    wallet_tools::{
+        checked_token, export_path, export_payment, open_wallet, private_new, valid_id,
+    },
 };
 use cashu_service::{
     create_topup_quote, load_mint_balance, load_wallet_overview, receive_payment_token,
-    simulation::{IssuerMode, LocalMint, MonotonicClock, PaymentNetwork},
+    simulation::{IssuerMode, LocalMint, MonotonicClock, PaymentNetwork, claim_paid_quote},
 };
 use fips_core::Identity;
 use serde::{Deserialize, Serialize};
@@ -23,9 +25,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    net::{TcpListener, TcpStream, UnixListener, UnixStream},
-    task::{JoinHandle, JoinSet},
+    net::{TcpListener, UnixListener, UnixStream},
+    task::JoinHandle,
 };
+
+mod faults;
+pub use faults::FaultAction;
+use faults::MintFaults;
+pub(crate) mod proxy;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +40,12 @@ pub struct BenchConfig {
     pub state_directory: PathBuf,
     pub bind: SocketAddr,
     pub max_issued_sat: u64,
+    /// Small disposable fixtures can retain many real coins without more value.
+    #[serde(default)]
+    pub fragmented_channel_keyset: bool,
+    /// The receiver-retirement fixture closes a 960-sat channel into 959 originals.
+    #[serde(default)]
+    pub receiver_history_keyset: bool,
 }
 
 impl BenchConfig {
@@ -54,6 +67,9 @@ impl BenchConfig {
             || self.socket().as_os_str().len() > 100
             || self.max_issued_sat == 0
             || self.max_issued_sat > 10_000_000
+            || (self.fragmented_channel_keyset && self.max_issued_sat > 512)
+            || (self.receiver_history_keyset
+                && (self.fragmented_channel_keyset || self.max_issued_sat != 3072))
         {
             return Err("test mint requires a private/loopback bind, absolute private state path and bounded test issuance".into());
         }
@@ -77,6 +93,7 @@ pub enum BenchRequest {
     Issue { id: String, amount_sat: u64 },
     Collect { token: String },
     Report,
+    Fault { command: FaultAction },
 }
 
 pub struct BenchMint {
@@ -84,12 +101,38 @@ pub struct BenchMint {
     url: String,
     network: PaymentNetwork,
     _mint: LocalMint,
+    faults: MintFaults,
     proxy: JoinHandle<()>,
     issued: BTreeMap<String, u64>,
 }
 
 impl BenchMint {
     pub async fn start(config: BenchConfig) -> Result<Self, String> {
+        let entropy = Identity::generate();
+        let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
+        Self::start_seeded(config, seed).await
+    }
+
+    /// Retain the disposable mint's seed and public keys for reviewed recovery.
+    /// Like `start`, this only creates fresh state; it never resumes or reissues.
+    pub async fn start_seeded(config: BenchConfig, seed: u64) -> Result<Self, String> {
+        let service = Self::start_with_seed(config, seed).await?;
+        let keyset =
+            cashu_service::fetch_spilman_keyset_info_json(&service.url, "sat", None).await?;
+        private_new(
+            &service.config.state_directory.join("recovery.json"),
+            &serde_json::to_vec(&json!({
+                "test_only": true, "seed": seed, "mint_id": service._mint.id(),
+                "url": service.url, "state_directory": service.config.state_directory,
+                "database_path": service._mint.database_path(),
+                "keyset": serde_json::from_str::<Value>(&keyset).map_err(|e| e.to_string())?,
+            }))
+            .unwrap(),
+        )?;
+        Ok(service)
+    }
+
+    async fn start_with_seed(config: BenchConfig, seed: u64) -> Result<Self, String> {
         config.validate()?;
         // Simulation keeps its Lightning network state in memory. Never imply
         // a fresh process can safely resume it from only the mint SQLite file.
@@ -103,8 +146,6 @@ impl BenchMint {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_secs();
-        let entropy = Identity::generate();
-        let seed = u64::from_le_bytes(entropy.node_addr().as_bytes()[..8].try_into().unwrap());
         let network = PaymentNetwork::new(
             seed,
             0,
@@ -113,15 +154,39 @@ impl BenchMint {
                 start: Instant::now(),
             }),
         );
-        let mint = LocalMint::start(
-            &config.state_directory,
-            network.clone(),
-            "hardware-bench",
-            IssuerMode::ClosedLoop,
-        )
-        .await
+        let mint = if config.receiver_history_keyset {
+            LocalMint::start_with_limits(
+                &config.state_directory,
+                network.clone(),
+                "hardware-bench",
+                IssuerMode::ClosedLoop,
+                4096,
+                4096,
+            )
+            .await
+        } else {
+            LocalMint::start(
+                &config.state_directory,
+                network.clone(),
+                "hardware-bench",
+                IssuerMode::ClosedLoop,
+            )
+            .await
+        }
         .map_err(|e| e.to_string())?;
-        let backend: SocketAddr = mint
+        if config.fragmented_channel_keyset || config.receiver_history_keyset {
+            let denominations = if config.receiver_history_keyset {
+                vec![1, 960, 1024]
+            } else {
+                vec![1, 64, 128]
+            };
+            mint.mint()
+                .rotate_keyset("sat".parse().unwrap(), denominations, 0, false, None)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let faults = MintFaults::start(mint.url()).await;
+        let backend: SocketAddr = faults
             .url()
             .strip_prefix("http://")
             .ok_or("invalid local mint URL")?
@@ -135,28 +200,13 @@ impl BenchMint {
             listener.local_addr().map_err(|e| e.to_string())?
         );
         // Fixed loopback upstream only. No client-provided proxy destinations.
-        let proxy = tokio::spawn(async move {
-            let mut jobs = JoinSet::new();
-            loop {
-                tokio::select! {
-                    connection = listener.accept(), if jobs.len() < 32 => {
-                        let Ok((mut incoming, _)) = connection else { break; };
-                        jobs.spawn(async move {
-                            let _ = tokio::time::timeout(Duration::from_secs(45), async {
-                                let mut upstream = TcpStream::connect(backend).await?;
-                                tokio::io::copy_bidirectional(&mut incoming, &mut upstream).await
-                            }).await;
-                        });
-                    }
-                    _ = jobs.join_next(), if !jobs.is_empty() => {}
-                }
-            }
-        });
+        let proxy = proxy::spawn(listener, backend);
         let service = Self {
             config,
             url,
             network,
             _mint: mint,
+            faults,
             proxy,
             issued: BTreeMap::new(),
         };
@@ -178,7 +228,16 @@ impl BenchMint {
     }
 
     pub async fn handle(&mut self, request: BenchRequest) -> Result<Value, String> {
+        if self.faults.active()
+            && matches!(
+                &request,
+                BenchRequest::Issue { .. } | BenchRequest::Collect { .. }
+            )
+        {
+            return Err("release the test barrier before issuing or collecting funds".into());
+        }
         match request {
+            BenchRequest::Fault { command } => self.faults.request(command),
             BenchRequest::Issue { id, amount_sat } => {
                 if !valid_id(&id) || amount_sat == 0 {
                     return Err("invalid test grant".into());
@@ -200,6 +259,8 @@ impl BenchMint {
                         &self.url,
                         &id,
                         amount_sat,
+                        format!("fips-export:{id}"),
+                        &open_wallet(&self.config.state_directory.join("wallet")).await?,
                     )
                     .await;
                 }
@@ -224,13 +285,26 @@ impl BenchMint {
                     .orchestrator_funding()
                     .settle_external(&quote.payment_request)
                     .map_err(|e| e.to_string())?;
+                if self.config.receiver_history_keyset {
+                    claim_paid_quote(&wallet, &self.url, &quote.quote_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
                 let overview = load_wallet_overview(&wallet, true)
                     .await
                     .map_err(|e| e.to_string())?;
                 if !overview.warnings.is_empty() {
                     return Err("test funding reconciliation has warnings".into());
                 }
-                export_payment(&self.config.state_directory, &self.url, &id, amount_sat).await
+                export_payment(
+                    &self.config.state_directory,
+                    &self.url,
+                    &id,
+                    amount_sat,
+                    format!("fips-export:{id}"),
+                    &open_wallet(&wallet).await?,
+                )
+                .await
             }
             BenchRequest::Collect { token } => {
                 checked_token(&token, &self.url)?;

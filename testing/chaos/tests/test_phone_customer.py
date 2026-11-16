@@ -29,7 +29,8 @@ class PhoneCustomerTests(unittest.TestCase):
         self.serial = "authorized-fixture"
         self.connected = b"device"
         self.policy = b"showing=false inputRestricted=false"
-        self.foreground = PACKAGE + "/" + ACTIVITY
+        self.expected_package = PACKAGE
+        self.foreground = self.expected_package + "/" + ACTIVITY
         self.status_value = {"customer": {"configured": True, "running": False}, "balance_sat": 128}
         self.marker = {"action": "buy", "ok": True, "old": True}
         self.archived = []
@@ -74,11 +75,11 @@ class PhoneCustomerTests(unittest.TestCase):
                 data = self.policy
             elif shell == ["dumpsys", "activity", "activities"]:
                 data = ("topResumedActivity=ActivityRecord{fixture u0 " + self.foreground + " t1}").encode()
-            elif shell == ["pm", "path", PACKAGE]:
+            elif shell == ["pm", "path", self.expected_package]:
                 data = b"package:/data/app/acceptance/base.apk"
-            elif shell == ["run-as", PACKAGE, "id", "-u"]:
+            elif shell == ["run-as", self.expected_package, "id", "-u"]:
                 data = b"10123"
-            elif shell[:4] == ["run-as", PACKAGE, "sh", "-c"]:
+            elif shell[:4] == ["run-as", self.expected_package, "sh", "-c"]:
                 script = shell[4]
                 if script.startswith("test ! -e"):
                     # Intent must be durable before touching the old marker.
@@ -122,8 +123,8 @@ class PhoneCustomerTests(unittest.TestCase):
                 data = b""
             elif shell[:2] == ["am", "start"]:
                 self.launches.append(shell)
-                already_top = self.foreground == PACKAGE + "/" + ACTIVITY
-                self.foreground = PACKAGE + "/" + ACTIVITY
+                already_top = self.foreground == self.expected_package + "/" + ACTIVITY
+                self.foreground = self.expected_package + "/" + ACTIVITY
                 if not already_top or "--activity-single-top" in shell:
                     self.marker = {"action": "preview", "ok": True}
                 self.setup_command = shell
@@ -133,6 +134,46 @@ class PhoneCustomerTests(unittest.TestCase):
             else:
                 self.fail("unexpected phone command")
         return subprocess.CompletedProcess(command, 0, stdout=data, stderr=b"")
+
+    def test_named_instance_targets_only_its_own_app_and_keeps_identity_bound(self):
+        self.output = self.root / "named-evidence"
+        self.phone = PhoneCustomer(self.adb, self.serial, self.output, instance="trial2")
+        self.expected_package = PACKAGE + ".trial2"
+        self.foreground = self.expected_package + "/" + ACTIVITY
+        self.button["package"] = self.expected_package
+        self.phone.open_setup({"version": 1}, timeout=0)
+        uri = self.setup_command[self.setup_command.index("-d") + 1]
+        self.assertEqual(urlsplit(uri).scheme, "fipsbench-acceptance-trial2")
+        self.phone.click("Buy forwarding", "buy", timeout=0)
+        self.assertEqual(self.phone.account_file("buyer/buyer.json"), self.account)
+        self.button["text"] = "Connect"
+        self.phone.stage_funds("private-test-token")
+        self.assertEqual(self.funding, {"token": "private-test-token"})
+        self.foreground = PACKAGE + "/" + ACTIVITY
+        with self.assertRaisesRegex(RuntimeError, "foreground"):
+            self.phone.check()
+        with self.assertRaisesRegex(RuntimeError, "another device or adapter"):
+            PhoneCustomer(self.adb, self.serial, self.output, instance="trial3")
+
+    def test_invalid_instance_cannot_create_an_evidence_directory(self):
+        for value in ("", "Main", "x.y", "a-b", "0first", "x" * 25, True):
+            output = self.root / "rejected"
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                PhoneCustomer(self.adb, self.serial, output, instance=value)
+            self.assertFalse(output.exists())
+
+    def test_empty_original_inventory_is_explicit_and_bound_to_adapter_identity(self):
+        output = self.root / "empty-originals"
+        phone = PhoneCustomer(self.adb, self.serial, output, original_packages=[])
+        self.assertEqual(phone.original_packages, [])
+        self.assertEqual(phone.identity["original_packages"], [])
+        with self.assertRaisesRegex(RuntimeError, "another device or adapter"):
+            PhoneCustomer(self.adb, self.serial, output)
+        for invalid in (False, "", ["org.fips.relaybench"]):
+            rejected = self.root / "rejected-originals"
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                PhoneCustomer(self.adb, self.serial, rejected, original_packages=invalid)
+            self.assertFalse(rejected.exists())
 
     def test_old_same_action_success_is_archived_and_cannot_complete_a_new_tap(self):
         old = dict(self.marker)
@@ -208,6 +249,34 @@ class PhoneCustomerTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.phone.click("Buy forwarding", "buy", timeout=0)
                 setattr(self, name, original)
+        self.assertEqual(self.taps, [])
+        self.assertEqual(self.archived, [])
+
+    def test_locked_background_diagnostics_preserve_ui_and_device_boundaries(self):
+        from sim.phone_diagnostics import control
+        import struct
+
+        self.policy = b"showing=true inputRestricted=true"
+        self.foreground = "launcher/Launcher"
+        reply = b'{"ok":{"peers":[]}}'
+        original_adb = self.phone.adb
+
+        def diagnostic_adb(*args, **kwargs):
+            if args[:3] == ('shell', '-T', 'run-as'):
+                self.assertEqual(kwargs['data'], b'\x00\x00\x00\x11{"type":"status"}')
+                return struct.pack('!I', len(reply)) + reply
+            return original_adb(*args, **kwargs)
+
+        with patch.object(self.phone, 'adb', side_effect=diagnostic_adb):
+            self.assertEqual(control(self.phone, 'status'), {'peers': []})
+            self.assertEqual(self.phone.account_file('buyer/buyer.json'), self.account)
+            with self.assertRaisesRegex(RuntimeError, 'unlocked'):
+                control(self.phone, 'send_probe', probe={})
+            with self.assertRaisesRegex(RuntimeError, 'unlocked'):
+                self.phone.click('Buy forwarding', 'buy', timeout=0)
+            self.serial = 'another-device'
+            with self.assertRaisesRegex(RuntimeError, 'identity'):
+                control(self.phone, 'status')
         self.assertEqual(self.taps, [])
         self.assertEqual(self.archived, [])
 
@@ -298,7 +367,7 @@ class PhoneCustomerTests(unittest.TestCase):
 
     def test_only_exact_candidate_account_files_can_be_read(self):
         for relative in ("buyer/buyer.json", "controller/controller.json", "seller/ledger.json",
-                         "exports/fixture_123.json"):
+                         "wallet/spilman-client.json", "exports/fixture_123.json"):
             self.assertEqual(self.phone.account_file(relative), self.account)
         for relative in ("../profile.json", "wallet/secrets.json", "exports/../secret.json",
                          "exports/" + "a" * 33 + ".json", "/etc/passwd"):

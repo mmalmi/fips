@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sim.paid_settlement import STOP_RELAY, settle_and_collect, stop_relay
+from sim.paid_settlement import (STOP_RELAY, collect_settled_wallets,
+                                 settle_and_collect, stop_relay)
 
 
 NODES = ("n01", "n02", "n03")
@@ -52,6 +53,8 @@ class FakeRun:
         self.collected = 0
         self.calls = []
         self.exports = {}
+        self.reconciled = set()
+        self.acknowledged = {}
         self.transform = lambda _action, value: value
 
     def ctl(self, node, kind):
@@ -63,8 +66,9 @@ class FakeRun:
         return copy.deepcopy(self.settled)
 
     def state_json(self, node, relative):
-        assert relative == f"exports/collect-{node}.json"
-        return self.transform("saved_export", copy.deepcopy(self.exports[node]))
+        export_id = int(Path(relative).stem)
+        assert relative == f"exports/{export_id}.json"
+        return self.transform("saved_export", copy.deepcopy(self.exports[node, export_id]))
 
     def execute(self, node, binary, action, request):
         kind = request["type"]
@@ -78,16 +82,33 @@ class FakeRun:
             return self.transform("balance", {"mint_url": MINT, "unit": "sat",
                                               "balance_sat": self.balances[node]})
         if kind == "export":
+            export_id = request["id"]
+            assert type(export_id) is int
+            assert export_id == 1 + sum(owner == node for owner, _ in self.exports)
             amount = request["amount_sat"]
-            assert node not in self.exports
-            assert amount == self.balances[node]
-            self.exports[node] = {"mint_url": MINT, "unit": "sat", "amount_sat": amount,
-                                  "send_fee_sat": 0, "operation_id": f"export-{node}",
-                                  "token": f"private-token-{node}"}
-            self.balances[node] = 0
+            assert 0 < amount <= self.balances[node]
+            operation = f"export-{node}-{export_id}"
+            self.exports[node, export_id] = {
+                "mint_url": MINT, "unit": "sat", "amount_sat": amount,
+                "send_fee_sat": 0, "operation_id": operation,
+                "token": f"private-token-{node}-{export_id}"}
+            self.balances[node] -= amount
             return self.transform("export", {
                 "path": f"/tmp/bench-state/exports/{request['id']}.json",
-                "amount_sat": amount, "operation_id": f"export-{node}"})
+                "amount_sat": amount, "operation_id": operation})
+        if kind == "recover":
+            self.reconciled.add(node)
+            return self.transform("recover", {
+                "recovery_pass_complete": True, "minted_amount": 0,
+                "finalized_melts": 0, "compensated_sagas": 0,
+                "pending_sagas": 0, "failed_sagas": 0, "warning_count": 0})
+        if kind == "acknowledge_exports":
+            assert node in self.reconciled
+            self.acknowledged[node] = request["through"]
+            total = sum(p.get("amount_sat", 0) for (owner, _), p in self.exports.items() if owner == node)
+            return self.transform("acknowledge_exports", {
+                "through": request["through"], "requested_sat": total,
+                "cost": {"wallet_debit_sat": total, "swap_fee_sat": 0}})
         assert kind == "collect" and node == "mint"
         payment = next(p for p in self.exports.values() if p["token"] == request["token"])
         self.collected += payment["amount_sat"]
@@ -96,6 +117,57 @@ class FakeRun:
 
 
 class SettlementTests(unittest.TestCase):
+    def collect_chunks(self, run, limit):
+        stop = Mock()
+        collect_settled_wallets(run, run.settled, {}, {}, MINT, execute=run.execute,
+                               stop=stop, export_path=lambda _n, p: f"/tmp/bench-state/{p}",
+                               max_export_sat=limit)
+        self.assertEqual([call.args[0] for call in stop.call_args_list], list(NODES))
+
+    def test_bounded_exports_use_distinct_sequences_and_collect_exact_original_value(self):
+        run = FakeRun()
+        self.collect_chunks(run, 32)
+        self.assertEqual(run.collected, 384)
+        self.assertEqual(run.balances, dict.fromkeys(NODES, 0))
+        self.assertEqual([row['amount_sat'] for row in run.exports.values()],
+                         [32, 32, 32, 25, 32, 32, 32, 32, 16, 32, 32, 32, 23])
+        self.assertNotIn('private-token', json.dumps(run.evidence))
+
+    def test_collection_respects_each_original_durable_export_floor(self):
+        run = FakeRun()
+        floors = dict(zip(NODES, (1, 137, 0)))
+        for node, floor in floors.items():
+            run.exports.update({(node, number): {'token': None} for number in range(1, floor + 1)})
+        collect_settled_wallets(run, run.settled, {}, {}, MINT, execute=run.execute,
+            stop=Mock(), export_path=lambda _n, p: f'/tmp/bench-state/{p}',
+            export_start=lambda name: floors[name] + 1)
+        self.assertEqual(run.collected, 384)
+        self.assertEqual(run.balances, dict.fromkeys(NODES, 0))
+        for name, floor in floors.items():
+            self.assertIsNotNone(run.exports[name, floor + 1]['token'])
+
+    def test_chunk_failure_preserves_remaining_value_without_repeating_export(self):
+        run = FakeRun()
+        def fail_second(action, result):
+            if action == 'collect' and run.collected == 64:
+                raise RuntimeError('second reply lost')
+            return result
+        run.transform = fail_second
+        with self.assertRaisesRegex(RuntimeError, 'second reply lost'):
+            self.collect_chunks(run, 32)
+        self.assertEqual(list(run.exports), [('n01', 1), ('n01', 2)])
+        self.assertEqual(run.balances, {'n01': 57, 'n02': 144, 'n03': 119})
+        self.assertNotIn('mint', run.evidence)
+
+    def test_invalid_chunk_limit_fails_before_stopping_or_accessing_wallets(self):
+        for limit in (0, -1, True, 1.5):
+            run, stop = FakeRun(), Mock()
+            with self.subTest(limit=limit), self.assertRaises(RuntimeError):
+                collect_settled_wallets(run, {}, {}, {}, MINT, execute=run.execute,
+                                       stop=stop, export_path=Mock(), max_export_sat=limit)
+            stop.assert_not_called()
+            self.assertEqual(run.calls, [])
+
     def run_closure(self, run):
         with patch("sim.paid_settlement.stop_relay") as stop:
             settle_and_collect(run, run.prior)
@@ -109,10 +181,30 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(run.balances, dict.fromkeys(NODES, 0))
         for node in NODES:
             self.assertEqual(run.calls.count((node, "export")), 1)
+            self.assertEqual(run.calls.count((node, "recover")), 1)
+            self.assertEqual(run.acknowledged[node], 1)
+            self.assertLess(run.calls.index((node, "recover")), run.calls.index((node, "acknowledge_exports")))
         self.assertEqual(run.calls.count(("mint", "collect")), 3)
         self.assertEqual(run.evidence["mint"]["collected_sat"], 384)
         self.assertNotIn("private-token", json.dumps(run.evidence))
         self.assertNotIn('"token"', json.dumps(run.evidence))
+
+    def test_incomplete_reconciliation_preserves_exports_and_never_reports_closure(self):
+        for field, value in (("recovery_pass_complete", False), ("minted_amount", 1),
+                             ("finalized_melts", 1), ("compensated_sagas", 1),
+                             ("pending_sagas", 1), ("failed_sagas", 1), ("warning_count", 1)):
+            with self.subTest(field=field):
+                run = FakeRun()
+                def transform(action, result):
+                    if action == "recover":
+                        result[field] = value
+                    return result
+                run.transform = transform
+                with self.assertRaises(RuntimeError):
+                    self.run_closure(run)
+                self.assertEqual(run.calls.count(("mint", "collect")), 1)
+                self.assertFalse(run.acknowledged)
+                self.assertNotIn("mint", run.evidence)
 
     def test_changed_original_account_or_funding_terms_fail_before_any_action(self):
         changes = (

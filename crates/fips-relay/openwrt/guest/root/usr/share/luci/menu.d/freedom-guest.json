@@ -1,0 +1,1 @@
+{"admin/services/freedom_guest":{"title":"Freedom guest internet","order":61,"action":{"type":"view","path":"freedom-guest"},"depends":{"acl":["luci-app-freedom-guest"]}}}

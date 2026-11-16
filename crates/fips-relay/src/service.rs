@@ -4,11 +4,14 @@
 mod accept_barrier;
 mod config;
 mod control;
+mod managed_mint;
+mod mint_access;
 mod network;
+pub(crate) use mint_access::OfflineMint;
 mod transport_startup;
 pub(crate) use config::read_json;
+pub use config::{LocalMintConfig, ServiceConfig, ServiceTerms};
 use config::{Manifest, REQUIRED, check_state};
-pub use config::{ServiceConfig, ServiceTerms};
 pub use control::{AdminRequest, native_request, request};
 #[cfg(feature = "testbench")]
 pub(crate) use control::{read_record, write_record};
@@ -25,22 +28,25 @@ use crate::{
 };
 use cashu_service::{
     CashuWalletService, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
-    FileSpilmanPaymentSigner,
+    FileSpilmanPaymentSigner, load_or_create_cashu_spilman_sender_key,
 };
 use fips_core::{
     FipsEndpoint, Identity, PeerIdentity,
     config::PeerConfig,
     endpoint::ServiceCarrierDiagnostics,
-    node::{ForwardingAdmission, ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
+    node::{
+        ForwardingAdmission, ForwardingDecision, ForwardingOutcome, ForwardingPolicy,
+        ForwardingRequest,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt},
+    fs::File,
+    io::Read,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -72,16 +78,29 @@ struct ServiceForwarder {
 }
 
 impl ForwardingPolicy for ServiceForwarder {
+    fn admission_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.relay.admission_notify()
+    }
+
     fn admit(&self, request: &ForwardingRequest<'_>) -> Option<u64> {
         self.admit_classified(request)
             .map(|admission| admission.token)
     }
 
     fn admit_classified(&self, request: &ForwardingRequest<'_>) -> Option<ForwardingAdmission> {
+        self.decide(request).admission()
+    }
+
+    fn decide(&self, request: &ForwardingRequest<'_>) -> ForwardingDecision {
+        self.decide_with_bid(request, &mut 0)
+    }
+
+    fn decide_with_bid(&self, request: &ForwardingRequest<'_>, bid: &mut u64) -> ForwardingDecision {
+        *bid = 0;
         if !self.ready.load(Ordering::Acquire) {
-            return None;
+            return ForwardingDecision::Reject;
         }
-        self.relay.admit_classified(request)
+        self.relay.decide_with_bid(request, bid)
     }
 
     fn complete(&self, token: u64, outcome: ForwardingOutcome) {
@@ -92,6 +111,8 @@ impl ForwardingPolicy for ServiceForwarder {
 pub struct RelayService {
     config: ServiceConfig,
     endpoint: Arc<FipsEndpoint>,
+    mint: Option<crate::mint_mesh::MeshMintBridge>,
+    managed_mint: Option<managed_mint::ManagedMint>,
     controller: Arc<Controller>,
     seller: Arc<DurableRelay>,
     buyer: Arc<BuyerAuthorizer>,
@@ -102,11 +123,15 @@ pub struct RelayService {
     quote_server: QuoteServer,
     received: Arc<Mutex<Received>>,
     probe_receiver: Arc<Mutex<Option<ProbeReceiver>>>,
+    #[cfg(feature = "measurements")]
+    stream_probe: Mutex<Option<probe::stream::StreamReport>>,
     probe_sender: tokio::sync::Semaphore,
+    probe_stop: tokio::sync::watch::Sender<bool>,
     control_statistics: Vec<(u16, Arc<ControlStatistics>)>,
     service_carriers: Vec<ServiceCarrierDiagnostics>,
     receive_task: tokio::task::JoinHandle<()>,
     receiver_pubkey: String,
+    sender_pubkey: String,
     forwarding: Arc<ServiceForwarder>,
     free: Arc<crate::free_routes::FreeRoutes>,
     _owner: File,
@@ -114,10 +139,16 @@ pub struct RelayService {
 
 impl RelayService {
     pub async fn initialize(config: ServiceConfig) -> Result<String, String> {
+        Self::initialize_with_identity(config, Identity::generate()).await
+    }
+
+    async fn initialize_with_identity(
+        config: ServiceConfig,
+        identity: Identity,
+    ) -> Result<String, String> {
         config.validate()?;
         std::fs::DirBuilder::new().mode(0o700).create(&config.state_directory)
             .map_err(|_| "init requires a new state directory; existing or partial state is never replaced")?;
-        let identity = Identity::generate();
         fips_core::config::write_key_file(
             &config.state_directory.join("identity.key"),
             &fips_core::encode_nsec(&identity.keypair().secret_key()),
@@ -125,9 +156,10 @@ impl RelayService {
         .map_err(|e| e.to_string())?;
         let service = Self::assemble(config.clone(), identity, None).await?;
         let manifest = Manifest {
-            version: 1,
+            version: 3,
             npub: service.endpoint.npub().to_string(),
             receiver_pubkey: service.receiver_pubkey.clone(),
+            sender_pubkey: service.sender_pubkey.clone(),
             terms: config.terms,
         };
         service.shutdown().await?;
@@ -143,18 +175,10 @@ impl RelayService {
                 .map_err(|e| e.to_string())?;
         }
         check_state(&config.state_directory)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(config.state_directory.join("service.json"))
-            .map_err(|e| e.to_string())?;
-        file.write_all(&serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        File::open(&config.state_directory)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+        crate::wallet_tools::private_new(
+            &config.state_directory.join("service.json"),
+            &serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
+        )?;
         Ok(manifest.npub)
     }
 
@@ -167,7 +191,9 @@ impl RelayService {
         Self::stored_state(config).map(|_| ())
     }
 
-    pub(crate) async fn check_wallet_capacity(config: &ServiceConfig) -> Result<(), String> {
+    pub(crate) async fn open_checked_wallet(
+        config: &ServiceConfig,
+    ) -> Result<CashuWalletService, String> {
         let wallet = CashuWalletService::open_file_backed(config.state_directory.join("wallet"))
             .await
             .map_err(|e| e.to_string())?;
@@ -179,13 +205,13 @@ impl RelayService {
         if maximum != config.terms.wallet_capacity_bytes {
             return Err("wallet storage capacity differs from saved terms".into());
         }
-        Ok(())
+        Ok(wallet)
     }
 
     fn stored_state(config: &ServiceConfig) -> Result<(Identity, Manifest), String> {
         config.validate()?;
         let manifest: Manifest = read_json(&config.state_directory.join("service.json"))?;
-        if manifest.version != 1 || manifest.terms != config.terms {
+        if manifest.version != 3 || manifest.terms != config.terms {
             return Err(
                 "configuration differs from saved terms; explicit reconciliation required".into(),
             );
@@ -208,6 +234,64 @@ impl RelayService {
         let create = manifest.is_none();
         let owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
         let root = &config.state_directory;
+        let managed_mint = if let Some(mint) = &config.terms.local_mint {
+            if create {
+                managed_mint::initialize(root, mint).await?;
+                None
+            } else {
+                Some(managed_mint::ManagedMint::start(&config, mint).await?)
+            }
+        } else {
+            None
+        };
+        if create {
+            let directory = root.join("wallet");
+            let wallet = CashuWalletService::create_file_backed_with_capacity(
+                &directory,
+                config.terms.wallet_capacity()?,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            wallet
+                .load_mint_balance(&config.terms.controller.mint_url)
+                .await
+                .map_err(|e| e.to_string())?;
+            drop(wallet);
+        } else {
+            Self::open_checked_wallet(&config).await?;
+        }
+        let sender_pubkey =
+            load_or_create_cashu_spilman_sender_key(&root.join("wallet"))?.public_key_hex;
+        if manifest.is_some_and(|m| m.sender_pubkey != sender_pubkey) {
+            return Err("stored payment sender identity changed".into());
+        }
+        let receiver = FileSpilmanPaymentReceiver::load(
+            &root.join("receiver"),
+            FileSpilmanPaymentReceiverConfig::new(config.terms.controller.receiving_mints().cloned()),
+        )?;
+        let receiver_pubkey = receiver.receiver_pubkey_hex().to_string();
+        if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
+            return Err("stored payment receiver identity changed".into());
+        }
+        drop(FileSpilmanPaymentSigner::load(&root.join("wallet"))?);
+        // Reject changed buyer terms before either accounting journal is recovered.
+        let buyer = Arc::new(
+            if create {
+                BuyerAuthorizer::create(
+                    &root.join("buyer"),
+                    *identity.node_addr(),
+                    config.terms.buyer_budget_sat,
+                    Limits::default(),
+                )
+            } else {
+                BuyerAuthorizer::load_bound(
+                    &root.join("buyer"),
+                    *identity.node_addr(),
+                    config.terms.buyer_budget_sat,
+                )
+            }
+            .map_err(|e| e.to_string())?,
+        );
         let seller = Arc::new(
             if create {
                 DurableRelay::create(
@@ -220,49 +304,11 @@ impl RelayService {
             }
             .map_err(|e| e.to_string())?,
         );
-        let buyer = Arc::new(
-            if create {
-                BuyerAuthorizer::create(
-                    &root.join("buyer"),
-                    *identity.node_addr(),
-                    config.terms.buyer_budget_sat,
-                    Limits::default(),
-                )
-            } else {
-                BuyerAuthorizer::load(&root.join("buyer"))
-            }
-            .map_err(|e| e.to_string())?,
-        );
-        if create {
-            let directory = root.join("wallet");
-            let wallet = match config.terms.wallet_capacity_bytes {
-                Some(maximum) => {
-                    CashuWalletService::create_file_backed_with_capacity(&directory, maximum).await
-                }
-                None => CashuWalletService::open_file_backed(&directory).await,
-            }
-            .map_err(|e| e.to_string())?;
-            wallet
-                .load_mint_balance(&config.terms.controller.mint_url)
-                .await
-                .map_err(|e| e.to_string())?;
-            drop(wallet);
-            drop(FileSpilmanPaymentSigner::load(&directory)?);
-        } else {
-            Self::check_wallet_capacity(&config).await?;
-        }
-        let receiver = FileSpilmanPaymentReceiver::load(
-            &root.join("receiver"),
-            FileSpilmanPaymentReceiverConfig::new([config.terms.controller.mint_url.clone()]),
-        )?;
-        let receiver_pubkey = receiver.receiver_pubkey_hex().to_string();
-        if manifest.is_some_and(|m| m.receiver_pubkey != receiver_pubkey) {
-            return Err("stored payment receiver identity changed".into());
-        }
         let mut free = crate::free_routes::FreeRoutes::for_accounts(seller.clone(), buyer.clone());
         if let Some(policy) = &config.free_bandwidth {
             free = free.with_bandwidth(policy.clone())?;
         }
+        free.set_public_free_transit(config.public_free_transit);
         let free = Arc::new(free);
         let relay = PaidForwarder::with_free_routes(
             seller.clone(),
@@ -271,7 +317,11 @@ impl RelayService {
             free.clone(),
         );
         let relay = if config.return_allowance {
-            relay.with_return_allowance()?
+            if let Some(policy) = &config.return_bandwidth {
+                relay.with_return_bandwidth(policy.clone())?
+            } else {
+                relay.with_return_allowance()?
+            }
         } else {
             relay
         };
@@ -320,7 +370,7 @@ impl RelayService {
         // Register once, before any service traffic; status only samples these
         // stable handles. Normal builds leave endpoint diagnostics disabled.
         #[cfg(feature = "measurements")]
-        let service_carriers = [PAYMENT_CONTROL_PORT, DATA_PORT]
+        let service_carriers = [PAYMENT_CONTROL_PORT, DATA_PORT, probe::stream::PORT]
             .into_iter()
             .map(|port| {
                 endpoint
@@ -342,27 +392,31 @@ impl RelayService {
         let quotes = RouteQuotes::with_free_routes(
             endpoint.clone(),
             Arc::new(quote_transport),
-            QuotePolicy {
-                destination_fees: config
-                    .destination_fees
-                    .resolve(t.max_rate_msat_per_kib, t.billing.has_free_handshakes())?,
-                billing: t.billing,
-                mint_url: t.controller.mint_url.clone(),
-                receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
-                fee_msat_per_kib: t.fee_msat_per_kib,
-                max_rate_msat_per_kib: t.max_rate_msat_per_kib,
-                lifetime_secs: t.quote_lifetime_secs,
-                max_units: t.quote_max_units,
-                capacity_sat: t.controller.channel_capacity_sat,
-                grace_msat: t.grace_msat,
-            },
+            config.quote_policy(receiver.receiver_pubkey_hex().to_string())?,
             free.clone(),
         )?;
+        let quote_directory = root.join("quotes");
+        let quotes = tokio::task::spawn_blocking(move || {
+            quotes.with_offer_journal(&quote_directory, create)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let quotes = Arc::new(if let Some(policy) = &config.price_selection {
             quotes.with_price_selection(policy.clone(), buyer.clone())?
         } else {
             quotes
         });
+        let mint = if create {
+            None
+        } else {
+            match mint_access::attach(&config, endpoint.clone(), quotes.clone()).await {
+                Ok(mint) => mint,
+                Err(error) => {
+                    let _ = endpoint.shutdown().await;
+                    return Err(error);
+                }
+            }
+        };
         let quote_server = QuoteServer::start(quotes.clone(), quote_incoming);
         let (acceptance, incoming) = ControlTransport::start_with_admission(
             endpoint.clone(),
@@ -383,7 +437,7 @@ impl RelayService {
         let payment_control = Arc::new(
             PaymentControl::new(receiver, root.join("wallet"), seller.clone()).with_keyset_refresh(
                 root.join("receiver"),
-                FileSpilmanPaymentReceiverConfig::new([t.controller.mint_url.clone()]),
+                FileSpilmanPaymentReceiverConfig::new(t.controller.receiving_mints().cloned()),
             ),
         );
         let payment_server = PaymentServer::start_shared(payment_control.clone(), payment_incoming);
@@ -397,11 +451,13 @@ impl RelayService {
             buyer: buyer.clone(),
             wallet_directory: root.join("wallet"),
         };
-        let controller = Arc::new(if create {
+        let controller = if create {
             Controller::create(&root.join("controller"), t.controller.clone(), services)
         } else {
             Controller::load(&root.join("controller"), t.controller.clone(), services)
-        }?);
+        }?;
+        let controller =
+            Arc::new(controller.with_funding_request_budget(config.funding_request_budget));
         #[cfg(feature = "testbench")]
         let (incoming, accept_barrier) =
             accept_barrier::AcceptBarrier::interpose(incoming, *endpoint.node_addr());
@@ -448,6 +504,8 @@ impl RelayService {
         Ok(Self {
             config,
             endpoint,
+            mint,
+            managed_mint,
             controller,
             seller,
             buyer,
@@ -458,11 +516,15 @@ impl RelayService {
             quote_server,
             received,
             probe_receiver,
+            #[cfg(feature = "measurements")]
+            stream_probe: Mutex::new(None),
             probe_sender: tokio::sync::Semaphore::new(1),
+            probe_stop: tokio::sync::watch::channel(false).0,
             control_statistics,
             service_carriers,
             receive_task,
             receiver_pubkey,
+            sender_pubkey,
             forwarding,
             free,
             _owner: owner,
@@ -472,6 +534,8 @@ impl RelayService {
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
             endpoint,
+            mint,
+            managed_mint,
             controller,
             seller,
             buyer,
@@ -493,6 +557,14 @@ impl RelayService {
         accept_barrier.shutdown().await;
         payment_server.stop().await;
         drop(quote_server);
+        let mint_result = match mint {
+            Some(mint) => mint.shutdown().await,
+            None => Ok(()),
+        };
+        let child_result = match managed_mint {
+            Some(child) => child.shutdown().await,
+            None => Ok(()),
+        };
         endpoint.shutdown().await.map_err(|e| e.to_string())?;
         receive_task.abort();
         let _ = receive_task.await;
@@ -506,9 +578,12 @@ impl RelayService {
         drop(controller);
         drop(endpoint);
         drop(_owner);
-        result
+        result?;
+        mint_result.and(child_result)
     }
 }
 
+#[cfg(all(test, feature = "testbench"))]
+mod mesh_mint_tests;
 #[cfg(test)]
 mod tests;

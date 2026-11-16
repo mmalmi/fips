@@ -1,0 +1,278 @@
+"""Paid phone transit on the existing LAN, including background/screen-off delivery.
+
+Reuses the guarded router profiles, mint and four-account collection. This tests
+FIPS hops over UDP, not phone 802.11s participation or customer-network isolation.
+Screen-off samples use ADB and USB power; they are not a battery-life benchmark.
+"""
+
+import hashlib
+from pathlib import Path
+import re
+from urllib.parse import urlsplit
+
+from .paid_finances import financial_snapshot, payments_credited
+from .paid_phone import PaidPhoneRun
+from .paid_phone_checks import guest_source, tcp_probe
+from .paid_phone_finances import validate_reopened
+from .paid_relay import eventually, relay_config
+from .paid_settlement import require
+from .phone_customer import ACTIVITY, save
+from .phone_diagnostics import control, native, resources
+from .stream_probe import duplex, validate_stream
+from .wifi_profiles import configure_stopped
+from . import phone_idle, phone_outage
+
+
+class PhoneTransitRun(PaidPhoneRun):
+    def __init__(self, args):
+        require(args.transit and not args.open_mesh, 'LAN transit cannot change radio profiles')
+        require(not getattr(args, 'forced_idle', False) or not (getattr(args, 'screen_off', False)
+                or getattr(args, 'sustained_transit', False)), 'idle is a separate transit workload')
+        require(not getattr(args, 'phone_outage', False) or not any(getattr(args, flag, False)
+                for flag in ('screen_off', 'sustained_transit', 'forced_idle')),
+                'phone outage is a separate transit workload')
+        impaired = bool(getattr(args, 'impaired_transit', False))
+        require(not impaired or (getattr(args, 'sustained_transit', False)
+                and not any(getattr(args, flag, False) for flag in
+                            ('screen_off', 'forced_idle', 'phone_outage', 'phone_renewal'))),
+                'impaired transit requires its own sustained background workload')
+        compare = bool(getattr(args, 'compare_transit_rates', False))
+        require(not compare or not any(getattr(args, flag, False) for flag in (
+            'screen_off', 'forced_idle', 'phone_outage', 'phone_renewal', 'impaired_transit')),
+            'rate comparison requires its own healthy background workload')
+        super().__init__(args)
+        if getattr(args, 'impaired_transit', None) == 'corrupt':
+            self.nodes['n02'].diagnostic_log_filter = 'warn,fips_core::node::handlers::encrypted=debug'
+        require(self.customer['interface'] == self.nodes['n01'].management,
+                'transit must use the existing management LAN')
+        self.addresses = self.scenario['router_addresses']
+        self.evidence.update(radio_mode='existing_lan_udp', customer_isolation_tested=False,
+                             physical_phone_transit=True,
+                             screen_off_requested=bool(getattr(args, 'screen_off', False)),
+                             impaired_transit_requested=impaired,
+                             sustained_transit_requested=bool(getattr(args, 'sustained_transit', False)), windows=[])
+        self.evidence['compare_transit_rates_requested'] = compare
+        for name in ('paid_phone_transit.py', 'stream_probe.py'):
+            self.evidence['harness_sha256'][name] = hashlib.sha256(
+                Path(__file__).with_name(name).read_bytes()).hexdigest()
+        self.background = False
+
+    def endpoint(self, name):
+        return f"{self.addresses[name]}:{self.customer['entry_port']}"
+
+    def profile_config(self, node):
+        name = next(name for name, candidate in self.nodes.items() if candidate is node)
+        config = relay_config([], self.mint_url)
+        config['state_directory'] = node.state
+        config['transports'] = {'udp': {'bind_addr': self.endpoint(name),
+                                         'advertise_on_nostr': False}}
+        # Match the phone's low tariff so the finite stream fits one original
+        # channel per account. All other financial authority stays unchanged.
+        config['terms'].update(fee_msat_per_kib=1, quote_max_units=128 * 1024 * 1024)
+        config['return_allowance'] = False
+        return config
+
+    def configure_access(self):
+        self.evidence['customer_access'] = {'mode': 'existing_lan', 'network_changes': False}
+
+    def check_customer_access(self):
+        source, _ = guest_source(self.phone, self.customer)
+        mint = urlsplit(self.mint_url)
+        require(tcp_probe(self.phone, source, mint.hostname, mint.port,
+                          self.root / 'network-shared_mint.json'),
+                'phone cannot reach the isolated mint')
+        self.phase('phone can reach the isolated mint on its unchanged Wi-Fi')
+
+    def customer_profile(self):
+        return {**super().customer_profile(), 'neighbor_admission': 'authenticated_adjacent'}
+
+    def expected_edges(self):
+        return [('n01', 'phone'), ('phone', 'n02'), ('n03', 'n02'), ('n02', 'phone')]
+
+    def launch_profiles(self):
+        self.before_launch()
+        first = self.nodes['n01']
+        first.start()
+        eventually('entry listener', lambda: self.ctl('n01', 'status'), 60)
+        require(self.ui('start')['customer']['running'], 'phone did not start')
+        adapters = native(self.phone, 'show_transports')['data']['transports']
+        require(len(adapters) == 1 and adapters[0]['type'] == 'udp',
+                'phone has an unexpected transport')
+        port = int(adapters[0]['local_addr'].rsplit(':', 1)[1])
+        require(0 < port <= 65535, 'phone UDP listener has no bound port')
+        source, _ = guest_source(self.phone, self.customer)
+        self.evidence['phone_udp_address'] = f'{source}:{port}'
+        neighbors = [
+            {'npub': self.evidence['phone_npub'],
+             'addresses': [{'transport': 'udp', 'addr': f'{source}:{port}'}]},
+            {'npub': self.nodes['n03'].npub,
+             'addresses': [{'transport': 'udp', 'addr': self.endpoint('n03')}]},
+        ]
+        configure_stopped(self.nodes['n02'], neighbors=neighbors)
+        for name in ('n02', 'n03'):
+            self.nodes[name].start()
+            eventually('transit relay listener', lambda name=name: self.ctl(name, 'status'), 60)
+
+    def topology(self):
+        identities = {name: node.npub for name, node in self.nodes.items()}
+        identities['phone'] = self.evidence['phone_npub']
+        line = ('n01', 'phone', 'n02', 'n03')
+        states = {name: self.accounts.ctl(name, 'status') for name in line}
+        self.evidence['last_peer_observation'] = {n: s['peers'] for n, s in states.items()}
+        self.save()
+        for index, name in enumerate(line):
+            wanted = {identities[other] for i, other in enumerate(line) if abs(i - index) == 1}
+            peers = states[name]['peers']
+            if ({peer['npub'] for peer in peers} != wanted
+                    or any(not peer['connected'] or peer['transport'] != 'udp' for peer in peers)):
+                return None
+        return states
+
+    def finances(self):
+        return financial_snapshot(self.accounts, wallet=None)
+
+    def screen(self, mode):
+        power = self.phone.shell('dumpsys', 'power').decode()
+        activity = self.phone.shell('dumpsys', 'activity', 'activities').decode()
+        service = self.phone.shell('dumpsys', 'activity', 'services', self.phone.package).decode()
+        awake = re.search(r'^\s*mWakefulness=(\w+)', power, re.MULTILINE)
+        require(awake is not None, 'phone wakefulness unavailable')
+        require(awake[1] in (('Asleep', 'Dozing') if mode == 'screen_off' else ('Awake',)),
+                'phone screen state changed during transfer')
+        components = re.findall(r'(?:topResumedActivity|mResumedActivity)[^\n]*?\bu\d+\s+(\S+/\S+)', activity)
+        ours = self.phone.package + '/' + ACTIVITY
+        require((mode == 'foreground' and components and all(x == ours for x in components))
+                or (mode != 'foreground' and ours not in components),
+                'phone foreground state changed during transfer')
+        require('isForeground=true' in service and 'RoutingService' in service,
+                'routing foreground service is absent')
+        return {'wakefulness': awake[1], 'activities': components, 'foreground_service': True}
+
+    def stream_shape(self, mode, unpaid):
+        count, duration = (1024, 4) if unpaid else (512 * 1024, 30)
+        compare = bool(getattr(self.args, 'compare_transit_rates', False))
+        minimum = 300 if (not unpaid and (
+            mode == 'background' and (getattr(self.args, 'sustained_transit', False) or compare)
+            or mode == 'background-high-rate' and compare)) else 0
+        rate = (256 if mode == 'background-high-rate' and compare else 32) * 1024
+        if minimum:
+            # Both comparison windows share the original channels. Endpoints
+            # pay the onward tariff as well, so reserve room for both transfers.
+            count, duration = (4 if compare else 9) * 1024**2, 300
+        return count, duration, rate, minimum
+
+    def stream(self, mode, *, unpaid=False, observe=None):
+        count, duration, rate, minimum = self.stream_shape(mode, unpaid)
+        compare = bool(getattr(self.args, 'compare_transit_rates', False))
+        row = {'mode': mode, 'unpaid': unpaid, 'minimum_duration_secs': minimum,
+               'before': resources(self.phone), 'battery_before':
+                   self.phone.shell('dumpsys', 'battery').decode()}
+        self.evidence['windows'].append(row)
+        self.save()
+        if minimum:
+            row['payment_before'] = control(self.phone, 'status')
+            if compare:
+                row['routers_before'] = {name: self.ctl(name, 'status') for name in self.nodes}
+        def sample():
+            require(self.topology() is not None, 'transit topology changed during transfer')
+            return {'line_verified': True, **self.screen(mode), **(observe() if observe else {})}
+        duplex(self, row, label=('unpaid-' if unpaid else '') + mode,
+               count=count, duration=duration, rate=rate, observe=sample, expect_denial=unpaid)
+        row['after'] = resources(self.phone)
+        if minimum:
+            row['payment_after'] = control(self.phone, 'status')
+            if compare:
+                row['routers_after'] = {name: self.ctl(name, 'status') for name in self.nodes}
+        require(row['before']['process'] == row['after']['process'], 'phone process changed')
+        row['cpu_seconds'] = (row['after']['cpu_ticks'] - row['before']['cpu_ticks']) / row['before']['ticks_per_second']
+        self.save()
+        if not unpaid:
+            for name, result in row['results'].items():
+                require(result['elapsed_us'] >= minimum * 1_000_000,
+                        'sustained transit ended before its five-minute paced window')
+                validate_stream(result, row['shapes'][name])
+            row['cpu_seconds_per_delivered_mib'] = row['cpu_seconds'] / (2 * count / 1024 ** 2)
+        row['passed'] = True
+        self.phase('unpaid denial verified' if unpaid else mode + ' paid duplex delivered')
+
+    def restore_foreground(self):
+        if self.background:
+            self.phone.shell('input', 'keyevent', 'KEYCODE_WAKEUP')
+            self.phone.shell('wm', 'dismiss-keyguard')
+            def unlocked():
+                self.phone.check(foreground=False)
+                return True
+            self.phase('waiting for unlocked phone to restore the app and settle')
+            eventually('operator unlock after background test', unlocked, 90)
+            self.phone.launch()
+            self.background = False
+
+    def check_unpaid(self):
+        self.stream('foreground', unpaid=True)
+        require(all(not self.accounts.ctl(name, 'status')['purchases'] for name in self.accounts.nodes),
+                'unpaid check created a purchase')
+
+    def buy_routes(self):
+        for name, other in (('n01', 'n03'), ('n03', 'n01')):
+            self.once('buy-' + name, lambda name=name, other=other:
+                      self.ctl(name, 'buy', destination=self.nodes[other].npub))
+
+    def exercise(self):
+        eventually('exact four-node phone transit line', self.topology, 90)
+        self.check_unpaid()
+        self.buy_routes()
+        self.stream('foreground')
+        self.background = True
+        self.phone.shell('input', 'keyevent', 'KEYCODE_HOME')
+        if self.evidence['impaired_transit_requested']:
+            before = self.journals('before-loss')
+            phone_outage.impaired_transit(self)
+            self.stream('background-after-loss')
+            validate_reopened(self.journals('after-loss'), before, self.mint_url, self.expected_edges())
+            self.phase('original paid channels retained through UDP impairment and fresh recovery traffic')
+        else:
+            self.stream('background')
+            if getattr(self.args, 'compare_transit_rates', False):
+                self.stream('background-high-rate')
+        event = ('idle' if getattr(self.args, 'forced_idle', False) else
+                 'outage' if getattr(self.args, 'phone_outage', False) else None)
+        if event:
+            before = self.journals('before-' + event)
+            (phone_idle if event == 'idle' else phone_outage).exercise(self)
+            eventually('original transit links after ' + event, self.topology, 90)
+            self.stream('background-after-' + event)
+            validate_reopened(self.journals('after-' + event), before, self.mint_url, self.expected_edges())
+            if event == 'outage':
+                row = self.evidence['phone_outage']
+                row['recovered_processes'] = phone_outage.processes(self)
+                require(row['recovered_processes'] == row['before_processes'],
+                        'recovery restarted a paid participant')
+            self.phase('original paid channels retained through ' + event + ' without another purchase')
+        if self.evidence['screen_off_requested']:
+            self.phone.shell('input', 'keyevent', 'KEYCODE_SLEEP')
+            eventually('phone screen off or ambient display', lambda: self.screen('screen_off'), 10)
+            self.stream('screen_off')
+        self.complete_transit()
+
+    def complete_transit(self):
+        self.restore_foreground()
+        eventually('unchanged paid transit line', self.topology, 30)
+        def paid():
+            state = self.finances()
+            return state if payments_credited(state) and all(x['authorized'] > 0 for x in state.values()) else None
+        final = eventually('provider credit on every paying direction', paid, 45)
+        counts = getattr(self, 'settlement_channel_counts', dict.fromkeys(self.accounts.nodes, 1))
+        require(len(final['phone']['credited']) == counts['n01'] + counts['n02']
+                and len(final['phone']['signed']) == counts['phone'],
+                'phone did not both sell and buy onward forwarding')
+        require(control(self.phone, 'status')['received']['packets'] == 0,
+                'phone was an application endpoint instead of transit')
+        save(self.root / 'paid-finances.json', final)
+        self.journals('paid')
+        self.settle()
+
+    def finish(self):
+        try:
+            self.restore_foreground()
+        finally:
+            super().finish()

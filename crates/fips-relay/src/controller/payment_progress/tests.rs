@@ -24,6 +24,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
     let buyer =
         BuyerAuthorizer::create(&root.path().join("buyer"), local, 10, Limits::default()).unwrap();
     let terms = ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: local,
         mint_url: "http://test.invalid".into(),
@@ -34,6 +35,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
     buyer.accept_channel(provider, terms.clone(), 0).unwrap();
     buyer
         .accept_quote(Contract {
+            bid_msat_per_kib: 0,
             billing: Default::default(),
             id: "quote".into(),
             channel_id: terms.id.clone(),
@@ -56,7 +58,7 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
         None
     );
     let observer = registry.track(&terms.id).unwrap();
-    observer.lock().unwrap().finished(Some(0));
+    observer.lock().unwrap().finished(Some(0), None);
     let token = buyer
         .observe(&OriginatedSessionRequest {
             source: local,
@@ -79,6 +81,8 @@ fn progress_reads_fresh_evidence_and_durable_unsigned_reply_liability() {
             authorized_sat: 1,
             acknowledged_msat: Some(0),
             in_flight: false,
+            pending: None,
+            last_failure_stage: None,
         }
     );
     assert!(registry.sample(&buyer, "missing").is_err());
@@ -116,4 +120,43 @@ fn progress_registry_is_bounded_and_reclaims_only_dropped_workers() {
     let fresh = registry.track("fresh").unwrap();
     assert_eq!(registry.channels.lock().unwrap().len(), 1);
     assert_eq!(fresh.lock().unwrap().acknowledged_msat, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn phase_trace_attributes_waits_to_the_completed_phase() {
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let output = bytes.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || Sink(output.clone()))
+        .finish();
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let registry = ProgressRegistry::default();
+    let progress = registry.track("channel").unwrap();
+    progress.lock().unwrap().started();
+    tokio::time::advance(Duration::from_millis(250)).await;
+    tracing::dispatcher::with_default(&dispatch, || {
+        progress.lock().unwrap().stage(PaymentStage::Signing);
+    });
+    tokio::time::advance(Duration::from_millis(375)).await;
+    tracing::dispatcher::with_default(&dispatch, || {
+        progress.lock().unwrap().finished(Some(1_000), None);
+    });
+    let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("channel_id=channel stage=Scheduled elapsed_us=250000"));
+    assert!(text.contains("channel_id=channel stage=Signing elapsed_us=375000"));
+    assert_eq!(text.lines().count(), 2);
+    assert!(!progress.lock().unwrap().in_flight());
 }

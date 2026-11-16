@@ -4,8 +4,10 @@ from bisect import bisect_left
 
 PAYMENT_PORT = 44743
 PAYMENT_OPERATIONS = ("payment_sign", "payment_usage", "payment_update")
+PAYMENT_CPU_OPERATIONS = (*PAYMENT_OPERATIONS, "payment_exchange")
 OPERATIONS = {"other", *PAYMENT_OPERATIONS, "window_checkpoint"}
 LEGACY_OPERATIONS = OPERATIONS | {"payment_open", "payment_stop"}
+CURRENT_OPERATIONS = OPERATIONS | {"payment_exchange"}
 COUNTERS = {"spans", "cpu_samples", "thread_cpu_ns", "elapsed_ns",
             "journal_bytes_written", "journal_writes", "journal_syncs", "journal_commits"}
 POLICIES = (250, 500, 1000, 2000, 2000, 1000, 500, 250)
@@ -29,15 +31,22 @@ def unsigned(value):
     return value
 
 
+def measurement_operations(version):
+    if type(version) is not int or version not in (1, 2, 3):
+        raise ValueError("unsupported measurement counter version")
+    return {1: LEGACY_OPERATIONS, 2: OPERATIONS, 3: CURRENT_OPERATIONS}[version]
+
+
 def validate_measurements(before, after):
     version = before["version"]
-    if type(version) is not int or version not in (1, 2) or after["version"] != version:
+    if (type(version) is not int or version not in (1, 2, 3)
+            or type(after["version"]) is not int or after["version"] != version):
         raise ValueError("unsupported measurement counter version")
     if before["process_id"] != after["process_id"]:
         raise ValueError("a service restarted during measurement")
     if unsigned(after["process_cpu_ns"]) < unsigned(before["process_cpu_ns"]):
         raise ValueError("process CPU counter reset")
-    operations = LEGACY_OPERATIONS if version == 1 else OPERATIONS
+    operations = measurement_operations(version)
     if set(before["operations"]) != operations or set(after["operations"]) != operations:
         raise ValueError("measurement operations changed or are missing")
     for name, prior in before["operations"].items():
@@ -160,7 +169,7 @@ def validate_gap(previous, current, schema=2, *, prepaid_usage=False):
             raise ValueError("payment traffic outside measurement windows")
         for name, counters in before["measurements"]["operations"].items():
             latest = after["measurements"]["operations"][name]
-            payment_work = name in PAYMENT_OPERATIONS or (
+            payment_work = name in PAYMENT_CPU_OPERATIONS or (
                 prepaid_usage and name in ('payment_open', 'payment_stop'))
             if payment_work and counters != latest:
                 raise ValueError("payment work outside measurement windows")

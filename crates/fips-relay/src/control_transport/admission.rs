@@ -11,7 +11,7 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const ADMISSION_BURST: u32 = 16;
-const ADMISSION_INTERVAL: Duration = Duration::from_millis(100);
+pub(super) const ADMISSION_INTERVAL: Duration = Duration::from_millis(100);
 const UNCONFIGURED_CONNECTIONS: usize = 8;
 const OBLIGATION_CONNECTIONS: usize = 8;
 const UNCONFIGURED_PEER_CONNECTIONS: usize = 4;
@@ -20,6 +20,34 @@ const AGGREGATE_INTERVAL: Duration = Duration::from_micros(3125);
 const UNCONFIGURED_IDENTITIES: usize = 64;
 const OBLIGATION_IDENTITIES: usize = MAX_CONTROL_OBLIGATIONS;
 const MEMBERSHIP_TIMEOUT: Duration = Duration::from_secs(1);
+const PEER_ADMISSION_EXHAUSTED: &str = "control peer request budget or identity capacity exhausted";
+
+#[derive(Debug)]
+pub(super) enum AdmissionError {
+    RateLimited(&'static str),
+    Rejected(String),
+}
+
+impl From<String> for AdmissionError {
+    fn from(error: String) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+impl From<&str> for AdmissionError {
+    fn from(error: &str) -> Self {
+        Self::Rejected(error.into())
+    }
+}
+
+impl std::fmt::Display for AdmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RateLimited(message) => f.write_str(message),
+            Self::Rejected(message) => f.write_str(message),
+        }
+    }
+}
 
 /// Whether bounded control also admits current authenticated adjacent peers.
 /// Neither mode authorizes route purchases, forwarding or wallet spending.
@@ -115,7 +143,13 @@ impl AdmissionState {
         }
     }
 
-    fn admit_peer(&mut self, peer: NodeAddr, outbound: bool, now: Instant, reserved: bool) -> bool {
+    fn admit_peer(
+        &mut self,
+        peer: NodeAddr,
+        outbound: bool,
+        now: Instant,
+        reserved: bool,
+    ) -> Result<(), AdmissionError> {
         let limit = if reserved {
             OBLIGATION_IDENTITIES
         } else {
@@ -130,7 +164,7 @@ impl AdmissionState {
             let Some(expired) = self.peers.iter().find_map(|(id, budget)| {
                 (budget.reserved == reserved && budget.idle_and_refilled(now)).then_some(*id)
             }) else {
-                return false;
+                return Err(PEER_ADMISSION_EXHAUSTED.into());
             };
             self.peers.remove(&expired);
         }
@@ -147,7 +181,7 @@ impl AdmissionState {
             budget.reserved = reserved;
         }
         if budget.active >= UNCONFIGURED_PEER_CONNECTIONS {
-            return false;
+            return Err(PEER_ADMISSION_EXHAUSTED.into());
         }
         let direction = if outbound {
             &mut budget.outgoing
@@ -155,10 +189,10 @@ impl AdmissionState {
             &mut budget.incoming
         };
         if !direction.allow(now) {
-            return false;
+            return Err(AdmissionError::RateLimited(PEER_ADMISSION_EXHAUSTED));
         }
         budget.active += 1;
-        true
+        Ok(())
     }
 
     fn release_peer(&mut self, peer: NodeAddr) {
@@ -279,7 +313,7 @@ impl ControlAdmission {
         self: &Arc<Self>,
         peer: PeerIdentity,
         outbound: bool,
-    ) -> Result<AdmissionPermit, String> {
+    ) -> Result<AdmissionPermit, AdmissionError> {
         let peer = *peer.node_addr();
         if self.configured.contains(&peer) {
             let mut state = self
@@ -292,7 +326,9 @@ impl ControlAdmission {
                 .or_insert_with(|| AdmissionBudget::new(Instant::now()))
                 .allow(Instant::now())
             {
-                return Err("control peer request budget exhausted".into());
+                return Err(AdmissionError::RateLimited(
+                    "control peer request budget exhausted",
+                ));
             }
             return Ok(AdmissionPermit {
                 admission: self.clone(),
@@ -325,18 +361,16 @@ impl ControlAdmission {
                 &mut state.aggregate
             };
             if !aggregate.allow(Instant::now()) {
-                return Err("unconfigured control request budget exhausted".into());
+                return Err(AdmissionError::RateLimited(
+                    "unconfigured control request budget exhausted",
+                ));
             }
         }
         let kind = self.classify(peer, outbound).await?;
-        if !self
-            .state
+        self.state
             .lock()
             .map_err(|_| "control admission poisoned")?
-            .admit_peer(peer, outbound, Instant::now(), reserved)
-        {
-            return Err("control peer request budget or identity capacity exhausted".into());
-        }
+            .admit_peer(peer, outbound, Instant::now(), reserved)?;
         Ok(AdmissionPermit {
             admission: self.clone(),
             peer,

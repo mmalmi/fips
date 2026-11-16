@@ -2,11 +2,16 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application android:label="${benchLabel}" android:theme="@style/BenchTheme"
         android:icon="@drawable/bench_icon" android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:allowBackup="false" android:usesCleartextTraffic="true"
         android:supportsRtl="true">
+        <service android:name=".RoutingService" android:exported="false"
+            android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
         <activity android:name=".MainActivity" android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>

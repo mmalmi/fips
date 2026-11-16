@@ -3,20 +3,22 @@ import copy
 import unittest
 
 from analyze import analyze_rows, diagnose_rows
-from native_counters import GROUPS
+from native_counters import BACKGROUND, DEFERRED, GROUPS, WAIT_DROPS
 from test_analyze import workload
 from test_hardware import hardware_report, nodes
 
 
-def native_report(background=False, transports=False):
+FORWARDING_EXTENSIONS = (BACKGROUND, BACKGROUND | DEFERRED, BACKGROUND | DEFERRED | WAIT_DROPS)
+
+
+def native_report(forwarding_fields=(), transports=False):
     rows = hardware_report()
     rows[0]["native_counters"] = True
     for node in nodes(rows):
         tick = node["measurements"]["process_cpu_ns"] // 100000
         counters = {group: dict.fromkeys(fields, tick) for group, fields in GROUPS.items()}
-        if background:
-            counters["forwarding"].update(drop_background_full_packets=tick,
-                                           drop_background_full_bytes=tick * 1000)
+        counters["forwarding"].update({field: tick * (1000 if field.endswith("_bytes") else 1)
+                                       for field in forwarding_fields})
         node["native"] = {
             "status": {"status": "ok", "data": {
                 "npub": node["npub"], "pid": node["host_process"]["pid"],
@@ -79,31 +81,33 @@ class NativeTests(unittest.TestCase):
                 with self.subTest(mutation=mutation), self.assertRaises((ValueError, KeyError, TypeError)):
                     analyzer(rows)
 
-    def test_background_queue_drops_are_preserved_as_observed_counters(self):
-        rows = native_report(background=True)
-        original = copy.deepcopy(rows)
-        _, trials, _ = analyze_rows(rows)
-        steady = next(r for r in trials if r["workload"] == "steady")
-        counters = steady["nodes"]["n02"]["native_counters"]["forwarding"]
-        self.assertEqual(counters["drop_background_full_packets"], 1)
-        self.assertEqual(counters["drop_background_full_bytes"], 1000)
-        self.assertEqual(rows, original)
+    def test_queue_observations_preserve_each_complete_historical_layout(self):
+        for fields in FORWARDING_EXTENSIONS:
+            rows = native_report(forwarding_fields=fields)
+            original = copy.deepcopy(rows)
+            _, trials, _ = analyze_rows(rows)
+            steady = next(r for r in trials if r["workload"] == "steady")
+            counters = steady["nodes"]["n02"]["native_counters"]["forwarding"]
+            self.assertEqual(set(counters), GROUPS["forwarding"] | fields)
+            for field in fields:
+                self.assertEqual(counters[field], 1000 if field.endswith("_bytes") else 1)
+            self.assertEqual(rows, original)
 
-    def test_background_schema_cannot_change_or_reset_between_observations(self):
+    def test_queue_schema_cannot_change_or_reset_between_observations(self):
         for location in ("status", "routing"):
             for boundary in ("before_guard", "before", "after", "after_guard"):
                 for mutation in ("partial", "legacy", "unknown", "reset", "invalid"):
-                    rows = native_report(background=True)
+                    rows = native_report(forwarding_fields=FORWARDING_EXTENSIONS[-1])
                     counters = workload(rows)[boundary][0]["native"][location]["data"]["forwarding"]
                     if mutation == "partial":
-                        counters.pop("drop_background_full_bytes")
+                        counters.pop("drop_policy_wait_expired_bytes")
                     elif mutation == "legacy":
-                        counters.pop("drop_background_full_bytes")
-                        counters.pop("drop_background_full_packets")
+                        for field in WAIT_DROPS:
+                            counters.pop(field)
                     elif mutation == "unknown":
                         counters["unrecognized_packets"] = 0
                     else:
-                        counters["drop_background_full_packets"] = (
+                        counters["drop_policy_wait_full_packets"] = (
                             (999 if location == "status" else 0) if mutation == "reset" else True)
                     for analyzer in (analyze_rows, diagnose_rows):
                         with self.subTest(location=location, boundary=boundary, mutation=mutation), \

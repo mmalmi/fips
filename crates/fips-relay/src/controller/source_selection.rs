@@ -27,6 +27,7 @@ impl Controller {
                         billing,
                         destination: id,
                         max_rate_msat_per_kib,
+                        bid_msat_per_kib: 0,
                         paused: true,
                         pending: None,
                         selected_trial: None,

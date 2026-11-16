@@ -5,6 +5,7 @@ import unittest
 from analyze import analyze_rows, diagnose_rows, markdown
 from test_analyze import complete_report
 from test_service_carrier import report as instrument_carriers
+from test_hardware import hardware_report
 
 
 CONTRACT = 'prepaid-usage-v1'
@@ -16,8 +17,8 @@ def trial_snapshots(rows, trial=0):
             for boundary in BOUNDARIES]
 
 
-def report():
-    rows = instrument_carriers(complete_report())
+def report(hardware=False):
+    rows = instrument_carriers(hardware_report() if hardware else complete_report())
     rows[0]['boundary_accounting'] = CONTRACT
     # Complete, monotonically sampled loopback peer counters. The original
     # synthetic report only carries sent_bytes; v1 must not invent the rest.
@@ -32,10 +33,11 @@ def report():
     return rows
 
 
-def prepaid_step(rows, boundary_index, amount=1):
+def prepaid_step(rows, boundary_index, amount=1, node_index=0):
     """Consume existing credit without changing authorization or acknowledgment."""
     for nodes in trial_snapshots(rows)[boundary_index:]:
-        nodes[0]['payment_progress']['forward-0']['evidence_msat'] += amount
+        state = next(iter(nodes[node_index]['payment_progress'].values()))
+        state['evidence_msat'] += amount
 
 
 class PrepaidBoundaryTests(unittest.TestCase):
@@ -62,18 +64,54 @@ class PrepaidBoundaryTests(unittest.TestCase):
                 rows[0].pop('boundary_accounting')
                 self.reject(rows, 'payment evidence changed')
 
-    def test_contract_is_explicit_typed_and_schema_two_only(self):
+    def test_contract_is_explicit_typed_and_instrumented(self):
         for value in (None, True, 1, [], {}, 'prepaid-usage-v2', 'strict'):
             rows = report()
             rows[0]['boundary_accounting'] = value
             with self.subTest(value=value):
                 self.reject(rows, 'boundary accounting')
         rows = report()
-        rows[0]['schema'] = 3
-        self.reject(rows, 'schema 2')
+        rows[0]['schema'] = 4
+        self.reject(rows, 'unsupported experiment schema')
         rows = report()
         rows[0]['payment_service_carrier'] = False
         self.reject(rows, 'carrier')
+
+    def test_hardware_prepaid_usage_keeps_host_namespaces_and_trial_totals(self):
+        for node_index in (0, 2):
+            rows = report(hardware=True)
+            prepaid_step(rows, 15, node_index=node_index)
+            original = copy.deepcopy(rows)
+            _, windows, _ = analyze_rows(rows)
+            final = windows[3]['observed_trial_costs']
+            self.assertEqual(set(final['nodes']), {'n01', 'n02', 'n03'})
+            self.assertEqual(final['prepaid_usage_msat'][f'direction-{node_index}'], 1)
+            self.assertEqual(final['interval_count'], 15)
+            self.assertTrue(final['telescopes'])
+            self.assertEqual(sum(n['process_cpu_ns'] for n in final['nodes'].values()),
+                             final['total']['process_cpu_ns'])
+            self.assertEqual(rows, original)
+            rows[0].pop('boundary_accounting')
+            self.reject(rows, 'payment evidence changed')
+
+    def test_hardware_prepaid_keeps_epoch_credit_payment_and_write_guards(self):
+        for change in ('epoch', 'host', 'credit', 'payment', 'traffic', 'durable', 'ethernet'):
+            rows = report(hardware=True)
+            node = trial_snapshots(rows)[15][2]
+            if change == 'epoch': node['host_process']['start_ticks'] += 1
+            elif change == 'host': node['host_process']['host'] = 'n01'
+            elif change == 'credit': node['payment_progress']['direction-2']['evidence_msat'] = 10001
+            elif change == 'payment':
+                node['measurements']['operations']['payment_sign']['spans'] += 1
+                node['measurements']['operations']['payment_sign']['cpu_samples'] += 1
+            elif change == 'traffic': node['control_traffic'][2]['counters']['stream_bytes_sent'] += 1
+            elif change == 'durable': node['measurements']['operations']['other']['journal_syncs'] += 1
+            else:
+                for c in node['control_traffic'][2]['service_carrier']['transports']:
+                    if c['transport'] == 'ethernet':
+                        c.update(submitted_packets=0, fips_payload_bytes=0, ethernet_framing_bytes=0)
+            with self.subTest(change=change):
+                self.reject(rows)
 
     def test_covered_evidence_only_does_not_allow_financial_changes(self):
         for field, value in (('evidence_msat', 10001), ('evidence_msat', 9998),

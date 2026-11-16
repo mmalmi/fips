@@ -1,9 +1,10 @@
 # FIPS Bench for Android
 
-A foreground customer for the paid-relay prototype. The app embeds the same
+A test customer for the paid-relay prototype. The app embeds the same
 `fips-relay` service used by the routers. `CustomerClient` owns account lifecycle,
 wallet operations and the existing private service controls; JNI serializes UI
-commands. Java owns Wi-Fi selection and the screen. There is no second payment,
+commands. Java owns Wi-Fi selection, the screen and a user-started foreground
+service. There is no second payment,
 voucher, forwarding or recovery implementation.
 
 This is a local test tool, not an Internet VPN or a production wallet. It installs
@@ -27,6 +28,11 @@ access are intentional for this isolated, test-funded bench. Do not distribute
 this artifact as a production wallet. Ordinary Gradle packaging alone is not the
 supported build entry point: it could reuse an old native library.
 
+The optional Cargo feature `measurements` enables the private bounded TCP stream
+diagnostic described in [MEASUREMENTS.md](../fips-relay/MEASUREMENTS.md). It is off
+in the build script above. A diagnostic build must add `--features measurements`
+to the native build before packaging and verify the resulting native library.
+
 For fresh-account acceptance alongside an existing installation, build with
 `crates/fips-relay-app/build-android.sh --isolated`. This uses the same code with
 package `org.fips.relaybench.acceptance`, label **FIPS Bench Acceptance** and setup
@@ -34,6 +40,22 @@ scheme `fipsbench-acceptance`. Its private account storage is separate. Use that
 package for installation, explicit activity intents and `run-as` transfers; the
 activity class remains `org.fips.relaybench.MainActivity`. Reinstalling either
 package retains its own account. Never clear its data to retry a pending payment.
+
+If that acceptance account is already configured, use a named installation:
+`crates/fips-relay-app/build-android.sh --isolated trial2`. The instance must
+start with a lowercase letter and contain at most 24 lowercase letters or digits.
+This builds package `org.fips.relaybench.acceptance.trial2` with setup scheme
+`fipsbench-acceptance-trial2`. Use the same `phone.instance` in the physical
+acceptance scenario. Each name has separate Android account storage; reusing a
+name retains that account. Runs verify that all other installed bench accounts
+remain unchanged, including earlier named installations.
+
+Remove completed acceptance installations after their funds, settlements and
+device restoration are verified and their diagnostics are no longer needed.
+Retain the exact APK, private account recovery data and test evidence; keep the
+main app and any installation with unresolved financial work. Do not accumulate
+finished test apps on the phone. Uninstalling with retained Android data preserves
+the old account if that same signed package is installed again.
 
 The existing `scripts/check-rust-file-lines.sh` gate also checks Java. Paid-relay
 Rust and Android source files have a 600-line limit. Integration scenarios retain
@@ -43,10 +65,12 @@ only its ChromeOS ABI recommendation excluded for this arm64 phone prototype.
 ## Bench preparation
 
 Follow [customer entry](../fips-relay/CUSTOMER-ENTRY.md) for the entry listener and
-network restrictions. The customer Wi-Fi must reach both the local FIPS UDP entry
-and the isolated mint without buying ordinary Internet access. Prevent access to
-unrelated LAN services and ordinary Internet forwarding. Keep router management
-and the native wireless relay path separate from the customer network.
+network restrictions. The customer Wi-Fi must reach the local FIPS UDP entry.
+Funding also requires either a bounded free FIPS route to the isolated mint or
+explicit local HTTP access to it, without buying ordinary Internet access.
+Prevent access to unrelated LAN services and ordinary Internet forwarding. Keep
+router management and the native wireless relay path separate from the customer
+network.
 
 The app binds its process to the Wi-Fi whose on-link route contains the configured
 entry IP before opening native sockets. It excludes VPN networks and rejects an
@@ -54,12 +78,13 @@ ambiguous Wi-Fi selection. Losing that network retains the failed binding; it
 does not deliberately fall back to cellular. Verify this on the actual customer
 subnet and with packet captures; merely launching the app is not a network test.
 
-The destination must explicitly fund and authorize its **return direction** to
-the customer's identity. FIPS session replies also traverse the paid path, so a
-forward purchase alone does not establish an end-to-end session. This follows
-sender-pays: the destination authorizes its own spending. A customer profile does
-not authorize spending by another endpoint. In the bench, the operator adds a
-bounded destination route watch after reading the new customer's public identity.
+For the bidirectional bench workload, the destination explicitly funds and
+authorizes its **return direction** to the customer's identity. The operator adds
+a bounded destination route watch after reading the customer's public identity;
+a customer profile cannot authorize another endpoint's spending.
+With `forwarding_data`, [bounded session establishment](../fips-relay/BOOTSTRAP.md)
+can succeed without that reverse purchase. The purchase is still needed for the
+bench's paid return payloads; see [customer admission and return policies](../fips-relay/CUSTOMER-ENTRY.md#admission-and-financial-boundaries).
 
 ## Immutable setup profile
 
@@ -78,6 +103,7 @@ mint's backing. Example shape (replace identities and addresses before use):
   "mint_url": "http://192.168.77.1:30338",
   "budget_sat": 128,
   "channel_capacity_sat": 32,
+  "wallet_capacity_bytes": 20971520,
   "max_rate_msat_per_kib": 8192
 }
 ```
@@ -86,15 +112,65 @@ The entry and mint require explicit numeric local addresses; the mint uses a
 root HTTP URL. Profile limits are 512 test sats lifetime spending, 8–128 sats per
 channel and at most 8,192 msat/KiB. A maximum of twice the channel capacity may be
 locked. Loading funds never resets spending history or those limits.
+The positive `wallet_capacity_bytes` value is also immutable. It bounds native
+wallet records and reserved completion space, not filesystem use. The example
+uses the shared 20 MiB mixed-role setting; it is not measured device sizing.
+Missing limits are rejected. Existing uncapped accounts remain unchanged and
+require their original compatible executable for recovery; editing the profile
+does not convert them. See [service storage limits](../fips-relay/SERVICE.md#initialization-and-configuration).
+
+For mint access through FIPS, use `forwarding_data` billing, replace `mint_url`
+in a **fresh** profile with the mint's agreed loopback URL, and add its pinned
+export identity:
+
+```json
+{
+  "mint_url": "http://127.0.0.1:3338",
+  "mint_mesh": {
+    "npub": "<mint export identity>",
+    "service_port": 44745
+  }
+}
+```
+
+These are fields of the full profile, not a standalone setup profile. The shared
+engine owns the local HTTP adapter, including during stopped-wallet import and
+export. It carries HTTP over authenticated TCP/FIPS with no direct-mint fallback.
+The mint and all participating wallets must use the same URL; the URL and pinned
+identity cannot change on a saved account. Configure bounded free requests to
+the mint and earned reply allowances at the forwarding routers as described in
+[mint HTTP over FIPS](../fips-relay/TESTBENCH.md#mint-http-over-fips).
+Native, router and physical Android tests cover this arrangement. The Android
+case funds an empty wallet, delivers paid data, settles while the activity is
+hidden, and returns funds after stopping routing; all 16 test sats are collected.
+Its verified mint path includes two radio hops. A second case recovers the
+original settlement over an alternate radio path after its committed reply is
+lost, without another mint swap. A forced-idle characterization on Android 17
+also completes settlement, but the foreground service retains network access;
+it does not test recovery from Android suspending networking. Natural movement,
+natural suspend, battery cost and process restart remain outside these cases;
+see the revision and scope
+in [paid-relay readiness](../fips-relay/READINESS.md#scope-and-outstanding-acceptance).
 
 `billing` must match the relay network: `forwarding_data` includes bounded free
 connection setup; `forwarding_attempt` uses the original per-attempt policy.
 Omitting it preserves `forwarding_attempt` for existing saved profiles. Both
 choices are immutable after setup; the legacy unique-envelope tariff is rejected.
 
+For a phone that also sells forwarding, explicitly add
+`"neighbor_admission": "authenticated_adjacent"`. This admits paid control from
+authenticated neighboring nodes within the service's peer/session limits. The
+default, `configured_only`, accepts only configured neighbors. The choice is
+immutable after setup and preserves the same spending, locked-capital and price
+limits; admitting a neighbor does not give it free payload forwarding. The entry
+remains the phone's only configured outgoing peer; another relay can connect to
+the phone's reachable UDP endpoint.
+
 Provide the JSON through the `setup_profile` intent string extra or through
 `fipsbench://setup?profile=<base64url-encoded-JSON>`. An intent only previews a
-profile. **Set up test account** is an explicit UI action. Once initialized, the
+profile. Preview and setup validate the resulting service configuration before
+saving the immutable profile; rejected input leaves the customer unconfigured.
+**Set up test account** is an explicit UI action. Once initialized, the
 profile and identity cannot be silently replaced; missing or partial state fails
 closed and requires operator recovery.
 
@@ -113,12 +189,47 @@ closed and requires operator recovery.
    forwarding attempts.
 5. Tap **Settle and stop**. The destination/router accounts also require their
    normal operator settlement and collection steps.
-6. Tap **Prepare fund return**. The app saves an export summary in its private
-   `files/fund-return.json`; the bearer token remains in the wallet export file
-   referenced by that summary. Collect it privately, redeem it with the test mint
-   and verify the combined conservation report.
+6. Tap **Prepare fund return**. Before exporting, the app saves a positive numbered
+   request ID and amount in private `files/fund-return.json`. After success, that file also holds
+   the export path and operation ID; the bearer token stays in the referenced
+   wallet export file. Collect it privately, redeem it with the test mint and
+   verify the combined conservation report. If interrupted, **Retry fund return**
+   reuses the saved ID and amount, including after restart at zero balance. A
+   pending file has no export path yet. Preserve unreadable or incomplete files
+   for operator recovery; do not delete them to authorize another export.
 
-**Stop**, leaving the foreground and ordinary app restarts preserve the account.
+Later loaded funds can create a new return request after the previous one
+completes. The app checks the current wallet balance first and replaces only the
+summary; the wallet retains each original export and its recovery evidence. The
+next return increments the saved number; malformed IDs and overflow refuse a new
+export. This fresh-profile protocol does not convert old named return requests.
+The local customer API accepts `{"type":"acknowledge_exports","through":N}` only
+while stopped. A trusted collector can use it after taking durable custody of all
+tokens through N or redeeming them. Saving a phone summary does **not** acknowledge
+custody and the activity never automatically discards those wallet records. See
+[collection and acknowledgement](../fips-relay/TESTBENCH.md#collect-and-verify).
+
+**Connect** starts a foreground service with a persistent notification and
+**Stop** action. On Android 13 or later it first requests notification permission
+so that control remains visible. Leaving or recreating the screen keeps the
+session running, with its existing purchases and limits. The process-wide Wi-Fi
+binding stays in place; losing Wi-Fi does not switch traffic to cellular. While
+running, a change of Wi-Fi network, interface or local address rebinds FIPS's
+sockets after selecting one on-link Wi-Fi path to the saved entry address.
+Duplicate callbacks and DNS-only changes do not rebind. Missing or ambiguous
+paths retain the binding until a usable Wi-Fi path appears. Rebinding preserves
+the native session, identity, channels and spending limits; it never starts a
+stopped session or buys a new route. This covers paths to the configured entry,
+not automatic selection of a different entry relay.
+**Stop** ends the session without settling; **Settle and stop** closes channels
+first. Neither action deletes the account.
+
+The service does not automatically restart after process death or on boot.
+Reopen the app and explicitly connect to resume through the existing recovery
+path. Background operation still requires physical screen-off, radio-recovery
+and battery testing; a foreground service alone is not proof of continuous
+delivery while Android manages power.
+
 Wallet imports/exports run only while the relay service is stopped. A stop timeout
 retains the live task, account ownership and Wi-Fi binding; retry joins that same
 task. Do not erase app data, uninstall it or start a replacement account to work
@@ -132,6 +243,21 @@ Cloud backup and device transfer of account state are disabled.
 
 ## Verification
 
+The Android activity tests exercise the real screen lifecycle and private files
+with a simulated native wallet and Wi-Fi binding. They cover an interrupted return,
+restart at zero balance, atomic-file backup recovery, incomplete saved requests,
+later funds and a failed balance refresh after export. Service checks cover
+screen recreation, the notification's Stop action, stop failure, service
+destruction, replacement races and notification permission. Network checks cover
+callback coalescing, retry after a failed rebind, Stop taking priority, retained
+bindings during loss, changed addresses and ambiguous paths. They do not execute JNI,
+contact a mint or prove physical power-loss behavior. Run with Java 17 and the
+Android SDK available:
+
+```sh
+gradle -p crates/fips-relay-app/android :app:testDebugUnitTest :app:lintDebug
+```
+
 The `fips-relay` customer integration test uses a real local simulated mint, an
 entry that has no static customer enrollment, and a real destination. It imports
 funds, buys forwarding and delivers payloads before/after a stop and reopen.
@@ -144,8 +270,19 @@ local process checks, not current Android or radio acceptance. The test also
 exercises exclusive ownership and rejects unsafe profiles. Existing process tests cover the longer
 three-relay path, both paid directions, longer streams and router crash recovery.
 
+With `measurements`, the customer suite also tests a four-node line:
+endpoint → phone client → onward relay → endpoint. The onward relay connects
+without static enrollment in the phone profile. Unfunded payloads are denied;
+after funding, both endpoints deliver and acknowledge 128 KiB, the phone earns
+provider credit and pays for onward forwarding. The running customer's UDP socket
+then moves to a new local port. Both endpoints deliver another 1 MiB, and each
+original channel advances its signed payment and acknowledged credit without
+changing identities, purchases or funding budgets. All 512 test sats reconcile.
+This exercises the same native `CustomerClient` used by JNI, on a local host.
+It does not establish actual phone background or screen-off delivery.
+
 ```sh
-cargo test -p fips-relay --lib --test customer --test control_transport --test service
+cargo test --manifest-path paid-routing/Cargo.toml --locked -p fips-relay --lib --test customer --test control_transport --test service
 cargo clippy -p fips-relay --all-targets --all-features -- -D warnings
 scripts/check-rust-file-lines.sh
 ```
@@ -157,3 +294,7 @@ verified purchase, both traffic directions, app reopen and final settlement over
 the intended native wireless links. Each router earned 49 test sats net and all
 2,560 run funds were collected. See [the acceptance report](../fips-relay/PROTOTYPE-RESULTS.md)
 for the initial dropped attempts, capture evidence, network isolation and limits.
+The newer named-installation regression verifies the current APK, automatic
+payments in both directions through three routers, complete test-fund collection
+and preservation of both saved phone accounts. See the current scoped evidence
+in [paid-relay readiness](../fips-relay/READINESS.md#scope-and-outstanding-acceptance).

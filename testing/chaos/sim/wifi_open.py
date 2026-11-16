@@ -93,17 +93,28 @@ open_caps_owned() {{
 open_original_caps() {{
 {original_caps}
 }}
-open_profile() {{
+open_frequency() {{
+  if [ -f {directory}/open-frequency ]; then
+    open_freq=$(cat {directory}/open-frequency) || return 1
+  else
+    open_freq={saved['frequency']}
+  fi
+  case "$open_freq" in ''|*[!0-9]*) return 1;; esac
+}}
+open_base_profile() {{
   mesh_saved_profile && open_owner && open_networks && open_caps_owned || return 1
   test "$(mesh_control "GET_NETWORK $open_network mode")" = 5 || return 1
   test "$(mesh_control "GET_NETWORK $open_network key_mgmt")" = NONE || return 1
   test "$(mesh_control "GET_NETWORK $open_network mesh_fwding")" = 0 || return 1
-  test "$(mesh_control "GET_NETWORK $open_network frequency")" = {saved['frequency']} || return 1
   open_ssid=$(mesh_control "GET_NETWORK $open_network ssid") || return 1
   test "$(printf '%s' "$open_ssid" | sha256sum | cut -d ' ' -f 1)" = {name_hash}
 }}
+open_profile() {{
+  open_base_profile && open_frequency || return 1
+  test "$(mesh_control "GET_NETWORK $open_network frequency")" = "$open_freq"
+}}
 open_joined() {{
-  mesh_identity && open_id || return 1
+  mesh_identity && open_id && open_frequency || return 1
   test "$(cat {net}/carrier)" = 1 || return 1
   test "$(iw dev {interface} get mesh_param mesh_fwding)" = 0 || return 1
   test -z "$(ip -o addr show dev {interface})" || return 1
@@ -111,7 +122,7 @@ open_joined() {{
   mesh_status=$(mesh_control STATUS) || return 1
   printf '%s\\n' "$mesh_status" | grep -Fxq 'wpa_state=COMPLETED' &&
   printf '%s\\n' "$mesh_status" | grep -Fxq "id=$open_network" &&
-  printf '%s\\n' "$mesh_status" | grep -Fxq 'freq={saved['frequency']}'
+  printf '%s\\n' "$mesh_status" | grep -Fxq "freq=$open_freq"
 }}
 open_limited() {{
   test "$(mesh_control 'GET max_peer_links')" = {PEER_LIMIT} &&
@@ -160,6 +171,19 @@ open_resume() {{
   test "$(cat {directory}/open-phase)" = active || return 1
   open_join
 }}
+open_change_frequency() {{
+  original_isolated && open_base_profile || return 1
+  test "$(cat {directory}/open-phase)" = active || return 1
+  case "$1" in ''|*[!0-9]*) return 1;; esac
+  touch {directory}/mesh-down
+  if [ "$(cat {net}/carrier)" = 1 ]; then
+    test "$(mesh_control 'MESH_GROUP_REMOVE {interface}')" = OK || return 1
+  fi
+  printf '%s\\n' "$1" >{directory}/open-frequency
+  test "$(mesh_control "SET_NETWORK $open_network frequency $1")" = OK || return 1
+  open_join || return 1
+  rm -f {directory}/mesh-down
+}}
 open_restore_original() {{
   mesh_saved_profile && open_caps_owned || return 1
   open_phase=$(cat {directory}/open-phase) || return 1
@@ -198,6 +222,6 @@ open_restore_original() {{
     test "$(mesh_control "REMOVE_NETWORK $open_network")" = OK || return 1
   fi
   mesh_profile && mesh_joined && open_original_caps || return 1
-  rm -f {directory}/open-armed {directory}/open-id {directory}/open-phase {directory}/mesh-down
+  rm -f {directory}/open-armed {directory}/open-id {directory}/open-phase {directory}/open-frequency {directory}/mesh-down
 }}
 """

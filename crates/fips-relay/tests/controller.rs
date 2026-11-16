@@ -2,6 +2,7 @@
 #[path = "controller_support/admission.rs"]
 mod admission;
 mod controller_support;
+use controller_support::traffic::{Traffic, TrafficKind};
 #[path = "controller_support/funding_recovery.rs"]
 mod funding_recovery;
 #[path = "controller_support/payment_mobility.rs"]
@@ -10,6 +11,8 @@ mod payment_mobility;
 mod purchase_closure;
 #[path = "controller_support/quote_traffic.rs"]
 mod quote_traffic;
+#[path = "controller_support/renewal_release.rs"]
+mod renewal_release;
 use controller_support::{errors, native_control, policy, recovery_stages, require_paid};
 
 use cashu_service::{
@@ -22,6 +25,7 @@ use fips_core::{
     config::{PeerConfig, TransportInstances, UdpConfig},
     node::{ForwardingOutcome, ForwardingPolicy, ForwardingRequest},
 };
+use fips_relay::ledger::BillingBasis::{ForwardingAttempt, ForwardingData};
 use fips_relay::{
     buyer::{BuyerAuthorizer, PaidForwarder},
     control_transport::ControlTransport,
@@ -30,7 +34,7 @@ use fips_relay::{
         ControllerTasks, RenewalPolicy,
     },
     durable::DurableRelay,
-    ledger::Limits,
+    ledger::{BillingBasis, Limits},
     payment_control::{PaymentControl, PaymentServer},
     route_quotes::{QuotePolicy, QuoteServer, RouteQuotes},
 };
@@ -41,34 +45,69 @@ use std::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authenticated_adjacent_routers_fund_accept_and_pay_without_a_control_roster() {
-    controller_scenario(false, false, false, false, false).await;
+    controller_scenario(None, false, false, false, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exhausted_channels_renew_automatically_without_resetting_capital_or_spending() {
-    controller_scenario(true, false, false, false, false).await;
+    controller_scenario(
+        Some(ForwardingAttempt),
+        false,
+        false,
+        false,
+        false,
+        TrafficKind::Datagrams,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bounded_handshakes_survive_paid_channel_renewal() {
+    controller_scenario(
+        Some(ForwardingData),
+        false,
+        false,
+        false,
+        false,
+        TrafficKind::Datagrams,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_buyer_pays_supported_usage_despite_a_provider_evidence_gap() {
-    controller_scenario(false, true, false, false, false).await;
+    controller_scenario(None, true, false, false, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn changed_native_paths_reprice_routes_and_reuse_unchanged_neighbor_channels() {
-    controller_scenario(false, false, true, false, false).await;
+    controller_scenario(None, false, true, false, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn source_authorized_routes_refresh_automatically_within_price_and_spending_caps() {
-    controller_scenario(false, false, true, true, false).await;
+    controller_scenario(None, false, true, true, false, TrafficKind::Datagrams).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels() {
-    controller_scenario(false, false, false, false, true).await;
+    controller_scenario(None, false, false, false, true, TrafficKind::Datagrams).await;
+}
+
+#[cfg(feature = "measurements")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reliable_stream_survives_paid_channel_renewal() {
+    controller_scenario(
+        Some(ForwardingData),
+        false,
+        false,
+        false,
+        false,
+        TrafficKind::Stream,
+    )
+    .await;
 }
 
 // Each scenario owns five live nodes and several signing workers. Keep the
@@ -77,13 +116,16 @@ async fn slow_neighbor_payment_and_settlement_do_not_stall_healthy_channels() {
 static NETWORK_SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn controller_scenario(
-    automatic_renewal: bool,
+    renewal_billing: Option<BillingBasis>,
     evidence_gap: bool,
     route_change: bool,
     automatic_routes: bool,
     slow_neighbor: bool,
+    traffic: TrafficKind,
 ) {
+    let automatic_renewal = renewal_billing.is_some();
     let _network = NETWORK_SCENARIO.lock().await;
+    controller_support::initialize_tracing();
     tokio::time::timeout(Duration::from_secs(240), async {
         let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
@@ -105,7 +147,9 @@ async fn controller_scenario(
         let mut ledgers = Vec::new();
         let mut buyers = Vec::new();
         let mut data = Vec::new();
+        let mut forwarding = Vec::new();
         let seed_sat = if automatic_renewal { 256 } else { 128 };
+        let billing = renewal_billing.unwrap_or_default();
         let paid_quote_traffic = !automatic_renewal && !evidence_gap && !route_change && !slow_neighbor;
         // Keep route-change and slow-neighbor scenarios below exhaustion, which the
         // separate renewal scenario deliberately exercises with small channels.
@@ -137,23 +181,24 @@ async fn controller_scenario(
             let mut config = Config::new();
             config.node.identity.nsec =
                 Some(fips_core::encode_nsec(&identity.keypair().secret_key()));
-            config.node.control.enabled = false;
-            if route_change && (1..=3).contains(&i) {
-                config.node.control.enabled = true;
-                config.node.control.socket_path = root.path().join(format!("native-{i}.sock")).to_str().unwrap().into();
-            }
+            config.node.control.enabled = cfg!(unix);
+            config.node.control.socket_path = root.path().join(format!("native-{i}.sock")).to_str().unwrap().into();
             config.node.discovery.nostr.enabled = false;
             config.node.discovery.lan.enabled = false;
             config.node.discovery.local.enabled = false;
+            #[cfg(unix)]
+            controller_support::RekeyObservation::configure(&mut config, automatic_renewal, slow_neighbor);
             config.transports.udp = TransportInstances::Single(UdpConfig {
                 bind_addr: Some("127.0.0.1:0".into()),
                 advertise_on_nostr: Some(false),
                 ..UdpConfig::default()
             });
+            let forwarder = Arc::new(controller_support::DeliveryTrace::new(PaidForwarder::for_billing(seller.clone(), buyer.clone(), billing)));
+            forwarding.push(forwarder.clone());
             let node = Arc::new(
                 FipsEndpoint::builder()
                     .config(config)
-                    .forwarding_policy(Arc::new(PaidForwarder::new(seller.clone(), buyer.clone())))
+                    .forwarding_policy(forwarder)
                     .originated_session_observer(buyer.clone())
                     .without_system_tun()
                     .bind()
@@ -215,8 +260,9 @@ async fn controller_scenario(
                     nodes[i].clone(),
                     Arc::new(quote_transport),
                     QuotePolicy {
+                        additional_receive_mints: vec![],
                         destination_fees: Default::default(),
-                        billing: Default::default(),
+                        billing,
                         mint_url: mint.url().to_string(),
                         receiver_pubkey_hex: receiver.receiver_pubkey_hex().to_string(),
                         fee_msat_per_kib: 1_024,
@@ -238,8 +284,8 @@ async fn controller_scenario(
                 ControlTransport::start_with_admission(nodes[i].clone(), 44_743, admission, i as u64 + 20)
                     .await
                     .unwrap();
-            let gate_buyer = if paid_quote_traffic { peers[0] } else { peers[2] };
-            let (incoming, gate) = payment_mobility::gate(incoming, gate_buyer, slow_neighbor || paid_quote_traffic);
+            let gate_buyer = if paid_quote_traffic || automatic_renewal { peers[0] } else { peers[2] };
+            let (incoming, gate) = payment_mobility::gate(incoming, gate_buyer, slow_neighbor || paid_quote_traffic || automatic_renewal);
             settlement_gates.push(gate);
             let (payment_incoming, gate) = payment_mobility::gate(payment_incoming, peers[2], slow_neighbor);
             payment_gates.push(gate);
@@ -259,13 +305,13 @@ async fn controller_scenario(
                         buyer: buyers[i].clone(),
                         wallet_directory: wallets[i].clone(),
                     });
-            let controller = Arc::new(
+            let controller = controller_support::controller(
                 Controller::create(
                     &root.path().join(format!("controller-{i}")),
                     policy(mint.url(), automatic_renewal, capacity),
                     services[i].clone(),
-                )
-                .unwrap(),
+                ),
+                automatic_renewal,
             );
             tasks.push(ControllerTasks::start(controller.clone(), incoming));
             controllers.push(controller);
@@ -305,10 +351,7 @@ async fn controller_scenario(
             async { if automatic_routes { controllers[4].watch_route(peers[0], 3072).await.map(require_paid) }
                 else { controllers[4].buy_route(peers[0]).await } }
         );
-        let (a, b) = (
-            a.unwrap_or_else(|e| panic!("forward acceptance: {e}; errors={:?}", errors(&controllers))),
-            b.unwrap_or_else(|e| panic!("reverse acceptance: {e}; errors={:?}", errors(&controllers))),
-        );
+        let (a, b) = controller_support::accepted_routes(root.path(), &peers, &controllers, a, b).await;
         assert_eq!(a.contract.price.msat, 3_072);
         assert_eq!(b.contract.price.msat, 3_072);
         assert_eq!(
@@ -361,13 +404,13 @@ async fn controller_scenario(
         }
         let mut controllers = Vec::new();
         for (i, receiver) in incoming.into_iter().enumerate() {
-            let controller = Arc::new(
+            let controller = controller_support::controller(
                 Controller::load(
                     &root.path().join(format!("controller-{i}")),
                     policy(mint.url(), automatic_renewal, capacity),
                     services[i].clone(),
-                )
-                .unwrap(),
+                ),
+                automatic_renewal,
             );
             if i == 0 || i == 4 {
                 assert!(controller.purchases().await.unwrap().is_empty());
@@ -396,14 +439,9 @@ async fn controller_scenario(
         })
         .await
         .unwrap_or_else(|_| panic!("durable purchase recovery: {:?}", errors(&controllers)));
-        for (i, controller) in controllers.iter().enumerate() {
-            let expected: Vec<_> = links.iter().filter(|(buyer, _, _)| *buyer == i)
-                .map(|(_, _, p)| p.clone()).collect();
-            assert_eq!(controller.purchases().await.unwrap(), expected);
-            assert_eq!(load_mint_balance(&wallets[i], mint.url()).await.unwrap().balance_sat,
-                seed_sat - capacity * expected.len() as u64,
-                "controller reload must not fund another channel");
-        }
+        controller_support::verify_reloaded_wallets(
+            &mut tasks, &controllers, &wallets, &links, mint.url(), seed_sat, capacity,
+        ).await;
         // Wallet-only funding recovery is checked before any paid payload.
         if paid_quote_traffic {
             quote_traffic::exercise(&nodes, &peers, &services, &ledgers, &links).await;
@@ -424,34 +462,25 @@ async fn controller_scenario(
             assert_eq!(buyers[2].authorized_sat(&p.channel.id), Some(0),
                 "provider-only evidence cannot create a payment obligation");
         }
-        for round in 0..if automatic_renewal { 18 } else { 8 } {
-            for (source, destination) in [(0, 4), (4, 0)] {
-                let mut payload = vec![round; 1_000];
-                payload[0] = source as u8;
-                tokio::time::timeout(Duration::from_secs(30), async {
-                    loop {
-                        nodes[source].send_datagram(peers[destination], 44_740, 44_740, payload.clone()).await.unwrap();
-                        let mut received = Vec::new();
-                        if let Ok(result) = tokio::time::timeout(
-                            Duration::from_millis(if automatic_renewal { 750 } else { 10_000 }),
-                            data[destination].recv_batch_into(&mut received, 8),
-                        ).await {
-                            result.unwrap();
-                            if received.iter().any(|m| m.data.as_slice() == payload) { break; }
-                        }
-                        assert!(automatic_renewal,
-                            "ordinary delivery needed a retry: round={round} direction={source}->{destination}; errors={:?}; usage={:?}",
-                            errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>());
-                    }
-                })
-                .await
-                .unwrap_or_else(|_| panic!("autonomously paid delivery round={round} direction={source}->{destination}; errors={:?}; usage={:?}; evidence={:?}; stages={:?}", errors(&controllers), links.iter().map(|(b,s,p)|(*b,*s,ledgers[*s].channel_usage(&p.channel.id))).collect::<Vec<_>>(), links.iter().map(|(b,s,p)|(*b,*s,buyers[*b].evidence_msat(&p.channel.id))).collect::<Vec<_>>(), recovery_stages(root.path())));
-            }
-            for controller in &controllers {
-                assert!(controller.locked_capital_sat().await.unwrap() <= capacity * 2);
-            }
-            // Payments are driven only by each controller's periodic task.
-            tokio::time::sleep(Duration::from_millis(600)).await;
+        #[cfg(unix)]
+        let mut rekey = traffic.rekey(root.path(), &peers, automatic_renewal, &forwarding[2]).await;
+        let release_gate = (matches!(renewal_billing, Some(ForwardingData))
+            && matches!(traffic, TrafficKind::Datagrams)).then(|| settlement_gates[1].as_ref().unwrap());
+        let mut workload = Traffic {
+            root: root.path(), nodes: &nodes, peers: &peers, data: &mut data,
+            controllers: &controllers, ledgers: &ledgers, buyers: &buyers,
+            forwarding: &forwarding, links: &links, capacity, automatic_renewal,
+            #[cfg(unix)]
+            rekey: &mut rekey,
+        };
+        let (_, release_progress) = tokio::join!(
+            workload.run(traffic),
+            renewal_release::observe(root.path(), release_gate, &a, &controllers[0], &buyers[0], &ledgers[1])
+        );
+        #[cfg(unix)]
+        if let Some(rekey) = rekey { rekey.assert_rotated("paid renewal"); }
+        if billing.has_free_handshakes() {
+            for relay in &forwarding[1..4] { relay.assert_handshake_allowance_used(); }
         }
         // Delivery and the periodic payment worker are independent. Observe
         // the verified balance transition instead of assuming the final 600ms
@@ -731,33 +760,7 @@ async fn controller_scenario(
                 "only the two new neighbour pairs need additional funding"
             );
         }
-        // Freeze a quiescent replacement for the lost-acceptance-reply check.
-        // A last in-flight datagram can exhaust a channel after its delivery
-        // was observed. Resuming that already-due channel legitimately opens
-        // another replacement, which is a different event from reply recovery.
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                for controller in &controllers {
-                    controller.pause_renewals().await.unwrap();
-                }
-                let mut stable = true;
-                if automatic_renewal {
-                    for (i, controller) in controllers.iter().enumerate() {
-                        let active = controller.purchases().await.unwrap();
-                        stable &= active.len() == if i == 2 { 2 } else { 1 };
-                        for p in active {
-                            stable &= buyers[i].evidence_msat(&p.channel.id).unwrap()
-                                < p.channel.capacity_sat * 1000;
-                            stable &= buyers[i].observed_units(&p.contract.id).unwrap()
-                                < p.contract.max_units;
-                        }
-                    }
-                }
-                if stable { break; }
-                for controller in &controllers { controller.resume_renewals().await.unwrap(); }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }).await.expect("renewal fixture reaches a funded, non-exhausted checkpoint");
+        purchase_closure::freeze_replacements(&controllers, &buyers, automatic_renewal).await;
         if paid_quote_traffic {
             let incoming = tasks.remove(0).stop().await.unwrap();
             purchase_closure::exercise(&controllers, &services, &peers, &settlement_gates, root.path()).await;
@@ -779,7 +782,7 @@ async fn controller_scenario(
                     "the unsupported remainder stays unpaid after settlement");
                 assert_eq!(usage.paid_msat, buyers[2].authorized_sat(&p.channel.id).unwrap()*1000);
             }
-            let remaining: Vec<_> = buyers.iter().map(|b| b.remaining_budget_sat().unwrap()).collect();
+            let budgets: Vec<_> = (0..buyers.len()).map(|i| purchase_closure::BudgetSnapshot::read(root.path(), i)).collect();
             let (forward, reverse) = tokio::join!(
                 controllers[0].buy_route(peers[4]),
                 controllers[4].buy_route(peers[0])
@@ -789,9 +792,8 @@ async fn controller_scenario(
             assert_ne!(forward.channel.id, a.channel.id);
             assert_ne!(reverse.channel.id, b.channel.id);
             assert_eq!(controllers[0].buy_route(peers[4]).await.unwrap(), forward);
-            for (buyer, left) in buyers.iter().zip(remaining) {
-                assert_eq!(buyer.remaining_budget_sat().unwrap(), left,
-                    "repurchase cannot reset lifetime authorization");
+            for (i, (buyer, budget)) in buyers.iter().zip(budgets).enumerate() {
+                budget.assert_repurchase(root.path(), i, buyer);
             }
             for (source, destination) in [(0, 4), (4, 0)] {
                 let mut payload = vec![117; 1_000];
@@ -819,8 +821,10 @@ async fn controller_scenario(
             for (buyer, _, old) in &links {
                 let current = controllers[*buyer].purchases().await.unwrap();
                 assert!(current.iter().any(|p| p.provider == old.provider && p.channel.id != old.channel.id), "each original direction needs a replacement channel");
-                assert!(buyers[*buyer].evidence_msat(&old.channel.id).unwrap() >= capacity * 1_000,
-                    "original channels were replaced because of local capacity evidence");
+                assert!(buyers[*buyer].evidence_msat(&old.channel.id).unwrap() >= capacity * 1_000
+                    || buyers[*buyer].authorized_sat(&old.channel.id).unwrap() == capacity
+                    || buyers[*buyer].capacity_blocked(&old.channel.id),
+                    "original channels were replaced at capacity or for approved traffic that could not fit");
             }
             let mut active_before = Vec::new();
             let mut funding_before = Vec::new();
@@ -848,7 +852,7 @@ async fn controller_scenario(
             std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
             controllers = Vec::new();
             for (i, incoming) in receiver_streams.into_iter().enumerate() {
-                let controller = Arc::new(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true, capacity), services[i].clone()).unwrap());
+                let controller = controller_support::controller(Controller::load(&root.path().join(format!("controller-{i}")), policy(mint.url(), true, capacity), services[i].clone()), true);
                 tasks.push(ControllerTasks::start(controller.clone(), incoming));
                 controllers.push(controller);
             }
@@ -933,21 +937,7 @@ async fn controller_scenario(
         for node in &nodes {
             node.shutdown().await.unwrap();
         }
-        for (wallet, balance) in wallets.iter().zip(expected) {
-            assert_eq!(
-                load_mint_balance(wallet, mint.url())
-                    .await
-                    .unwrap()
-                    .balance_sat,
-                balance as u64
-            );
-            let token = send_payment_token(wallet, mint.url(), balance as u64)
-                .await
-                .unwrap();
-            receive_payment_token(&root.path().join("collector"), &token.token)
-                .await
-                .unwrap();
-        }
+        controller_support::collect_wallets(root.path(), &wallets, mint.url(), expected).await;
         for controller in &controllers {
             controller.settle_all().await.unwrap();
         }
@@ -980,6 +970,10 @@ async fn controller_scenario(
             seed_sat * 5
         );
         assert!(network.accounting().unwrap().is_conserved());
+        if release_gate.is_some() {
+            eprintln!("renewal release: {} test sats collected; progress={release_progress:?}", seed_sat * 5);
+        }
+        release_progress.expect("renewal must restore paid forwarding before report release");
     })
     .await
     .expect("autonomous controller test deadline");

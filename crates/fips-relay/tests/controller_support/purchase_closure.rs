@@ -1,6 +1,117 @@
 //! Cancel acceptance, then hold a real Seal while another route is requested.
 use super::*;
 
+pub(super) async fn freeze_replacements(
+    controllers: &[Arc<Controller>],
+    buyers: &[Arc<BuyerAuthorizer>],
+    automatic_renewal: bool,
+) {
+    // A delivered datagram can exhaust its channel. Queue every router's pause
+    // before waiting for renewal workers to drain.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let mut pauses = tokio::task::JoinSet::new();
+            for controller in controllers {
+                let controller = controller.clone();
+                pauses.spawn(async move { controller.pause_renewals().await });
+            }
+            while let Some(result) = pauses.join_next().await {
+                result.unwrap().unwrap();
+            }
+            let mut stable = true;
+            if automatic_renewal {
+                for (i, controller) in controllers.iter().enumerate() {
+                    let active = controller.purchases().await.unwrap();
+                    stable &= active.len() == if i == 2 { 2 } else { 1 };
+                    for p in active {
+                        stable &= buyers[i].evidence_msat(&p.channel.id).unwrap()
+                            < p.channel.capacity_sat * 1000;
+                        stable &= buyers[i].observed_units(&p.contract.id).unwrap()
+                            < p.contract.max_units;
+                    }
+                }
+            }
+            if stable {
+                break;
+            }
+            for controller in controllers {
+                controller.resume_renewals().await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("renewal fixture reaches a funded, non-exhausted checkpoint");
+}
+
+pub(super) struct BudgetSnapshot {
+    limit: u64,
+    retired: u64,
+    authorizations: std::collections::BTreeMap<String, u64>,
+}
+
+impl BudgetSnapshot {
+    pub(super) fn read(root: &std::path::Path, node: usize) -> Self {
+        let path = root.join(format!("buyer-{node}/buyer.json"));
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        Self {
+            limit: saved["total_budget_sat"].as_u64().unwrap(),
+            retired: saved["history"]["authorized_sat"].as_u64().unwrap_or(0),
+            authorizations: saved["channels"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(id, channel)| (id.clone(), channel["authorized_sat"].as_u64().unwrap()))
+                .collect(),
+        }
+    }
+
+    pub(super) fn assert_repurchase(
+        &self,
+        root: &std::path::Path,
+        node: usize,
+        buyer: &BuyerAuthorizer,
+    ) {
+        let after = Self::read(root, node);
+        assert_eq!(
+            after.limit, self.limit,
+            "repurchase preserves the original budget"
+        );
+        assert_eq!(
+            after.retired, self.retired,
+            "repurchase preserves retired obligations"
+        );
+        for (id, authorized) in &self.authorizations {
+            assert_eq!(
+                after.authorizations.get(id),
+                Some(authorized),
+                "repurchase preserves every closed channel's signed obligation"
+            );
+        }
+        // Session reports can use the new route before the next application
+        // payload. Their payments may reduce the budget, but need real evidence.
+        let mut added = 0;
+        for (id, authorized) in &after.authorizations {
+            if !self.authorizations.contains_key(id) {
+                assert!(
+                    *authorized <= buyer.evidence_msat(id).unwrap().div_ceil(1_000),
+                    "new authorization requires locally observed usage"
+                );
+                added += authorized;
+            }
+        }
+        let remaining = self.limit - self.retired - self.authorizations.values().sum::<u64>();
+        assert!(
+            buyer.remaining_budget_sat().unwrap() <= remaining - added,
+            "repurchase cannot reset lifetime authorization"
+        );
+        if added > 0 {
+            eprintln!("repurchase node={node} new evidence-backed authorization={added} sat");
+        }
+    }
+}
+
 pub(super) async fn exercise(
     controllers: &[Arc<Controller>],
     services: &[ControllerServices],

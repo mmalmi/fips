@@ -59,9 +59,11 @@ peer credit. The policy charges the authenticated neighbor that submitted the
 packet. A recipient can receive traffic without purchasing a return route.
 
 The [peer-credit adapter](crates/fips-credit/README.md) includes a three-node
-example tested with `cargo test --locked -p fips-credit`. The experimental
-[Cashu relay](crates/fips-relay/README.md) requires the payment-library sources
-described in its [build notes](crates/fips-relay/FUNDING-COSTS.md). For one-way
+example tested with `cargo test --locked -p fips-credit`. Build the optional
+[Cashu relay](crates/fips-relay/README.md) from the repository root with
+`cargo build --locked --manifest-path paid-routing/Cargo.toml -p fips-relay`.
+Its [build notes](crates/fips-relay/FUNDING-COSTS.md) identify the funding and
+refund APIs provided by the pinned payment libraries. For one-way
 paid traffic to continue across key rotation, enable
 [bounded replies](crates/fips-relay/RETURN-ALLOWANCE.md) on each transit relay
 or fund the return route. Both use the existing FIPS protocol.

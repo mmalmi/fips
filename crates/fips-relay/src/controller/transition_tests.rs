@@ -2,11 +2,17 @@
 use super::*;
 
 pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
+    fixture_for_local(directory, NodeAddr::from_bytes([1; 16]))
+}
+
+pub(super) fn fixture_for_local(directory: &Path, local: NodeAddr) -> (Store, Outgoing) {
     let mut j = tests::unresolved_journal();
+    j.local = local;
     let funding = j.funding.get_mut("test-1").unwrap();
     funding.created_unix = now().unwrap();
     funding.expires_unix = funding.created_unix + j.policy.channel_lifetime_secs;
     let channel = ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: j.local,
         mint_url: j.policy.mint_url.clone(),
@@ -44,6 +50,7 @@ pub(super) fn fixture(directory: &Path) -> (Store, Outgoing) {
             per_bytes: 1024,
         },
         billing: Default::default(),
+        bid_msat_per_kib: 0,
         trial: false,
         expires_unix: channel.expires_unix,
         max_units: 30_000,

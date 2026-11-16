@@ -2,9 +2,59 @@
 use super::cadence::ChannelSchedule;
 use super::*;
 use crate::ledger::ChannelUsage;
-use crate::measurements::{Operation, measure};
+use crate::measurements::{Operation, measure, measure_async};
 
-type PaymentResult = Result<Option<ChannelUsage>, String>;
+/// Local diagnostic labels; they are never sent to the payment peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentStage {
+    #[cfg(feature = "measurements")]
+    Scheduled,
+    ChannelLock,
+    Preparation,
+    UsageRequest,
+    UsageResponse,
+    Signing,
+    UpdateRequest,
+    UpdateResponse,
+    Reconciliation,
+    Worker,
+    AwaitingHarvest,
+}
+
+impl PaymentStage {
+    fn error(self, message: impl ToString) -> (Self, String) {
+        (self, message.to_string())
+    }
+}
+
+type PaymentResult = Result<Option<ChannelUsage>, (PaymentStage, String)>;
+use PaymentStage as Stage;
+
+#[derive(Default)]
+struct PaymentObservation {
+    #[cfg(feature = "measurements")]
+    progress: Option<Arc<Mutex<super::payment_progress::ScheduleProgress>>>,
+}
+
+impl PaymentObservation {
+    fn stage(&self, stage: Stage) {
+        #[cfg(feature = "measurements")]
+        if let Some(progress) = &self.progress
+            && let Ok(mut progress) = progress.lock()
+        {
+            progress.stage(stage);
+        }
+        #[cfg(not(feature = "measurements"))]
+        let _ = stage;
+    }
+}
+
+impl Drop for PaymentObservation {
+    fn drop(&mut self) {
+        self.stage(Stage::AwaitingHarvest);
+    }
+}
 
 impl Controller {
     /// Serialize financial transitions for this channel without holding other
@@ -33,26 +83,56 @@ impl Controller {
             if !seen.insert(purchase.channel.id.clone()) {
                 continue;
             }
-            if let Err(error) = self.pay_channel(purchase).await {
+            if let Err((_, error)) = self
+                .pay_channel(purchase, PaymentObservation::default())
+                .await
+            {
                 first_error.get_or_insert(error);
             }
         }
         first_error.map_or(Ok(()), Err)
     }
 
-    pub(super) async fn pay_channel(&self, purchase: Purchase) -> PaymentResult {
-        let _channel = self.channel_work(&purchase.channel.id)?.lock_owned().await;
+    async fn pay_channel(
+        &self,
+        purchase: Purchase,
+        observation: PaymentObservation,
+    ) -> PaymentResult {
+        measure_async(
+            Operation::PaymentExchange,
+            self.pay_channel_inner(purchase, observation),
+        )
+        .await
+    }
+
+    async fn pay_channel_inner(
+        &self,
+        purchase: Purchase,
+        observation: PaymentObservation,
+    ) -> PaymentResult {
+        observation.stage(Stage::ChannelLock);
+        let _channel = self
+            .channel_work(&purchase.channel.id)
+            .map_err(|e| Stage::Preparation.error(e))?
+            .lock_owned()
+            .await;
+        observation.stage(Stage::Preparation);
         // A task can have waited behind settlement or a route replacement.
         // Never sign from an active-purchase snapshot taken before that wait.
         if !self
             .purchases()
-            .await?
+            .await
+            .map_err(|e| Stage::Preparation.error(e))?
             .iter()
             .any(|p| p.channel == purchase.channel)
         {
             return Ok(None);
         }
-        let peer = self.neighbor(purchase.provider).await?;
+        let peer = self
+            .neighbor(purchase.provider)
+            .await
+            .map_err(|e| Stage::Preparation.error(e))?;
+        observation.stage(Stage::UsageRequest);
         let response = self
             .services
             .payments
@@ -61,22 +141,24 @@ impl Controller {
                 serde_json::to_vec(&PaymentRequest::Usage {
                     channel_id: purchase.channel.id.clone(),
                 })
-                .map_err(|e| e.to_string())?,
+                .map_err(|e| Stage::UsageRequest.error(e))?,
             )
-            .await?;
-        let PaymentResponse::Status { channel_id, usage } =
-            serde_json::from_slice(&response).map_err(|_| "invalid usage response")?
+            .await
+            .map_err(|e| Stage::UsageRequest.error(e))?;
+        observation.stage(Stage::UsageResponse);
+        let PaymentResponse::Status { channel_id, usage } = serde_json::from_slice(&response)
+            .map_err(|_| Stage::UsageResponse.error("invalid usage response"))?
         else {
-            return Err("provider rejected usage".into());
+            return Err(Stage::UsageResponse.error("provider rejected usage"));
         };
         if channel_id != purchase.channel.id || !settlement::valid_usage(&purchase.channel, usage) {
-            return Err("invalid usage response".into());
+            return Err(Stage::UsageResponse.error("invalid usage response"));
         }
         let prior = self
             .services
             .buyer
             .authorized_sat(&channel_id)
-            .ok_or("buyer channel missing")?;
+            .ok_or_else(|| Stage::Preparation.error("buyer channel missing"))?;
         // A crash can lose a local submission that the provider retained.
         // Pay the supported portion of its cumulative claim; rejecting the
         // entire claim would also prevent payment for every later known send.
@@ -86,12 +168,17 @@ impl Controller {
             self.services
                 .buyer
                 .evidence_msat(&channel_id)
-                .ok_or("buyer channel evidence missing")?,
+                .ok_or_else(|| Stage::Preparation.error("buyer channel evidence missing"))?,
         );
         if usage.paid_msat / 1_000 >= supported.div_ceil(1_000) && usage.paid_msat / 1_000 >= prior
         {
-            return self.reconcile_payment_usage(purchase, usage).await;
+            observation.stage(Stage::Reconciliation);
+            return self
+                .reconcile_payment_usage(purchase, usage)
+                .await
+                .map_err(|e| Stage::Reconciliation.error(e));
         }
+        observation.stage(Stage::Signing);
         let payment = {
             let buyer = self.services.buyer.clone();
             let directory = self.services.wallet_directory.clone();
@@ -106,9 +193,11 @@ impl Controller {
                         .map_err(|e| e.to_string())
                 })
             })
-            .await?
+            .await
+            .map_err(|e| Stage::Signing.error(e))?
         };
         let expected = payment.balance * 1_000;
+        observation.stage(Stage::UpdateRequest);
         let response = self
             .services
             .payments
@@ -118,11 +207,13 @@ impl Controller {
                     channel_id: channel_id.clone(),
                     payment,
                 })
-                .map_err(|e| e.to_string())?,
+                .map_err(|e| Stage::UpdateRequest.error(e))?,
             )
-            .await?;
+            .await
+            .map_err(|e| Stage::UpdateRequest.error(e))?;
+        observation.stage(Stage::UpdateResponse);
         match serde_json::from_slice::<PaymentResponse>(&response)
-            .map_err(|_| "invalid payment response")?
+            .map_err(|_| Stage::UpdateResponse.error("invalid payment response"))?
         {
             PaymentResponse::Status {
                 channel_id: id,
@@ -131,9 +222,12 @@ impl Controller {
                 && usage.paid_msat >= expected
                 && settlement::valid_usage(&purchase.channel, usage) =>
             {
-                self.reconcile_payment_usage(purchase, usage).await
+                observation.stage(Stage::Reconciliation);
+                self.reconcile_payment_usage(purchase, usage)
+                    .await
+                    .map_err(|e| Stage::Reconciliation.error(e))
             }
-            _ => Err("provider did not accept signed balance".into()),
+            _ => Err(Stage::UpdateResponse.error("provider did not accept signed balance")),
         }
     }
 
@@ -141,7 +235,7 @@ impl Controller {
         &self,
         purchase: Purchase,
         usage: ChannelUsage,
-    ) -> PaymentResult {
+    ) -> Result<Option<ChannelUsage>, String> {
         if self
             .policy
             .renewal
@@ -175,7 +269,10 @@ impl ChannelPayment {
         let Some(job) = self.job.as_mut() else {
             return Ok(());
         };
-        let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
+        let result = job
+            .await
+            .map_err(|e| Stage::Worker.error(e))
+            .and_then(|r| r);
         self.job = None;
         #[cfg(feature = "measurements")]
         if let Some(progress) = &self.progress {
@@ -185,6 +282,7 @@ impl ChannelPayment {
                     .ok()
                     .and_then(|usage| usage.as_ref())
                     .map(|usage| usage.paid_msat),
+                result.as_ref().err().map(|(stage, _)| *stage),
             );
         }
         match result {
@@ -193,11 +291,12 @@ impl ChannelPayment {
                     tokio::time::Instant::now(),
                     self.started_evidence_msat,
                     usage.paid_msat,
+                    usage.lost_msat,
                 );
                 Ok(())
             }
             Ok(None) => Ok(()),
-            Err(error) => {
+            Err((_, error)) => {
                 self.schedule.failed(tokio::time::Instant::now());
                 Err(error)
             }
@@ -216,7 +315,7 @@ impl Drop for ChannelPayment {
         }
         #[cfg(feature = "measurements")]
         if let Some(progress) = &self.progress {
-            progress.lock().unwrap().finished(None);
+            progress.lock().unwrap().finished(None, None);
         }
     }
 }
@@ -261,9 +360,6 @@ impl PaymentWorkers {
             if work.progress.is_none() {
                 work.progress = controller.payment_progress.track(&id);
             }
-            if work.job.is_some() {
-                continue;
-            }
             let (Some(evidence), Some(authorized)) = (
                 controller.services.buyer.evidence_msat(&id),
                 controller.services.buyer.authorized_sat(&id),
@@ -271,8 +367,18 @@ impl PaymentWorkers {
                 error.get_or_insert_with(|| "buyer channel or evidence missing".into());
                 continue;
             };
+            let now = tokio::time::Instant::now();
+            if work.job.is_some() {
+                work.schedule.observe_in_flight(
+                    now,
+                    evidence,
+                    authorized,
+                    work.started_evidence_msat,
+                );
+                continue;
+            }
             if !work.schedule.due(
-                tokio::time::Instant::now(),
+                now,
                 evidence,
                 authorized,
                 purchase.channel.grace_msat,
@@ -287,9 +393,13 @@ impl PaymentWorkers {
             if let Some(progress) = &work.progress {
                 progress.lock().unwrap().started();
             }
-            work.job = Some(tokio::spawn(
-                async move { payer.pay_channel(purchase).await },
-            ));
+            let observation = PaymentObservation {
+                #[cfg(feature = "measurements")]
+                progress: work.progress.clone(),
+            };
+            work.job = Some(tokio::spawn(async move {
+                payer.pay_channel(purchase, observation).await
+            }));
         }
         error.map_or(Ok(()), Err)
     }

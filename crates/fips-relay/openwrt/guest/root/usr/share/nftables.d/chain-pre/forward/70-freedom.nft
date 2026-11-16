@@ -1,0 +1,5 @@
+iifname "br-freedom" ip daddr @freedom_private drop
+iifname "br-freedom" oifname @freedom_uplink ether saddr . ip saddr @freedom_clients accept
+iifname "br-freedom" drop
+oifname "br-freedom" iifname @freedom_uplink ip daddr @freedom_returns ct state established,related accept
+oifname "br-freedom" drop

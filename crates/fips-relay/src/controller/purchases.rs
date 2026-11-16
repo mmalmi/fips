@@ -1,8 +1,34 @@
 //! Fund adjacent purchases and authorize cumulative outgoing payments.
 use super::*;
-use cashu_service::open_streaming_route_cashu_spilman_channel_from_wallet;
+use cashu_service::CashuWalletService;
+use std::num::NonZeroU32;
+
+/// CDK HTTP pacing for wallet-backed channel opening and offline money operations.
+/// Configure only within the mint operator's limits; this grants no spending authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FundingRequestBudget {
+    pub burst: NonZeroU32,
+    pub requests_per_minute: NonZeroU32,
+}
+
+impl FundingRequestBudget {
+    pub(crate) fn apply(self, wallet: &CashuWalletService) -> Result<(), String> {
+        wallet
+            .set_request_budget(self.burst.get(), self.requests_per_minute.get())
+            .map_err(|e| e.to_string())
+    }
+}
 
 impl Controller {
+    /// Set local channel-funding HTTP pacing. Omission retains CDK's defaults.
+    /// This runtime setting neither changes saved financial terms nor configures
+    /// separate Spilman settlement/refund clients. Reapply it after loading.
+    pub fn with_funding_request_budget(mut self, budget: Option<FundingRequestBudget>) -> Self {
+        self.funding_request_budget = budget;
+        self
+    }
+
     pub async fn open_route(&self, destination: PeerIdentity) -> Result<RouteAccess, String> {
         self.authorize_source_selection(destination).await?;
         let offer = self.services.quotes.request_route(destination).await?;
@@ -21,7 +47,41 @@ impl Controller {
     }
 
     pub(super) async fn fund(&self, offer: &RouteOffer) -> Result<(String, Funded), String> {
-        if Self::offer_paused(&self.snapshot().await?, &offer.id) {
+        self.fund_for(offer, None).await
+    }
+
+    pub(super) async fn fund_for(
+        &self,
+        offer: &RouteOffer,
+        renewal: Option<&str>,
+    ) -> Result<(String, Funded), String> {
+        let funding = self.fund_inner(offer, renewal);
+        tokio::pin!(funding);
+        loop {
+            tokio::select! {
+                result = &mut funding => return result,
+                _ = tokio::time::sleep(refresh::REFRESH_RECHECK) => {
+                    // Wallet recovery may be waiting on this same operation.
+                    // Persist withdrawal before ending the routing wait. The
+                    // blocking wallet worker retains ownership until it ends;
+                    // recovery must still reconcile its original funding intent.
+                    self.withdraw_disconnected_purchases().await?;
+                    if Self::offer_paused(&self.snapshot().await?, &offer.id) {
+                        return Err("route change paused".into());
+                    }
+                }
+            }
+        }
+    }
+
+    async fn fund_inner(
+        &self,
+        offer: &RouteOffer,
+        renewal: Option<&str>,
+    ) -> Result<(String, Funded), String> {
+        let timing = TransitionTiming::new("fund", &offer.id);
+        let snapshot = self.snapshot().await?;
+        if Self::offer_paused(&snapshot, &offer.id) {
             return Err("route change paused".into());
         }
         if offer.buyer != *self.services.endpoint.node_addr()
@@ -30,84 +90,50 @@ impl Controller {
         {
             return Err("unapproved funding destination or mint".into());
         }
-        let wallet_guard = self.wallet.clone().lock_owned().await;
-        let provider = offer.provider;
-        let receiver = offer.receiver_pubkey_hex.clone();
-        let capacity = self.policy.channel_capacity_sat.min(offer.capacity_sat);
-        let grace = offer
-            .grace_msat
-            .min(capacity.checked_mul(1_000).ok_or("capacity overflow")?);
+        // Existing funded accounts need only local accounting. New funding
+        // still obtains wallet ownership before reserving capital or an ID.
+        let reusable =
+            Self::selected_funding(&snapshot, offer, renewal)?.is_some_and(|f| f.funded.is_some());
+        drop(snapshot);
+        let wallet_guard = if reusable {
+            None
+        } else {
+            Some(self.wallet.clone().lock_owned().await)
+        };
+        timing.mark("wallet_ready");
+        let may_fund = wallet_guard.is_some();
         let created = now()?;
         let saved_offer = offer.clone();
+        let owner = renewal.map(str::to_string);
         let f = self
             .change(move |j| {
-                Self::check_purchase(j, &saved_offer, None)?;
-                if let Some(f) = j
-                    .funding
-                    .values()
-                    .find(|f| f.provider == provider && !Self::funding_released(j, f))
-                {
-                    if f.receiver_pubkey_hex != receiver
-                        || f.capacity_sat > capacity
-                        || f.grace_msat > grace
-                        || f.expires_unix <= created
-                    {
-                        return Err(
-                            "existing channel needs explicit renewal or reconciliation".into()
-                        );
-                    }
-                    return Ok(f.clone());
-                }
-                if j.funding.len() >= MAX_CHANNELS {
-                    return Err("funding history capacity".into());
-                }
-                let id = cashu_service::CashuRequestSequence::new(
-                    channel_history::scope(j),
-                    j.next_funding,
-                )
-                .map_err(|e| e.to_string())?
-                .request_id();
-                j.advance_history_version(4);
-                j.history
-                    .get_or_insert_with(History::default)
-                    .channels
-                    .get_or_insert_with(channel_history::ChannelHistory::default);
-                j.next_funding = j
-                    .next_funding
-                    .checked_add(1)
-                    .ok_or("funding sequence exhausted")?;
-                let f = FundingIntent {
-                    id: id.clone(),
-                    provider,
-                    receiver_pubkey_hex: receiver,
-                    capacity_sat: capacity,
-                    max_wallet_debit_sat: capacity
-                        .checked_add(j.policy.max_funding_overhead_sat)
-                        .ok_or("funding cost overflow")?,
-                    grace_msat: grace,
-                    created_unix: created,
-                    expires_unix: created
-                        .checked_add(j.policy.channel_lifetime_secs)
-                        .ok_or("expiry overflow")?,
-                    funded: None,
-                    reclaim: None,
-                };
-                j.funding.insert(id, f.clone());
-                Ok(f)
+                Self::reserve_route_funding(j, &saved_offer, owner.as_deref(), may_fund, created)
             })
             .await?;
+        timing.mark("reserved");
         let funded = if let Some(funded) = f.funded.clone() {
             funded
         } else {
+            let wallet_guard = wallet_guard.ok_or("unfunded channel needs wallet ownership")?;
             let request = f.wallet_request(&self.policy)?;
             let directory = self.services.wallet_directory.clone();
             let runtime = tokio::runtime::Handle::current();
+            let budget = self.funding_request_budget;
+            let wallet_timing = timing.clone();
             // The upstream wallet's file-store future is intentionally !Send.
             // Drive it entirely on one blocking worker, keeping the native node
             // loop free and retaining the idempotent intent if its reply is lost.
             let (opened, _wallet) = blocking(move || {
                 let opened = runtime.block_on(async move {
-                    open_streaming_route_cashu_spilman_channel_from_wallet(&directory, request)
+                    let wallet = CashuWalletService::open_existing_file_backed(&directory)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    wallet_timing.mark("wallet_opened");
+                    if let Some(budget) = budget {
+                        budget.apply(&wallet)?;
+                    }
+                    wallet
+                        .open_streaming_route_cashu_spilman_channel(request)
                         .await
                         .map_err(|e| e.to_string())
                 });
@@ -117,6 +143,7 @@ impl Controller {
             })
             .await?;
             let opened = opened?;
+            timing.mark("wallet_funded");
             let funded =
                 f.funded_channel(*self.services.endpoint.node_addr(), &self.policy, opened)?;
             let saved = funded.clone();
@@ -125,6 +152,10 @@ impl Controller {
                 .await?;
             funded
         };
+        timing.mark("funding_saved");
+        if renewal.is_some() {
+            return Ok((f.id, funded));
+        }
         let buyer = self.services.buyer.clone();
         let saved_offer = offer.clone();
         let funding_id = f.id.clone();
@@ -142,6 +173,7 @@ impl Controller {
             )
         })
         .await?;
+        timing.mark("buyer_installed");
         Ok((f.id, funded))
     }
 
@@ -220,6 +252,7 @@ impl Controller {
                 )?;
                 if existing.purchase.contract.expires_unix <= now()?
                     || existing.offer.price != offer.price
+                || existing.offer.bid_msat_per_kib != offer.bid_msat_per_kib
                     || existing.offer.billing != offer.billing
                     || existing.offer.next_hop != offer.next_hop
                     || existing.offer.path != offer.path
@@ -376,12 +409,12 @@ impl Controller {
         channel: &ChannelTerms,
         provider: NodeAddr,
     ) -> Result<CashuSpilmanPayment, String> {
-        let wallet_guard = self.wallet.clone().lock_owned().await;
         let buyer = self.services.buyer.clone();
         let directory = self.services.wallet_directory.clone();
         let id = channel.id.clone();
         blocking(move || {
-            let _wallet = wallet_guard;
+            // The signer serializes its channel store and enforces its closing
+            // fence; reproducing existing credit never opens the cash wallet.
             let signer = FileSpilmanPaymentSigner::load(&directory)?;
             buyer
                 .reproduce_payment(&signer, provider, &id, now()?)
@@ -395,12 +428,14 @@ impl Controller {
         peer: PeerIdentity,
         record: Outgoing,
     ) -> Result<Purchase, String> {
+        let timing = TransitionTiming::new("accept_outgoing", &record.purchase.channel.id);
         if Self::offer_paused(&self.snapshot().await?, &record.offer.id) {
             return Err("route change paused".into());
         }
         let payment = self
             .opening_payment(&record.purchase.channel, record.purchase.provider)
             .await?;
+        timing.mark("opening_signed");
         let body = serde_json::to_vec(&ControllerRequest::Accept {
             offer_id: record.offer.id.clone(),
             channel: record.purchase.channel.clone(),
@@ -423,6 +458,7 @@ impl Controller {
                 .map_err(|_| "invalid acceptance response")?
             {
                 ControllerResponse::Accepted { purchase } => {
+                    timing.mark("accepted");
                     if *purchase != record.purchase {
                         return Err("provider changed accepted terms".into());
                     }
@@ -433,7 +469,9 @@ impl Controller {
                     {
                         return Err("purchase closed before acceptance completed".into());
                     }
+                    timing.mark("acceptance_saved");
                     self.activate_source_route(&record.offer).await?;
+                    timing.mark("active");
                     return Ok(*purchase);
                 }
                 ControllerResponse::Pending => tokio::time::sleep(Duration::from_millis(250)).await,

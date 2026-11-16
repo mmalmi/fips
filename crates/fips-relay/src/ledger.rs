@@ -4,6 +4,7 @@
 //! its exposure window before activation and reconcile it after a process crash.
 
 mod admission;
+pub(crate) use admission::Admission;
 pub(crate) mod channel_history;
 use channel_history::relationship_reservation_limit;
 mod history;
@@ -30,10 +31,24 @@ pub struct ChannelTerms {
     #[serde(with = "node_addr")]
     pub buyer: NodeAddr,
     pub mint_url: String,
+    /// Last instant at which this channel permits forwarding.
     pub expires_unix: u64,
+    /// Immutable mint refund deadline. Omission retains the original 60-second gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refund_after_unix: Option<u64>,
     pub capacity_sat: u64,
     /// Shared unpaid exposure across every destination using this channel.
     pub grace_msat: u64,
+}
+
+pub(crate) fn refund_deadline(service_deadline: u64, saved: Option<u64>) -> Option<u64> {
+    saved.or_else(|| service_deadline.checked_add(60))
+}
+
+impl ChannelTerms {
+    pub fn refund_deadline(&self) -> Option<u64> {
+        refund_deadline(self.expires_unix, self.refund_after_unix)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +95,9 @@ impl BillingBasis {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contract {
+    /// Local scheduling bid committed when this paid offer was accepted.
+    #[serde(default, skip_serializing_if = "crate::route_quotes::zero_bid")]
+    pub bid_msat_per_kib: u64,
     pub id: String,
     pub channel_id: String,
     #[serde(with = "node_addr")]
@@ -521,6 +539,8 @@ pub(crate) fn validate_channel(c: &ChannelTerms) -> Result<u64, LedgerError> {
         || c.mint_url.ends_with('/')
         || cap == 0
         || c.grace_msat > cap
+        || c.refund_after_unix
+            .is_some_and(|refund| refund <= c.expires_unix)
     {
         return Err(LedgerError::InvalidContract);
     }
@@ -532,6 +552,7 @@ pub(crate) fn validate_contract(c: &Contract, channel: &ChannelTerms) -> Result<
         || c.id.len() > 128
         || c.max_units == 0
         || c.price.msat == 0
+        || (c.bid_msat_per_kib > 0 && (!c.billing.has_free_handshakes() || c.price.per_bytes != crate::route_quotes::PRICE_BYTES || c.bid_msat_per_kib > c.price.msat))
         || c.price.amount_due_msat(c.max_units).is_none()
         || c.next_hop == channel.buyer
         || c.expires_unix > channel.expires_unix

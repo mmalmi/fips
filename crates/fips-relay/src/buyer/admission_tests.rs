@@ -1,12 +1,17 @@
 use super::*;
 use crate::route_quotes::{RouteOffer, contract_from_offer};
 use fips_core::{Identity, PeerIdentity};
+use std::{
+    future::Future,
+    task::{Context, Waker},
+};
 
 fn fixture(root: &Path, max_units: u64, limits: Limits) -> (BuyerAuthorizer, RouteOffer, Contract) {
     let peer = |n| {
         PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: true,
         billing: BillingBasis::ForwardingData,
         id: "source-trial".into(),
@@ -32,6 +37,7 @@ fn fixture(root: &Path, max_units: u64, limits: Limits) -> (BuyerAuthorizer, Rou
     };
     let buyer = BuyerAuthorizer::create(root, offer.buyer, 64, limits).unwrap();
     let channel = ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: offer.buyer,
         mint_url: offer.mint_url.clone(),
@@ -61,6 +67,255 @@ fn submit(buyer: &BuyerAuthorizer, offer: &RouteOffer, bytes: usize) {
         panic!("expected real source reservation");
     };
     buyer.complete(token, ForwardingOutcome::Submitted);
+}
+
+#[test]
+fn channel_capacity_counts_pending_reservations_across_quotes() {
+    use fips_core::node::ForwardingDecision;
+    for billing in [
+        BillingBasis::ForwardingAttempt,
+        BillingBasis::ForwardingData,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (buyer, original, contract) =
+            fixture(&root.path().join("buyer"), 200_000, Limits::default());
+        let buyer = Arc::new(buyer);
+        submit(&buyer, &original, 100 * 1024);
+        let mut offer = original.clone();
+        offer.id = "capacity-quote".into();
+        offer.billing = billing;
+        offer.destination = PeerIdentity::from_pubkey_full(
+            Identity::from_secret_bytes(&[4; 32]).unwrap().pubkey_full(),
+        );
+        offer.next_hop = *offer.destination.node_addr();
+        offer.path[1] = offer.next_hop;
+        offer.price.msat = 1024;
+        let channel = buyer.state.lock().unwrap().channels[&contract.channel_id]
+            .terms
+            .clone();
+        let priced = contract_from_offer(&offer, &channel).unwrap();
+        buyer.accept_quote(priced.clone()).unwrap();
+        let OriginatedSessionAdmission::Track(pending) = buyer.prepare(&intent(&offer, 63_899))
+        else {
+            panic!("pending traffic fits the shared channel");
+        };
+        buyer.checkpoint().unwrap();
+        let before = std::fs::read(root.path().join("buyer/buyer.json")).unwrap();
+        let seller = Arc::new(
+            crate::durable::DurableRelay::create(
+                &root.path().join("seller"),
+                Limits::default(),
+                8_000,
+            )
+            .unwrap(),
+        );
+        let forwarding = PaidForwarder::for_billing(seller.clone(), buyer.clone(), billing);
+        let request = ForwardingRequest {
+            ingress: offer.destination,
+            source: offer.buyer,
+            destination: priced.destination,
+            next_hop: offer.provider,
+            session_payload: &[7; 200],
+        };
+        assert_eq!(forwarding.decide(&request), ForwardingDecision::Reject);
+        assert!(!buyer.capacity_blocked(&channel.id));
+        let mut incoming = channel.clone();
+        incoming.id = "incoming".into();
+        incoming.buyer = *request.ingress.node_addr();
+        seller.open_channel_verified(incoming.clone(), 0).unwrap();
+        seller
+            .add_contract(Contract {
+                bid_msat_per_kib: 0,
+                id: "incoming-quote".into(),
+                channel_id: incoming.id.clone(),
+                next_hop: offer.provider,
+                ..priced.clone()
+            })
+            .unwrap();
+        let upstream_before = seller.channel_usage(&incoming.id);
+        assert_eq!(forwarding.decide(&request), ForwardingDecision::Retry);
+        assert!(buyer.capacity_blocked(&channel.id));
+        assert_eq!(seller.channel_usage(&incoming.id), upstream_before);
+        assert_eq!(
+            buyer.prepare_with_retry(&intent(&offer, 200)),
+            Err(OriginatedSessionRetry)
+        );
+        let mut upstream_reserved = false;
+        assert!(matches!(
+            buyer.begin_admitted(
+                &OriginatedSessionRequest {
+                    source: offer.buyer,
+                    destination: priced.destination,
+                    next_hop: offer.provider,
+                    session_payload: &[7; 200],
+                },
+                false,
+                || {
+                    upstream_reserved = true;
+                    Some(())
+                },
+                || true,
+            ),
+            Err(ForwardingDecision::Retry)
+        ));
+        assert!(!upstream_reserved);
+        buyer.checkpoint().unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("buyer/buyer.json")).unwrap(),
+            before
+        );
+        assert_eq!(buyer.observed_units(&priced.id), Some(63_899));
+        assert_eq!(
+            buyer.prepare(&intent(&offer, 65_000)),
+            OriginatedSessionAdmission::Reject
+        );
+        // A smaller packet can still use the last millisat of this same channel.
+        submit(&buyer, &original, 1024);
+        buyer.complete(pending, ForwardingOutcome::Submitted);
+        assert_eq!(buyer.evidence_msat(&channel.id), Some(64_000));
+        buyer.close_channel(&channel.id).unwrap();
+        assert_eq!(
+            buyer.prepare(&intent(&offer, 1)),
+            OriginatedSessionAdmission::Reject
+        );
+    }
+}
+
+#[test]
+fn renewal_pause_reserves_nothing_and_releases_only_into_current_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("buyer");
+    let (buyer, offer, contract) = fixture(&directory, 32_768, Limits::default());
+    let buyer = Arc::new(buyer);
+    let ingress = PeerIdentity::from_pubkey_full(
+        Identity::from_secret_bytes(&[4; 32]).unwrap().pubkey_full(),
+    );
+    let seller = Arc::new(
+        crate::durable::DurableRelay::create(&root.path().join("seller"), Limits::default(), 8_000)
+            .unwrap(),
+    );
+    let mut incoming = buyer.state.lock().unwrap().channels[&contract.channel_id]
+        .terms
+        .clone();
+    incoming.id = "incoming".into();
+    incoming.buyer = *ingress.node_addr();
+    seller.open_channel_verified(incoming.clone(), 0).unwrap();
+    seller
+        .add_contract(Contract {
+            bid_msat_per_kib: 0,
+            id: "incoming-quote".into(),
+            channel_id: incoming.id.clone(),
+            next_hop: offer.provider,
+            ..contract.clone()
+        })
+        .unwrap();
+    let forwarding = PaidForwarder::for_billing(seller.clone(), buyer.clone(), offer.billing);
+    let request = ForwardingRequest {
+        ingress,
+        source: *ingress.node_addr(),
+        destination: contract.destination,
+        next_hop: offer.provider,
+        session_payload: &[7; 200],
+    };
+    let upstream_before = seller.channel_usage(&incoming.id);
+    let wake = forwarding.admission_notify().unwrap();
+    let take_wake = || {
+        std::pin::pin!(wake.notified())
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    };
+    let _ = take_wake();
+    submit(&buyer, &offer, 100);
+    buyer.checkpoint().unwrap();
+    let before = std::fs::read(directory.join("buyer.json")).unwrap();
+    let pause = buyer
+        .pause_for_renewal([&contract], Some(wake.clone()))
+        .unwrap();
+    let nested = buyer
+        .pause_for_renewal([&contract], Some(wake.clone()))
+        .unwrap();
+    let mut mismatched = contract.clone();
+    mismatched.max_units += 1;
+    assert!(
+        buyer
+            .pause_for_renewal([&contract, &mismatched], Some(wake.clone()))
+            .is_err()
+    );
+    let mut direct = intent(&offer, 200);
+    direct.next_hop = direct.destination;
+    assert_eq!(buyer.prepare(&direct), OriginatedSessionAdmission::Defer);
+    for _ in 0..3 {
+        assert_eq!(
+            buyer.prepare_with_retry(&intent(&offer, 200)),
+            Err(OriginatedSessionRetry)
+        );
+        assert_eq!(
+            forwarding.decide(&request),
+            fips_core::node::ForwardingDecision::Retry
+        );
+    }
+    assert_eq!(seller.channel_usage(&incoming.id), upstream_before);
+    buyer.checkpoint().unwrap();
+    assert_eq!(std::fs::read(directory.join("buyer.json")).unwrap(), before);
+    drop(nested);
+    assert!(!take_wake());
+    assert_eq!(
+        buyer.prepare_with_retry(&intent(&offer, 200)),
+        Err(OriginatedSessionRetry)
+    );
+    buyer.close_channel(&contract.channel_id).unwrap();
+    let mut replacement = buyer.state.lock().unwrap().channels[&contract.channel_id]
+        .terms
+        .clone();
+    replacement.id = "replacement".into();
+    buyer
+        .accept_channel(offer.provider, replacement.clone(), 0)
+        .unwrap();
+    let replacement_contract = Contract {
+        bid_msat_per_kib: 0,
+        id: "replacement-quote".into(),
+        channel_id: replacement.id.clone(),
+        ..contract.clone()
+    };
+    buyer.accept_quote(replacement_contract.clone()).unwrap();
+    assert_eq!(
+        buyer.prepare_with_retry(&intent(&offer, 200)),
+        Err(OriginatedSessionRetry)
+    );
+    assert_eq!(buyer.evidence_msat(&replacement.id), Some(0));
+    assert_eq!(
+        forwarding.decide(&request),
+        fips_core::node::ForwardingDecision::Retry
+    );
+    let previous_evidence = buyer.evidence_msat(&contract.channel_id);
+    drop(pause);
+    assert!(take_wake());
+    let admission = forwarding
+        .decide(&request)
+        .admission()
+        .expect("replacement admits held transit");
+    forwarding.complete(admission.token, ForwardingOutcome::Submitted);
+    submit(&buyer, &offer, 200);
+    assert_eq!(buyer.evidence_msat(&contract.channel_id), previous_evidence);
+    assert_eq!(
+        buyer.state.lock().unwrap().quotes[&replacement_contract.id].submitted_units,
+        400
+    );
+    assert_eq!(buyer.remaining_budget_sat(), Some(64));
+    let cancelled = buyer
+        .pause_for_renewal([&replacement_contract], Some(wake))
+        .unwrap();
+    buyer.close_channel(&replacement.id).unwrap();
+    drop(cancelled);
+    assert_eq!(
+        buyer.prepare(&intent(&offer, 200)),
+        OriginatedSessionAdmission::Reject
+    );
+    assert_eq!(
+        forwarding.decide(&request),
+        fips_core::node::ForwardingDecision::Reject
+    );
+    assert!(buyer.state.lock().unwrap().renewal_pauses.is_empty());
 }
 
 #[test]
@@ -207,7 +462,11 @@ fn nonquota_denials_and_transit_do_not_mark_source_trial_blocked() {
         next_hop: offer.provider,
         session_payload: &[1; 100],
     };
-    assert!(buyer.begin_admitted(&request, false, || Some(())).is_none());
+    assert!(
+        buyer
+            .begin_admitted(&request, false, || Some(()), || false)
+            .is_err()
+    );
     assert_eq!(
         buyer.quota_blocked(&offer),
         Ok(Some(false)),
@@ -232,8 +491,9 @@ fn arithmetic_overflow_is_an_actual_quota_denial_and_poison_is_an_error() {
             u64::MAX,
             true,
             || Some(()),
+            || true,
         )
-        .is_none()
+        .is_err()
     );
     assert_eq!(buyer.quota_blocked(&offer), Ok(Some(true)));
     let buyer = Arc::new(buyer);

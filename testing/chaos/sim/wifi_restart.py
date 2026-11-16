@@ -5,8 +5,8 @@ import shlex
 from .wifi_remote import checked_path
 
 
-def crash_profile(node, before_sample):
-    """Signal once under the existing lease lock; an ambiguous reply stays failed."""
+def sampled_process(node, before_sample):
+    """Validate a sampled epoch and build its guarded ownership check."""
     if not isinstance(before_sample, dict) or not isinstance(before_sample.get("host_process"), dict):
         raise ValueError("crash requires a sampled candidate epoch")
     identity = before_sample.get("host_process", {})
@@ -17,10 +17,8 @@ def crash_profile(node, before_sample):
             or type(start) is not int or start <= 0):
         raise ValueError("crash requires a matching sampled candidate epoch")
     temporary = shlex.quote(checked_path(node.temporary))
-    binary = shlex.quote(checked_path(node.binary))
+    binary = shlex.quote(checked_path(getattr(node, 'process_binary', node.binary)))
     config = shlex.quote(checked_path(node.config))
-    # The primary and auxiliary profiles share their owner's lease/operation lock.
-    owner = getattr(node, "owner", node)
     command = f"""set -efu
 target_pid={pid}
 target_start={start}
@@ -45,6 +43,16 @@ owned() {{
   test "$process_state" != Z
 }}
 owned
+"""
+    return pid, start, command
+
+
+def crash_profile(node, before_sample):
+    """Signal once under the existing lease lock; an ambiguous reply stays failed."""
+    pid, start, command = sampled_process(node, before_sample)
+    # The primary and auxiliary profiles share their owner's lease/operation lock.
+    owner = getattr(node, "owner", node)
+    command += """
 # A four-second monotonic deadline leaves room below the five-second limit.
 deadline=$(( $(cut -d . -f 1 /proc/uptime) + 4 ))
 owned
@@ -76,7 +84,7 @@ while :; do
     echo 'candidate exit observation deadline expired' >&2
     exit 1
   fi
-  sleep .05
+  sleep 1
 done
 printf '%s\\000' "$target_pid" "$target_start" "$stopped"
 """
@@ -86,3 +94,21 @@ printf '%s\\000' "$target_pid" "$target_start" "$stopped"
             or parts[2] not in ("gone", "zombie")):
         raise RuntimeError("crash response did not verify the sampled process stopped")
     return {"pid": pid, "start_ticks": start, "stopped": True, "state": parts[2]}
+
+
+def pause_profile(node, before_sample, *, resume=False):
+    """Freeze only the sampled candidate; never sync its pending disk writes."""
+    _, _, command = sampled_process(node, before_sample)
+    if resume:
+        command += 'test "$process_state" = T\nkill -CONT "$target_pid"\n'
+    else:
+        command += '''kill -STOP "$target_pid"
+deadline=$(( $(cut -d . -f 1 /proc/uptime) + 3 ))
+while :; do
+  owned
+  if test "$process_state" = T; then break; fi
+  test "$(cut -d . -f 1 /proc/uptime)" -lt "$deadline"
+  sleep 1
+done
+'''
+    node.guarded(command, timeout=10)

@@ -17,10 +17,7 @@ impl Controller {
     ) -> Result<Funded, String> {
         let funded = intent.funded.as_ref().ok_or("funding remains uncertain")?;
         if j.funding.get(&intent.id) != Some(intent)
-            || intent
-                .expires_unix
-                .checked_add(60)
-                .is_none_or(|e| e >= timestamp)
+            || intent.refund_deadline()? >= timestamp
             || funded.opening.balance != 0
             || (!Self::used_funding(j, &funded.terms.id)
                 && !Self::funding_exclusively_withdrawn(j, intent))
@@ -83,7 +80,7 @@ impl Controller {
         }
         let mut first_error = None;
         for (id, channel) in channels {
-            if timestamp <= channel.expires_unix
+            if timestamp < channel.expires_unix
                 || snapshot
                     .seller_settlements
                     .get(&id)

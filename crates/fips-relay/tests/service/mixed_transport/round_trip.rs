@@ -14,6 +14,7 @@ async fn arm(bench: &MixedBench, id: &str, count: u32) {
                 payload_bytes: 128,
                 reflect: true,
                 measure_one_way_latency: false,
+                lifetime_secs: None,
             },
         },
     )
@@ -32,6 +33,7 @@ async fn measure(bench: &MixedBench, id: &str, count: u32) {
                 payload_bytes: 128,
                 packets_per_second: 10,
                 measure_round_trip: true,
+                max_duration_secs: None,
             },
         },
     )
@@ -128,14 +130,29 @@ pub(super) async fn assert_paid_round_trip(bench: &MixedBench, id: &str) {
     })
     .await
     .expect("both existing channels advance credited payment for the fixed round trip");
+    let after_states = bench.states().await;
     for node in [0, 2] {
-        let state = request(&bench.configs[node], &AdminRequest::Status)
-            .await
-            .unwrap();
+        let state = &after_states[node];
         assert_eq!(state["history"], before_states[node]["history"]);
+        let old: FundingBudget =
+            serde_json::from_value(before_states[node]["funding_budget"].clone()).unwrap();
+        let current: FundingBudget =
+            serde_json::from_value(state["funding_budget"].clone()).unwrap();
+        // An earlier channel refund can finish during this cohort. It may
+        // release capital, but cannot add a reservation, debit or active channel.
+        let refund = current
+            .wallet_refunded_sat
+            .checked_sub(old.wallet_refunded_sat)
+            .unwrap();
+        assert!(current.locked_sat <= old.locked_sat);
         assert_eq!(
-            state["funding_budget"],
-            before_states[node]["funding_budget"]
+            current,
+            FundingBudget {
+                wallet_refunded_sat: current.wallet_refunded_sat,
+                locked_sat: current.locked_sat,
+                exposure_sat: old.exposure_sat.checked_sub(refund).unwrap(),
+                ..old
+            }
         );
         assert_eq!(
             state["purchases"][0]["channel"]["id"],
@@ -161,7 +178,15 @@ async fn round_trip_is_priced_in_both_directions_and_never_reflects_invalid_or_d
         )
         .await
         .unwrap();
-        let mut bench = MixedBench::start(mint.url(), &network).await;
+        let mut bench =
+            MixedBench::start_configured(mint.url(), &network, SecondHop::Tcp, |_, config| {
+                // Keep the long diagnostic on its original channel; renewal
+                // has its own continuous-traffic acceptance fixture.
+                config.terms.controller.channel_capacity_sat = 32;
+                config.terms.controller.max_locked_sat = 64;
+                config.terms.controller.renewal = None;
+            })
+            .await;
         bench.assert_carriers().await;
         request(
             &bench.configs[0],
@@ -293,11 +318,52 @@ async fn round_trip_is_priced_in_both_directions_and_never_reflects_invalid_or_d
         })
         .await
         .expect("ordinary paid accounting charges both request and reply traffic");
-        // An expired arm cannot reflect even a previously unseen, valid packet.
-        // Use the real service deadline; no diagnostic-only clock bypass.
+        // Keep the ordinary arm while the opposite direction explicitly runs
+        // beyond both short defaults. Neither arm nor stream is refreshed.
         let expired_id = "63".repeat(16);
         arm(&bench, &expired_id, 1).await;
-        tokio::time::sleep(Duration::from_millis(60_100)).await;
+        let long_id = "64".repeat(16);
+        request(
+            &bench.configs[0],
+            &AdminRequest::ReceiveProbe {
+                probe: ReceiveProbe {
+                    source: bench.npubs[2].clone(),
+                    stream_id: long_id.clone(),
+                    packet_count: 65,
+                    payload_bytes: 128,
+                    lifetime_secs: Some(75),
+                    measure_one_way_latency: false,
+                    reflect: false,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let sent = request(
+            &bench.configs[2],
+            &AdminRequest::SendProbe {
+                probe: SendProbe {
+                    destination: bench.npubs[0].clone(),
+                    stream_id: long_id.clone(),
+                    packet_count: 65,
+                    payload_bytes: 128,
+                    packets_per_second: 1,
+                    max_duration_secs: Some(70),
+                    measure_round_trip: false,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent["probe"]["submitted_packets"], 65);
+        assert!(sent["probe"]["stopped_reason"].is_null());
+        assert!(sent["probe"]["elapsed_us"].as_u64().unwrap() >= 64_000_000);
+        let received = wait_probe(&bench, 0, 65).await;
+        assert_eq!(received["stream_id"], long_id);
+        assert_eq!(received["unique_bytes"], 65 * 128);
+        assert_eq!(received["duplicate_packets"], 0);
+        assert_eq!(received["invalid_packets"], 0);
+        // The default arm must have expired while the explicit long arm worked.
         request(
             &bench.configs[0],
             &AdminRequest::Send {

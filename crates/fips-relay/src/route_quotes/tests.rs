@@ -4,9 +4,10 @@ fn peer(n: u8) -> PeerIdentity {
     PeerIdentity::from_pubkey_full(Identity::from_secret_bytes(&[n; 32]).unwrap().pubkey_full())
 }
 
-fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
+pub(super) fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
     let (buyer, provider, destination) = (peer(1), peer(2), peer(3));
     let policy = QuotePolicy {
+        additional_receive_mints: vec![],
         destination_fees: Default::default(),
         billing: Default::default(),
         mint_url: "http://test.invalid".into(),
@@ -19,13 +20,16 @@ fn quote_fixture() -> (QuotePolicy, QuoteRequest, RouteOffer) {
         grace_msat: 16_384,
     };
     let request = QuoteRequest {
+        preferred_mint: None,
         destination,
         ancestors: vec![*buyer.node_addr()],
         deadline_unix: 110,
         reuse_unchanged: false,
+        bid_msat_per_kib: 0,
         requested_max_units: None,
     };
     let offer = RouteOffer {
+        bid_msat_per_kib: 0,
         trial: false,
         billing: Default::default(),
         id: "quote".into(),
@@ -173,4 +177,112 @@ fn downstream_quotes_cannot_change_identity_price_mint_or_loop_bounds() {
         check_trial(&trial).is_err(),
         "trial cannot become renewable"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retired_offers_release_capacity_without_reviving_their_bindings() {
+    use fips_core::{
+        Config,
+        config::{PeerConfig, TransportInstances, UdpConfig},
+    };
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut nodes = Vec::new();
+        for _ in 0..2 {
+            let mut config = Config::new();
+            config.node.control.enabled = false;
+            config.node.discovery.nostr.enabled = false;
+            config.node.discovery.lan.enabled = false;
+            config.node.discovery.local.enabled = false;
+            config.transports.udp = TransportInstances::Single(UdpConfig {
+                bind_addr: Some("127.0.0.1:0".into()),
+                advertise_on_nostr: Some(false),
+                ..UdpConfig::default()
+            });
+            nodes.push(Arc::new(
+                FipsEndpoint::builder()
+                    .config(config)
+                    .without_system_tun()
+                    .bind()
+                    .await
+                    .unwrap(),
+            ));
+        }
+        let destination = PeerIdentity::from_npub(nodes[1].npub()).unwrap();
+        for (source, target) in [(0, 1), (1, 0)] {
+            nodes[source]
+                .update_peers(vec![PeerConfig::new(
+                    nodes[target].npub(),
+                    "udp",
+                    nodes[target].bound_udp_listen_addrs().await.unwrap()[0].to_string(),
+                )])
+                .await
+                .unwrap();
+        }
+        while !nodes[0].peers().await.unwrap().iter().any(|p| p.connected) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (control, _) = ControlTransport::start(nodes[0].clone(), 44_730, vec![destination], 20)
+            .await
+            .unwrap();
+        let (policy, mut request, _) = quote_fixture();
+        request.destination = destination;
+        request.deadline_unix = unix_now().unwrap() + 10;
+        let quotes = RouteQuotes::new(nodes[0].clone(), Arc::new(control), policy).unwrap();
+        let buyer = peer(1);
+        let body = serde_json::to_vec(&request).unwrap();
+        let mut retained = Vec::new();
+        for _ in 0..MAX_OFFERS_PER_BUYER {
+            let QuoteResponse::Offer { offer } = quotes.handle(buyer, &body).await else {
+                panic!("offers below the buyer limit must be admitted")
+            };
+            retained.push(*offer);
+        }
+        assert!(matches!(
+            quotes.handle(buyer, &body).await,
+            QuoteResponse::Rejected
+        ));
+        let previous = &retained[0];
+        quotes.retire_offer(&previous.id).unwrap();
+        let QuoteResponse::Offer { offer: fresh } = quotes.handle(buyer, &body).await else {
+            panic!("a retired agreement must release its pending quote slot")
+        };
+        let channel = ChannelTerms {
+            refund_after_unix: None,
+            id: "replacement-channel".into(),
+            buyer: *buyer.node_addr(),
+            mint_url: fresh.mint_url.clone(),
+            expires_unix: fresh.expires_unix,
+            capacity_sat: fresh.capacity_sat,
+            grace_msat: fresh.grace_msat,
+        };
+        assert_ne!(fresh.id, previous.id);
+        assert!(
+            quotes.bind_offer(buyer, &previous.id, &channel).is_err(),
+            "retirement must also prevent a fresh binding to the closed offer"
+        );
+        quotes.bind_offer(buyer, &fresh.id, &channel).unwrap();
+        for offer in &retained[1..] {
+            assert_eq!(quotes.retained_offer(buyer, &offer.id).unwrap(), *offer);
+        }
+        assert!(
+            matches!(quotes.handle(buyer, &body).await, QuoteResponse::Rejected),
+            "retirement must preserve the per-buyer admission limit"
+        );
+        let mut current = fresh;
+        for _ in 0..MAX_OFFERS_PER_BUYER * 2 {
+            quotes.retire_offer(&current.id).unwrap();
+            quotes.retire_offer(&current.id).unwrap();
+            let QuoteResponse::Offer { offer } = quotes.handle(buyer, &body).await else {
+                panic!("repeated retirements must keep permitting replacements")
+            };
+            assert_ne!(offer.id, current.id);
+            current = offer;
+        }
+        for node in nodes {
+            node.shutdown().await.unwrap();
+        }
+    })
+    .await
+    .expect("quote retirement scenario deadline");
 }

@@ -1,4 +1,4 @@
-//! Durable acceptance can precede its parent renewal's completion checkpoint.
+//! Channel renewal triggers and durable replacement admission.
 use super::*;
 use crate::controller::transition_tests::{fixture, reload};
 
@@ -16,7 +16,13 @@ fn crash_exposure_reserves_one_durable_renewal_without_spending_or_billing_loss(
         lost_msat: 4_000,
         paid_msat: 21_000,
     };
-    assert!(!policy.due(&old.purchase, usage.submitted_msat, 21_000, now().unwrap()));
+    assert!(!policy.due(
+        &old.purchase,
+        usage.submitted_msat,
+        0,
+        21_000,
+        now().unwrap()
+    ));
     store
         .change(|j| {
             j.policy.renewal = Some(policy);
@@ -133,7 +139,10 @@ fn funded_replacement(journal: &mut Journal, old: &Outgoing, provider: NodeAddr)
 }
 
 fn accepted_before_completion(directory: &Path) -> (Store, Outgoing, Outgoing) {
-    let (mut store, old) = fixture(directory);
+    accepted_replacement(fixture(directory))
+}
+
+fn accepted_replacement((mut store, old): (Store, Outgoing)) -> (Store, Outgoing, Outgoing) {
     let replacement = store
         .change(|journal| {
             Controller::reserve_renewal(journal, old.purchase.channel.id.clone())?;
@@ -289,4 +298,177 @@ fn incomplete_predecessor_does_not_reserve_an_unrelated_provider() {
         serde_json::to_value(&store.journal.funding).unwrap(),
         funding
     );
+}
+
+#[tokio::test]
+async fn recovery_defers_replacement_purchases_to_their_unfinished_renewal() {
+    let root = tempfile::tempdir().unwrap();
+    let controller = crate::controller::refresh::tests::disconnected_controller(root.path()).await;
+    let services = controller.services.clone();
+    let policy = controller.policy.clone();
+    let local = *services.endpoint.node_addr();
+    drop(controller);
+    let (mut store, old, replacement) =
+        accepted_replacement(crate::controller::transition_tests::fixture_for_local(
+            &root.path().join("controller"),
+            local,
+        ));
+    store
+        .change(|j| {
+            j.outgoing
+                .get_mut(&replacement.purchase.contract.id)
+                .unwrap()
+                .accepted = false;
+            Ok(())
+        })
+        .unwrap();
+    let directory = store.directory.clone();
+    drop(store);
+    let controller = Controller::load(&directory, policy, services).unwrap();
+    let saved = controller.snapshot().await.unwrap();
+    // Recovery must not duplicate the renewal worker's purchase, even while
+    // that replacement cannot reach its provider after a restart.
+    controller.resume_recovery().await.unwrap();
+    assert_eq!(
+        controller.pending_renewals().await.unwrap().0,
+        vec![old.purchase.channel.id]
+    );
+    let mut independent = replacement.offer.clone();
+    independent.id = "independent-offer".into();
+    independent.provider = NodeAddr::from_bytes([3; 16]);
+    independent.path[0] = independent.provider;
+    controller
+        .change(move |j| {
+            j.requested.insert(independent.id.clone(), independent);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        controller.resume_recovery().await.is_err(),
+        "recovery still attempts the independent purchase's disconnected provider"
+    );
+    assert_eq!(
+        serde_json::to_value(saved.funding).unwrap(),
+        serde_json::to_value(controller.snapshot().await.unwrap().funding).unwrap()
+    );
+}
+
+fn offer() -> RouteOffer {
+    let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let provider = NodeAddr::from_bytes([2; 16]);
+    RouteOffer {
+        bid_msat_per_kib: 0,
+        trial: false,
+        billing: Default::default(),
+        id: "offer".into(),
+        buyer: NodeAddr::from_bytes([1; 16]),
+        provider,
+        destination,
+        next_hop: *destination.node_addr(),
+        path: vec![provider, *destination.node_addr()],
+        price: crate::ledger::BytePrice {
+            msat: 1_024,
+            per_bytes: 1_024,
+        },
+        expires_unix: 500,
+        max_units: 30_000,
+        mint_url: "http://127.0.0.1:1234".into(),
+        receiver_pubkey_hex: format!("02{}", "11".repeat(32)),
+        capacity_sat: 16,
+        grace_msat: 8_000,
+    }
+}
+
+#[test]
+fn renewal_does_not_silently_change_resale_price_route_or_limits() {
+    let old = offer();
+    assert!(same_service(&old, &old));
+    let mutations: Vec<fn(&mut RouteOffer)> = vec![
+        |o| o.billing = crate::ledger::BillingBasis::ForwardingAttempt,
+        |o| o.price.msat += 1,
+        |o| o.provider = NodeAddr::from_bytes([3; 16]),
+        |o| o.next_hop = NodeAddr::from_bytes([4; 16]),
+        |o| o.path.push(NodeAddr::from_bytes([5; 16])),
+        |o| o.trial = !o.trial,
+        |o| o.mint_url = "http://127.0.0.1:5678".into(),
+        |o| o.max_units -= 1,
+    ];
+    for mutate in mutations {
+        let mut changed = old.clone();
+        mutate(&mut changed);
+        assert!(!same_service(&old, &changed));
+    }
+}
+
+#[test]
+fn renewal_triggers_at_local_capacity_byte_limit_and_service_expiry() {
+    let offer = offer();
+    let mut purchase = Purchase {
+        provider: offer.provider,
+        channel: ChannelTerms {
+            refund_after_unix: None,
+            id: "channel".into(),
+            buyer: offer.buyer,
+            mint_url: offer.mint_url.clone(),
+            capacity_sat: 16,
+            grace_msat: 8_000,
+            expires_unix: 600,
+        },
+        contract: Contract {
+            bid_msat_per_kib: 0,
+            billing: Default::default(),
+            id: "contract".into(),
+            channel_id: "channel".into(),
+            destination: *offer.destination.node_addr(),
+            next_hop: offer.next_hop,
+            price: offer.price,
+            max_units: 30_000,
+            expires_unix: 500,
+        },
+    };
+    let policy = RenewalPolicy {
+        at_capacity_percent: 100,
+        before_expiry_secs: 30,
+    };
+    assert!(!policy.due(&purchase, 15_999, 0, 29_999, 469));
+    // The payment's whole-sat balance can fill capacity before byte usage does.
+    assert!(!policy.due(&purchase, 15_809, 15, 15_809, 100));
+    assert!(policy.due(&purchase, 15_809, 16, 15_809, 100));
+    assert!(policy.due(&purchase, 16_000, 0, 0, 100));
+    assert!(policy.due(&purchase, 0, 0, 30_000, 100));
+    assert!(policy.due(&purchase, 0, 0, 0, 470));
+    purchase.contract.expires_unix = 600;
+    assert!(!policy.due(&purchase, 0, 0, 0, 569));
+    assert!(policy.due(&purchase, 0, 0, 0, 570));
+    purchase.channel.refund_after_unix = Some(640);
+    assert!(!policy.due(&purchase, 0, 0, 0, 579));
+    assert!(policy.due(&purchase, 0, 0, 0, 580));
+}
+
+#[test]
+fn renewal_policy_rejects_unbounded_or_immediate_expiry_cycles() {
+    let mut policy = ControllerPolicy {
+        additional_receive_mints: vec![],
+        mint_url: "http://127.0.0.1:1234".into(),
+        channel_capacity_sat: 16,
+        max_locked_sat: 32,
+        max_funding_overhead_sat: 0,
+        max_wallet_spend_sat: 1024,
+        channel_lifetime_secs: 600,
+        renewal: Some(RenewalPolicy {
+            at_capacity_percent: 100,
+            before_expiry_secs: 30,
+        }),
+    };
+    Controller::validate_policy(&policy).unwrap();
+    policy.renewal.as_mut().unwrap().at_capacity_percent = 0;
+    assert!(Controller::validate_policy(&policy).is_err());
+    policy.renewal.as_mut().unwrap().at_capacity_percent = 101;
+    assert!(Controller::validate_policy(&policy).is_err());
+    policy.renewal.as_mut().unwrap().at_capacity_percent = 100;
+    policy.renewal.as_mut().unwrap().before_expiry_secs = 300;
+    Controller::validate_policy(&policy).unwrap();
+    policy.renewal.as_mut().unwrap().before_expiry_secs = 301;
+    assert!(Controller::validate_policy(&policy).is_err());
 }

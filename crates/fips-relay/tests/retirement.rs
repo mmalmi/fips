@@ -27,6 +27,7 @@ fn address(n: u8) -> NodeAddr {
 }
 fn terms() -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: None,
         id: "channel".into(),
         buyer: *peer().node_addr(),
         mint_url: "http://test.invalid".into(),
@@ -37,6 +38,7 @@ fn terms() -> ChannelTerms {
 }
 fn quote(id: usize, expiry: u64) -> Contract {
     Contract {
+        bid_msat_per_kib: 0,
         id: format!("quote-{id}"),
         channel_id: "channel".into(),
         destination: address(9),

@@ -9,7 +9,9 @@ mod agreements;
 pub(crate) mod channel_history;
 mod forwarding;
 mod retirement;
-pub use forwarding::{PaidForwarder, RouteObserver};
+const REFUND_DEADLINE_VERSION: u16 = 0x100;
+
+pub use forwarding::{PaidForwarder, PeerCreditForwarder, RouteObserver};
 
 use crate::{
     durable::{
@@ -26,7 +28,7 @@ use fips_core::{
     node::{
         ForwardingAdmission, ForwardingClass, ForwardingOutcome, ForwardingPolicy,
         ForwardingRequest, OriginatedSessionAdmission, OriginatedSessionIntent,
-        OriginatedSessionObserver, OriginatedSessionRequest,
+        OriginatedSessionObserver, OriginatedSessionRequest, OriginatedSessionRetry,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -57,6 +59,8 @@ pub enum BuyerError {
     Capacity,
     #[error("invalid buyer journal")]
     Format,
+    #[error("buyer identity or budget differs from saved service terms")]
+    SavedTerms,
     #[error("payment signer failed: {0}")]
     Signer(String),
 }
@@ -71,6 +75,8 @@ struct PurchaseChannel {
     #[serde(default)]
     retired: Option<RetiredRouteEvidence>,
     active: bool,
+    #[serde(skip)]
+    capacity_blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,32 +130,57 @@ struct State {
     seen: HashSet<(NodeAddr, [u8; 32])>,
     #[serde(skip)]
     pending: BTreeMap<u64, (String, usize)>,
+    #[serde(skip)]
+    renewal_pauses: BTreeMap<String, usize>,
 }
 
 impl State {
     fn evidence_msat(&self, id: &str) -> Option<u64> {
+        self.amount_msat(id, true)
+    }
+
+    fn amount_msat(&self, id: &str, submitted: bool) -> Option<u64> {
         let retired = self.channels.get(id)?.retired?;
+        let initial = if submitted {
+            retired.submitted_msat
+        } else {
+            retired.reserved_msat
+        };
         self.quotes
             .values()
             .filter(|q| q.contract.channel_id == id)
-            .try_fold(retired.submitted_msat, |sum, q| {
-                sum.checked_add(q.contract.price.amount_due_msat(q.submitted_units)?)
+            .try_fold(initial, |sum, q| {
+                let units = if submitted {
+                    q.submitted_units
+                } else {
+                    q.observed_units
+                };
+                sum.checked_add(q.contract.price.amount_due_msat(units)?)
             })
     }
 
+    fn history_version(&self) -> u16 {
+        self.version & !REFUND_DEADLINE_VERSION
+    }
+
     fn validate_and_recover(&mut self) -> Result<(), BuyerError> {
-        if !matches!(self.version, 1..=4)
-            || self.total_budget_sat == 0
+        if !matches!(self.history_version(), 1..=4)
+            || (self.total_budget_sat == 0 && (!self.channels.is_empty() || !self.quotes.is_empty() || self.history.is_some()))
             || self.next_token == 0
             || self.channels.len() > self.limits.max_channels
             || self.quotes.len() > self.limits.max_contracts
         {
             return Err(BuyerError::Format);
         }
+        let history_version = self.history_version();
         for c in self.channels.values_mut() {
             c.retired = Some(
-                RetiredRouteEvidence::recovered(c.retired, self.version >= 3, c.terms.expires_unix)
-                    .ok_or(BuyerError::Format)?,
+                RetiredRouteEvidence::recovered(
+                    c.retired,
+                    history_version >= 3,
+                    c.terms.expires_unix,
+                )
+                .ok_or(BuyerError::Format)?,
             );
         }
         self.validate_channel_history()?;
@@ -162,7 +193,8 @@ impl State {
         let mut total = self.history.as_ref().map_or(0, |h| h.authorized_sat);
         for (id, c) in &self.channels {
             let capacity = validate_channel(&c.terms).map_err(|_| BuyerError::Format)?;
-            if id != &c.terms.id
+            if (c.terms.refund_after_unix.is_some() && self.version & REFUND_DEADLINE_VERSION == 0)
+                || id != &c.terms.id
                 || c.terms.buyer != self.local
                 || c.provider == self.local
                 || c.advance_msat > capacity
@@ -191,7 +223,7 @@ impl State {
                 || id != &q.contract.id
                 || q.contract.destination == c.provider
                 || (legacy && q.attempts.len() > self.limits.max_packets_per_contract)
-                || (self.version == 1 && !legacy)
+                || (history_version == 1 && !legacy)
                 || q.completed.submitted_units > q.completed.observed_units
                 || (legacy && q.completed.observed_units != 0)
                 || (q.active
@@ -274,9 +306,6 @@ impl BuyerAuthorizer {
         total_budget_sat: u64,
         limits: Limits,
     ) -> Result<Self, BuyerError> {
-        if total_budget_sat == 0 {
-            return Err(BuyerError::Budget);
-        }
         let owner = acquire_owner(directory)?;
         if directory
             .join("buyer.json")
@@ -298,6 +327,7 @@ impl BuyerAuthorizer {
                 quotes: BTreeMap::new(),
                 seen: HashSet::new(),
                 pending: BTreeMap::new(),
+                renewal_pauses: BTreeMap::new(),
             }),
             writer_ready: Mutex::new(true),
             _owner: owner,
@@ -307,6 +337,21 @@ impl BuyerAuthorizer {
     }
 
     pub fn load(directory: &Path) -> Result<Self, BuyerError> {
+        Self::load_checked(directory, None)
+    }
+
+    pub(crate) fn load_bound(
+        directory: &Path,
+        local: NodeAddr,
+        total_budget_sat: u64,
+    ) -> Result<Self, BuyerError> {
+        Self::load_checked(directory, Some((local, total_budget_sat)))
+    }
+
+    fn load_checked(
+        directory: &Path,
+        expected: Option<(NodeAddr, u64)>,
+    ) -> Result<Self, BuyerError> {
         let owner = acquire_owner(directory)?;
         let file = File::open(directory.join("buyer.json")).map_err(DurableError::Io)?;
         if file.metadata().map_err(DurableError::Io)?.len() > MAX_JOURNAL_BYTES {
@@ -320,6 +365,9 @@ impl BuyerAuthorizer {
             return Err(BuyerError::Format);
         }
         let mut state: State = serde_json::from_slice(&bytes).map_err(|_| BuyerError::Format)?;
+        if expected.is_some_and(|terms| terms != (state.local, state.total_budget_sat)) {
+            return Err(BuyerError::SavedTerms);
+        }
         state.validate_and_recover()?;
         let buyer = Self {
             directory: directory.into(),
@@ -419,6 +467,8 @@ impl BuyerAuthorizer {
         if !*ready {
             return Err(DurableError::Suspended.into());
         }
+        #[cfg(feature = "measurements")]
+        let mut authorization = None;
         let (balance, snapshot) = {
             let mut s = self.state.lock().map_err(|_| DurableError::Suspended)?;
             let c = s
@@ -434,6 +484,10 @@ impl BuyerAuthorizer {
                 return Err(BuyerError::UnearnedClaim);
             }
             let balance = claimed_msat.div_ceil(1_000).max(c.authorized_sat);
+            #[cfg(feature = "measurements")]
+            if balance > c.authorized_sat {
+                authorization = Some(c.authorized_sat);
+            }
             let total = s
                 .channels
                 .values()
@@ -455,7 +509,14 @@ impl BuyerAuthorizer {
                 .authorized_sat = balance;
             (balance, s.clone())
         };
+        #[cfg(feature = "measurements")]
+        let authorization =
+            authorization.map(|old| (old, crate::measurements::authorization_begin()));
         self.persist(&snapshot, &mut ready)?;
+        #[cfg(feature = "measurements")]
+        if let Some((old, trace)) = authorization {
+            trace.committed(id, old, balance);
+        }
         let payment = signer
             .sign_cashu_spilman_payment(id, balance, include_funding)
             .map_err(BuyerError::Signer)?;
@@ -471,6 +532,18 @@ impl BuyerAuthorizer {
         &self,
         change: impl FnOnce(&mut State) -> Result<(), BuyerError>,
     ) -> Result<(), BuyerError> {
+        self.change_if_needed(|state| {
+            change(state)?;
+            Ok(true)
+        })
+    }
+
+    // A false result must leave state unchanged. Check the writer first: memory
+    // may contain an identical agreement whose earlier persistence failed.
+    fn change_if_needed(
+        &self,
+        change: impl FnOnce(&mut State) -> Result<bool, BuyerError>,
+    ) -> Result<(), BuyerError> {
         let mut ready = self
             .writer_ready
             .lock()
@@ -480,7 +553,9 @@ impl BuyerAuthorizer {
         }
         let snapshot = {
             let mut state = self.state.lock().map_err(|_| DurableError::Suspended)?;
-            change(&mut state)?;
+            if !change(&mut state)? {
+                return Ok(());
+            }
             state.clone()
         };
         self.persist(&snapshot, &mut ready)

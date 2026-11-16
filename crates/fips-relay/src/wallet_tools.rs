@@ -1,20 +1,22 @@
 //! Offline administration of the existing relay wallet, never relay credit.
+mod history;
+#[cfg(test)]
+mod tests;
 
 use crate::{
-    durable::acquire_owner,
+    durable::{acquire_owner, write_private_journal},
     service::{RelayService, ServiceConfig, read_json},
 };
 use cashu::nuts::{CurrencyUnit, Token};
 use cashu_service::{
-    CashuSentPayment, load_mint_balance, normalize_mint_url, receive_payment_token,
-    send_payment_token,
+    CashuSentPayment, CashuWalletSendRequest, CashuWalletService, normalize_mint_url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -23,8 +25,19 @@ use std::{
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WalletRequest {
     Balance,
-    Import { token: String },
-    Export { id: String, amount_sat: u64 },
+    /// Resume existing wallet operations without creating new spending requests.
+    Recover,
+    Import {
+        token: String,
+    },
+    Export {
+        id: u64,
+        amount_sat: u64,
+    },
+    /// Release a prefix only after retaining its tokens elsewhere or collecting them.
+    AcknowledgeExports {
+        through: u64,
+    },
 }
 
 pub(crate) fn valid_id(id: &str) -> bool {
@@ -36,16 +49,14 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 pub(crate) fn private_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| e.to_string())?;
+    let directory = path.parent().ok_or("missing parent")?;
+    let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
     file.write_all(bytes)
-        .and_then(|_| file.sync_all())
+        .and_then(|_| file.as_file().sync_all())
         .map_err(|e| e.to_string())?;
-    File::open(path.parent().ok_or("missing parent")?)
+    // Publish only complete, durable bytes; never replace a saved account.
+    file.persist_noclobber(path).map_err(|e| e.to_string())?;
+    File::open(directory)
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())
 }
@@ -78,13 +89,53 @@ fn export_summary(path: &Path, payment: &CashuSentPayment) -> Value {
     json!({"path": path, "amount_sat": payment.amount_sat, "operation_id": payment.operation_id})
 }
 
+fn send_request(mint: String, request_id: String, amount_sat: u64) -> CashuWalletSendRequest {
+    CashuWalletSendRequest {
+        request_id,
+        mint_url: mint,
+        amount_sat,
+        required_keyset_id: None,
+        max_total_amount_sat: None,
+        metadata: Default::default(),
+    }
+}
+
+async fn check_cached(
+    wallet: &CashuWalletService,
+    request: CashuWalletSendRequest,
+    cached: &CashuSentPayment,
+) -> Result<(), String> {
+    // Validation cannot start or recover an unfinished wallet send.
+    let original = wallet
+        .wallet_send_result(request)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("export is missing its original wallet result; reconcile before retrying")?;
+    if *cached != original.payment {
+        return Err(
+            "export conflicts with its original wallet result; reconcile before retrying".into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "testbench")]
+pub(crate) async fn open_wallet(directory: &Path) -> Result<CashuWalletService, String> {
+    CashuWalletService::open_file_backed(directory)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) async fn export_payment(
     root: &Path,
     mint: &str,
     id: &str,
     amount: u64,
+    request_id: String,
+    wallet: &CashuWalletService,
 ) -> Result<Value, String> {
     let path = export_path(root, id)?;
+    let mint = normalize_mint_url(mint).map_err(|e| e.to_string())?;
     if amount == 0 {
         return Err("export amount must be positive".into());
     }
@@ -95,30 +146,40 @@ pub(crate) async fn export_payment(
             .create(&directory)
             .map_err(|e| e.to_string())?;
     }
-    if path.try_exists().map_err(|e| e.to_string())? {
+    let cached = if path.try_exists().map_err(|e| e.to_string())? {
         let payment: CashuSentPayment = read_json(&path)?;
         if payment.amount_sat != amount || payment.mint_url != mint {
             return Err("export id already has different terms".into());
         }
-        return Ok(export_summary(&path, &payment));
+        Some(payment)
+    } else {
+        None
+    };
+    // Older reservations do not identify an SDK request. Their absence of a
+    // token cannot authorize a new send under the current request namespace.
+    match std::fs::symlink_metadata(directory.join(format!("{id}.intent"))) {
+        Ok(_) => return Err("export is pending; reconcile its original wallet operation".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
     }
-    // Reserve the id before the wallet operation. If interrupted before its
-    // token is saved, fail closed; the Cashu activity/saga journal remains the
-    // recovery source. Retrying must not produce another spend automatically.
-    private_new(
-        &directory.join(format!("{id}.intent")),
-        &serde_json::to_vec(&json!({"amount_sat":amount,"mint":mint})).unwrap(),
-    )
-    .map_err(|_| {
-        "export is pending or cannot be reserved; reconcile its wallet activity before retrying"
-    })?;
-    let payment = send_payment_token(&root.join("wallet"), mint, amount)
+    // The SDK retains the original terms, coins and result before publication.
+    // Keep this identity stable: a retry must never become another wallet send.
+    let request = send_request(mint, request_id, amount);
+    if let Some(cached) = cached {
+        check_cached(wallet, request, &cached).await?;
+        return Ok(export_summary(&path, &cached));
+    }
+    let payment = wallet
+        .send_payment_token_for_request(request)
         .await
-        .map_err(|e| e.to_string())?;
-    private_new(
-        &path,
+        .map_err(|e| e.to_string())?
+        .payment;
+    write_private_journal(
+        &directory,
+        &format!("{id}.json"),
         &serde_json::to_vec(&payment).map_err(|e| e.to_string())?,
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(export_summary(&path, &payment))
 }
 
@@ -129,30 +190,102 @@ pub async fn offline_wallet(
     config: &ServiceConfig,
     command: WalletRequest,
 ) -> Result<Value, String> {
+    offline_wallet_at_mint(config, command, &config.terms.controller.mint_url).await
+}
+
+/// Wallet operations stay inside the chosen issuer's balance and custody history.
+pub async fn offline_wallet_at_mint(config: &ServiceConfig, command: WalletRequest, mint: &str) -> Result<Value, String> {
+    let issuer = config.terms.controller.receiving_mints().position(|candidate| candidate == mint)
+        .ok_or("mint is outside the saved receiving policy")?;
     RelayService::validate_stored_state(config)?;
     let _owner = acquire_owner(&config.state_directory).map_err(|e| e.to_string())?;
     RelayService::validate_stored_state(config)?;
-    RelayService::check_wallet_capacity(config).await?;
-    let mint = &config.terms.controller.mint_url;
-    let wallet = config.state_directory.join("wallet");
-    match command {
-        WalletRequest::Balance => serde_json::to_value(
-            load_mint_balance(&wallet, mint)
-                .await
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string()),
-        WalletRequest::Import { token } => {
-            checked_token(&token, mint)?;
-            serde_json::to_value(
-                receive_payment_token(&wallet, &token)
+    let wallet = RelayService::open_checked_wallet(config).await?;
+    // Index zero retains the original export paths and SDK sequence.
+    // The saved account manifest binds the order of every additional issuer.
+    let (export_root, scope) = if issuer == 0 {
+        (config.state_directory.clone(), "fips-exports".to_owned())
+    } else {
+        (config.state_directory.join(format!("issuer-{issuer}")), format!("fips-exports-{issuer}"))
+    };
+    if issuer != 0 && matches!(&command, WalletRequest::Export { .. } | WalletRequest::AcknowledgeExports { .. }) {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&export_root).map_err(|e| e.to_string())?;
+    }
+    let uses_mint = matches!(
+        &command,
+        WalletRequest::Import { .. } | WalletRequest::Export { .. } | WalletRequest::Recover
+    );
+    let network = if uses_mint {
+        crate::service::OfflineMint::start(config)
+            .await
+            .map_err(|e| format!("start wallet mint network: {e}"))?
+    } else {
+        None
+    };
+    let result = async {
+        if uses_mint && let Some(budget) = config.funding_request_budget {
+            budget.apply(&wallet)?;
+        }
+        match command {
+            WalletRequest::Balance => serde_json::to_value(
+                wallet
+                    .load_mint_balance(mint)
                     .await
                     .map_err(|e| e.to_string())?,
             )
-            .map_err(|e| e.to_string())
-        }
-        WalletRequest::Export { id, amount_sat } => {
-            export_payment(&config.state_directory, mint, &id, amount_sat).await
+            .map_err(|e| e.to_string()),
+            WalletRequest::Recover => {
+                let report = wallet.recover_startup_state().await;
+                Ok(json!({
+                    "wallets": report.wallets,
+                    "finalized_melts": report.finalized_melts,
+                    "recovered_sagas": report.recovered_sagas,
+                    "compensated_sagas": report.compensated_sagas,
+                    "pending_sagas": report.pending_sagas,
+                    "failed_sagas": report.failed_sagas,
+                    "minted_amount": report.minted_amount,
+                    "warning_count": report.warnings.len(),
+                    "recovery_pass_complete": report.pending_sagas == 0 && report.failed_sagas == 0
+                        && report.warnings.is_empty(),
+                }))
+            }
+            WalletRequest::Import { token } => {
+                checked_token(&token, mint)?;
+                serde_json::to_value(
+                    wallet
+                        .receive_payment_token(&token)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())
+            }
+            WalletRequest::Export { id, amount_sat } => {
+                let request_id =
+                    history::prepare_export(&export_root, mint, &scope, id, &wallet)
+                        .await
+                        .map_err(|e| format!("prepare wallet export: {e}"))?;
+                export_payment(
+                    &export_root,
+                    mint,
+                    &id.to_string(),
+                    amount_sat,
+                    request_id,
+                    &wallet,
+                )
+                .await
+                .map_err(|e| format!("send wallet export: {e}"))
+            }
+            WalletRequest::AcknowledgeExports { through } => {
+                history::acknowledge(&export_root, mint, &scope, through, &wallet).await
+            }
         }
     }
+    .await;
+    if let Some(network) = network {
+        network
+            .shutdown()
+            .await
+            .map_err(|e| format!("stop wallet mint network: {e}"))?;
+    }
+    result
 }

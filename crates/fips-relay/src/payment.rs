@@ -56,7 +56,11 @@ pub fn process_payment<R: CashuSpilmanPaymentReceiver<String>>(
             .get("expiry_timestamp")
             .and_then(|v| v.as_u64())
             .ok_or("missing channel expiry")?;
-        if expiry < channel.expires_unix {
+        if expiry < channel.expires_unix
+            || channel
+                .refund_after_unix
+                .is_some_and(|agreed| expiry != agreed)
+        {
             return Err("channel expires before the forwarding agreement".into());
         }
         if params.get("mint").and_then(|v| v.as_str()) != Some(channel.mint_url.as_str()) {

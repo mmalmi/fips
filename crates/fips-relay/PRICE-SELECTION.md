@@ -3,7 +3,8 @@
 This opt-in policy compares real adjacent providers' downstream quotes and binds
 the accepted source route to the selected provider. Transit still uses the native
 FIPS planner. It is a bounded local search, not a globally cheapest-path algorithm
-or a delivery guarantee. The broader [readiness work](READINESS.md) remains active.
+or a delivery guarantee. The [readiness assessment](READINESS.md) records the
+qualified targets, workload and known limits.
 
 ## Decision rule
 
@@ -80,6 +81,14 @@ allows for native session-report intervals up to 10 seconds. The older impairmen
 fixture uses a 2-second feedback window. The continuously watched recovery fixture
 uses 10-second feedback and retry windows across the 5-second automatic scans.
 These are test settings, not deployment defaults.
+
+The feedback window also limits the age of usable loss samples. Shortening it
+can detect a failed path earlier while making sparse quality evidence expire
+between observations. It is not a recovery deadline: automatic checks run every
+five seconds, and quote negotiation, paid acceptance and trial qualification
+take additional time. [The router comparison](READINESS.md#scope-and-outstanding-acceptance)
+records a five-second window with less packet loss but similar full-confirmation
+time; it does not change the default or establish a general latency guarantee.
 
 Wire peers on the quote path must support `requested_max_units` and the `trial`
 offer marker. A capped request propagates downstream; oversized caps or an
@@ -160,6 +169,33 @@ branch on which an unfunded receiver has earned bounded return allowance.
 Completion still follows local transport submission; canceled work retains its
 conservative quota reservation. The legacy unique-envelope tariff keeps its
 post-seal ciphertext/deduplication observer and is not changed into a source gate.
+
+An active automatic renewal may hold new source records before that reservation.
+The controller pauses only its exact retained agreements while settling and
+replacing their channel. FIPS retains the original unsealed packet for at most
+two seconds from its first enqueue, checking admission every 50 ms. Holds share
+the ordinary outbound queue capacity. Each priority lane permits waits in at most
+half its packet slots, with half that allowance per next hop (at least one when
+the lane has two or more slots). Lanes with zero or one slot cannot retain waits.
+The normal total/per-next-hop limits are 512/256 priority packets, 2,048/1,024
+bulk packets and 32/16 background packets. All lanes share the unchanged 1 MiB
+payload limit and 512 KiB per-next-hop limit. Woken packets remain charged to
+these bounds until admission or drop. Other owners and direct
+neighbor control traffic continue; owner or policy replacement cancels holds.
+The pause is volatile. It ends once every replacement is accepted by its provider,
+saved locally and activated, before the final renewal-completion write. Errors
+or cancellation also release it; a closed agreement then rejects unless replacement
+authority exists. No sequence, sent metric or financial token is reserved while waiting.
+Already submitted packets are never replayed or charged to the successor by this
+mechanism. Slow renewals, full queues and packets already in flight can still
+lose traffic; this is bounded source continuity, not a delivery guarantee.
+For a diagnostic run, `RUST_LOG=warn,fips_core::dataplane::source_wait=debug`
+reports hold drops caused by capacity, expiry or invalidation, without payloads.
+Adding `fips_relay::controller::renewal=debug` reports monotonic elapsed time at
+pause, settlement, replacement preparation and resume. Identical already-durable
+buyer channels and quotes skip duplicate journal writes. The persistence health
+check still runs first, so an earlier failed write suspends these calls too;
+explicit accounting checkpoints continue to persist normally.
 
 Unknown/unpurchased routes and direct endpoints retain their original admission
 paths, so bounded bootstrap and earned return traffic can still reach the relay's

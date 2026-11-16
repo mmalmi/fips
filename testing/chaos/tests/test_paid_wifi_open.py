@@ -29,7 +29,8 @@ class OpenNode(FakeNode):
     def baseline(self):
         if self.radio_open:
             raise ValueError("original radio restoration remains uncertain")
-        return {"original": self.name, "original_accounts_unchanged": True}
+        return {"identity": self.name, "original_accounts_unchanged": True,
+                "connected_peers": [], "mesh_runtime": {"mac": self.mac}}
 
     def prepare(self, _binary, config):
         self.config = config

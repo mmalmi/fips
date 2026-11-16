@@ -25,6 +25,9 @@ from .paid_payment_faults import diagnostics, exercise_payment_faults
 from .topology import SimNode, SimTopology
 from .veth import VethManager
 
+# Match ServiceTerms::DEFAULT_WALLET_CAPACITY_BYTES for fresh mixed-role accounts.
+WALLET_CAPACITY_BYTES = 20 * 1024 * 1024
+
 
 def write_json(path: Path, value):
     with path.open("x") as stream:
@@ -58,6 +61,7 @@ def relay_config(interfaces, mint):
         "neighbor_admission": "authenticated_adjacent",
         "neighbors": [], "terms": {
             "billing": "forwarding_data",
+            "wallet_capacity_bytes": WALLET_CAPACITY_BYTES,
             "controller": {"mint_url": mint, "channel_capacity_sat": 32,
                            "max_locked_sat": 64, "max_funding_overhead_sat": 0,
                            "max_wallet_spend_sat": 128, "channel_lifetime_secs": 1800,

@@ -68,10 +68,13 @@ Admission permits a request to reach its existing handler. It does not bypass
 offer validation, authenticated payer binding, mint/funding verification, local
 buyer evidence, account capacity or lifetime budgets. Incoming service payments
 do not grant permission to initiate purchases from an unconfigured provider.
-Return traffic requires its own sender authorization; reception creates none.
-This includes FIPS session replies: the destination must explicitly fund its
-return route even when application data primarily travels toward it. A forward
-purchase cannot authorize spending by the destination.
+Return application traffic requires its own sender authorization or an explicit
+free policy; reception creates no spending authority. The `forwarding_data`
+tariff permits [bounded unpaid session establishment](BOOTSTRAP.md), and an
+optional [earned return allowance](RETURN-ALLOWANCE.md) permits small replies.
+Neither grants general reverse forwarding. Under `forwarding_attempt`, session
+replies also need an authorized return route. A forward purchase cannot authorize
+spending by the destination.
 
 The [Android bench customer](../fips-relay-app/README.md) embeds this same service
 and provides profile preview, funding, purchase, traffic and settlement controls.

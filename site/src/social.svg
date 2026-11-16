@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+<rect width="1200" height="630" fill="#f7f7ef"/>
+<g fill="#282439" font-family="Arial, Helvetica, sans-serif">
+<text x="80" y="110" font-size="36" font-weight="700">freedom</text>
+<text x="80" y="250" font-size="62" font-weight="700">Free or paid mesh routing</text>
+<text x="80" y="330" font-size="27">Router software that forwards encrypted data</text>
+<text x="80" y="370" font-size="27">between devices running FIPS.</text>
+<text x="80" y="460" font-size="23" fill="#65646c">What it does · Requirements · OpenWrt setup</text>
+<text x="80" y="550" font-size="21">freedom.iris.to</text>
+</g>
+</svg>

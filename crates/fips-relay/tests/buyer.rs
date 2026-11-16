@@ -26,6 +26,7 @@ fn now() -> u64 {
 
 fn channel(id: &str) -> ChannelTerms {
     ChannelTerms {
+        refund_after_unix: Some(now() + 1200),
         id: id.into(),
         buyer: address(1),
         mint_url: "http://test.invalid".into(),
@@ -37,6 +38,7 @@ fn channel(id: &str) -> ChannelTerms {
 
 fn quote(id: &str, channel: &ChannelTerms) -> Contract {
     Contract {
+        bid_msat_per_kib: 0,
         billing: Default::default(),
         id: id.into(),
         channel_id: channel.id.clone(),
@@ -221,7 +223,9 @@ fn compact_evidence_is_bounded(billing: fips_relay::ledger::BillingBasis) {
         },
     )
     .unwrap();
-    let terms = channel("bounded");
+    let mut terms = channel("bounded");
+    // Exercise history and pending limits independently of channel capacity.
+    terms.capacity_sat = 20;
     buyer.accept_channel(address(2), terms.clone(), 0).unwrap();
     let mut route = quote("stream", &terms);
     route.billing = billing;
@@ -290,6 +294,15 @@ fn loading_a_legacy_buyer_does_not_change_its_duplicate_tariff() {
         .as_object_mut()
         .unwrap()
         .remove("token");
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    assert!(matches!(
+        BuyerAuthorizer::load(&directory),
+        Err(BuyerError::Format)
+    ));
+    journal["channels"]["legacy"]["terms"]
+        .as_object_mut()
+        .unwrap()
+        .remove("refund_after_unix");
     std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
     let buyer = BuyerAuthorizer::load(&directory).unwrap();
     assert!(observe(&buyer, b"same").is_none());
@@ -588,7 +601,9 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("buyer");
     let buyer = BuyerAuthorizer::create(&directory, address(1), 10, Limits::default()).unwrap();
-    approve(&buyer, &channel("one"), "quote");
+    let terms = channel("one");
+    let contract = quote("quote", &terms);
+    approve(&buyer, &terms, "quote");
     let token = observe(&buyer, b"bytes").unwrap();
     buyer.complete(token, ForwardingOutcome::Submitted);
     // Keep the last usable journal while making its target unwritable.
@@ -598,6 +613,12 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
     )
     .unwrap();
     std::fs::create_dir(directory.join("buyer.json")).unwrap();
+    buyer
+        .accept_channel(address(2), terms.clone(), 0)
+        .expect("identical durable channel does not rewrite its journal");
+    buyer
+        .accept_quote(contract.clone())
+        .expect("identical durable quote does not rewrite its journal");
     let signer = FailingSigner::default();
     assert!(matches!(
         buyer.sign_claim(&signer, address(2), "one", 500, now()),
@@ -610,6 +631,14 @@ fn failed_persistence_prevents_signing_and_suspends_further_authorization() {
         directory.join("buyer.json"),
     )
     .unwrap();
+    assert!(matches!(
+        buyer.accept_channel(address(2), terms, 0),
+        Err(BuyerError::Journal(_))
+    ));
+    assert!(matches!(
+        buyer.accept_quote(contract),
+        Err(BuyerError::Journal(_))
+    ));
     assert!(matches!(
         buyer.sign_claim(&signer, address(2), "one", 500, now()),
         Err(BuyerError::Journal(_))

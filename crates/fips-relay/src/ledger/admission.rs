@@ -1,17 +1,26 @@
 //! Bound paid admission and complete local forwarding attempts.
 use super::*;
 
+pub(crate) enum Admission {
+    Granted { token: u64, bid_msat_per_kib: u64 },
+    CreditExhausted,
+    WindowExhausted { channel_id: String, cost_msat: u64 },
+}
+
 impl RelayLedger {
     pub fn admit_at(&self, request: &ForwardingRequest<'_>, now_unix: u64) -> Option<u64> {
-        self.admit_with_windows(request, now_unix, None)
+        match self.admit_with_windows(request, now_unix, None)? {
+            Admission::Granted {token, ..} => Some(token),
+            Admission::CreditExhausted | Admission::WindowExhausted { .. } => None,
+        }
     }
 
     pub(crate) fn admit_with_windows(
         &self,
         request: &ForwardingRequest<'_>,
         now_unix: u64,
-        windows: Option<&BTreeMap<String, u64>>,
-    ) -> Option<u64> {
+        windows: Option<(&BTreeMap<String, u64>, u64)>,
+    ) -> Option<Admission> {
         let units = u64::try_from(request.session_payload.len()).ok()?;
         if units == 0 {
             return None;
@@ -51,6 +60,7 @@ impl RelayLedger {
         {
             return None;
         }
+        let bid_msat_per_kib = a.contract.bid_msat_per_kib;
         let legacy = a.contract.billing.is_legacy();
         let digest = if legacy {
             fingerprint(request)
@@ -69,6 +79,9 @@ impl RelayLedger {
             .price
             .amount_due_msat(prospective)?
             .checked_sub(a.contract.price.amount_due_msat(a.usage.reserved_units)?)?;
+        if windows.is_some_and(|(_, max)| incremental_cost > max) {
+            return None;
+        }
         let channel_id = a.contract.channel_id.clone();
         let channel = &state.channels[&channel_id];
         if !channel.active || now_unix >= channel.terms.expires_unix {
@@ -80,10 +93,28 @@ impl RelayLedger {
             channel.usage.paid_msat,
             state.channels.values().map(|c| (&c.terms, c.usage)),
             state.history.as_ref(),
-        )?
-        .min(windows.map_or(u64::MAX, |w| w.get(&channel_id).copied().unwrap_or(0)));
+        )?;
         if channel_reserved > limit {
-            return None;
+            crate::measurements::admission_denied(
+                crate::measurements::AdmissionDenial::CreditLimit,
+            );
+            // Other retained channels can still be paid. Retired debt cannot;
+            // it reduces the ceiling even after this channel is fully funded.
+            let replenished = relationship_reservation_limit(
+                &channel.terms,
+                channel.terms.capacity_sat.checked_mul(1_000)?,
+                std::iter::empty(),
+                state.history.as_ref(),
+            )?;
+            return (channel_reserved <= replenished).then_some(Admission::CreditExhausted);
+        }
+        if channel_reserved
+            > windows.map_or(u64::MAX, |(w, _)| w.get(&channel_id).copied().unwrap_or(0))
+        {
+            return Some(Admission::WindowExhausted {
+                channel_id,
+                cost_msat: incremental_cost,
+            });
         }
         let a = state.accounts.get_mut(&id)?;
         a.usage.reserved_units = prospective;
@@ -101,7 +132,7 @@ impl RelayLedger {
             state.seen.insert((*request.ingress.node_addr(), digest));
         }
         state.pending.insert(token, (id, digest));
-        Some(token)
+        Some(Admission::Granted {token, bid_msat_per_kib})
     }
 
     /// Used only by the durable wrapper, which must commit the recovered

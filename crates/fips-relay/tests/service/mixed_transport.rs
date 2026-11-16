@@ -17,22 +17,49 @@ use std::{
 
 #[path = "mixed_transport/bench.rs"]
 mod bench;
-use crate::process_support;
+#[path = "mixed_transport/ethernet.rs"]
+mod ethernet;
+use crate::process_support::{self, retained_tempdir};
 use bench::{MixedBench, SecondHop};
 #[cfg(feature = "testbench")]
 #[path = "mixed_transport/accept_barrier.rs"]
 mod accept_barrier;
+#[path = "mixed_transport/admission_wait.rs"]
+mod admission_wait;
+#[path = "mixed_transport/lifecycle.rs"]
+mod lifecycle;
+#[path = "mixed_transport/newcomer.rs"]
+mod newcomer;
 #[cfg(feature = "measurements")]
 #[path = "mixed_transport/payment_progress.rs"]
 mod payment_progress;
-#[path = "mixed_transport/proxy.rs"]
+#[path = "../process_support/stream_proxy.rs"]
 mod proxy;
+#[path = "mixed_transport/renewal_load.rs"]
+mod renewal_load;
+#[path = "mixed_transport/restart.rs"]
+mod restart;
 #[path = "mixed_transport/round_trip.rs"]
 mod round_trip;
+#[cfg(feature = "measurements")]
+#[path = "mixed_transport/seller_storage.rs"]
+mod seller_storage;
 #[path = "mixed_transport/service_carrier.rs"]
 mod service_carrier;
+#[path = "mixed_transport/signer_storage.rs"]
+mod signer_storage;
+#[cfg(feature = "measurements")]
+#[path = "mixed_transport/stream_probe.rs"]
+mod stream_probe;
+#[cfg(target_os = "linux")]
+#[path = "mixed_transport/suspension.rs"]
+mod suspension;
+#[path = "mixed_transport/sustained_loss.rs"]
+mod sustained_loss;
 #[path = "mixed_transport/tls.rs"]
 mod tls;
+#[path = "mixed_transport/udp_loss.rs"]
+mod udp_loss;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_udp_tcp_daemons_preserve_paid_limits_through_exhaustion_and_restart() {
@@ -50,6 +77,10 @@ async fn mixed_udp_websocket_seed_daemons_preserve_paid_limits_without_a_websock
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(feature = "test-native-roots"),
+    ignore = "requires test-native-roots on both the test harness and relay executable"
+)]
 async fn mixed_udp_websocket_tls_daemons_validate_certificates_and_preserve_paid_limits() {
     mixed_daemons_preserve_paid_limits(SecondHop::WebSocketTls).await;
 }
@@ -60,8 +91,9 @@ async fn mixed_udp_websocket_self_signed_daemons_authenticate_fips_and_preserve_
 }
 
 async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
+    // Keep both mint and daemon originals if setup, traffic or settlement fails.
+    let mut root = retained_tempdir();
     tokio::time::timeout(Duration::from_secs(240), async {
-        let root = tempfile::tempdir().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -75,7 +107,23 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         )
         .await
         .unwrap();
-        let mut bench = MixedBench::start_with_second_hop(mint.url(), &network, second_hop).await;
+        let mint_gate = if second_hop == SecondHop::Tcp {
+            Some(
+                proxy::StreamProxy::start(
+                    mint.url().strip_prefix("http://").unwrap().parse().unwrap(),
+                    None,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let mint_url = mint_gate
+            .as_ref()
+            .map(|gate| format!("http://{}", gate.address))
+            .unwrap_or_else(|| mint.url().to_owned());
+        let mut bench = MixedBench::start_with_second_hop(&mint_url, &network, second_hop).await;
+        bench.retain_on_drop(true);
         bench.set_stage("unfunded-admission");
         bench.assert_carriers().await;
         service_carrier::assert_status(&bench, false).await;
@@ -92,7 +140,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             assert_eq!(state["funding_budget"]["wallet_debited_sat"], 0);
             assert!(state["history"].as_array().unwrap().is_empty());
             assert_eq!(
-                load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+                load_mint_balance(&config.state_directory.join("wallet"), &mint_url)
                     .await
                     .unwrap()
                     .balance_sat,
@@ -123,6 +171,11 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"64".repeat(16)).await;
         }
+        if second_hop == SecondHop::Tcp
+            && std::env::var("FIPS_TEST_SIGNER_WRITE_FAILURE").as_deref() == Ok("1")
+        {
+            signer_storage::assert_automatic_recovery(&mut bench, &original_channels).await;
+        }
         #[cfg(feature = "measurements")]
         payment_progress::assert_reconciled(&bench, &original_channels).await;
         service_carrier::assert_status(&bench, true).await;
@@ -132,7 +185,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         bench.set_stage("exhaustion");
         for (index, (source, destination)) in [(0, 2), (2, 0)].into_iter().enumerate() {
             bench.send_probe(source, destination, 40, 256, 8).await;
-            bench.wait_exhausted(source).await;
+            bench.wait_exhausted(source, 56).await;
             bench.wait_paid(&original_channels[index]).await;
             bench.expect_denied(source, destination).await;
             let state = request(&bench.configs[source], &AdminRequest::Status)
@@ -147,7 +200,13 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         bench.set_renewals_paused(false).await;
         bench.wait_replacements(&original_channels).await;
         for (source, destination) in [(0, 2), (2, 0)] {
-            bench.deliver(source, destination).await;
+            if second_hop == SecondHop::WebSocketSeed {
+                // Minimum payload across preload and both recovery phases is
+                // 6,656 bytes, above the unchanged 6,000-msat renewal threshold.
+                bench.deliver_cohorts(source, destination, 256, 3).await;
+            } else {
+                bench.deliver(source, destination).await;
+            }
             let state = request(&bench.configs[source], &AdminRequest::Status)
                 .await
                 .unwrap();
@@ -169,33 +228,56 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
             if second_hop == SecondHop::WebSocketSeed {
                 bench.set_stage("carrier-silent-loss");
                 bench.recover_seed_carrier(true).await;
+                // The repeated cohorts must exercise replacement, not merely
+                // permit it. The recovery helper verifies its accounting.
+                for source in [0, 2] {
+                    let status = request(&bench.configs[source], &AdminRequest::Status)
+                        .await
+                        .unwrap();
+                    assert_eq!(status["history"].as_array().unwrap().len(), 3);
+                    assert_eq!(status["funding_budget"]["wallet_debited_sat"], 24);
+                }
             }
         }
 
         // A process crash preserves accounts. Whether any individual stream write
         // was submitted is covered by deterministic core completion tests.
         bench.set_stage("middle-restart");
-        let original_funding = bench.funding_intents();
+        let blocked_mint_connections = if let Some(gate) = &mint_gate {
+            Some(gate.deny_connections().await)
+        } else {
+            None
+        };
+        let original_funding = bench.funding_intents(false);
         let before = bench.states().await;
-        let tls_connections = bench.tls.as_ref().map(tls::TlsProxy::connections);
-        bench.children[1].kill().await.unwrap();
-        bench.children[1] = process_support::start(&bench.paths[1]).await;
-        process_support::ready(
-            &bench.configs,
-            &bench.paths,
-            &bench.npubs,
-            &mut bench.children,
-        )
-        .await;
-        bench.assert_carriers().await;
-        if let Some(previous) = tls_connections {
-            assert!(bench.tls.as_ref().unwrap().connections() > previous);
+        #[cfg(feature = "measurements")]
+        let failed_credit = if second_hop == SecondHop::Tcp
+            && std::env::var("FIPS_TEST_SELLER_WRITE_FAILURE").as_deref() == Ok("1")
+        {
+            Some(seller_storage::interrupt(&mut bench, &before).await)
+        } else {
+            None
+        };
+        restart::middle(&mut bench, &before, &original_funding).await;
+        if mint_gate.is_some() {
+            restart::assert_retained_accounts(&bench, &before, &original_funding).await;
+        }
+        #[cfg(feature = "measurements")]
+        if let Some(failed_credit) = failed_credit {
+            failed_credit.assert_recovered(&bench, &before).await;
         }
         bench.set_stage("post-restart-paid");
         for (source, destination) in [(0, 2), (2, 0)] {
             // Exceed the previous whole-sat payment so both buyers request
             // fresh usage and observe the provider's retained crash exposure.
             bench.deliver_sized(source, destination, 512).await;
+        }
+        if let Some(gate) = &mint_gate {
+            assert_eq!(Some(gate.connections()), blocked_mint_connections);
+            assert_eq!(gate.set_available(true).await, 0);
+            eprintln!(
+                "funded relay restarted and delivered paid traffic while mint was unavailable"
+            );
         }
         bench.set_stage("crash-allowance-renewal");
         let channels: Vec<_> = [0, 2]
@@ -230,7 +312,14 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
                 "crash exposure stays retained and unbilled after replacement"
             );
         }
-        assert_restart_accounts(&bench, &before, &original_funding).await;
+        assert_replacement_accounts(
+            &bench,
+            &before,
+            &bench.states().await,
+            &original_funding,
+            [1, 0, 1],
+        )
+        .await;
         if second_hop != SecondHop::Tcp {
             round_trip::assert_paid_round_trip(&bench, &"65".repeat(16)).await;
         }
@@ -246,7 +335,7 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         }
         let mut total = 0;
         for (node, config) in bench.configs.iter().enumerate() {
-            let amount = load_mint_balance(&config.state_directory.join("wallet"), mint.url())
+            let amount = load_mint_balance(&config.state_directory.join("wallet"), &mint_url)
                 .await
                 .unwrap()
                 .balance_sat;
@@ -263,19 +352,23 @@ async fn mixed_daemons_preserve_paid_limits(second_hop: SecondHop) {
         }
         assert_eq!(total, 384);
         assert!(network.accounting().unwrap().is_conserved());
+        eprintln!("mixed carrier: all 384 test sats conserved");
+        bench.retain_on_drop(false);
     })
     .await
     .expect("mixed native transport acceptance deadline");
+    root.disable_cleanup(false);
 }
 
-async fn assert_restart_accounts(
+async fn assert_replacement_accounts(
     bench: &MixedBench,
     before: &[Value],
+    after: &[Value],
     original_funding: &[serde_json::Map<String, Value>],
+    replacements: [usize; 3],
 ) {
-    let after = bench.states().await;
-    let funding = bench.funding_intents();
-    for (node, (old, recovered)) in before.iter().zip(&after).enumerate() {
+    let funding = bench.funding_intents(false);
+    for (node, (old, recovered)) in before.iter().zip(after).enumerate() {
         // A completed refund or replacement may change aggregate counters.
         // Original wallet operations and purchase identities must remain exact.
         for (id, intent) in &original_funding[node] {
@@ -287,9 +380,7 @@ async fn assert_restart_accounts(
         let previous = old["history"].as_array().unwrap();
         let history = recovered["history"].as_array().unwrap();
         assert!(previous.iter().all(|purchase| history.contains(purchase)));
-        let replacements = usize::from(node != 1);
-        assert!(funding[node].len() <= original_funding[node].len() + replacements);
-        assert!(history.len() <= previous.len() + replacements);
+        let replacements = replacements[node];
 
         let old_budget: FundingBudget =
             serde_json::from_value(old["funding_budget"].clone()).unwrap();
@@ -313,13 +404,14 @@ async fn assert_restart_accounts(
             recovered["remaining_budget_sat"].as_u64().unwrap()
                 <= old["remaining_budget_sat"].as_u64().unwrap()
         );
-        if node != 1 {
-            assert_eq!(history.len(), previous.len() + 1);
-            assert_eq!(funding[node].len(), original_funding[node].len() + 1);
-            assert_eq!(
-                budget.wallet_debited_sat,
-                old_budget.wallet_debited_sat + policy.channel_capacity_sat
-            );
-        }
+        assert_eq!(history.len(), previous.len() + replacements);
+        assert_eq!(
+            funding[node].len(),
+            original_funding[node].len() + replacements
+        );
+        assert_eq!(
+            budget.wallet_debited_sat,
+            old_budget.wallet_debited_sat + replacements as u64 * policy.channel_capacity_sat
+        );
     }
 }

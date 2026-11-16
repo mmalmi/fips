@@ -9,33 +9,38 @@ from .paid_settlement import require
 from .wifi_priority_checks import received, submitted
 
 
-def arm(run, source, destination, count, size, *, round_trip=False):
+def arm(run, source, destination, count, size, *, round_trip=False, lifetime_secs=None):
     shape = {"stream_id": secrets.token_hex(16), "packet_count": count, "payload_bytes": size}
     reflection = {"reflect": True} if round_trip else {}
+    lifetime = {} if lifetime_secs is None else {"lifetime_secs": lifetime_secs}
     run.ctl(destination, "receive_probe", probe={
         **shape, "source": run.participants()[source].npub, "measure_one_way_latency": False,
-        **reflection,
+        **reflection, **lifetime,
     })
     return shape
 
 
-def send(run, source, destination, shape, rate, *, round_trip=False):
+def send(run, source, destination, shape, rate, *, round_trip=False,
+         max_duration_secs=None, operation_timeout=None):
     latency = {"measure_round_trip": True} if round_trip else {}
+    duration = {} if max_duration_secs is None else {"max_duration_secs": max_duration_secs}
+    timeout = {} if operation_timeout is None else {"operation_timeout": operation_timeout}
     return run.ctl(source, "send_probe", probe={
         **shape, "destination": run.participants()[destination].npub,
-        "packets_per_second": rate, **latency,
-    })["probe"]
+        "packets_per_second": rate, **latency, **duration,
+    }, **timeout)["probe"]
 
 
-def receive(run, source, destination, shape, *, complete=False, round_trip=False):
-    report = run.ctl(source if round_trip else destination, "status")["probe"]
+def receive(run, source, destination, shape, *, complete=False, round_trip=False, operation_timeout=None):
+    timeout = {} if operation_timeout is None else {"operation_timeout": operation_timeout}
+    report = run.ctl(source if round_trip else destination, "status", **timeout)["probe"]
     identity = run.participants()[destination if round_trip else source].npub
     received(report, shape, identity, complete=complete, round_trip=round_trip)
     return report
 
 
 def send_with_radio_cut(run, source, destination, shape, rate, radio, evidence, *,
-                        round_trip=False, verify_route=None):
+                        round_trip=False, verify_route=None, cut=None):
     """Cut during partial delivery, drain one finite send, and let the caller restore."""
     with ThreadPoolExecutor(max_workers=1) as pool:
         evidence["dispatch_started"] = time.monotonic()
@@ -63,7 +68,7 @@ def send_with_radio_cut(run, source, destination, shape, rate, radio, evidence, 
             evidence["cut_started"] = cut_started
             run.save()  # An uncertain radio command still needs the caller's restoration.
             evidence["cut_attempted"] = True
-            radio.mesh_down()
+            (radio.mesh_down if cut is None else cut)()
             evidence["cut_completed"] = time.monotonic()
             # A pending control response alone does not prove remote sending continues.
             require(evidence["cut_completed"] - evidence["dispatch_started"]

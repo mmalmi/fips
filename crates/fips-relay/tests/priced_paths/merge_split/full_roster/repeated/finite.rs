@@ -4,8 +4,21 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn crowded_finite_contacts_preserve_authority_and_recover_paid_routes() {
+    run_finite(10).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual neighbor-age comparison; repeats the full paid encounter fixture"]
+async fn compare_neighbor_age_during_crowded_paid_encounters() {
+    for idle_secs in [10, 2] {
+        run_finite(idle_secs).await;
+    }
+}
+
+async fn run_finite(idle_secs: u64) {
     run(EncounterProfile {
         seed: 139,
+        idle_secs,
         finite_contacts: true,
         ..EncounterProfile::baseline(false)
     })

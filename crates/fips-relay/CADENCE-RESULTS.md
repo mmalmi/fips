@@ -1,71 +1,2043 @@
 # Paid-relay cadence measurements
 
-## Accepted ARM64 Linux comparison — 27 September 2026
+Each dated section applies to its recorded source, dependencies, workload and
+artifact. “Current” in a historical section means current at that observation.
+The latest accepted native comparison uses the payment-cohort timer correction
+on `51ef364dd`, SDK `9d6722a` and CDK `92ab6a37`. Earlier target, storage and capture comparisons retain their recorded
+graphs. Keep CPU/storage/wire values attached to their measured builds;
+[readiness](READINESS.md#completion-sequence) describes affected-path validation
+and evidence reuse for the final candidate. The 500-ms default is unchanged.
 
-The r12 source bundle uses FIPS `9c180baeb`, Cashu SDK `9480336`, CDK
-`9a8e9792`, TCP/FIPS `491b112`, Spilman `7ceb4df` and bitreq `f22cf3e`.
-The existing five-process loopback experiment runs with the OpenWrt optimization
-profile and `measurements` enabled. This instrumented executable is separate
-from the accepted default-feature r12 package; both use the same source bundle.
+## Native payment-cohort correction — 21 October 2026
+
+A successful payment now leaves newer sends with their own first-observed age.
+It cannot make already paid traffic age those sends prematurely. Unpaid older
+usage, value triggers, rounded-credit behavior and failure retry bounds remain
+unchanged. The existing in-flight/idle worker regression reproduces the old
+behavior and passes with the correction; all 180 controller tests pass.
+
+The matched successor in `work/payment-cohort-native-cadence-matrix-1` passes all
+eight trials and 32 windows. All 285,696 packets arrive; independent original-state
+audits close 48 channels, conserve 40,960 test sats and verify 96 SQLite sets and
+872 archived members. The ordinary native/ARM qualification, source inventories,
+logs, collected originals and actual stopped owners are independently verified.
+An initial local launch refuses before staging or any remote operation; its
+missing input and failure remain preserved separately from the funded run.
+
+The workload, prices, allowances, two-core quota and attribution match the rate-wait
+baseline below. Each high-rate repeat delivers 32,000,000 application bytes.
+
+| Maximum age | Updates, mean (range) | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Submitted service UDP payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 77.5 (77–78) | 14.38 | 0.018019 | 465 | 126,848 |
+| 500 ms | 51 (51–51) | 9.66 | 0.011690 | 306 | 83,660 |
+| 1000 ms | 44 (44–44) | 8.25 | 0.009995 | 264 | 72,025 |
+| 2000 ms | 42 (41–43) | 7.71 | 0.009385 | 252 | 68,758 |
+
+At the unchanged 500-ms default, high-rate scoped payment CPU falls from 17.06 to
+9.66 seconds per delivered GiB (43%); updates fall from a mean of 92 to 51 (45%).
+Logical payment journal bytes fall from 0.021357 to 0.011690 per delivered byte.
+Steady windows average 19/19/17/12 updates and 34.43/36.23/30.90/22.19 scoped CPU
+seconds per GiB. Every idle payment counter remains zero. All steady/high-rate
+latency histogram upper bounds remain 0.5/1 ms, with high-rate goodput about
+31.91 Mb/s. Two repeats support retaining this correction for the measured
+workload; they establish no general optimum or hard performance bound.
+
+At 500 ms, the two high-rate repeats average 717 service UDP datagrams and
+83,660.5 submitted payload bytes per 32,000,000 delivered application bytes:
+0.2614%. These counters include TCP/FIPS segments and FIPS encryption/fragment
+headers at the local transport boundary. Each idle window still records 1,392
+service-carrier bytes while payment-activity counters remain zero. The saved-data
+derivation in `work/payment-cohort-carrier-cost-derivation-1` verifies all 32 windows
+against the accepted summary; it runs no new workload or financial operations.
+
+CPU covers exclusive payment spans, future polls and inherited blocking work.
+Service submissions can include quotes and carrier traffic; they are not a
+payment-only class or proof of physical transmission. Shared core/TCP CPU,
+opaque transit and shared handshake/MMP/rekey traffic, wallet SQLite and physical
+writes, outer network/link headers, radio airtime, battery and impaired links
+remain excluded. See the [measurement boundaries](MEASUREMENTS.md). The later
+FULL11 router timing acceptance is recorded in [readiness](READINESS.md).
+
+## Native rate-wait candidate — 21 October 2026
+
+The optimized ordinary daemon passes all eight forward/reverse trials at
+250/500/1000/2000 ms. Strict analysis accepts all 32 idle, bursty, steady and
+high-rate windows; all 285,696 original packets arrive. Five Linux processes,
+three paid relays and two funded directions share the unchanged prices, credit
+allowances and workload, with a two-core quota and the real cache lock.
+
+Independent audits close all 48 channels and conserve all 40,960 original test
+sats across 96 complete SQLite sets. Eight original archives and all 872 members
+are retained. Actual producer/closer/root exits, source identity and complete
+collected evidence pass independent parent review in
+`work/control-rate-native-cadence-matrix-1`. The preceding failed rate-limit run
+remains preserved with its own complete original-fund closure.
+
+Each high-rate observation delivers 32,000,000 application bytes. Values below
+average its two repeats and sum the five processes. Service bytes are local
+payment-service FIPS payload submissions, including carrier traffic, rather than
+physical wire bytes.
+
+| Maximum age | Updates, mean (range) | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Service payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 103.5 (89–118) | 18.98 | 0.023630 | 621 | 169,405 |
+| 500 ms | 92 (79–105) | 17.06 | 0.021357 | 552 | 150,584 |
+| 1 s | 77.5 (60–95) | 14.52 | 0.017752 | 465 | 126,857 |
+| 2 s | 71 (52–90) | 13.46 | 0.016354 | 426 | 116,217 |
+
+Steady windows deliver 3,200,000 bytes. The four policies average 19/19/18/15.5
+updates and 35.69/35.79/32.50/28.74 scoped CPU seconds per GiB. Every idle window
+has zero payment updates, polls, signatures, CPU, records and journal writes/syncs.
+Latency histogram upper bounds are 0.5 ms at steady load and 1 ms at high rate;
+high-rate goodput is about 31.91 Mb/s in this loopback workload. Repeat ranges
+overlap substantially, so these observations establish no general optimum.
+
+Scoped CPU includes exclusive controller spans, future polls and inherited
+blocking work. Shared core/TCP work, wallet SQLite and physical-media writes,
+physical wire framing, radio airtime, battery costs and impaired links remain
+excluded. Earlier storage traces and packet captures retain their own graphs.
+
+## Native session-recovery candidate — 19 October 2026
+
+The current optimized ordinary daemon passes all eight trials in
+250/500/1000/2000/2000/1000/500/250-ms order. Five Linux processes include three
+paid relays and two funded directions over UDP loopback, with identical prices,
+credit allowances and workloads. The measurement owns the cache lock and a
+two-core quota; no quota throttling is observed. All 285,696 payloads arrive,
+and the strict analyzer accepts all 32 idle, bursty, steady and high-rate windows.
+
+Independent original-state audits close all 48 channels and account for all
+40,960 test sats across 96 complete SQLite sets. All eight original archives and
+872 member files are verified and retained. Measurement, audit and sequence
+owners exit; no workload or financial operation is repeated. Parent review and
+verified final mirrors remain in `work/native-cadence-final`, with original
+reports and audits in `work/restart-recovery-native-cadence/matrix`.
+
+Values below average the two high-rate observations for each maximum age and
+sum the five processes. Each observation delivers 32,000,000 application bytes.
+Service bytes count local payment-service FIPS payload submissions, including
+their carrier traffic; they are distinct from the smaller payment records.
+
+| Maximum age | Updates | Scoped payment CPU, s / delivered GiB | Logical payment journal bytes / delivered byte | Journal syncs | Payment-service payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 61.5 | 11.07 | 0.014112 | 369 | 100,675 |
+| 500 ms | 44 | 8.19 | 0.010049 | 264 | 72,035 |
+| 1 s | 40 | 7.45 | 0.008970 | 240 | 65,491 |
+| 2 s | 40 | 7.45 | 0.008942 | 240 | 65,491 |
+
+Steady windows deliver 3,200,000 bytes: the four policies average 19/19/14/10
+updates, 34.91/35.17/25.48/18.26 scoped CPU seconds per GiB and 114/114/84/60
+journal syncs. Each bursty window delivers 512,000 bytes with two updates and
+12 syncs. Every idle window has zero payment updates, polls, signatures,
+payment CPU, payment-record bytes and payment-journal writes/syncs. Other
+transport traffic continues during idle. Reported latency histogram upper
+bounds are 0.5 ms at steady load and 1 ms at high rate; these are local loopback
+observations, not radio latency.
+
+At high rate, one second uses about 9% less scoped CPU, 11% fewer logical payment
+journal bytes and 9% fewer service payload bytes than 500 ms. Two seconds offers
+no observed update-count reduction over one second at that load. Two repeats
+describe this workload and do not establish an optimum or a throughput ceiling.
+The 500-ms default is unchanged.
+
+Scoped CPU covers exclusive controller spans, future polls and inherited
+blocking work. Shared core/TCP and transport CPU outside those spans, wallet
+SQLite and physical media writes, physical wire framing, radio airtime and
+battery costs are excluded. These logical counters do not replace the separately
+recorded storage traces or packet captures below, and are not total payment
+overhead.
+
+## Storage syscalls on the current graph — 16 October 2026
+
+r622's four accepted forward observations and r623's four reverse observations
+complete the 250/500/1000/2000-ms comparison on the current ordinary ARM64 build.
+Three Linux containers run the same binaries, workload, financial terms and
+three-second tail in both passes. The only intervening harness change verifies
+process-log aliases before classifying their writes; each capture retains its
+original path map and source bindings. The rejected fifth r622 trial remains
+excluded and rejected, with its 384 test sats separately accounted for.
+
+All 93,696 payloads arrive. Saved-data analysis reproduces all 96 traces and
+32 workload windows, including tracer lifecycle, strict timing-boundary,
+accounting and idle checks. Eight independent original-state audits close all
+16 channels and account for all 3,072 test sats across 72 complete SQLite sets
+and 40 wallets. All 32 original archives remain verified; a fresh inspection
+finds all 32 retained containers stopped. No workload or financial operation is
+retried. A failed saved-data analysis used the wrong schema for the previously
+rejected trial; its corrected copy changes only that assertion and output names,
+preserving the original analysis, execution bindings and rejected verdict.
+
+Values average the forward and reverse observation for each policy, summing
+three processes. Steady and high-rate observations deliver 3,200,000 and
+8,000,000 application bytes respectively. File bytes include relay journals,
+SDK snapshots, wallet/receiver SQLite and SQLite shared-memory writes. Syncs
+include those files and their directories; process logs are excluded.
+
+| Workload | Maximum age | Updates | Written KiB | File/directory syncs | Written bytes / delivered byte |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | 250 ms | 3 | 128.40 | 36 | 0.041087 |
+| Steady | 500 ms | 3 | 128.31 | 36 | 0.041058 |
+| Steady | 1 s | 3 | 128.64 | 36 | 0.041165 |
+| Steady | 2 s | 3 | 128.29 | 36 | 0.041053 |
+| High rate | 250 ms | 4 | 160.38 | 49 | 0.020528 |
+| High rate | 500 ms | 3 | 126.23 | 40 | 0.016158 |
+| High rate | 1 s | 2 | 87.43 | 30 | 0.011191 |
+| High rate | 2 s | 2 | 87.61 | 30 | 0.011213 |
+
+Idle and bursty windows have no payment updates or syncs. Their 112–128 and
+264–272 written bytes respectively are exclusively SQLite's transient shared
+memory; financial file writes and payment counters remain unchanged. At high
+rate, one second uses about 31% fewer observed file bytes and 25% fewer syncs
+than 500 ms. Steady traffic uses three updates and 36 syncs under every policy.
+
+These are observed write-like syscalls and sync calls, not physical media bytes,
+flash endurance or committed SQLite changes. Tracing changes scheduling, so no
+CPU/timing comparison is made and these observations are not combined with the
+untraced CPU or separate packet captures. Two observations per policy are
+descriptive; they do not establish an optimum. The 500-ms default is unchanged.
+Original traces, two separately bound passes, audits and root acceptance remain
+in `work/measurement-reconciliation-r622/storage` and
+`work/measurement-reconciliation-r623/storage`.
+
+## Phone transit costs on the current graph — 16 October 2026
+
+r621 uses the qualified r615 Android build and the same runtime/dependency graph
+as the current native and router comparisons. The phone forwards between two
+endpoints with its app hidden. After unpaid rejection and a 1-MiB paid warmup,
+two 300-second background windows each deliver 4 MiB per direction, first at
+32 KiB/s and then at 256 KiB/s per direction. All 17 MiB arrive, the phone records
+no local application deliveries, and all 1,248 management checks pass. Each
+background window has 53 observations; the process and four original channels
+remain continuous. This is one ordered pair of rates, not a cadence sweep.
+
+Independent audits of 11 complete SQLite sets, including four receiver stores
+and six wallets, close the four channels and account for all 512 test sats in
+the collector. There is no unaccounted value, duplicate/spent live proof or
+pending mint operation. Five retained send records contain 94 `PENDING_SPENT`
+rows, all verified spent at the original mint; they are not reported as locally
+completed. The original mint recovery identity and all financial archives are
+retained. No workload or financial operation is retried.
+
+Owned test processes have stopped; the archived temporary app and router
+profiles are removed. Independent postflight preserves the original accounts,
+normal Wi-Fi and router baselines.
+
+Each column below describes the phone over one complete 300-second window,
+including its idle tail, divided where indicated by 8 MiB delivered in total.
+
+| Observation | 32 KiB/s per direction | 256 KiB/s per direction |
+| --- | ---: | ---: |
+| Completion rate per direction, KiB/s | 31.947–31.952 | 254.563–254.827 |
+| Whole-process CPU, ms / delivered MiB | 12,788.66 | 6,048.18 |
+| Scoped payment CPU, ms / delivered MiB | 144.17 | 79.14 |
+| Logical payment journal bytes | 122,024 | 86,755 |
+| Payment journal syncs | 94 | 60 |
+| Sent payment record bytes | 10,567 | 6,672 |
+
+Whole-window CPU includes ACK pumping, diagnostics and different idle tails.
+The harness paces writes every 10 ms, so write sizes also differ between rates;
+endpoint receive/ACK pumping continues after payload completion. These are not
+isolated measurements of the cost of changing the offered rate.
+Scoped payment CPU excludes shared scheduling, TCP/FIPS/core and transport work
+outside its spans. Journal bytes exclude wallet SQLite and physical storage;
+record bytes exclude carrier framing and shared traffic. These observations do
+not establish an optimal rate or cadence, a throughput ceiling, battery cost or
+natural deep-idle behavior. The phone is USB-powered, and the 500-ms default
+remains unchanged. Strict analysis, original-state audits and source/artifact
+bindings remain in `work/phone-cost-current-r621`.
+
+The r625 follow-up did not qualify native CPU profiling. Its unfunded capability
+probes first exposed recorder permission problems; a corrected 20-second capture
+contained 290 samples with no reported loss but no FIPS native call chains. A
+subsequent recorder-readiness probe exceeded its fixed preview time allowance.
+These observations do not identify the source of the whole-process CPU cost or
+show that native profiling is unsupported. No paid profiling trial ran. Original
+recordings are retained, all temporary apps and sampler files are removed, and
+original accounts and Wi-Fi are preserved. The r621 measurements and their
+limits above remain unchanged.
+
+## Rejected storage comparison — 16 October 2026
+
+The r620 ARM64 storage pilot passes all four workloads and independently
+accounts for its 384 test sats. The subsequent eight-trial comparison stops
+in the first idle window: the two rounds of sequential node-status reads take
+2,323 ms, exceeding the unchanged 2,000-ms observation limit. Its three complete
+traces and failed verdict are retained; independent original-state audits close
+both channels and account for all 384 test sats across nine SQLite sets.
+No workload or financial operation is retried.
+
+The measurement harness now collects the three independent node-status reads
+concurrently within each round. It still completes the first round before the
+second, requires unchanged payment/durability counters and reconciled credit,
+and performs no retry at strict workload boundaries. The existing boundary
+regression fails with sequential reads and passes with concurrent reads; all
+41 focused storage checks pass. Runtime binaries, workloads, financial terms
+and timing limits are unchanged. Neither the pilot nor this rejected attempt
+establishes the full cadence comparison.
+Original evidence remains in `work/measurement-reconciliation-r620/storage`.
+
+r622 then passes the four forward trials at 250/500/1000/2000 ms. The fifth
+trial stops in idle because one 334-byte stderr write uses a host-mounted alias
+of the owned process log, which the original path map does not recognize.
+The failed trial remains rejected. Independent audits close all five funded
+trials and account for all 1,920 test sats; original state and traces are retained
+in `work/measurement-reconciliation-r622/storage`.
+
+The harness now records stdout/stderr aliases only after verifying both against
+the owned log's device/inode, then checks the same identity after capture.
+Classification uses those exact paths with literal matching. Failed log writes
+or syncs, unmatched file operations and financial-idle activity still reject.
+All 66 focused storage checks pass. This changes measurement classification,
+not runtime, workload or financial terms. The four accepted forward trials keep
+their original path maps. The separately bound r623 reverse pass completes the
+[descriptive comparison above](#storage-syscalls-on-the-current-graph--16-october-2026)
+without including the failed trial. Neither pass supports CPU/timing comparisons
+under tracing or statistical claims about the optimal cadence.
+
+## Router packet capture on the current graph — 15 October 2026
+
+r620 repeats the eight-trial Wi-Fi workload below with the same ordinary ARM64
+relay and runtime/dependency graph, adding payment-service packet tracing and
+independent outgoing Ethernet captures. All 93,696 payloads arrive. The strict
+analyzer accepts all 24 complete, zero-drop captures and 32 workload windows,
+matching encrypted packet fingerprints to service counters without relying on
+synchronized router clocks. All 2,616 management checks pass.
+
+Independent audits of 72 complete SQLite sets close all 16 original channels
+and account for all 3,072 test sats, with no unaccounted value, duplicate/spent
+live proofs or pending mint operations. Original recovery identities and all
+financial state remain retained. Local export records that still say pending
+are verified spent at the original mint; they are not counted as outstanding
+value or reported as locally completed. Controllers and test processes have
+stopped. No workload or monetary operation is retried.
+
+Values below average two high-rate observations per policy and sum the three
+routers. Each observation delivers 8,000,000 application bytes and includes the
+same three-second tail. Captured bytes include the observed Ethernet framing.
+
+| Maximum age | Updates | Payment-service packets | Captured payment-service bytes | Bytes / delivered byte |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 3.5 | 51 | 6,713.5 | 0.000839 |
+| 500 ms | 2.5 | 37 | 4,844.5 | 0.000606 |
+| 1 s | 2.0 | 34 | 4,208.0 | 0.000526 |
+| 2 s | 2.0 | 34 | 4,208.0 | 0.000526 |
+
+Every steady observation uses three updates and 5,770 captured payment-service
+bytes for 3,200,000 delivered bytes. Bursty observations use no payment-service
+packets. Idle observations have no application payment requests or payment
+journal writes but still capture eight carrier ACK/keepalive packets, totaling
+600 bytes. One second uses about 13% fewer captured high-rate payment bytes than
+500 ms in this matrix. Tracing changes timing and update counts, so these costs
+must not be combined with the untraced CPU observations below. Two repeats do
+not establish an optimum; the 500-ms default remains unchanged.
+
+Through the final measurement guard, including setup and earlier guards, 1,142
+local payment-service packets match exactly, accounting for 139,558 captured bytes.
+The other 214,301,294 captured bytes remain explicitly unattributed; they include
+application, opaque transit and shared traffic, and are not subtracted as a
+baseline. This measures captured local payment-service traffic, not complete
+end-to-end payment overhead, uncaptured physical framing or radio airtime.
+Storage syscalls and phone costs are reconciled separately above. Private raw
+captures, analysis, original-state audits and acceptance remain in
+`work/measurement-reconciliation-r620/wire`; the controller bookkeeping failure
+is retained separately and did not repeat any completed archive or audit.
+The eight closed runs' temporary and persistent router profiles have been
+archived and removed; original financial evidence and normal services remain
+preserved. Cleanup verification is retained with `work/retirement-current-r624`.
+
+## Wi-Fi comparison on the current graph — 15 October 2026
+
+r613 runs the unchanged eight-trial Wi-Fi comparison on the same source and
+dependency graph as the native comparison below. The ordinary ARM64 daemon uses
+core default features and no wallet simulation; only the mint simulates money.
+Three OpenWrt routers use native Ethernet over 802.11s, one paid relay and two
+funded directions. Policy order is 250/500/1000/2000/2000/1000/500/250 ms. The
+1-msat/KiB tariff, 32-sat channels, 4,000-msat durable window, 8,000-msat grace,
+workloads and three-second tail match the
+[hardware runbook](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3).
+
+All 93,696 payloads arrive without duplicates, invalid payloads or controller
+errors. Strict delivery, accounting, counter-continuity and cost checks pass.
+Independent audits close all 16 original channels and conserve 3,072 test sats,
+with no pending mint operations or duplicate/mint-spent live coins. The original
+736 files and 72 complete SQLite sets are archived. All 2,103 management checks
+pass; each trial restores the normal router baseline. All 24 closed profiles and
+their temporary directories are archived before exact-path removal, with baseline
+checks after cleanup. Mint originals remain retained. Source/artifact bindings,
+stopped owners, readable-reference observations and their access limits are saved
+in `work/cadence-control-r613/router`. There are no retries or replacement grants.
+
+Values average two trials per policy and sum all three service processes. Bursty,
+steady and high-rate trials deliver 512,000, 3,200,000 and 8,000,000 application
+bytes respectively. CPU is per delivered MiB; storage and traffic are per
+observation including its tail. Compare policies within each matrix: the native
+comparison has a different paid-hop count and high-rate workload.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Steady | 250 ms | 3.0 | 54.51 | 20.12 | 2.40 | 5.03 |
+| Steady | 500 ms | 3.0 | 53.46 | 20.30 | 2.40 | 5.03 |
+| Steady | 1 s | 3.0 | 53.87 | 20.24 | 2.40 | 5.03 |
+| Steady | 2 s | 3.0 | 53.27 | 20.19 | 2.40 | 5.03 |
+| High rate | 250 ms | 4.0 | 29.59 | 31.45 | 3.21 | 6.68 |
+| High rate | 500 ms | 3.0 | 22.05 | 23.86 | 2.41 | 5.04 |
+| High rate | 1 s | 2.0 | 14.46 | 14.57 | 1.60 | 3.64 |
+| High rate | 2 s | 2.0 | 14.40 | 15.04 | 1.60 | 3.64 |
+
+Idle and bursty windows record zero payment CPU, application payment requests and
+payment journal writes. The burst fits already acknowledged whole-sat credit.
+Idle local payment-carrier traffic remains 488 bytes per observation and
+whole-process CPU remains nonzero. At high rate, one second uses about 34% less
+scoped payment CPU and 28% fewer local payment-carrier bytes than 500 ms.
+Whole-process CPU averages 0.807/0.824/0.793/0.796 seconds per delivered MiB across
+the four policies. Steady traffic still uses three updates under every policy.
+Two repeats do not establish a general optimum; the 500-ms default stays unchanged.
+
+Observed high-rate goodput is 25.38–25.95 Mbps under the paced workload, which does
+not measure maximum throughput. Router clocks are not synchronized, so no one-way
+latency is reported. Endpoint samples place per-process RSS at 19.99–22.01 MiB;
+these are finite-workload observations, not peak memory at resource limits.
+Payment CPU excludes shared scheduler/core/transport work outside its spans.
+Journal bytes exclude wallet SQLite and physical storage. Local carrier bytes
+include submitted payment traffic, ACKs, retransmissions and instrumented Ethernet
+framing; they exclude opaque transit, shared traffic and physical radio overhead.
+Physical airtime, flash endurance, mobility and power loss remain separate checks.
+
+## Native comparison on the current graph — 15 October 2026
+
+r613 qualifies FIPS runtime `1b948a688`, SDK `dad0fc3`, Spilman `669fbdd943`
+and CDK `04c37d5a152a`, built from source `6ddbadc33` and the recorded dependency
+bundle. The ordinary daemon has core default features and no wallet simulation;
+only the mint simulates money. The unchanged eight-trial comparison uses five
+processes, three paid hops and two funded directions over UDP loopback in a
+two-core scope. Policy order is 250/500/1000/2000/2000/1000/500/250 ms; financial
+terms, workloads and the three-second tail match the [runbook](../../testing/relay-cadence/README.md).
+
+All 285,696 payloads arrive without duplicates, invalid payloads/timestamps or
+controller errors. Strict delivery, accounting, counter-continuity and cost
+checks pass. Independent audits close all 48 original channels and conserve
+40,960 test sats, with no pending mint operations or duplicate/mint-spent live
+coins. All 96 complete SQLite sets and 872 original files remain archived;
+source/artifact hashes are unchanged and owned processes have stopped. Private
+evidence is retained in `work/cadence-control-r613/native`. No trial is retried
+or given replacement funds. The rejected r611 result below remains rejected;
+this pass does not identify the precise cause of its intermittent stream error.
+
+Values average two trials per policy and sum all five processes. Each bursty,
+steady and high-rate trial delivers 512,000, 3,200,000 and 32,000,000 application
+bytes respectively. CPU is per delivered MiB; traffic and logical journal sizes
+are per observation including its tail.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bursty | 250 ms | 2.0 | 20.16 | 13.35 | 1.60 | 3.67 |
+| Bursty | 500 ms | 2.0 | 24.68 | 13.31 | 1.60 | 3.67 |
+| Bursty | 1 s | 2.0 | 22.47 | 13.31 | 1.60 | 3.44 |
+| Bursty | 2 s | 2.0 | 22.40 | 13.30 | 1.60 | 3.44 |
+| Steady | 250 ms | 19.0 | 34.61 | 131.44 | 15.19 | 30.70 |
+| Steady | 500 ms | 19.0 | 34.77 | 130.64 | 15.19 | 30.52 |
+| Steady | 1 s | 14.0 | 24.51 | 97.11 | 11.19 | 23.13 |
+| Steady | 2 s | 10.0 | 18.57 | 70.34 | 8.00 | 16.77 |
+| High rate | 250 ms | 59.5 | 10.81 | 429.56 | 47.94 | 95.12 |
+| High rate | 500 ms | 44.0 | 7.92 | 313.92 | 35.46 | 70.35 |
+| High rate | 1 s | 40.0 | 7.37 | 280.05 | 32.24 | 63.96 |
+| High rate | 2 s | 40.0 | 7.20 | 282.35 | 32.24 | 63.96 |
+
+Idle windows record zero payment requests, payment CPU and payment journal
+writes; local payment-carrier traffic remains 1.36 KiB per observation and
+whole-process CPU remains nonzero. Bursty/steady p95 latency falls in the 500-µs
+bucket; high-rate p95 falls in the 1-ms bucket, using the shared host clock.
+High-rate goodput is 31.912–31.916 Mbps; the paced workload is not a throughput ceiling.
+
+Relative to 500 ms, one second reduces measured payment CPU by about 30% at the
+steady rate and 7% at high rate, with 24% and 9% fewer local payment-carrier bytes.
+High-rate whole-process CPU averages 0.173/0.166/0.170/0.167 seconds per delivered
+MiB across the four policies: lower payment CPU does not establish lower total
+CPU. One and two seconds both average 40 high-rate updates. Two repetitions do
+not establish a general optimum, so the 500-ms default remains unchanged.
+
+Payment CPU excludes scheduler scans and shared TCP/FIPS/core work outside its
+spans. Journal bytes exclude wallet SQLite and physical storage. Local carrier
+bytes include submitted payment traffic, ACKs and retransmissions, excluding
+opaque transit, shared traffic, kernel/radio framing and airtime. This accepts
+the native comparison; phone and physical-cost acceptance remain separate.
+
+## Rejected preceding native comparison — 15 October 2026
+
+r611 runs the unchanged eight-trial native matrix on FIPS runtime `718cfe5be`,
+SDK `dad0fc3`, Spilman `669fbdd943` and CDK `04c37d5a152a`. All 285,696 payloads
+arrive, with no duplicates, invalid payloads/timestamps or missing packets.
+The strict analyzer nevertheless rejects the comparison: trial 5 (1 s) records
+`control stream ended before its record` at the end of the steady workload on
+the second node. Its payment diagnostic identifies the usage-request stage.
+Later payments advance, but six boundary samples retain that error.
+No overhead comparison or new cadence recommendation is accepted from this run.
+
+Independent audits of the original databases conserve all 40,960 test sats and
+close all 48 channels, with no unfinished mint operations or duplicate/mint-spent
+live coins. All 96 complete SQLite sets and 872 original files are retained;
+source/artifact hashes are unchanged and owned processes/file handles are absent.
+There are no retries or replacement grants. The private
+`work/cadence-final-r611/native` bundle retains the failed verdict, raw boundaries,
+archives and independent financial closure. The earlier accepted results below
+remain evidence for their recorded builds; the 500-ms default is unchanged.
+
+## Wi-Fi matrix with the control expiry fix — 14 October 2026
+
+The r526 comparison uses the corrected runtime and SDK/CDK graph from the native
+matrix below, with the r525 optimized ARM64 executable. Three OpenWrt routers use
+native Ethernet over 802.11s, one paid relay and two funded directions. All eight
+trials pass in 250/500/1000/2000/2000/1000/500/250-ms order, retaining the same
+tariff, channel capacity, durable window, grace, workloads and three-second tail.
+The relay fee is 1 msat/KiB, channels hold 32 sats, the durable window is 4,000 msat
+and grace is 8,000 msat.
+The untraced ordinary wallet build uses core default features; only the mint
+simulates money. The [hardware runbook](../../testing/relay-cadence/README.md#hardware-report-contract-schema-3)
+defines the experiment and its prepaid boundary accounting.
+
+All 93,696 measured payloads arrive without duplicates, invalid payloads or
+controller errors. Strict analysis accepts delivery, accounting boundaries,
+counter continuity and costs. All 16 channels settle, all 3,072 test sats are
+collected and all 2,109 management checks pass. Each trial closes before the next
+starts. Raw reports retain every guard and inter-workload interval; those
+intervals record no payment CPU, application payment requests or journal writes.
+Independent closure verifies unchanged source/harness and executable hashes,
+restored router state, and stopped owned processes. All 24 settled profiles are
+archived before removal; mint financial evidence remains. The private
+`work/cadence-router-r526` bundle retains the raw measurements and closure hashes.
+
+Values average two trials per policy and sum all three service processes. Each
+bursty trial delivers 512,000 application bytes, steady delivers 3,200,000 and
+high rate delivers 8,000,000. CPU is per delivered payload MiB; storage and traffic
+are KiB per workload observation including its tail. These hardware workloads and
+paid-hop count differ from the Linux matrix, so compare policies within a matrix.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Steady | 250 ms | 3.0 | 53.65 | 20.17 | 2.40 | 5.03 |
+| Steady | 500 ms | 3.0 | 52.93 | 20.18 | 2.40 | 5.03 |
+| Steady | 1 s | 3.0 | 54.52 | 20.17 | 2.40 | 5.03 |
+| Steady | 2 s | 3.0 | 52.89 | 20.13 | 2.40 | 5.03 |
+| High rate | 250 ms | 4.0 | 29.15 | 37.20 | 3.21 | 6.68 |
+| High rate | 500 ms | 3.0 | 22.12 | 24.30 | 2.41 | 5.04 |
+| High rate | 1 s | 2.0 | 14.52 | 14.33 | 1.60 | 3.64 |
+| High rate | 2 s | 2.0 | 14.26 | 16.12 | 1.60 | 3.64 |
+
+Idle and bursty windows record zero payment CPU, application payment requests
+and payment journal writes for every policy. The small burst fits already
+acknowledged whole-sat credit, so its usage remains covered without another
+payment update. Idle local payment-carrier traffic is still 488 bytes per
+observation. Whole-process CPU remains nonzero in both workloads.
+
+At high rate, one second uses about 34% less scoped payment CPU and 28% fewer
+local payment-carrier bytes than 500 ms. Whole-process CPU averages
+0.804/0.805/0.792/0.789 seconds per delivered MiB for the four policies: the
+whole-process difference is much smaller. Steady traffic uses three updates
+under every policy, without a corresponding reduction from longer ages. Two
+repeats do not establish a general optimum; the 500-ms default stays unchanged.
+
+High-rate observed goodput ranges from 25.28 to 25.93 Mbps. The paced workload and
+controller observation overhead do not measure maximum throughput. Router clocks
+are not synchronized, so this experiment makes no one-way latency claim. Observed
+per-process RSS at workload endpoints ranges from 19.85 to 21.95 MiB; this finite
+workload does not qualify peak memory at the wallet's resource limits.
+
+Payment CPU excludes scheduler and shared core/transport work outside the measured
+spans. Journal bytes are logical relay writes, excluding wallet SQLite and physical
+storage. Local carrier bytes count submitted FIPS/payment-service payload and
+instrumented Ethernet framing, including ACKs and retransmissions. They exclude
+opaque transit, shared traffic and physical radio overhead. Full physical wire
+cost, airtime, battery use and flash endurance remain separate measurements.
+
+## Native matrix with the control expiry fix — 14 October 2026
+
+The ordinary Linux daemon at `d6874c3bf` passes the unchanged eight-trial matrix
+with Cashu service `6a90ccc40da2` and CDK `04c37d5a152a`. The runtime includes the
+queued-request idle-expiry fix, core default features and a wallet SDK without
+simulation. Only the test mint simulates money. Five processes, three paid hops
+and two funded directions run over UDP loopback in a two-core scope, in
+250/500/1000/2000/2000/1000/500/250-ms order. Tariffs, channel capacity, durable
+windows, allowance, workload schedules and the three-second tail are unchanged.
+The [runbook](../../testing/relay-cadence/README.md) defines these inputs.
+
+All 285,696 payloads arrive with zero duplicates, invalid payloads/timestamps or
+controller errors. The strict analyzer accepts delivery, accounting boundaries,
+counter continuity and costs. All 48 channels settle and all 40,960 test sats
+are collected. Independent closure verifies hashes, unchanged source/dependency
+inventories and stopped processes; settled profiles and raw evidence are retained
+in the private `work/cadence-current-r524` bundle. The original rejected r522 run
+and diagnostic r523 repeat retain their separate verdicts. This pass does not
+prove which event caused the original intermittent error.
+
+Values below average two trials per policy and sum all five service processes.
+Each bursty trial delivers 512,000 application bytes, each steady trial 3,200,000,
+and each high-rate trial 32,000,000. CPU is normalized to delivered payload MiB;
+storage and traffic are KiB per complete workload observation, including its tail.
+
+| Workload | Maximum age | Updates | Payment CPU ms / MiB | Journal KiB | Record KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bursty | 250 ms | 2.0 | 22.28 | 13.25 | 1.60 | 3.67 |
+| Bursty | 500 ms | 2.0 | 24.00 | 13.32 | 1.60 | 3.67 |
+| Bursty | 1 s | 2.0 | 21.55 | 13.30 | 1.60 | 3.44 |
+| Bursty | 2 s | 2.0 | 23.42 | 13.33 | 1.60 | 3.44 |
+| Steady | 250 ms | 19.0 | 33.82 | 130.41 | 15.19 | 30.70 |
+| Steady | 500 ms | 19.0 | 33.93 | 130.49 | 15.19 | 30.70 |
+| Steady | 1 s | 14.0 | 24.87 | 97.20 | 11.19 | 22.78 |
+| Steady | 2 s | 10.0 | 18.44 | 70.60 | 8.00 | 16.77 |
+| High rate | 250 ms | 60.0 | 11.30 | 430.70 | 48.34 | 95.92 |
+| High rate | 500 ms | 44.0 | 8.00 | 313.69 | 35.46 | 70.35 |
+| High rate | 1 s | 40.0 | 7.43 | 282.63 | 32.24 | 63.96 |
+| High rate | 2 s | 40.0 | 7.36 | 282.17 | 32.24 | 63.96 |
+
+Every four-second idle workload, including its three-second tail, records zero
+payment requests/records, payment CPU and payment journal writes. Local
+payment-service transport traffic still averages 1.36 KiB per idle observation;
+zero application polling does not imply zero TCP/FIPS transport traffic.
+
+All bursty and steady trials put their 95th-percentile delivery latency in the
+500-µs bucket; all high-rate trials put it in the 1-ms bucket. These use a shared
+host clock. High-rate goodput is 31.908–31.916 Mbps; this paced test does not find
+the throughput ceiling. Whole-process CPU at high rate averages
+0.178/0.169/0.175/0.172 seconds per delivered MiB for the four policies. A reduction
+in scoped payment work therefore does not establish an overall CPU improvement.
+
+At high rate, one second uses about 7% less scoped payment CPU and 9% fewer local
+payment-carrier bytes than 500 ms. One and two seconds both average 40 updates:
+the longer age limit produces no further reduction in updates at this load.
+At the steady rate, two seconds reduces scoped payment CPU by about 46% relative
+to 500 ms. Two repetitions on clean loopback links do not establish a general
+optimum. The 500-ms default remains unchanged.
+
+Payment CPU includes controller future polls and inherited blocking work; it
+excludes scheduler scans and shared TCP/FIPS/core work outside those spans.
+Journal bytes are logical relay writes, excluding wallet SQLite and physical
+storage. Record bytes include application framing; local carrier bytes include
+submitted TCP/FIPS traffic, ACKs and retransmissions, excluding opaque transit,
+shared traffic, UDP/kernel/radio framing and airtime. This qualifies the current
+native comparison, not physical router/phone performance or total payment cost.
+
+## Background phone channel renewal — 12 October 2026
+
+The r479 workload uses the current ordinary router and Android runtime graph
+over the existing four-node LAN UDP line. The phone routes with its activity
+hidden and foreground service active. Two consecutive five-minute TCP/FIPS
+windows each deliver nine MiB per direction, paced at 32 KiB/s. Each of the three
+buyers with short-lived quotes renews twice; the fourth renews once on capacity.
+The original 32-sat channel size, 64-sat lifetime budgets, capital limits and
+processes remain unchanged. Every successor shows advancing payment and delivery
+in both directions during an active stream.
+
+All 37 MiB including warm-up arrive with exact digests and acknowledgments.
+Eleven channels settle, all 512 test sats are collected, and 1,266 management
+checks pass. Independent closure verifies empty wallets and restored devices.
+The original r478 trial's failed foreground-only pause and its successful fund
+recovery remain separate evidence. The corrected harness passes 108 focused
+Linux checks. Private evidence is `work/phone-renewable-r479`.
+
+| Background window | Slower endpoint completion, s | Phone process CPU s / payload MiB | Scoped payment CPU ms / payload MiB | Payment requests sent | Payment record bytes sent | Payment logical journal bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| First | 288.138 | 10.711 | 147.039 | 32 | 24,680 | 285,500 |
+| Second | 288.068 | 10.947 | 155.687 | 28 | 23,077 | 385,246 |
+
+Each row divides CPU by eighteen delivered application-payload MiB. Whole-process
+CPU includes the measurement interval, probe pumping after payload completion
+and diagnostics. Scoped payment spans account for 1.37% and 1.42% of measured
+process CPU; they exclude scheduler and TCP/FIPS/core transport work. The
+existing shared counter analyzer checks monotonic counters and unchanged link
+epochs while allowing the expected channel replacements. Logical journal bytes
+are not physical flash/SQLite writes; payment records are not complete wire
+attribution. The phone is externally powered and observed through ADB.
+
+These results qualify paced background renewal and settlement. They do not show
+an optimization, throughput ceiling, sustained saturation, natural deep-idle
+behavior, battery cost or moving-radio handover. Reproduce with
+`--transit --phone-renewal sustained` in `sim.paid_phone`.
+
+## Background phone rate comparison — 12 October 2026
+
+The r447 fixture reuses the qualified r439 native and Android runtime graph.
+Three OpenWrt routers and an Android phone form an authenticated UDP line on the
+existing LAN. The phone's activity stays hidden and its routing foreground service
+remains active. After unpaid denial and a paid warm-up, two ordered five-minute
+windows each carry four MiB per direction, offered at 32 then 256 KiB/s. No
+payment policy, tariff, channel capacity or spending limit changes between rates.
+
+All 17 MiB across the warm-up and measured windows arrive with exact payload
+digests and acknowledgment. Every paying hop advances credit on its original
+32-sat channel. All 512 test sats are collected, four wallets end empty, and
+1,239 management checks pass. Independent closure verifies restored networking,
+unchanged original phone accounts and removal of the temporary app and router
+profiles. Evidence is `work/phone-rate-r447` in the private recovery bundle.
+
+Completion includes connection setup and final acknowledgment. The table uses
+the slower endpoint in each window; CPU is the phone process counter delta over
+the complete five-minute window, divided by eight delivered payload MiB.
+
+| Offered KiB/s per direction | Completion seconds | Completed KiB/s per direction | Phone process CPU s / payload MiB | Scoped payment CPU ms / payload MiB |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 128.094 | 31.98 | 13.43 | 140.88 |
+| 256 | 16.107 | 254.31 | 6.11 | 84.27 |
+
+The shared analyzer also reports all three routers, logical journal activity,
+payment-record bytes and native link counters. Phone resident memory after the
+two windows is approximately 270.1 MiB in both cases, including the Android app.
+The probes keep pumping after completion for ACK recovery, so these CPU totals
+include different idle tails and diagnostic work. Scoped payment spans exclude
+scheduler and TCP/FIPS/core transport work. Journal bytes are not physical
+flash/SQLite writes, and payment records are not complete wire attribution.
+
+This one ordered pair verifies the offered-rate increase on this path. It does
+not establish a throughput ceiling, sustained saturation, natural deep idle,
+battery cost or an optimization. No runtime or default-policy change is made.
+The final harness and analyzer pass 106 Linux checks. Reproduce with
+`--transit --compare-transit-rates` in `sim.paid_phone`, then run
+`python3 testing/relay-cadence/phone_rates.py /private/results/phone-rates/result.json`.
+The analyzer rejects changed workloads, purchased terms, payment identities,
+counter epochs, unfinished delivery and inter-window counter resets.
+
+## Earlier native matrix — 7 October 2026
+
+The ordinary Linux daemon now reports measurement version 3. Payer and provider
+future polls each use a thread-local CPU span that ends before yielding; blocking
+workers inherit the operation, and nested signing/usage/update work is counted
+once. The five measurement regressions, eight payment worker/provider checks,
+strict lint with and without measurements, normal optimized build and 219
+benchmark/device-tool checks pass in `work/payment-cpu-scope-r200`. The old span
+implementation fails the new nested-work regression.
+
+The accepted frozen runtime graph, including the TCP/FIPS reopen fix, runs the
+unchanged eight-trial matrix in `work/payment-cpu-cadence-r201`: five real service
+processes and a capped test mint in a two-core Linux scope over UDP loopback,
+250/500/1000/2000/2000/1000/500/250-ms order, original idle/bursty/steady/high-rate
+schedules, 8,000-msat allowance, 4,000-msat durable windows, 256-sat channels,
+one-msat/KiB tariff and three-second payment tail. Setup and settlement remain
+outside the measured windows. The daemon has core default features and wallet SDK
+without simulation; the unchanged harness retains simulation for its test mint.
+
+All 285,696 payloads arrive, with zero duplicates, invalid payloads, invalid
+timestamps or controller errors. Strict delivery, quiet-boundary and cost
+validation passes. All 40,960 test sats are collected. Independent closure verifies
+source/dependency/binary hashes, stopped processes, the removed CPU scope and an
+empty temporary directory. No competing builds were present at preflight.
+
+High-rate values average two trials per policy. Each delivers 32,000,000 application
+bytes; costs sum all five service processes.
+
+| Maximum age | Payment updates | Controller payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Process CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 61.5 | 11.15 | 439.52 | 142.04 | 0.172 |
+| 500 ms | 44.0 | 8.06 | 312.82 | 101.63 | 0.168 |
+| 1 s | 40.0 | 7.18 | 280.93 | 92.39 | 0.166 |
+| 2 s | 40.0 | 7.26 | 280.09 | 92.39 | 0.165 |
+
+Idle windows record zero payment requests, attributed CPU and journal work.
+Bursty windows average two updates at every policy. Steady windows average
+19/19/14/10 updates and 34.97/34.88/25.23/17.72 controller payment CPU ms per
+MiB respectively. Every high-rate latency histogram puts its 95th percentile
+within the one-ms bucket, using the shared-host clock assumption. The 500-ms
+default stays unchanged; these finite clean-link trials do not establish an
+optimal policy or independent-router latency.
+
+CPU now includes controller future polls and inherited blocking work, while
+scheduler scans, TCP/FIPS carrier processing and core transport CPU remain outside
+payment attribution. It is not complete payment CPU. Journal bytes remain logical
+relay writes, excluding wallet SQLite and physical storage. Local payment carrier
+bytes include submitted TCP/FIPS segments, ACKs and retries, excluding opaque
+transit and UDP/kernel/radio framing. Earlier CPU results use a narrower scope and
+must not be used to claim a before/after optimization. The separate storage
+comparison below covers wallet/receiver syscall writes. Physical media,
+memory-mapped storage, complete wire attribution and impaired/sustained device
+workloads remain outstanding.
+
+## Independent packet attribution check — 7 October 2026
+
+Opt-in `fips_core::service_wire` traces now identify successful encrypted service
+submissions by process, counter identity and per-transport packet number. Separate
+endpoints using the same service port retain distinct ordinals. Whole packets,
+fragments and retries hash their actual submitted ciphertext; unsent tails and
+untagged traffic produce no event. Hashing runs only when the trace target is
+enabled. This adds local diagnostics, with no network message or financial-state
+change. The analyzer matches each trace to one independent captured packet and
+requires agreement with final carrier counters; shared and opaque traffic remains
+unattributed.
+
+The real UDP fragment regression in `work/wire-trace-r206` submits and receives
+four fragments totaling 818 FIPS bytes. An isolated Linux loopback capture matches
+all four fingerprints, 930 IPv4/UDP bytes and 986 captured link bytes. The latter
+includes 56 bytes of synthetic loopback Ethernet headers, not physical framing.
+Linux suppresses outgoing loopback capture duplicates, so this isolated case uses
+incoming capture. Its first offloaded capture contains one aggregate packet and
+is rejected. A fresh namespace with UDP segmentation, GSO, GRO and TSO disabled
+passes; both records remain preserved. Neither case uses funds or claims radio
+airtime, delivery guarantees beyond the regression, or a performance result.
+
+All 28 selected carrier/UDP tests and 19 analyzer checks pass, along with strict
+core and measured/unmeasured relay lint and the optimized ordinary Linux daemon
+build. The daemon uses core default features and the wallet SDK without simulation.
+This qualifies packet attribution for the recorded case. The following matrix
+extends it to matched payment workloads. Ethernet device captures and complete
+shared/transit or physical-radio attribution remain open. Trace hashing and
+disabled offloads alter execution cost; these capture runs cannot replace the
+untraced CPU measurements.
+
+## Matched payment UDP capture — 7 October 2026
+
+`work/wire-cadence-r208` passes the original eight-policy, five-process loopback
+matrix with the ordinary daemon qualified in `work/wire-trace-r206`. The workload,
+financial terms, two-core quota and three-second tails match the native matrix
+above. Each trial retains its complete logs and wallet state, including on failure.
+The capped test mint and harness enable simulation; the daemon does not. Capture
+and trace hashing run during this experiment, with loopback offloads disabled,
+so its CPU and timing do not replace the untraced measurements.
+
+All 285,696 application payloads arrive and all 40,960 test sats are collected.
+The 1,174,518 captured UDP packets contain every payment submission through the
+final measurement guards, with zero kernel capture drops. Packet ordinals allocate
+costs to each node's workload and guard boundaries; setup, settlement/shutdown and
+application service traffic stay outside measured payment windows. Counter
+reconciliation passes for all 32 windows, including zero payment packets in all
+eight idle windows. No background baseline is subtracted.
+
+High-rate values average two trials, each delivering 32,000,000 application bytes.
+IPv4/UDP bytes include actual captured IP and UDP headers, summing the five nodes'
+locally originated payment packets, including TCP/FIPS ACKs and retries.
+
+| Maximum age | Payment updates | Payment UDP packets | FIPS KiB | IPv4/UDP KiB |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 59.5 | 1,547 | 137.41 | 179.71 |
+| 500 ms | 44 | 1,144 | 101.63 | 132.91 |
+| 1 s | 40 | 1,040 | 92.39 | 120.83 |
+| 2 s | 40 | 1,040 | 92.39 | 120.83 |
+
+The first matrix in `work/wire-cadence-r207` also returns all funds and matches
+every payment trace through those guards, but its capture drops 16 packets and
+remains rejected. A fresh matrix with a 32-MiB capture buffer passes the original
+zero-drop check. Both retained-state archives are independently verified. Nine
+wire analyzer checks, the retained-log regression and strict harness lint pass.
+Captured Ethernet headers are synthetic loopback framing. Shared handshakes,
+opaque transit, direct mint TCP traffic and physical/radio costs remain outside
+payment attribution; unmatched captured UDP bytes remain visible. The 500-ms
+default stays unchanged.
+
+## Physical Ethernet capture pilot — 7 October 2026
+
+The ordinary ARM64 candidate from `fbc2c3ac1` passes the original four-workload
+500-ms pilot on three OpenWrt routers in `work/wire-device-capture-r210`. It uses
+the saved SAE radio profile, native Ethernet over two 802.11s hops and a capped
+LAN test mint. All 11,712 payloads arrive, both original channels settle and all
+384 test sats are collected. All 288 management checks pass. Independent
+postflight verifies restored original profiles/services, stopped candidates,
+capture supervisors and mint, removed candidate executables and byte-verified
+recovery archives for all three test accounts. The accounts remain preserved.
+
+All three outgoing captures have zero kernel drops. Of 25,789 captured packets,
+234 match payment submissions through the final guards; other captured traffic
+remains unattributed. Each host's counter ordinals reconcile across all four
+windows. Costs below sum locally originated payment frames from all three hosts;
+setup and guards are separate, with no baseline subtraction.
+
+| Workload | Delivered application bytes | Payment frames | FIPS bytes | Captured Ethernet bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Idle | 0 | 0 | 0 | 0 |
+| Bursty | 512,000 | 0 | 0 | 0 |
+| Steady | 3,200,000 | 78 | 7,074 | 8,400 |
+| High rate | 8,000,000 | 78 | 7,087 | 8,413 |
+
+The shared analyzer now supports explicit host and trial selection, including
+independent PID namespaces and PID reuse between separate captures. It validates
+the complete workload/financial report before selecting a capture. Ten focused
+checks pass, and its command reproduces the accepted native UDP capture.
+
+This is one finite policy's capture acceptance, not a hardware policy comparison
+or an untraced CPU/timing result. Captured Ethernet framing includes observed
+headers and padding; shared/opaque transit, physical framing and radio airtime
+remain outside payment attribution. Impaired and sustained device comparisons
+remain open. The 500-ms default stays unchanged.
+
+## Full physical capture matrix — 7 October 2026
+
+`work/wire-device-prepaid-r214` runs the ordinary ARM64 candidate from `c8aaeda65`
+through 250/500/1000/2000/2000/1000/500/250-ms policies on the same three-router,
+saved-SAE two-hop topology. The workloads, financial terms and three-second tails
+match the pilot above. Tools on `467844a15` declare `--prepaid-boundaries` and
+`--service-wire-trace` before any trial; 99 tool files remain frozen. The shared
+native accounting check now supports hardware host/process identities. Its 59
+focused analyzer checks and 16 workload checks pass. The unchanged candidate's
+two real terminal-carrier recovery tests, strict core/relay lint and ordinary
+ARM64 build pass in `work/wire-device-build-r211`, with frozen runtime dependencies.
+
+All 93,696 application payloads arrive, with 227 out of order and no duplicates
+or invalid payloads. All 2,298 management checks pass. Every trial settles its
+two channels and collects all 384 test sats before the next starts: all 3,072
+test sats return. Independent postflight verifies restored original device
+state, stopped candidates/capture supervisors and eight cleanly exited mints,
+plus 24 byte-verified recovery archives. Persistent financial accounts remain
+preserved. Closed capture/log copies are verified on both the controller and
+archive host before their exact temporary router copies are removed.
+
+Complete-run validation and capture attribution pass for all 32 workload windows.
+Every trial's 15 observed intervals sum exactly to its complete integer counters,
+including all 88 guard/inter-workload gaps. In the fourth trial, a final guard
+records 1 msat of already-paid usage with unchanged acknowledgment and no payment
+operation, payment traffic or durable write. The declared contract retains that
+usage and all gap costs while requiring unchanged paid credit and process epochs.
+
+All 24 captures have zero kernel drops. Their 206,021 packets match all 1,716
+locally originated payment submissions through the final guards: 153,320 FIPS
+bytes and 182,492 captured Ethernet bytes, including setup and guard intervals.
+High-rate costs below average two trials, each delivering 8,000,000 application
+bytes. They sum the three hosts' locally originated payment frames; setup and
+guards remain separate, with no baseline subtraction.
+
+| Maximum age | Payment updates | Payment frames | FIPS bytes | Captured Ethernet bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 3 | 78 | 7,086 | 8,412 |
+| 500 ms | 2 | 52 | 4,722 | 5,606 |
+| 1 s | 2 | 52 | 4,722 | 5,606 |
+| 2 s | 2 | 52 | 4,722 | 5,606 |
+
+All idle and bursty windows have zero payment updates and payment frames. Shared
+or opaque transit, direct mint traffic, physical framing and radio airtime remain
+outside attribution. Trace hashing changes execution cost, so traced CPU/timing
+is diagnostic. These finite clean-link repetitions do not establish an optimal
+policy or maximum throughput; the 500-ms default stays unchanged.
+
+The preceding run in `work/wire-device-matrix-r212` remains rejected under its
+original strict usage-equality contract. It delivers all 93,696 payloads and
+returns all 3,072 test sats, but its sixth trial's final guard observes usage
+increasing from 4 to 5 msat within unchanged 1,000-msat credit. Its 24 captures
+verify submission prefixes and its 24 recovery archives pass. The current
+analyzer still rejects that unchanged report; no old metadata or result is
+rewritten to accept it.
+
+## Full physical CPU comparison — 7 October 2026
+
+`work/device-cpu-r215` passes the unchanged eight-policy hardware schedule with
+the measurement-enabled ordinary ARM64 candidate on `c8aaeda65` and tools on
+`0c9d1e833`. The three-router saved-SAE topology, financial terms and three-second
+tails match the physical wire matrix above. Packet capture and diagnostic tracing
+are disabled; independent postflight verifies all 24 candidate launch scripts,
+complete logs and absence of tracing processes.
+
+All 93,696 payloads arrive, with 132 out of order and no duplicates, invalid
+payloads or controller errors. All 2,118 management checks pass. Each trial settles
+its two channels and returns all 384 test sats before the next starts; all 3,072
+return. Independent checks reproduce the complete analysis, verify 99 frozen tool
+files, restored original router state, stopped candidates and mints, and 24
+byte-verified account recovery archives. Financial profiles remain preserved.
+All 120 observed intervals sum exactly to the complete trial counters, including
+1 msat of guard usage within unchanged paid credit.
+
+High-rate values average two trials per policy, each delivering 8,000,000
+application bytes. Costs sum the three candidate processes; setup and settlement
+remain outside the measurement windows, with no baseline subtraction.
+
+| Maximum age | Payment updates | Controller payment CPU ms / delivered MiB | Payment journal KiB | Process CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 3.5 | 27.22 | 33.32 | 0.793 |
+| 500 ms | 3 | 23.05 | 28.19 | 0.792 |
+| 1 s | 2 | 15.17 | 15.13 | 0.792 |
+| 2 s | 2 | 15.06 | 16.05 | 0.796 |
+
+All idle and bursty windows record zero payment updates, attributed CPU and
+payment journal bytes. Steady windows average three updates at every policy and
+53.78–55.45 payment CPU ms per MiB. High-rate payment CPU at one second averages
+34% below 500 ms, while total process CPU is nearly unchanged. The two 250-ms
+samples range from 23.22 to 31.22 payment CPU ms per MiB; two repetitions do not
+establish an optimal interval. The 500-ms default stays unchanged.
+
+Payment CPU covers exclusive controller future polls and inherited blocking work,
+excluding scheduler scans and TCP/FIPS/core transport attribution. Process CPU
+excludes the mint, normal router services and kernel workers. Journal bytes are
+logical relay writes, excluding wallet SQLite and physical storage. Independent
+router clocks provide no valid one-way latency measurement. Impaired, sustained,
+mobile and phone performance acceptance remain open.
+
+## Current continuous router renewal — 7 October 2026
+
+`work/router-sustained-r221` reuses the ordinary `ab00e5fbe` ARM64 candidate
+qualified in `work/payment-loss-arm-r217`, with the unchanged public renewal
+workload on harness `f9f6bf166`. Three routers use the saved SAE mesh and isolated
+test EtherType alongside their original services. Each endpoint sends 42,000
+original 1,000-byte packets once at 140 packets/s over a continuous five-minute
+window; no traffic pause or replay hides renewal loss.
+
+All 84,000 packets arrive with zero missing, duplicate or invalid packets.
+Each direction has six live successor observations with advancing delivery and
+automatic credit, and authorizes 44 test sats within its unchanged 64-sat limit.
+All four channels settle, all 384 simulated sats return and all 648 management
+checks pass. Independent closure verifies restored normal state, stopped owned
+processes, removed candidate executables and three account recovery archives.
+Nineteen valid financial samples remain; twelve concurrent sampling races are
+recorded and rejected by the existing bounded observation checks.
+
+Shared version-three counter checks bind CPU, journal and payment-control deltas
+to unchanged processes and peer-link epochs. Channel membership changes during
+the window as required by renewal. Costs sum all three routers and divide by
+84,000,000 delivered bytes (80.11 MiB); setup and final collection are outside
+the window, while automatic renewal and diagnostic observations are inside it.
+
+| Measurement | Continuous-window result |
+| --- | ---: |
+| Attributed payment CPU | 5,188.51 ms; 64.77 ms / delivered MiB |
+| Whole-process CPU | 211.90 s; 2.645 s / delivered MiB |
+| Middle-router whole-process CPU | 81.50 s; 1.017 s / delivered MiB |
+| Logical payment journal writes / bytes | 258 / 804,545 |
+| All logical relay journal writes / bytes | 322 / 1,298,493 |
+| Local payment requests started / received | 172 / 172 |
+| Local payment stream bytes sent / received | 70,678 / 70,678 |
+
+Payment spans exclude scheduler, TCP/FIPS/core and other funding/settlement work.
+Logical relay journals exclude wallet SQLite and physical flash; local payment
+stream counters exclude complete transport and radio framing. This single
+unchanged-rate, untraced run does not establish a speedup, optimal cadence,
+maximum throughput, latency across independent clocks or long-soak capacity. Slower
+renewal near expiry, greater pressure, sustained impairment and physical power
+loss remain separate acceptance work. The 500-ms default is unchanged.
+
+The expiry variant passes the same 84,000-packet workload in
+`work/router-expiry-r226`, on the same ordinary runtime and corrected retirement
+observer (`d7bde066f`). Its 180-second quotes renew with an eight-second lead and
+100% capacity/allowance threshold, retaining all prices and financial limits.
+Both replacements start six seconds before expiry below capacity/byte exhaustion.
+Each direction has eight live successor observations and authorizes 44 test sats
+within its unchanged 64-sat limit. All four channels settle, all 384 test sats
+return and all 633 management checks pass. Independent closure verifies restored
+state, stopped processes/mint, removed candidate executables and three account
+archives. Packet reordering is 262 and 238 respectively; missing, duplicate and
+invalid counts are zero. Concurrent snapshot races remain recorded and bounded.
+
+| Measurement | Expiry-window result |
+| --- | ---: |
+| Attributed payment CPU | 5,212.19 ms; 65.06 ms / delivered MiB |
+| Whole-process CPU | 208.71 s; 2.605 s / delivered MiB |
+| Middle-router whole-process CPU | 78.88 s; 0.985 s / delivered MiB |
+| Logical payment journal writes / bytes | 258 / 715,547 |
+| All logical relay journal writes / bytes | 334 / 1,316,293 |
+| Local payment requests started / received | 172 / 172 |
+| Local payment stream bytes sent / received | 70,678 / 70,678 |
+
+The process, journal and wire scope remains as described above. This single
+expiry success does not demonstrate a performance improvement or explain the
+40-packet loss in the fully recovered first attempt (`work/router-expiry-r225`).
+That failure remains preserved; broader sustained, impaired and power-loss
+acceptance is still open.
+
+## Sustained background phone transit — 9 October 2026
+
+`work/phone-adaptive-window-r405` rechecks the r220/r369 workload with adaptive
+crash-window runtime `45f44135b`, the qualified r404 APK, matching ordinary r400
+ARM64 router binaries and harness `1afcdbe0a`. The wallet SDK excludes simulation;
+only the capped issuer uses test money. The router → phone → router → router path
+uses UDP over the existing LAN, with USB power and the phone awake.
+
+Unpaid delivery is zero. Foreground traffic delivers 512 KiB per direction;
+the hidden activity then relays nine MiB per direction at 32 KiB/s in an interval
+of at least 300 seconds, including setup and ACK drain. Both directions have
+complete delivery, ACK and matching digests. All 53 background observations retain
+the expected links and foreground service; the same process spans every window.
+The phone earns on two channels, pays one onward channel and receives no
+application packets itself. All four original channels settle, all 512 test sats
+return, and all 813 management checks pass. Independent closure verifies restored
+devices and unchanged original accounts; the temporary app and router profiles
+are removed after all four completed accounts are archived.
+
+The current-runtime repeat in `work/phone-current-r428` uses `7a4616b5a`, the
+qualified r428 APK and matching r425 router binaries. All 1,042 crate Rust files
+match both artifacts; the accepted dependency graph is unchanged. The same
+workload delivers all 19 MiB, keeps the same phone process and four original
+channels, and passes 52 background observations and 804 management checks. All
+512 test sats return; the temporary app and router profiles are removed after
+independent account and device verification.
+
+`work/phone-impairment-r429` repeats that background window with the same binaries
+and one-in-twenty UDP packet loss in each direction on one phone link. All 18 MiB
+arrive despite 4,801 observed drops. Fresh recovery traffic then succeeds on the
+same channels and processes; all 512 test sats return, all 894 management checks
+pass, and the filter, temporary app and router profiles are removed. Cumulative
+signed and acknowledged payments advance during the loss window. This is one
+finite impaired acceptance trial, not a controlled optimization comparison.
+
+Version-three counter validation compares two live native snapshots around the
+background window. Costs cover only the phone and are divided by the 18 MiB
+delivered in that window, rather than summed across the route.
+
+| Measurement | r405 — 9 October | r428 — 11 October | r429 — 11 October, 5% loss |
+| --- | ---: | ---: | ---: |
+| Attributed payment CPU | 2,553.75 ms; 141.88 ms / delivered MiB | 2,268.94 ms; 126.05 ms / delivered MiB | 3,312.73 ms; 184.04 ms / delivered MiB |
+| Whole-process CPU | 9.713 s / delivered MiB | 10.933 s / delivered MiB | 10.050 s / delivered MiB |
+| Android process CPU tick delta | 174.96 s | 196.85 s | 180.84 s |
+| Logical relay journal writes / syncs / commits | 98 / 196 / 98 | 98 / 196 / 98 | 238 / 476 / 238 |
+| Logical relay journal bytes | 256,849 | 255,754 | 638,596 |
+| Payment requests started / received | 28 / 84 | 28 / 84 | 169 / 225 |
+| Local payment stream bytes sent / received | 21,970 / 24,054 | 21,970 / 24,054 | 62,118 / 63,958 |
+
+Whole-process CPU includes diagnostic work. Payment spans exclude scheduler scans
+and TCP/FIPS/core transport CPU; relay journal bytes exclude physical flash and
+wallet SQLite attribution. These low-rate acceptance repeats are not a controlled
+optimization comparison and do not establish optimal cadence, throughput or
+battery cost. Natural deep idle, renewal, network suspension, movement, phone
+802.11s and long-run impaired traffic remain separate acceptance work. The 500-ms
+default is unchanged.
+
+### Phone CPU profile and allocation experiment
+
+`work/phone-cpu-profile-r406` repeats the same paid workload and records a bounded
+45-second user-space CPU profile during background transit. All 19 MiB arrive,
+all four original channels settle, all 512 test sats return and all 810 management
+checks pass. Independent closure verifies device restoration, empty wallets,
+account archives and removal of the temporary app and router profiles.
+
+Of 1,588 samples, 91.7% run on the customer runtime threads. Allocation, freeing
+and memory copying account for 25.1% of sampled user CPU; this excludes kernel
+CPU and is not a fraction of total process CPU. No samples are lost, but 244
+stacks are truncated. Symbols are resolved against the exact native library
+whose stripped bytes match the installed APK. These instrumented figures are
+for diagnosis, not a speed comparison against the unprofiled trial above.
+
+The profile identifies per-turn control work for inspection. The qualified
+Android binary allocates 15,344-byte and 536-byte futures in
+`finish_dataplane_turn`, even when little control work is pending. Direct awaits
+preserve both operations and their ordering without those two explicit boxes.
+Candidate `912faa273` passes 28 focused receive-loop/recovery checks, strict
+relay lint, source-size checks and ordinary native/ARM builds in
+`work/rx-future-allocation-r407`. Its r409 APK passes all eight Android build
+gates, including six lifecycle tests and native packaging verification.
+
+`work/phone-rx-allocation-r410` compares that phone candidate with the unchanged
+r400 router binaries, workload, harness, prices and spending limits. All 19 MiB
+arrive, all 52 background observations retain the expected links/service and
+same process, and all four original channels settle. All 512 test sats return;
+813 management checks and independent financial/device closure pass. The
+temporary app and router profiles are removed and four closed accounts archived.
+
+| Phone background-window measurement | Baseline r405 | Candidate r410 |
+| --- | ---: | ---: |
+| Android process CPU tick delta | 174.96 s | 186.04 s |
+| Whole-process CPU / delivered MiB | 9.713 s | 10.336 s |
+| Attributed payment CPU / delivered MiB | 141.88 ms | 133.47 ms |
+
+The candidate does not demonstrate a total CPU saving and is **not retained**.
+One trial per version, even with a matched workload, does not establish a causal
+regression or a payment-CPU improvement. The compiled candidate also inlines
+other deferred-work allocations, so a count of allocator calls in this one
+function cannot establish total allocation cost. Existing awaits, cadence and
+financial policy remain in place; the profile informs further investigation.
+
+### Skip root-flush allocation when no traffic is pending
+
+`work/root-flush-r480` adds a guard after draining deferred control turns, so
+newly queued root traffic still reaches the existing flush operation. When no
+root traffic is pending, the exact qualified Android binary skips allocation
+and copying of a 10,384-byte future. Pending forwards, control ingress and root
+recovery retain their existing order and handling. This removes verified
+unnecessary allocation work; it is not a claim about allocation frequency or
+whole-process memory savings.
+
+The candidate passes 29 receive-loop/root-recovery checks, 330 relay unit checks,
+six live-service checks, strict core/relay lint and the 1,077-file source-size
+gate. Its ordinary ARM build passes, and Android qualification passes ten
+lifecycle tests plus packaging/signature/native-byte checks. The 108 harness
+checks are reused with their exact unchanged source hashes.
+
+`work/phone-root-flush-r481` repeats r479's two five-minute background windows
+with only the phone executable changed. Routers, mint, workload, prices and
+budgets stay the same. All 37 MiB arrive with matching hashes and acknowledgments;
+the same 11 channels include seven automatic replacements. All 512 test sats
+return, all four wallets are empty and 1,272 management checks pass. Independent
+closure verifies normal networking and original accounts; closed test accounts
+are archived and temporary profiles and the phone app removed.
+
+| Background window | Baseline r479 CPU / MiB | Candidate r481 CPU / MiB |
+| --- | ---: | ---: |
+| First five minutes | 10.711 s | 10.322 s |
+| Second five minutes | 10.947 s | 10.869 s |
+
+The observed CPU reductions are 3.6% and 0.7%. One trial per executable does not
+establish a repeatable CPU speedup. The narrow guard is retained for its verified
+allocation avoidance and preserved delivery/recovery behavior; CPU readiness
+remains open. These externally powered, paced trials do not measure saturation,
+battery life, natural deep idle, physical storage writes or full wire overhead.
+
+## Current storage syscall comparison — 7 October 2026
+
+The current ordinary Linux ARM64 executable on `29a88d481`, with measurement
+version 3 and the accepted frozen dependency graph, passes all eight virtual
+Ethernet storage trials in `work/storage-current-r202`: payment ages of
+250/500/1000/2000 ms followed by the reverse order. All 93,696 application
+packets arrive, with 323 out of order and no duplicates or invalid
+packets. Each trial settles its two original 32-sat channels and collects all
+384 test sats; the matrix collects all 3,072. Independent analysis reproduces
+all 96 raw traces and workload summaries, reconciles wallet/settlement amounts,
+and verifies that all 40 owned containers/networks are absent.
+
+Three relay processes use core default features and the wallet SDK without
+simulation. Only the capped test mint enables simulation. The relay SHA-256 is
+`b7d3ef44541af66f9896e690c7a51ecd1f539f868f03ffabfdffc95204755acc`.
+The fixed idle/bursty/steady/high-rate workloads match the earlier hardware
+storage schedule, with a three-second tail, one-msat/KiB tariff, 8,000-msat
+grace and 4,000-msat durable windows. Tracing changes execution cost; CPU and
+timing under tracing are not benchmark results. The native CPU matrix above
+uses a different topology and high-rate workload, so their figures are separate.
+
+The current history collector opens the funding wallet during background
+upkeep. SQLite touches its transient `wallet.sqlite-shm` index even when there
+is no financial operation. These syscall bytes/calls are a separate category
+and remain included in total file cost. All funding-wallet main database, WAL
+and rollback-journal writes and syncs remain zero in every workload window.
+Idle windows have zero payment activity, SDK/receiver/journal writes and syncs;
+they include 120 shared-memory bytes/calls across the three processes.
+Bursty windows have zero payment updates and financial writes, plus
+168–176 shared-memory bytes/calls while using prepaid credit.
+Nothing is subtracted as a background baseline.
+
+Each steady window delivers 3,200,000 bytes, performs three payment updates and
+36 file/directory sync calls, and writes 131,242–131,641 total file bytes.
+Every high-rate window delivers 8,000,000 bytes. Both repetitions appear below
+in trial order; totals include independent allowance checkpoints and upkeep.
+
+| Maximum age (ms) | Updates | SDK snapshot bytes | Receiver SQLite family bytes | Relay journal bytes | Wallet shared-memory bytes | Total file bytes | File/directory sync calls |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 250 | 4 / 4 | 58,083 / 58,083 | 67,696 / 67,696 | 44,287 / 45,129 | 88 / 80 | 170,154 / 170,988 | 50 / 52 |
+| 500 | 3 / 3 | 43,562 / 43,562 | 50,772 / 50,772 | 35,645 / 42,232 | 88 / 88 | 130,067 / 136,654 | 42 / 42 |
+| 1000 | 2 / 2 | 29,041 / 29,041 | 33,848 / 33,848 | 27,968 / 24,403 | 88 / 80 | 90,945 / 87,372 | 30 / 30 |
+| 2000 | 2 / 2 | 29,042 / 29,041 | 33,848 / 33,848 | 98,851 / 41,847 | 88 / 88 | 161,829 / 104,824 | 48 / 34 |
+
+The two traced repetitions per policy do not establish an optimal payment
+cadence. At 1 s, the high-rate pair writes about 0.0109–0.0114 file bytes per
+delivered application byte, versus 0.0163–0.0171 at 500 ms. Two seconds does not
+consistently lower total writes because independent checkpoints also contribute.
+The 500-ms default remains unchanged. These are successful write-like
+syscall lengths and sync calls, not physical media writes, flash wear, SQLite
+commit counts or memory-mapped write traffic. See SQLite's
+[WAL-index description](https://sqlite.org/walformat.html) and the
+[capture contract](../../testing/relay-cadence/README.md#matched-storage-cadence-capture).
+
+Every boundary preserves authorization, acknowledged credit, payment activity
+and durable-operation counters. 8 msat of already-covered usage appear outside
+workload windows and remain separately reported. 3 verified tracer detach
+events interrupt event-counter writes; they are counted without inventing
+successful bytes. No file operation is incomplete, failed or unmatched, and
+all target processes survive clean detachment.
+
+The initial current pilot remains failed: its older guard classified 120 bytes
+of wallet shared-memory upkeep as a financial write. All 384 test sats were
+collected and its five resources removed. The new classification retains those
+costs, rejects financial database/WAL/rollback-journal writes and idle payment
+activity, and passes all 41 storage and 129 diagnostic checks, including the
+new classification regression. A fresh 500-ms pilot passes before this full
+matrix; it delivers all 11,712
+payloads, collects all 384 test sats and reproduces all 12 raw traces. Runtime
+binaries and financial policy are unchanged by the classification correction.
+
+## Earlier native matrix — 6 October 2026
+
+The current production source on `6a33df2f7`, with the integrated refund-client
+reuse and purchase projection, passes the existing eight-trial matrix. Five real
+service processes and the test mint share a two-core native Linux scope over UDP
+loopback. Policies run in forward and reverse order with unchanged idle, bursty,
+steady and high-rate workloads, 8,000-msat grace, 4,000-msat windows, 256-sat channel
+capacities, one-msat/KiB tariff and three-second payment tail. Setup and settlement
+remain outside workload measurements.
+The measured daemon uses the ordinary measurements-enabled binary, core default
+features without `sim-transport`, and the wallet SDK without `simulation`. The
+existing test harness retains simulation support for its capped test mint.
+
+All 285,696 payloads arrive, with zero duplicates, invalid payloads, invalid
+timestamps or controller errors. Strict delivery, payment-boundary and cost
+validation passes. All 40,960 test sats are collected. Source, binary, dependency,
+stopped-process and ten-file local archive verification passes in
+`work/normal-runtime-cadence-r183`, with no temporary financial residue. Its
+borrowed daemon and harness also match their closed build archives. No competing
+builds or tests run during the matrix. The earlier matrix in
+`work/current-cadence-r177` remains preserved; its daemon also enabled core
+`sim-transport` and SDK `simulation`, so it has a separate image scope.
+
+High-rate values average two trials per policy. Each trial delivers 32,000,000
+application bytes; costs sum all five service processes.
+
+| Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Process CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 61 | 10.51 | 435.88 | 140.88 | 0.169 |
+| 500 ms | 44 | 7.81 | 311.58 | 101.63 | 0.167 |
+| 1 s | 40 | 6.90 | 280.07 | 92.39 | 0.164 |
+| 2 s | 40 | 6.98 | 279.04 | 92.39 | 0.166 |
+
+Idle windows record zero payment updates, CPU and journal work. Bursty windows
+average two updates under every policy. Steady windows average 19/19/14/10 updates
+and 33.09/34.61/25.42/17.18 payment CPU ms per delivered MiB respectively. All
+high-rate latency histograms place their 95th percentile within the one-ms bucket,
+using the shared-host clock assumption. These observations do not establish
+independent-router latency or an optimal policy; the 500-ms default stays unchanged.
+
+Payment CPU covers synchronous measurement spans. Journal bytes are logical relay
+writes, excluding wallet SQLite and physical storage. Local payment-carrier bytes
+include submitted TCP/FIPS segments, acknowledgments and retries, excluding opaque
+transit and UDP/kernel/radio framing; they are not complete physical wire cost.
+Whole-process CPU includes routing and observation work. This matched current-build
+result does not isolate either optimization's effect or accept physical devices,
+impaired links, sustained capacity, power loss or production deployment.
+
+## Matched router cadence matrix — 3 October 2026
+
+The full eight-trial hardware matrix passes on the standalone `80bf5baec`
+ARM64 runtime, using the unchanged `59c8901c2` harness. The three OpenWrt
+routers use native Ethernet over their dedicated 802.11s radio, with one paid
+middle relay and two funded directions. Candidate journals remain on persistent
+overlay/UBIFS storage. The optimized, measurements-enabled executable is
+`4a53448ae49162f7643e0c47de2b4bea0ca45806ca34ab8e73442d75e130c0d6`.
+
+Policies run in 250/500/1000/2000/2000/1000/500/250-ms order. Each fresh trial
+retains the default 8,000-msat unpaid allowance, 4,000-msat durable window,
+32-sat channel capacities, one-msat/KiB tariff and common three-second payment
+tail. The workloads are four seconds idle, eight 64-packet bursts, 3,200 packets
+at 400 packets/s, and 8,000 packets at 4,000 packets/s. Payloads are 1,000 bytes;
+each burst retains its final 800-ms sleep. Measured payloads are not retried.
+
+All 93,696 submitted payloads arrive, including all 64,000 high-rate payloads.
+There are 151 reordered packets, no duplicates or invalid payloads, and no
+controller errors. Strict delivery, payment-boundary and cost validation passes.
+Every idle and bursty window records zero new payment updates, usage polls,
+payment CPU, journal work and local payment-carrier submissions. This describes
+those measured windows; it does not classify the burst traffic as free or remove
+the initial purchases. Every steady window completes three payment updates.
+
+High-rate costs below average two trials per policy. Payment costs sum all three
+candidate processes; each trial delivers 8,000,000 application bytes.
+
+| Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB | Middle-router CPU s / delivered MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 250 ms | 4 | 29.55 | 37.40 | 9.53 | 0.291 |
+| 500 ms | 3 | 23.18 | 24.12 | 7.15 | 0.287 |
+| 1 s | 2 | 14.34 | 15.70 | 4.76 | 0.284 |
+| 2 s | 2 | 14.44 | 17.54 | 4.76 | 0.280 |
+
+Payment CPU covers the existing synchronous spans, not complete transport or
+wallet cost. Journal bytes are logical relay writes, excluding wallet SQLite and
+physical flash writes. Local payment-carrier bytes include submitted TCP/FIPS
+segments, acknowledgments, retries and the Ethernet transport prefix; they
+exclude opaque transit, kernel/radio framing, radio retries and airtime. Record
+bytes and carrier bytes are nested measurements, not additive overhead.
+OS process I/O is unavailable on all three routers and remains null. Independent
+router clocks provide no one-way latency. CPU windows include sampling and the
+fixed tail; raw evidence retains each repetition and costs between windows.
+
+All sixteen channels settle, all 3,072 test sats are collected and all 2,142
+management checks pass. Independent closure reruns the strict analyzer, checks
+the source/artifact evidence and verifies restored router baselines, stopped
+candidate/guard/mint processes, and removed temporary executables and filters.
+The receipt is `work/hardware-current-r1/cadence-current-r2/closure.json` in the
+private recovery bundle, SHA-256
+`5c022698637de06f1f15a2fc4cf5c141f7e402936ece5c3f6e846090b6b4c56f`;
+`summary.json` and `reduced-summary.json` retain the complete and reduced results.
+The sixteen focused hardware-harness checks and 129 analyzer checks pass.
+
+The 1-s and 2-s settings have fewer updates and lower measured payment cost in
+this finite high-rate workload. Two repetitions do not establish an optimal
+cadence or a significant whole-router improvement, so the 500-ms default stays
+unchanged. The two-second burst does not qualify sustained capacity, impaired
+radio conditions, mobile handover, flash lifetime, physical power loss, a long
+soak or production deployment. Earlier packaged and phone acceptance retains
+its recorded revision.
+
+## Router load and process recovery — 3 October 2026
+
+The same standalone ARM64 build used for the router pilot (`5b64cf8b184b`,
+runtime `6f97dfb03a41`) passes the longer `5fce2fa94` hardware harness. Twelve
+alternating forward/reverse streams each deliver all 4,000 × 1,000-byte packets
+at 200 packets/s: 48,000 packets and 48 MB in total, without loss, duplicates,
+invalid packets or reordering. Each measured stream lasts 20.47–20.51 seconds;
+the six pairs retain successful automatic-payment observations between them.
+
+After the third pair, an ownership-checked process kill stops the middle relay.
+It restarts from the same persistent overlay/UBIFS account. Its identity, both
+original channels, quote agreements and lifetime budgets remain unchanged.
+Recovery conservatively records exactly 4,000 msat of unbilled exposure per
+channel, matching each stopped journal's durable ceiling minus reserved usage.
+Fresh bidirectional probes and financial reconciliation complete within 24.95
+seconds of the restart attempt; the remaining six measured streams then pass.
+No payload stream is offered while the process is stopped.
+
+The 500-ms cadence, 8,000-msat unpaid allowance, 4,000-msat durable window,
+32-sat channel capacities and original spending limits remain unchanged. The
+one-msat/KiB tariff and 32-MiB quote grants are set before the run. Both channels
+settle, all 384 test sats are collected, and all 606 management checks pass.
+Independent closure verifies restored router baselines, stopped candidate
+services and mint, and removal of temporary executables and test filters.
+
+The closed receipt is `work/hardware-current-r1/restart-load-r1/closure.json`
+in the private recovery bundle. All 30 focused Linux harness checks pass,
+including the real process-ownership checks. This accepts finite paid traffic
+before and after one process crash. Physical power loss, uninterrupted traffic
+during restart, maximum throughput, long-running operation and Pixel acceptance
+remain separate requirements.
+
+### Injected frame loss before and after restart
+
+A follow-up on the identical ARM64 executable uses harness `26c6d7656` and the
+same twelve-stream workload, financial limits and persistent storage. During
+the second and fifth stream pairs, each receiving endpoint drops every twentieth
+test-EtherType frame from the middle router. The owned ingress rules exclude
+ordinary traffic and are removed before the next healthy pair.
+
+All 32,000 payloads in the eight healthy/recovery streams arrive. The four
+impaired streams deliver 3,804, 3,800, 3,806 and 3,800 of 4,000 payloads:
+15,210/16,000 (95.06%) overall. There are no duplicates, invalid payloads or
+reordered payloads. The rules count 818 dropped frames during those stream
+observations, against 790 missing payloads. Those counters include control
+traffic and do not establish individual missing-payload attribution.
+
+Both original channels advance automatic payments while each impairment is
+still enabled. The middle process restart retains the original accounts,
+channels, quote agreements and budgets; its stopped journal again yields
+exactly 4,000 msat of unbilled exposure per channel. Fresh probes and financial
+reconciliation complete within 30.07 seconds of the restart attempt. The
+subsequent healthy, impaired and recovery pairs pass without new purchases.
+
+Both channels settle, all 384 test sats are collected and all 633 management
+checks pass. Independent closure checks the actual loss-rule selectors,
+unchanged original state and prior links, removed filters/executables, and
+terminal candidate/guard/mint exit. The receipt is
+`work/hardware-current-r1/restart-loss-r1/closure.json` in the private recovery
+bundle. Eighteen focused harness checks pass, including uncertain installation
+and partial-cleanup failures. This accepts bounded injected frame loss around a
+process restart; it does not simulate physical radio interference, power loss,
+traffic during the stopped interval, maximum throughput or a long soak.
+
+The same workload also passes on the current `80bf5baec` ARM64 executable
+(`4a53448ae49162f7643e0c47de2b4bea0ca45806ca34ab8e73442d75e130c0d6`),
+using unchanged harness inputs at `d8a4dc7a6`. All eight healthy/recovery streams
+deliver 32,000/32,000 payloads. The four impaired streams deliver 3,799, 3,798,
+3,800 and 3,804: 15,201/16,000 (95.01%). No payloads are duplicated, invalid or
+reordered. The filters count 818 dropped test frames during those observations,
+including control traffic; 799 missing payloads cannot be attributed individually.
+
+Both original channels advance payments while each loss phase remains enabled.
+Fresh probes and financial reconciliation finish within 16.77 seconds of the
+restart attempt, retaining exactly 4,000 msat of unbilled exposure per channel.
+Loss is disabled during the restart itself; this does not test discovery recovery
+while impairment remains active. All 384 test sats are collected, all 612
+management checks pass, and independent closure verifies restored device state,
+removed test filters/executables and stopped candidate/guard/mint processes.
+The receipt is `work/hardware-current-r1/restart-loss-r2/closure.json` in the
+private recovery bundle, SHA-256
+`140e1aa8b54a8ffe5319d8fb20f69dca54f42efebca5181e34e8c578e867c0f9`.
+This accepts the recorded finite loss/restart case on the newer runtime; it does
+not extend the sustained-capacity, renewal, mobility or power-loss claims.
+
+### Active stream during process restart
+
+The newer `699840f52` ARM64 runtime fails the `603942bc9` active-restart
+harness. The first six streams deliver all 24,000 payloads. During the fourth
+round's forward stream, the middle process is killed and reopened in 0.99 seconds.
+The sender submits all 4,000 payloads over 20 seconds, but only 224 arrive; its
+receiver count does not increase after the new middle process is observed.
+The test therefore fails its requirement to resume delivery within the same
+sending window and does not run the remaining five streams.
+
+The new middle process initially has no peers, despite its Ethernet transport
+being up and having sent a discovery beacon. Surviving endpoints later report
+the old direct paths stale at the 30-second link-dead timeout. The native
+reproduction below isolates the discarded startup hint. The earlier
+paused-traffic restart passes do not establish recovery under active traffic.
+
+Both 4,000-msat unbilled exposure bounds remain recorded and all 384 test sats
+are collected. All 432 management checks pass; independent closure verifies
+restored router state and stopped candidate, guard and mint processes. The
+failed receipt is `work/hardware-current-r1/restart-active-r1/closure.json` in
+the private recovery bundle. The harness's 31 focused Linux checks pass,
+including rejection of late/stale delivery and preservation of the exact sender
+and receiver results after an uncertain crash. No runtime behavior was changed.
+
+The subsequent native regression reproduces one concrete cause: a single real
+Ethernet startup beacon is drained while the old authenticated owner is fresh,
+then no recovery starts before another periodic beacon. Retaining a bounded hint
+fixes that case. The candidate also discards hints after authenticated link
+activity and waits one heartbeat opportunity plus a maintenance tick, avoiding
+unnecessary handshakes when a healthy heartbeat arrives slightly late. Retry and
+expiry use monotonic time; current-owner receive counters identify activity.
+
+On frozen `discovery-restart-green-r3`, five real-veth tests pass in an isolated
+Linux network namespace, including mixed UDP/Ethernet, the restart case with a
+temporarily full link budget, and healthy heartbeat jitter. Another 113 focused
+discovery, liveness, same-path ownership and replay checks pass. Both new failures
+were observed before their fixes. Formatting and file-length checks pass.
+
+The unchanged physical test passes on the subsequent `80bf5baec` ARM64 runtime
+(`4a53448ae49162f7643e0c47de2b4bea0ca45806ca34ab8e73442d75e130c0d6`).
+The process restart takes 0.985 seconds; fresh delivery resumes 14.12 seconds
+after the kill, before the original 20-second send ends. The active stream
+delivers 1,290/4,000 payloads, and the other eleven deliver 44,000/44,000, for
+45,290/48,000 overall. All six bidirectional rounds reconcile automatic payments
+with the same channels, capital and budgets. Both 4,000-msat unbilled exposure
+bounds remain exact. All 384 test sats are collected and all 573 management
+checks pass.
+
+Independent closure verifies restored router state and stopped candidate,
+guard and mint processes. The receipt is
+`work/hardware-current-r1/restart-active-r2/closure.json` in the private recovery
+bundle, SHA-256 `06d721159d73d8bd14dfedb028416b748383263769dc8de7d426653aafe72252`.
+This accepts one finite active process-restart scenario on the recorded devices;
+it does not qualify physical power loss, maximum throughput, mobile handover,
+long soaks or production readiness.
+
+## Default-limit native matrix on SSD — 3 October 2026
+
+The complete untraced matrix passes on the frozen `060f12a56bac` standalone
+runtime and driver, using persistent SSD/ext4 storage. It restores the default
+8,000-msat unpaid allowance and 4,000-msat durable window. Policies run in the
+unchanged 250/500/1000/2000/2000/1000/500/250-ms order with the original workloads,
+drains, three-second payment tails and spending limits.
+
+All 285,696 payload packets arrive, including all 256,000 high-rate packets.
+Four arrive out of order; none are duplicated, invalid or timestamp-rejected,
+and no controller error is recorded. All 48 channels settle and all 40,960 test
+sats are collected. Strict clean-link, payment-boundary, prepaid-gap and exact
+whole-trial accounting checks pass. Every idle window has zero payment polling,
+updates, payment CPU and journal work.
+
+High-rate observations below average two trials per policy, summing all five
+service processes. Each trial delivers 32,000,000 application bytes.
+
+| Maximum age | Payment updates | Payment CPU ms / delivered MiB | Payment journal KiB | Local payment carrier KiB |
+| --- | ---: | ---: | ---: | ---: |
+| 250 ms | 58 | 11.99 | 416.62 | 133.96 |
+| 500 ms | 44 | 9.25 | 312.83 | 101.63 |
+| 1 s | 40 | 7.71 | 281.41 | 92.39 |
+| 2 s | 40 | 7.88 | 284.55 | 92.39 |
+
+Payment CPU covers the existing synchronous spans; whole-process observations
+range from 170.81 to 188.02 ms per delivered MiB. Journal bytes are logical relay
+writes, excluding wallet SQLite and physical media writes. Carrier counts cover
+local payment-service submissions, including TCP/FIPS segments and retries;
+physical wire bytes remain unmeasured. Raw JSON retains workload intervals,
+guard gaps and whole-trial totals separately. Mean high-rate packet latency
+ranges from 0.411 to 0.428 ms on this local host.
+
+All 87 samples are compiler-free with no cgroup CPU throttling. Ordinary host
+activity remains: mean sampled I/O-full average is 16.40%, peaking at 25.57%.
+This accepts the recorded functional/accounting matrix, not isolated performance
+attribution or an optimal policy. Two repetitions and one topology do not
+justify changing the 500-ms default. The 1-s and 2-s policies perform the same
+number of high-rate updates, consistent with the usage trigger limiting their
+effective cadence at this rate.
+
+Source/executable hashes and terminal process/cgroup/lock checks pass. The closed
+receipt is `work/payment-reply-recovery/cadence-ssd-r1-1/closure.json`; the reduced
+summary is `work/payment-reply-recovery/cadence-ssd-r1-summary.json` in the private
+recovery bundle. The earlier lossy disk-array results remain valid evidence of
+storage-pressure limitations. This matrix does not accept arbitrary disks,
+physical power-loss recovery, radio roaming, or the latest packaged/phone build.
+
+## Persistent storage comparison — 3 October 2026
+
+A predeclared HDD/SSD/SSD/HDD sequence uses the same traced `060f12a56bac`
+runtime and driver. Only temporary workload storage changes, between mechanical
+RAID/XFS and NVMe/ext4; both are persistent filesystems. Each invocation has two
+unchanged five-process trials with 16,000-msat unpaid allowance, a 4,000-msat
+durable window, a 4,000-msat payment trigger and a 500-ms maximum payment age.
+
+| Storage path | High-rate delivered / submitted | Delivery | First-relay publication medians across trials | Queue-full drops |
+| --- | ---: | ---: | ---: | ---: |
+| HDD / XFS | 119,095 / 128,000 | 93.04% | 84.78–91.86 ms | 8,905 |
+| SSD / ext4 | 128,000 / 128,000 | 100% | 10.43–10.47 ms | 0 |
+
+The first relay queues 1,789 packets across the HDD trials, with readmission
+waits reaching 713.29 ms and publication reaching 871.42 ms. Neither SSD run
+queues packets; its longest observed first-relay publication is 20.43 ms.
+Individual delivery counts in execution order are 31,156/31,851,
+32,000/32,000, 32,000/32,000 and 26,793/29,295, each out of 32,000.
+Native queue counters include control traffic; matching the total application
+loss does not identify individual dropped packets.
+
+Bursty and steady delivery is complete. All 48 channels settle and all 40,960
+test sats are collected. Both SSD runs and the last HDD run pass the diagnostic
+cost-boundary checks. The first HDD run retains an unfinished-payment boundary
+rejection, so no aggregate HDD CPU-cost comparison is accepted. Later settlement
+does not repair that sample. All 121 host samples are compiler-free, with no
+cgroup CPU throttling. Ordinary background I/O remains active; mean sampled
+I/O-full averages are 10.09%, 11.29%, 11.43% and 9.85% in execution order.
+
+This identifies storage latency as a major contributor under these conditions;
+device, filesystem and contention change together. It does not establish a
+hardware-only causal comparison, optimal cadence or loss-free behavior under
+arbitrary storage stalls. No production limits, buffers or crash exposure are
+increased. The SSD result still uses doubled unpaid allowance and tracing;
+the full untraced matrix at default limits requires separate acceptance.
+All four runs are closed and rehashed. Raw evidence and the fixed-sequence
+summary remain under `work/payment-reply-recovery/storage-abba-r1-*` in the
+private recovery bundle.
+
+## Current router workload pilot — 3 October 2026
+
+The verified static ARM64 OpenWrt build (`5b64cf8b184b`, runtime
+`6f97dfb03a41`, measurements enabled) passes the existing three-router
+500-ms pilot with harness `2e0b39520`. It retains the default 4,000-msat
+durable window and 8,000-msat unpaid allowance, a separate capped LAN test
+mint, both paying directions and the original three-second payment tails.
+
+| Workload | Delivered / submitted | Middle-router CPU seconds / delivered MiB |
+| --- | ---: | ---: |
+| Idle | 0 / 0 | — |
+| Bursty | 512 / 512 | 1.526 |
+| Steady | 3,200 / 3,200 | 0.946 |
+| High rate | 8,000 / 8,000 | 0.288 |
+
+All 11,712 payloads arrive, with 24 reordered and none missing, duplicated or
+invalid. Idle causes no payment or journal work. Steady and high-rate workloads
+each complete three payment updates; strict delivery, payment-boundary and cost
+validation passes. Both channels settle, all 384 test sats are collected and
+every test wallet is empty. All 261 management checks pass; independent closure
+confirms restored router baselines, stopped candidate processes and mint, and
+removed test filters and executables.
+
+The candidate journals reside on persistent OpenWrt overlay storage backed by
+UBIFS; only the temporary executable and sockets use `/tmp`. The original
+closure's scope text incorrectly says tmpfs, although its raw filesystem output
+already shows overlay. A separately retained `storage-clarification.json` binds
+that correction to the original receipt, saved configuration and fresh mount
+checks without changing test results. Evidence is under
+`work/hardware-current-r1/cadence-current-r1` in the private recovery bundle.
+
+This is one finite workload sequence: high rate offers 4,000 packets/s for two
+seconds. It establishes neither sustained capacity nor a cadence winner,
+physical power-loss safety or flash lifetime. CPU observations include sampling
+and the fixed tail; independent router clocks provide no one-way latency.
+Earlier package and phone acceptance retain their original revisions.
+
+## Admission timing capture — 3 October 2026
+
+Opt-in instrumentation at `060f12a56bac` measures journal publication and queued
+readmission using monotonic clocks. The frozen standalone build passes the real
+UDP publication-wakeup regression, delayed-crypto accounting, checkpoint-callback
+and log-retention checks, three parser tests, and strict Clippy. Normal logging
+leaves the extra tracing disabled; forwarding and accounting semantics are
+unchanged.
+
+The first two-trial high-rate capture delivers 23,743 and 31,267 of 32,000
+packets. At the first relay, publication medians are 83.72 and 91.14 ms, maxima
+822.67 and 154.06 ms. Queued packet waits reach 687.98 and 135.99 ms.
+Publication includes snapshot/serialization, disk writes and allowance
+publication; readmission ends before transport submission. Wakeups can coalesce,
+so these events do not establish an exact causal refill-to-packet interval.
+
+The scratch directory resolves to disk-backed XFS on a mechanical RAID array.
+Both trials pass diagnostic financial-boundary checks, settle all twelve
+channels and collect all 10,240 test sats. Delivery loss still rejects clean-link
+acceptance. Full logs and source/binary hashes verify; all owned processes and
+locks are closed. The private receipt is
+`work/payment-reply-recovery/admission-timing-load-r1-1/closure.json`.
+
+## Durable-window diagnostic — 3 October 2026
+
+A fixed A–B–B–A sequence compares 4,000 and 8,000 msat durable windows with
+the same standalone runtime (`6f97dfb03a41`) and driver (`d39bfeb338c2`).
+Unpaid allowance stays at 16,000 msat, the debt trigger at 4,000 msat and the
+maximum payment delay at 500 ms. The five-node UDP workloads, two trials per
+invocation, fixed drains and payment tails are unchanged.
+
+| Durable window | High-rate delivered / submitted | Delivery | Mean delivered-packet latency | Credit / durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 4 sats | 90,128 / 128,000 | 70.41% | 15.02 ms | 18,129 / 48,612 |
+| 8 sats | 125,294 / 128,000 | 97.89% | 1.23 ms | 2,190 / 3,032 |
+
+Individual delivery percentages in execution order are 79.01/78.51,
+99.56/100, 91.98/100 and 79.45/44.67. Bursty and steady delivery is complete.
+All 48 channels settle and all 40,960 test sats are collected. The final
+4-sat invocation fails the unchanged cost validator: payment work remains in
+flight at fixed high-rate and steady sample boundaries. No payment failure
+stage is reported, and later settlement completes; the earlier measurement
+boundaries remain rejected. Therefore no aggregate CPU-cost comparison is
+accepted. The 8-sat observations alone are 8.21 ms payment CPU and 176.63 ms
+total process CPU per delivered MiB.
+
+All 159 host samples are compiler-free with no cgroup CPU throttling. Ordinary
+background I/O varies: mean sampled I/O-full averages are 9.04%, 15.99%, 20.35%
+and 20.63%. Larger windows reduce observed refusals and loss in this sequence,
+but still lose 2,706 high-rate packets and increase permitted unbilled crash
+exposure. Native counters include control traffic; exact refill-to-resumption
+latency remains unmeasured. Defaults and production readiness are unchanged.
+All four runs are closed and rehashed; raw evidence and the summary remain in
+`work/payment-reply-recovery/window-abba-r1-summary.json` in the private recovery
+bundle. Further diagnosis must measure allowance refill and queue delay rather
+than infer timing from aggregate refusal counts.
+
+## Credit headroom diagnostic — 3 October 2026
+
+A fixed A–B–B–A experiment compares 8,000 and 16,000 msat of unpaid allowance
+with the same standalone runtime (`6f97dfb03a41`) and driver (`31bd4ca6f82d`).
+The payment trigger remains 4,000 msat, the maximum delay 500 ms and the durable
+window 4,000 msat. Each invocation repeats the unchanged five-node native UDP
+workloads twice. High-rate traffic sends 32,000 payloads of 1,000 bytes at
+4,000 packets/s, followed by the original bounded drain and payment tail.
+
+| Unpaid allowance | High-rate delivered / submitted | Delivery | Mean delivered-packet latency | Credit / durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 8 sats | 80,108 / 128,000 | 62.58% | 21.10 ms | 62,525 / 21,061 |
+| 16 sats | 113,595 / 128,000 | 88.75% | 6.18 ms | 12,164 / 17,555 |
+
+Individual high-rate delivery percentages, in execution order, are
+67.80/66.95, 92.81/98.78, 86.40/76.99 and 56.43/59.15. Bursty and steady
+delivery is complete. Every diagnostic passes its existing cost-boundary checks;
+all 48 channels settle and all 40,960 test sats are collected. The high-rate
+diagnostic retains its explicit treatment of local evidence for undelivered
+packets; this does not accept the stricter clean-link cadence matrix.
+
+Measured payment CPU is 11.21 versus 7.02 ms per delivered MiB; total process CPU
+is 229.52 versus 179.72 ms per delivered MiB. These are observations from lossy
+runs, not accepted performance improvements. All 163 host samples are
+compiler-free and show no cgroup CPU throttling, but background I/O-full averages
+vary between runs (8.14%, 14.77%, 15.19%, 15.34%). No scheduling reservation or
+repeat selected for a better result is used.
+
+Increasing headroom reduces observed credit refusals and loss, but does not
+resolve high-rate delivery. Native queue counters include control traffic and
+cannot attribute individual probe loss. Exact allowance-publication-to-resumption
+latency is still unmeasured. The next diagnosis must distinguish payment refill
+delay from durable-window delay; neither production defaults nor readiness
+change. All source/executable hashes and terminal process/lock checks pass.
+The private recovery bundle retains the four raw runs and
+`work/payment-reply-recovery/headroom-abba-r1-summary.json`.
+
+## Service admission wrapper diagnostic — 3 October 2026
+
+Two sequential 500-ms diagnostics compare the pre-wait daemon with the bounded
+admission-wait daemon using the identical frozen driver, workload and limits.
+All samples are compiler-free, but background I/O pressure differs: sampled
+I/O-full averages are 13.11% for the baseline and 5.03% for the candidate.
+Neither run accepts performance or a change to the 500-ms default.
+
+| Runtime revision | High-rate submitted | Missing packets | Deferred packets |
+| --- | ---: | ---: | ---: |
+| `6d678ea9923b` | 64,000 | 2,074 | Not instrumented |
+| `c3ebe10ce63c` | 64,000 | 3,911 | 0 |
+
+Bursty and steady delivery is complete. Each run settles 12 channels and
+reconciles 10,240 test sats, but both high-rate rows in each run fail the existing
+payment-boundary validator. This conservation result does not accept delivery,
+payment-overhead attribution or exact per-packet charging.
+
+The zero deferrals exposed an integration gap: `ServiceForwarder` inherited the
+default decision method, whose optional-admission interface collapsed the inner
+policy's `Retry` into `Reject`. The earlier controller/core tests bypassed that
+wrapper. A wrapper regression and a real UDP/TCP daemon regression both reproduce
+the failure on the unchanged `c3ebe10ce63c` executable. Sources and executable
+hashes verify; owned processes and locks are closed. The raw comparison and
+closure evidence is retained in `work/admission-wait/comparison-r2-review.json`
+in the local recovery bundle. The later wrapper correction has separate
+[finite daemon acceptance](READINESS.md); high-rate and cadence-overhead
+acceptance still require new measurements. These failed runs remain preserved.
+
+### Corrected service under load
+
+The subsequent `ab2d76916a1d` daemon repeats the same two-trial diagnostic with
+the unchanged driver, 500-ms policy and financial limits. Its high-rate trials
+lose 2,805 and 1,158 of 32,000 packets respectively. All 3,963 native policy drops
+occur at the first relay, matching application loss in this run; other recorded
+native drop/error counters stay zero. The service now records 1,447 deferred
+packets, so the waiting path is active. Its 2,937 credit and 4,794 durable-window
+refusal counts include repeated attempts and are not unique packet losses.
+These aggregate counters could not distinguish a full waiting queue, expired
+wait, changed peer/policy or permanent refusal. The category diagnostic below
+identifies overflow in a later run; these earlier drops remain unclassified.
+
+Bursty and steady delivery is complete. All 12 channels settle and 10,240 test
+sats reconcile, but both high-rate payment-boundary checks still reject the
+report. All samples are compiler-free; sampled I/O-full averages 8.20%, with
+ordinary apps and VMs running. This is not a speedup, cadence comparison or
+device acceptance. All 36,141 source inputs and frozen executable hashes verify,
+and process groups, cgroup and build locks close. The retained evidence is
+`work/admission-service/load-r1/review.json` in the local recovery bundle.
+
+### Waiting-queue overflow attribution
+
+The `f3609ed433dd` diagnostic adds disjoint full, expired and invalidated waiting
+drop counters inside the existing policy total; the remainder is explicit
+rejection. Forwarding decisions, queue bounds, financial limits, 500-ms cadence
+and frozen traffic driver are unchanged. Six focused core tests, the running
+daemon admission regression, strict core/relay lint and 121 analyzer tests pass.
+
+| High-rate trial | Missing packets | First relay full-queue drops | Second relay full-queue drops |
+| --- | ---: | ---: | ---: |
+| 0 | 6,747 | 6,217 | 530 |
+| 1 | 1,332 | 1,332 | 0 |
+
+All 8,079 policy drops are full-queue drops, matching missing application packets
+in both repeats. Expired waits, invalidated waits, explicit rejections and other
+recorded native drop/error categories stay zero. There are 1,752 deferrals,
+6,428 credit refusal attempts and 9,172 durable-window refusal attempts; attempts
+include retries. This identifies queue overflow while temporary financial
+shortages wait for replenishment. It does not yet explain the replenishment
+latency or establish which shortage dominates each overflow.
+
+Bursty and steady traffic deliver fully. All 12 channels settle and 10,240 test
+sats reconcile. Both high-rate payment boundaries remain rejected because local
+send evidence exceeds acknowledged credit; signed balances are fully
+acknowledged, with no payment update in flight or recorded controller error.
+All samples are compiler-free; sampled I/O-full averages 2.70%. This daemon was
+built with `cargo build` rather than the preceding `cargo test` target, so this
+is not a matched performance comparison. No speedup, default or device
+acceptance follows. Source and executable hashes verify and owned processes,
+cgroup and locks close. Functional and load evidence are retained separately in
+`work/admission-drop-counters/r1/acceptance.json` and
+`work/admission-drop-counters/load-r1/review.json` in the local recovery bundle.
+
+## Superseded window checkpoints — 2 October 2026
+
+At `6d678ea9923b`, a scheduled window checkpoint rechecks whether it is due after
+acquiring the existing writer lock. A payment or usage checkpoint can have
+advanced the window while that job was waiting. The cheap scheduling hint still
+avoids starting idle jobs; explicit usage/payment checkpoints remain durable.
+
+The existing durable integration test models this ordering sequentially. With a
+helper retaining the old unconditional behavior, it fails because the superseded
+job replaces the journal. The fixed method skips that replacement. All 12 durable
+tests pass, including crash exposure and failed-writer suspension, as do strict
+all-feature/default relay lint, formatting and source-size checks. This regression
+does not itself exercise a contended writer lock.
+
+The unchanged two-trial diagnostic uses the same harness executable and the
+original 500-ms cadence, rates, allowances and tails. Across its high-rate
+workloads, 139 completed window-checkpoint spans contain 110 journal commits
+and 220 syncs: 29 operations finish without another journal commit. Counts are
+stable across the surrounding service guards, with no recorded controller error.
+Idle, bursty and steady workloads record no window-checkpoint spans.
+
+| High-rate trial | Missing application packets | Native policy refusals | Credit-limit refusal attempts | Durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 8,718 | 8,718 | 5,169 | 3,549 |
+| 1 | 15,338 | 15,340 | 7,374 | 7,966 |
+
+Refusals occur at the first two relays. Their financial counters sum to native
+policy refusals; native counts also include protocol traffic, so the second
+trial has two more refusals than missing application packets. The attempt and
+predicate-order caveats below still apply. Bursty and steady traffic deliver
+fully, other recorded native forwarding-drop/error counters remain zero, and all
+12 channels settle with all 10,240 test sats reconciled. Overall delivery is
+47,368 of 71,424 packets; the high-rate failure remains unresolved.
+
+The test takes 176.04 seconds and the guarded runner 182.84 seconds. An independent
+build starts after the compiler-free preflight and appears in 21 of 36 host
+samples. Ordinary applications and VMs stay running. This run measures skipped
+journal commits, not a throughput/CPU improvement or regression against the
+earlier runs. The full cadence comparison remains rejected; the default stays
+500 ms and hardware acceptance is unchanged.
+
+All 36,136 source inputs and selected executables retain their hashes; owned
+process groups, cgroup and target locks close. Before/after regression, build,
+local-gate and runtime evidence is retained in `work/window-recheck/acceptance.json`
+in the local recovery bundle; derived checkpoint counts are in `io-summary.json`.
+The raw report SHA-256 is
+`695a045f013eb5e6fcf3266fc66a864d43e7fd4bb42182210544523253f2d041`.
+
+## Credit and durable-window attribution — 2 October 2026
+
+The follow-on diagnostic uses `29ded47759ea`, which adds optional process-local
+counters at the existing credit-limit and durable-window refusal branches.
+Admission decisions, financial limits, workloads, cadence and tails are unchanged.
+The harness executable is identical to the previous forwarding diagnostic.
+
+| High-rate trial | Missing application packets | First relay policy refusals | Credit-limit refusal attempts | Durable-window refusal attempts |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 785 | 785 | 521 | 264 |
+| 1 | 778 | 778 | 363 | 415 |
+
+All recorded refusals occur at the first relay. The two admission counters sum
+to its native policy refusals and the application loss in each trial. Bursty and
+steady traffic deliver every packet; no other native forwarding-drop, decode or
+TTL counter increases. Overall, 69,861 of 71,424 packets arrive, all 12 channels
+settle and all 10,240 test sats reconcile.
+
+These counters count admission attempts, not unique packets. Fallback can repeat
+an admission, credit is checked before the durable window, and the credit branch
+combines channel capacity and relationship credit. Window refusals can also
+include packets larger than the configured window. Earlier refusal branches are
+not instrumented. Matching process IDs were verified across the service guards
+and the enclosing native snapshots; the different intervals still prevent a
+general one-to-one interpretation. This run demonstrates that both recorded
+bounds are reached; it does not yet identify why replenishment falls behind.
+
+The existing 12 durable tests, strict all-feature and default-feature relay lint,
+formatting and source-size checks pass. The diagnostic test takes 165.17 seconds;
+the guarded runner takes 206.16 seconds. All 36,136 source files and frozen
+executables retain their hashes, and owned process groups, cgroup and target lock
+close. No compiler appears in 33 host samples; ordinary VMs remain running.
+
+Evidence is retained in `work/admission-bounds/acceptance.json` in the local
+recovery bundle; the raw report SHA-256 is
+`60a44f3a0360d1e9ef6dd56ab9d77ac3455d2ab4e5b1fd0f14a748a68d1936f0`.
+This accepts counter attribution only. The lower loss than previous runs is not
+an established improvement: no forwarding fix was made and host conditions vary.
+Both payment-credit replenishment and durable-window scheduling need investigation;
+the full cadence comparison remains rejected and the default stays 500 ms.
+
+## Native forwarding-drop attribution — 2 October 2026
+
+The optional diagnostic in harness `ac467ea2d01e` runs two 500-ms trials against
+the exact frozen `18110c330558` daemon from the rejected matrix below, with the
+original workloads, financial limits and tails. It reuses native `show_status` counters around each
+workload; the ordinary matched matrix takes no additional snapshots.
+
+| High-rate trial | Missing application packets | First relay policy refusals | Second relay policy refusals | Other recorded native forwarding drops |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 6,776 | 6,611 | 165 | 0 |
+| 1 | 3,982 | 3,818 | 166 | 0 |
+
+Bursty and steady traffic deliver every packet. Across both trials, 60,666 of
+71,424 application packets arrive; all 12 channels settle and all 10,240 test
+sats reconcile. The first trial's policy refusals exactly match its missing
+application packets. The second has two additional refusals: native counters
+also include protocol traffic and surrounding service snapshots, so they are
+not an application-only packet trace. No route, MTU, decode, TTL or send-error
+counter increases. The evidence locates the observed forwarding loss in policy
+admission; it does not distinguish exhausted credit, durable windows or other
+admission limits, and does not yet establish a fix.
+
+The test passes in 165.88 seconds; the guarded runner completes in 201.38 seconds.
+No host compiler appears in 34 samples; normal applications and VMs remain
+running. All 36,136 source inputs and both selected executables retain their
+hashes; process groups, cgroup and target lock close. The receipt is
+`work/forwarding-drops/acceptance.json` in the local recovery bundle and the raw
+report SHA-256 is
+`6760512c70d7e05f8b58f3e40152d0b2a335133ec6591fb3be5ecca183861cd1`.
+This accepts the diagnostic's execution and evidence, not cadence costs,
+throughput, hardware or the failed matched comparisons below.
+
+## Rejected native Linux comparison after checkpoint fix — 2 October 2026
+
+The unchanged eight-trial matrix on FIPS `18110c330558` still fails acceptance
+after removal of the duplicate payment checkpoint. All 48 channels settle and
+all 40,960 test sats reconcile, but only 268,009 of 285,696 submitted packets
+arrive. The 17,687 missing packets occur in seven high-rate workloads; bursty,
+steady and the other high-rate workload deliver every packet. There are no
+duplicates, invalid packets, invalid timestamps or out-of-order packets.
+
+Both the strict analyzer and its existing loss diagnostic first reject
+unreconciled payment work at a measurement boundary. Raw snapshots contain 12
+such channel/boundary observations and no controller errors. Local sends can
+exceed a provider's admitted usage after drops, so this does not independently
+establish a payment defect. The original rates, spending limits, durable window,
+tails and analyzer remain unchanged; no measured packets are retried.
+
+The worst trial, the second 500-ms repetition, again places the loss at the first
+forwarding relay: it receives 32,048 link packets and sends 25,770 onward; the
+endpoint receives 25,723 application packets. Subsequent link counts closely
+match. That relay's 20 payment-update spans now contain 20 journal commits and
+40 syncs, consistent with the separately accepted checkpoint fix. Its 37 window
+checkpoints accumulate 3.35 seconds of wall time and 9.72 ms of CPU time.
+Operation spans can overlap; they do not prove that durable-window exhaustion
+caused the drops. A separate diagnostic must distinguish admission refusals
+from transport or queue drops before choosing a further change.
+
+The runner takes 629.17 seconds under the same four-CPU quota and 3 GiB memory
+limit. No compiler appears in 125 host samples; an ordinary background VM
+averages 186.30% CPU and host I/O pressure varies. Both current native runs use
+disk-backed XFS journals. The earlier accepted ARM64 comparison used memory-backed
+storage, a different architecture and earlier source. These runs do not isolate
+a software speedup, regression or optimal cadence. The default stays 500 ms.
+
+All 36,135 source inputs and both frozen executables retain their hashes;
+process groups, cgroup and target lock are closed. The raw report SHA-256 is
+`add00693370624050372a05977c5b71a4251a9d1ee11f297cd1aaea345304a7f`.
+The receipt and complete evidence are retained under `work/checkpoint-cadence`
+in the local recovery bundle. Both rejected matrices remain preserved. This run
+adds no accepted cadence-cost comparison, hardware result or package update.
+
+## Rejected current native Linux comparison — 2 October 2026
+
+The unchanged eight-trial matrix completed on FIPS `8b4a9b4a7272`, using the
+current private dependency bundle and the OpenWrt optimization profile on native
+x86-64 Linux. All 48 channels settled and all 40,960 test sats reconciled. The
+strict analyzer rejected delivery loss: 261,557 of 285,696 submitted packets
+arrived. All 24,139 missing packets belong to the high-rate workloads; bursty and
+steady workloads delivered all their packets. There were no duplicates, invalid
+packets or invalid timestamps, and four packets arrived out of order.
+
+The existing loss diagnostic also rejected 14 channel/boundary observations
+where local send evidence exceeded acknowledged payment. This does not establish
+an independent payment defect: dropped sends can legitimately exceed a provider's
+admitted usage. In trial 2, the first forwarding relay received 32,057 link packets
+and sent 22,878 onward during the high-rate workload; the endpoint received 22,820
+application packets. Downstream link counts closely matched. Storage-bound work
+is a lead for investigation: that relay's 47 window-checkpoint spans accumulated
+4.43 seconds of wall time and 11.47 ms of CPU time, while 14 payment-update spans
+accumulated 4.22 seconds and 48.40 ms of CPU time. These spans can overlap and are
+not an accepted cost comparison or a proven cause of the loss.
+
+The matrix took 622.35 seconds under a four-CPU quota and 3 GiB memory limit. No
+host compiler appeared in 124 samples, but a background VM averaged 188.54% CPU
+and host I/O pressure remained present. Sources and both executables retained
+their verified hashes; process groups, cgroup and target lock closed. The raw
+report hash is `a6b0b4147afd1364d61122d1ce31a60ad580f410fd6e87b26dbe4ff91c5359ea`.
+The receipt and complete evidence are retained under `work/cadence-current` in
+the local recovery bundle. The failed matrix is preserved without retries,
+relaxed delivery checks or extra payment flushes. No performance result or policy
+change is accepted from this run; the default remains 500 ms.
+
+## Accepted ARM64 Linux comparison — 30 September 2026
+
+The r37 source bundle uses FIPS `6b367afc9878`, Cashu SDK `c3fd5b2f8c1b`
+and CDK `418380651373`. The existing five-process loopback experiment runs
+with the OpenWrt optimization profile and `measurements` enabled. This
+instrumented executable is separate from the accepted default-feature package.
+The package executables and all 94 indexed acceptance files remain unchanged.
 
 All 285,696 original packets arrive without loss, duplicates, invalid packets or
-rejected timestamps. Five arrive out of order: one steady and three high-rate
-packets in the first 1-s trial, and one high-rate packet in its second trial.
-All eight trials settle six channels each and collect all 40,960 test sats. The unchanged strict analyzer passes, including
-credit/payment boundaries and exact reconciliation of 15 disjoint intervals per
-trial. Its 120 regression tests pass. Source, dependency, lock, analyzer,
-measurement executable and existing package hashes remain unchanged.
+rejected timestamps; 13 arrive out of order. All eight trials settle six channels
+each and collect all 40,960 test sats. The unchanged strict analyzer passes,
+including credit/payment boundaries and exact reconciliation of 15 disjoint
+intervals per trial. Its 121 regression tests pass. The source bundle, lock,
+analyzer and measurement executables remain unchanged throughout verification.
 
 Both directions are funded across three paid forwarding hops. Policies run in
 opposite orders, 250/500/1000/2000 and 2000/1000/500/250 ms. Values below sum all
 five processes and average two workload windows. Each window has the same
 three-second tail. Bursty sends 512, steady 3,200 and high rate 32,000 packets per
 repetition, each with a 1,000-byte payload; offered steady/high rates are 3.2/32 Mbps.
+No measured packets are retried and no explicit payment flush is added.
 
 | Workload | Limit ms | Payment CPU ms | Process CPU ms | Updates | Records KiB | Payment journal KiB | Local carrier KiB | Mean delay ms |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| idle | 250 | 0.00 | 578.93 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| idle | 500 | 0.00 | 600.04 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| idle | 1000 | 0.00 | 696.23 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| idle | 2000 | 0.00 | 751.58 | 0.0 | 0.00 | 0.00 | 0.00 | — |
-| bursty | 250 | 17.14 | 1238.98 | 2.0 | 1.60 | 18.04 | 4.61 | 1.243 |
-| bursty | 500 | 17.64 | 1447.32 | 2.0 | 1.60 | 18.04 | 4.61 | 1.389 |
-| bursty | 1000 | 17.47 | 1564.77 | 2.0 | 1.60 | 18.07 | 4.61 | 1.434 |
-| bursty | 2000 | 20.33 | 1588.11 | 2.0 | 1.60 | 18.10 | 4.61 | 1.423 |
-| steady | 250 | 132.20 | 4753.52 | 19.0 | 15.19 | 175.52 | 43.77 | 1.214 |
-| steady | 500 | 137.17 | 5494.82 | 19.0 | 15.19 | 175.72 | 43.77 | 1.360 |
-| steady | 1000 | 104.41 | 5373.59 | 14.0 | 11.19 | 130.66 | 32.25 | 1.396 |
-| steady | 2000 | 80.22 | 5448.16 | 10.0 | 8.00 | 94.21 | 23.04 | 1.454 |
-| high_rate | 250 | 312.01 | 6418.98 | 63.0 | 50.76 | 602.16 | 145.50 | 2.049 |
-| high_rate | 500 | 244.52 | 6695.10 | 44.0 | 35.46 | 420.59 | 101.63 | 1.235 |
-| high_rate | 1000 | 230.14 | 6825.30 | 40.0 | 32.24 | 378.14 | 92.39 | 1.270 |
-| high_rate | 2000 | 222.54 | 6795.13 | 40.0 | 32.24 | 377.89 | 92.39 | 1.238 |
+| idle | 250 | 0.00 | 688.83 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 500 | 0.00 | 777.80 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 1000 | 0.00 | 628.42 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| idle | 2000 | 0.00 | 674.65 | 0.0 | 0.00 | 0.00 | 0.00 | — |
+| bursty | 250 | 24.55 | 1544.59 | 2.0 | 1.60 | 18.09 | 4.61 | 1.282 |
+| bursty | 500 | 26.40 | 1498.10 | 2.0 | 1.60 | 18.09 | 4.61 | 1.328 |
+| bursty | 1000 | 21.84 | 1434.00 | 2.0 | 1.60 | 18.03 | 4.61 | 1.251 |
+| bursty | 2000 | 23.00 | 1534.85 | 2.0 | 1.60 | 18.09 | 4.61 | 1.351 |
+| steady | 250 | 145.08 | 4870.69 | 19.0 | 15.19 | 176.72 | 43.77 | 1.391 |
+| steady | 500 | 123.12 | 5082.94 | 19.0 | 15.19 | 176.81 | 43.77 | 1.226 |
+| steady | 1000 | 97.05 | 4977.20 | 14.0 | 11.19 | 130.24 | 32.25 | 1.262 |
+| steady | 2000 | 79.57 | 5013.30 | 10.0 | 8.00 | 94.24 | 23.04 | 1.407 |
+| high_rate | 250 | 296.20 | 7247.45 | 60.0 | 48.34 | 576.04 | 138.57 | 1.120 |
+| high_rate | 500 | 243.26 | 6506.68 | 44.0 | 35.46 | 417.58 | 101.63 | 1.175 |
+| high_rate | 1000 | 216.87 | 6212.30 | 40.0 | 32.24 | 375.54 | 92.39 | 1.136 |
+| high_rate | 2000 | 229.99 | 6646.48 | 40.0 | 32.24 | 378.03 | 92.39 | 1.152 |
 
 All eight idle windows have zero payment polling, signing, updates, records,
 attributed payment carriers and relay-journal writes. Total observed process CPU
-is 113,270.526 ms, including 729.400 ms in the guards and gaps retained
-separately from the workload rows. These costs are not baseline-subtracted.
+is 111,599.538 ms, including 922.990 ms in the guards and gaps retained separately
+from the workload rows. These costs are not baseline-subtracted.
 
-At high rate, 500 ms costs 8.01 ms of measured payment CPU and
-0.219 total process CPU-seconds per delivered MiB. Locally attributed
-payment carriers are 0.325% of application bytes. Independent durable checkpoints
-add 9.90 ms of CPU and 195.41 KiB of relay-journal writes per
-window, included in process CPU and total journal counters but not the payment
-columns. Its mean delivery delay is 1.235 ms and both p95 histogram
-bounds are 2 ms. The 1-s policy uses 9.1% fewer updates/carrier bytes and
-5.9% less measured payment CPU, but 1.9% more total process CPU.
-The 500-ms payment CPU samples are 232.27/256.77 ms;
-the 1-s samples are 234.30/225.98 ms. Two repetitions on a
-shared host do not establish a reliable optimum; the default remains 500 ms.
+At high rate, 500 ms costs 7.97 ms of measured payment CPU and 0.213 total process
+CPU-seconds per delivered MiB. Locally attributed payment carriers are 0.325% of
+application bytes. Mean delivery delay is 1.175 ms; the two p95 histogram bounds
+are 2 ms and 5 ms. The 1-s policy uses 9.1% fewer updates/carrier bytes and measures
+10.8% lower payment CPU and 4.5% lower total process CPU. The payment CPU samples
+are 254.65/231.88 ms at 500 ms and 226.96/206.78 ms at 1 s. Two repetitions with
+shared-host interference do not establish an optimum; the default stays 500 ms.
 
-Measurement takes 387.063 seconds, with all task builds/tests finished
-before traffic starts. An isolated ARM64 Linux container has a four-CPU quota,
-2 GiB memory limit and 512 MiB temporary memory-backed filesystem for wallets
-and journals, on an ARM64 macOS host with 14 logical CPUs. Host load averages
-change from 3.49/3.57/3.60 to 3.46/4.44/4.29. High-rate timing also varies: the
-two 250-ms p95 bounds are 10 ms and 2 ms. This run does not isolate
-software changes from differences in OS, compiler profile or storage versus the
-older macOS release measurements.
+Measurement takes 392.050 seconds with all task builds/tests finished before
+traffic starts. The isolated ARM64 Linux container has a four-CPU quota, 2 GiB
+memory limit and 512 MiB temporary memory-backed filesystem for wallets and
+journals, on an ARM64 macOS host with 14 logical CPUs. No compiler is active at
+startup, but unrelated host compilers appear in 9 of 77 five-second samples.
+Host load averages change from 7.82/8.18/6.90 to 6.79/7.36/6.94. These are observed
+costs under that interference, not a controlled estimate of software speedup or
+regression against the earlier measurements. The container is removed after
+collection; no router, saved account or installed package is changed.
 
 CPU attribution covers synchronous payment spans, not whole payment tasks.
 Journal bytes exclude SDK snapshots, SQLite and physical writes. Carrier bytes
@@ -76,9 +2048,11 @@ maximum throughput, flash behavior or router performance. No production code,
 feature default or payment policy changes accompany this result.
 
 The instrumented relay SHA-256 is
-`82eed6315864f35fe9bbd14adfb15fc0b450f110fadadc21dad5eb14aeb1451f`;
+`090f3afe3344ce6b700de154a476b97d34f6a0a4c10d26c3e37626ca830c74d3`;
 the raw report SHA-256 is
-`b23c5b6dd66922bdfbaca4ed2e3e615d38c6430951243120af3fb0d0b63aad94`.
+`ada28f662ef912e686238c5069b9022527b5860e1f45d35016ccb9f42d0004a9`.
+Exact build/runtime commands, host samples, raw reports and the complete interval
+analysis are retained in `work/paid-relay-verification/2026-09-30-cadence-r37`.
 Reproduce with the existing [loopback experiment](../../testing/relay-cadence/README.md),
 using the matched source bundle and `--profile openwrt --features measurements`.
 
@@ -458,61 +2432,6 @@ The 500-ms default remains unchanged. Two repetitions with diagnostic sampling
 establish this bounded comparison, not an optimal universal payment age or
 proof that the earlier packet loss is resolved.
 
-## Matched storage syscall comparison — 19 September 2026
-
-The separate Linux ARM64 storage comparison passes all eight trials: maximum
-payment ages of 250/500/1000/2000 ms followed by the reverse order. All 93,696
-application packets arrive, with 101 out of order and no duplicates or invalid
-packets. Each trial settles its original two 32-sat channels and collects all
-384 test sats; the complete matrix conserves 3,072 sats. Independent replay of
-all 96 raw traces matches the saved summaries, settlement and wallet equations
-reconcile, and all 40 owned containers/networks are absent after cleanup.
-
-The fixture uses three relay processes and native Ethernet over virtual links,
-with the same finite workloads as the hardware comparison and a fixed three-second
-tail. The tariff is 1 msat/KiB. The optimized relay executable is unchanged during
-measurement (SHA-256 `9a17f2df6a147028ad894724e2d0dcd89a39ab8deb93e4c214f39a7e89ca1ce2`).
-No task builds or tests run concurrently. These are successful syscall write
-lengths and sync calls, not physical media writes or flash wear. Tracing changes
-execution cost; its CPU/timing observations are not compared with the untraced
-Wi-Fi experiment. The virtual carrier, platform and warmup also differ.
-
-All eight idle and all eight bursty windows have zero payment updates, file
-writes and syncs. Bursty traffic consumes already-paid credit; its metered usage
-still increases. Every steady window delivers 3,200,000 bytes, performs three
-updates and 42 syncs, and writes between 140,225 and 140,655 bytes. Each high-rate
-window delivers 8,000,000 bytes. The pairs below retain both repetitions in trial
-order; file writes include independent allowance checkpoints as well as payments.
-
-| Maximum age | Updates | SDK snapshot bytes | Receiver SQLite bytes | Relay journal bytes | Total file bytes | File/directory sync calls |
-| --- | --- | --- | --- | --- | --- | --- |
-| 250 ms | 3 / 4 | 45,344 / 60,459 | 50,772 / 67,696 | 51,606 / 53,154 | 147,722 / 181,309 | 46 / 58 |
-| 500 ms | 3 / 3 | 45,344 / 45,344 | 50,772 / 50,772 | 45,444 / 52,439 | 141,560 / 148,555 | 46 / 46 |
-| 1,000 ms | 2 / 2 | 30,229 / 30,229 | 33,848 / 33,848 | 30,952 / 31,434 | 95,029 / 95,511 | 34 / 34 |
-| 2,000 ms | 2 / 2 | 30,229 / 30,230 | 33,848 / 33,848 | 36,557 / 55,105 | 100,634 / 119,183 | 34 / 44 |
-
-Funding-wallet SQLite files have zero writes or syncs in every workload window.
-The 1-second high-rate pair writes about 0.0119 file bytes per delivered application
-byte, versus 0.0177–0.0186 at 500 ms. Fewer updates reduce SDK/receiver writes;
-independent checkpoints and snapshot lengths also affect the total. Two seconds
-does not consistently reduce total writes further. These two traced repetitions
-do not establish an optimal policy; the production default remains 500 ms.
-
-Every boundary verifies unchanged authorization, acknowledged credit, payment
-activity and all durable-operation counters. Already-covered usage may advance
-without another payment: six msat of such usage appear outside the workload
-windows and are reported separately, never subtracted from workload cost. Five
-explicit tracer detach events interrupt event-counter writes; they are counted
-separately without inventing successful bytes. All file operations are complete
-and attributed, and all traced processes survive clean detachment.
-
-The preceding matrix attempt stopped on its fourth trial because its guard
-incorrectly required already-covered usage to remain fixed between windows.
-It remains an incomplete result; all 1,536 test sats from its four trials were
-collected. The corrected guard permits only monotonic covered usage, preserving
-all payment, credit and durability checks. A fresh pilot and this complete matrix
-pass that guard. See the [capture contract](../../testing/relay-cadence/README.md#matched-storage-cadence-capture).
-
 ## Payment connection costs on Wi-Fi — 19 September 2026
 
 The new eight-trial capture retains **93,694 of 93,696** delivered application
@@ -818,9 +2737,10 @@ receiver/wallet SQLite; the separate syscall comparison above measures those
 file operations, still excluding physical storage writes. Framed payment records
 exclude TCP/FIPS/carrier headers, acknowledgments and retransmissions; the local
 payment-service counters above add those submissions within their stated scope.
-Aggregate link bytes cannot establish payment-specific wire overhead. Broader
-impairment/device acceptance, actual radio airtime and complete CPU/storage/wire
-attribution remain work for production readiness.
+Aggregate link bytes cannot establish payment-specific wire overhead. Remaining
+device acceptance follows the [readiness checklist](READINESS.md#acceptance-checklist).
+Shared CPU work outside the observed spans, physical storage writes, radio
+airtime and battery costs remain unmeasured and excluded from the v1 claims.
 
 The earlier 16 September schema-1 result remains in repository history. It reported
 complete delivery and conservation but did not verify payment boundaries; it must

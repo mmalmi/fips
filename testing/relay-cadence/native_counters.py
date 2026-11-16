@@ -18,6 +18,9 @@ GROUPS = {
     },
 }
 BACKGROUND = {"drop_background_full_packets", "drop_background_full_bytes"}
+DEFERRED = {"deferred_policy_packets", "deferred_policy_bytes"}
+WAIT_DROPS = {f"drop_policy_wait_{reason}_{unit}" for reason in ("full", "expired", "invalidated")
+              for unit in ("packets", "bytes")}
 
 
 def groups(data, expected=GROUPS):
@@ -26,7 +29,9 @@ def groups(data, expected=GROUPS):
         layouts = (GROUPS[group],)
         if group == "forwarding":
             # Preserve historical reports without inventing absent queue counters.
-            layouts += (GROUPS[group] | BACKGROUND,)
+            layouts += (GROUPS[group] | BACKGROUND,
+                        GROUPS[group] | BACKGROUND | DEFERRED,
+                        GROUPS[group] | BACKGROUND | DEFERRED | WAIT_DROPS)
         if not isinstance(values, dict) or set(values) not in layouts:
             raise ValueError(f"missing or changed native counter group: {group}")
         for value in values.values():

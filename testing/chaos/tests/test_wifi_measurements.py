@@ -12,11 +12,12 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sim.wifi_measurements import COUNTERS, IO_COUNTERS, OPERATIONS, process_identity, snapshot
+from sim.wifi_measurements import COUNTERS, IO_COUNTERS, OPERATIONS, process_identity, snapshot, summarize_process_samples
 
 
-def stat(pid=123, start=456, name="fips relay (worker)"):
+def stat(pid=123, start=456, name="fips relay (worker)", cpu=0):
     fields = ["S", *(["0"] * 18), str(start), "0", "0"]
+    fields[11] = str(cpu)
     return f"{pid} ({name}) " + " ".join(fields)
 
 
@@ -43,6 +44,28 @@ def node(raw=None):
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_current_measurement_schema_preserves_admission_denials(self):
+        for version in (2, 3):
+            current = status()
+            value = current["measurements"]
+            value["version"] = version
+            for operation in ("payment_open", "payment_stop"):
+                del value["operations"][operation]
+            if version == 3:
+                value["operations"]["payment_exchange"] = dict.fromkeys(COUNTERS, 0)
+            value["admission_denials"] = {"credit_limit": 7, "durable_window": 11}
+            observed = snapshot(node(frame(relay=json.dumps(current))), "n01")
+            self.assertEqual(observed["measurements"], value)
+            if version == 3:
+                del value["operations"]["payment_exchange"]
+                with self.assertRaises(ValueError):
+                    snapshot(node(frame(relay=json.dumps(current))), "n01")
+                value["operations"]["payment_exchange"] = dict.fromkeys(COUNTERS, 0)
+            for bad in ({}, {"credit_limit": 7}, {"credit_limit": True, "durable_window": 11}):
+                value["admission_denials"] = bad
+                with self.subTest(version=version, bad=bad), self.assertRaises(ValueError):
+                    snapshot(node(frame(relay=json.dumps(current))), "n01")
+
     def test_native_observations_are_opt_in_and_bound_to_the_same_process(self):
         native = {"status": "ok", "data": {"pid": 123, "npub": "test-node",
                   "exe_path": "/tmp/owned/fips-relay", "forwarding": {"received_packets": 1}}}
@@ -56,6 +79,15 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(result["native"], {"status": native, "routing": routing,
                                            "transports": transports})
         self.assertEqual(result["data_carrier"], status()["data_carrier"])
+        supervised = copy.deepcopy(native)
+        supervised['data']['exe_path'] = '/usr/sbin/fips-relay'
+        client = node(frame(native_status=json.dumps(supervised), native_routing=json.dumps(routing),
+                            native_transports=json.dumps(transports)))
+        client.process_binary = '/usr/sbin/fips-relay'
+        self.assertEqual(snapshot(client, 'n01', True)['native']['status'], supervised)
+        with self.assertRaises(ValueError):
+            snapshot(node(frame(native_status=json.dumps(supervised), native_routing=json.dumps(routing),
+                                native_transports=json.dumps(transports))), 'n01', True)
         for evidence in (raw, frame()):
             with self.assertRaises(ValueError):
                 snapshot(node(evidence), "n01", native_counters=evidence != raw)
@@ -303,6 +335,58 @@ class ShellSamplerTests(unittest.TestCase):
             (self.root / "process.pid").write_text("123\n")
             (self.record / "cmdline").write_bytes(
                 "\0".join([self.router.binary, "run", self.router.config, ""]).encode())
+
+
+class ProcessSummaryTests(unittest.TestCase):
+    expected = {'router': {'relay'}}
+    intent = {'boot_ids': {'router': 'original'}, 'tick_hz': {'router': 100}}
+
+    def rows(self):
+        rows = []
+        for index, (epoch, ticks, peak) in enumerate([(1, 100, 128), (1, 120, 100),
+                                                    (2, 10, 64), (2, 40, 96)]):
+            raw = stat(start=epoch, cpu=ticks)
+            sample = dict(state='live', pid=123, start_ticks=epoch, cpu_ticks=ticks,
+                          cpu_seconds=ticks/100, rss_kib=peak, peak_rss_kib=peak,
+                          stat_before=raw, stat_after=raw)
+            start = 100 + 5 * index
+            rows.append(dict(host='router', boot_id='original', started_monotonic=start,
+                             finished_monotonic=start+.1, device_uptime_start=start,
+                             device_uptime_end=start+.1,
+                             host_memory_kib={'MemAvailable': 300000, 'MemTotal': 500000},
+                             profiles={'relay': sample}, observed_profile_rss_sum_kib=peak))
+        return rows
+
+    def test_approximate_memory_peak_can_fall_without_resetting_cpu_or_epochs(self):
+        result = summarize_process_samples(self.rows(), self.intent, self.expected)
+        self.assertEqual(result['observed_cpu_delta_seconds'], .5)
+        first, second = result['process_epochs']
+        self.assertEqual((first['peak_rss_kib'], first['last_peak_rss_kib'],
+                          first['peak_counter_decreases']), (128, 100, 1))
+        self.assertEqual((second['peak_rss_kib'], second['peak_counter_decreases']), (96, 0))
+        self.assertTrue(result['memory_counters_approximate'])
+        self.assertEqual(result['hosts']['router']['maximum_recorded_rss_sum_kib'], 128)
+        self.assertEqual(result['missing_profiles'], [])
+
+    def test_cpu_identity_and_clock_failures_still_reject_the_observation(self):
+        for mutation in ('cpu', 'identity', 'clock'):
+            rows = self.rows()
+            sample = rows[1]['profiles']['relay']
+            if mutation == 'cpu':
+                sample.update(cpu_ticks=99, cpu_seconds=.99,
+                              stat_before=stat(start=1, cpu=99), stat_after=stat(start=1, cpu=99))
+            elif mutation == 'identity':
+                sample['start_ticks'] = 9
+            else:
+                rows[1]['started_monotonic'] = 99
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                summarize_process_samples(rows, self.intent, self.expected)
+        absent = self.rows()[0]
+        absent.update(profiles={'relay': {'state': 'unavailable'}}, observed_profile_rss_sum_kib=0)
+        result = summarize_process_samples([absent], self.intent, self.expected)
+        self.assertIsNone(result['observed_cpu_delta_seconds'])
+        self.assertIsNone(result['hosts']['router']['maximum_recorded_rss_sum_kib'])
+        self.assertEqual(result['missing_profiles'], ['relay'])
 
 
 if __name__ == "__main__":

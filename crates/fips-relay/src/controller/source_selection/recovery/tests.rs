@@ -22,6 +22,7 @@ fn fixture(root: &Path) -> (Store, Outgoing, BuyerAuthorizer, DurableRelay) {
         billing: old.offer.billing,
         destination: old.offer.destination.npub(),
         max_rate_msat_per_kib: 8192,
+        bid_msat_per_kib: 0,
         paused: false,
         pending: Some(old.offer.clone()),
         selected_trial: None,

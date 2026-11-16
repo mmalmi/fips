@@ -2,10 +2,11 @@
 //!
 //! Quotes do not fund channels or authorize traffic. A controller must recheck
 //! the route, verify funding, arrange its onward purchase and persist accepted
-//! bindings before enabling forwarding. Pending offers may expire on restart;
-//! accepted accounting belongs in the durable seller/buyer journals.
+//! bindings before enabling forwarding. Services retain issued offers across
+//! restart; accepted accounting belongs in the durable seller/buyer journals.
 
 mod cache;
+mod journal;
 mod messages;
 mod selection;
 pub use messages::{QuoteRequest, QuoteResponse, RouteOffer};
@@ -38,6 +39,7 @@ const MAX_REQUEST_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct QuotePolicy {
+    pub additional_receive_mints: Vec<String>,
     pub destination_fees: BTreeMap<NodeAddr, u64>,
     pub billing: BillingBasis,
     pub mint_url: String,
@@ -52,24 +54,32 @@ pub struct QuotePolicy {
     pub grace_msat: u64,
 }
 
-#[derive(Debug, Clone)]
+impl QuotePolicy {
+    fn accepts_mint(&self, mint: &str) -> bool {
+        mint == self.mint_url || self.additional_receive_mints.iter().any(|allowed| allowed == mint)
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredOffer {
     offer: RouteOffer,
+    local_fee_msat_per_kib: u64,
     downstream: Option<RouteOffer>,
-    reusable: bool,
 }
 
 struct Offers {
     epoch: String,
     next_id: u64,
     pending: BTreeMap<String, StoredOffer>,
+    journal: Option<journal::OfferJournal>,
+    ready: bool,
 }
 
 pub struct RouteQuotes {
     endpoint: Arc<FipsEndpoint>,
     client: Arc<cache::QuoteClient>,
     policy: Arc<QuotePolicy>,
-    offers: Mutex<Offers>,
+    offers: Arc<Mutex<Offers>>,
     pub(crate) free: Arc<crate::free_routes::FreeRoutes>,
     selection: Option<selection::PriceSelection>,
 }
@@ -79,6 +89,10 @@ fn unix_now() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map(|t| t.as_secs())
         .map_err(|_| "invalid clock".into())
+}
+
+pub(crate) fn zero_bid(value: &u64) -> bool {
+    *value == 0
 }
 
 fn is_false(value: &bool) -> bool {
@@ -144,6 +158,7 @@ impl RouteQuotes {
             control,
             policy.clone(),
             *endpoint.node_addr(),
+            free.clone(),
         ));
         Ok(Self {
             endpoint,
@@ -151,18 +166,20 @@ impl RouteQuotes {
             policy,
             free,
             selection: None,
-            offers: Mutex::new(Offers {
+            offers: Arc::new(Mutex::new(Offers {
                 epoch: Identity::generate().node_addr().to_string(),
                 next_id: 1,
                 pending: BTreeMap::new(),
-            }),
+                journal: None,
+                ready: true,
+            })),
         })
     }
 
     /// Request a fresh quote using native routing or the opted-in source selector.
     /// A direct final destination needs no paid forwarding quote.
     pub async fn request_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
-        self.request_route_inner(destination, false).await
+        self.request_route_at_bid(destination, false, 0).await
     }
 
     pub(crate) fn billing_basis(&self) -> BillingBasis {
@@ -172,7 +189,19 @@ impl RouteQuotes {
     /// Check current native prices and paths while reusing unchanged offers.
     /// This does not accept a quote, fund a channel or authorize any traffic.
     pub async fn refresh_route(&self, destination: PeerIdentity) -> Result<RouteOffer, String> {
-        self.request_route_inner(destination, true).await
+        self.request_route_at_bid(destination, true, 0).await
+    }
+
+    /// Mint bootstrap never creates a payment obligation or accepts a priced
+    /// route. Request only when opening a connection; reuse the bounded cache.
+    pub(crate) async fn require_free_route(&self, destination: PeerIdentity) -> Result<(), String> {
+        let Some(offer) = self.request_native_route(destination, true, 0).await? else {
+            return Ok(());
+        };
+        if offer.price.msat != 0 {
+            return Err("mint bootstrap requires an explicitly free route".into());
+        }
+        Ok(())
     }
 
     pub(crate) fn max_rate_msat_per_kib(&self) -> u64 {
@@ -183,45 +212,60 @@ impl RouteQuotes {
         self.client.invalidate(provider, destination);
     }
 
-    pub(crate) fn stop_reusing(&self, id: &str) -> Result<(), String> {
-        if let Some(offer) = self
-            .offers
+    /// Called after the controller durably stops the agreement. Accepted
+    /// bindings remain in its journal; this slot can no longer fund a new one.
+    pub(crate) fn retire_offer(&self, id: &str) -> Result<(), String> {
+        self.offers
             .lock()
             .map_err(|_| "quote state poisoned")?
-            .pending
-            .get_mut(id)
-        {
-            offer.reusable = false;
-        }
-        Ok(())
+            .retire(id)
     }
 
-    async fn request_route_inner(
+    pub(crate) async fn request_route_at_bid(
         &self,
         destination: PeerIdentity,
         reuse_unchanged: bool,
+        bid_msat_per_kib: u64,
     ) -> Result<RouteOffer, String> {
+        if bid_msat_per_kib > self.policy.max_rate_msat_per_kib || (bid_msat_per_kib > 0 && !self.policy.billing.has_free_handshakes()) {
+            return Err("priority bid outside local policy".into());
+        }
         if let Some(selection) = &self.selection {
             return self
-                .select_priced_route(destination, selection, reuse_unchanged)
+                .select_priced_route(destination, selection, reuse_unchanged, bid_msat_per_kib)
                 .await;
         }
+        self.request_native_route(destination, reuse_unchanged, bid_msat_per_kib)
+            .await?
+            .ok_or_else(|| "destination is a direct neighbor".into())
+    }
+
+    // Bootstrap follows native routing without invoking the paid source selector.
+    async fn request_native_route(
+        &self,
+        destination: PeerIdentity,
+        reuse_unchanged: bool,
+        bid_msat_per_kib: u64,
+    ) -> Result<Option<RouteOffer>, String> {
         let deadline_unix = unix_now()?.checked_add(20).ok_or("clock overflow")?;
         let provider = self.resolve(destination, None, deadline_unix).await?;
         if provider.node_addr() == destination.node_addr() {
-            return Err("destination is a direct neighbor".into());
+            return Ok(None);
         }
         self.request_from(
             provider,
             QuoteRequest {
+                preferred_mint: (bid_msat_per_kib > 0).then(|| self.policy.mint_url.clone()),
                 destination,
                 ancestors: vec![*self.endpoint.node_addr()],
                 deadline_unix,
                 reuse_unchanged,
+                bid_msat_per_kib,
                 requested_max_units: None,
             },
         )
         .await
+        .map(Some)
     }
 
     /// Renewal retains its provider and financial service. It must not invoke
@@ -231,10 +275,12 @@ impl RouteQuotes {
         self.request_from(
             provider,
             QuoteRequest {
+                preferred_mint: (old.bid_msat_per_kib > 0).then(|| old.mint_url.clone()),
                 destination: old.destination,
                 ancestors: vec![*self.endpoint.node_addr()],
                 deadline_unix: unix_now()?.checked_add(20).ok_or("clock overflow")?,
                 reuse_unchanged: false,
+                bid_msat_per_kib: old.bid_msat_per_kib,
                 requested_max_units: old.trial.then_some(old.max_units),
             },
         )
@@ -290,7 +336,10 @@ impl RouteQuotes {
             Ok(offer) => QuoteResponse::Offer {
                 offer: Box::new(offer),
             },
-            Err(_) => QuoteResponse::Rejected,
+            Err(error) => {
+                tracing::debug!(peer = %peer.node_addr(), %error, "route quote rejected");
+                QuoteResponse::Rejected
+            }
         }
     }
 
@@ -312,11 +361,15 @@ impl RouteQuotes {
             || request.deadline_unix <= now
             || request.deadline_unix > now.saturating_add(MAX_REQUEST_SECONDS)
             || request.requested_max_units == Some(0)
+            || request.preferred_mint.as_ref().is_some_and(|mint| request.bid_msat_per_kib == 0 || !self.policy.accepts_mint(mint))
+            || request.bid_msat_per_kib > self.policy.max_rate_msat_per_kib
+            || (request.bid_msat_per_kib > 0 && !self.policy.billing.has_free_handshakes())
         {
             return Err("invalid quote path or deadline".into());
         }
         {
             let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
+            offers.ensure_ready()?;
             offers
                 .pending
                 .retain(|_, stored| stored.offer.expires_unix > now);
@@ -342,7 +395,10 @@ impl RouteQuotes {
         if request.ancestors.contains(next.node_addr()) {
             return Err("quote loop".into());
         }
-        let downstream = if next.node_addr() == request.destination.node_addr() {
+        // A receive-only seed sells its own link. Beyond that link the
+        // native network carries the packet on ordinary best-effort terms.
+        let native_tail = request.bid_msat_per_kib > 0 && self.free.public_free_transit();
+        let downstream = if native_tail || next.node_addr() == request.destination.node_addr() {
             None
         } else {
             if request.ancestors.len() == MAX_PAID_HOPS {
@@ -352,12 +408,17 @@ impl RouteQuotes {
             onward.ancestors.push(local);
             Some(self.request_from(next, onward).await?)
         };
-        let rate = self
+        let local_fee_msat_per_kib = self
             .policy
             .destination_fees
             .get(request.destination.node_addr())
             .copied()
             .unwrap_or(self.policy.fee_msat_per_kib)
+            .max(request.bid_msat_per_kib);
+        if downstream.as_ref().is_some_and(|offer| offer.price.msat > 0 && offer.mint_url != self.policy.mint_url) {
+            return Err("onward purchase needs an authorized funding mint".into());
+        }
+        let rate = local_fee_msat_per_kib
             .checked_add(downstream.as_ref().map_or(0, |d| d.price.msat))
             .ok_or("quote price overflow")?;
         if rate > self.policy.max_rate_msat_per_kib {
@@ -371,7 +432,7 @@ impl RouteQuotes {
         if let Some(downstream) = &downstream {
             path.extend_from_slice(&downstream.path);
         } else {
-            path.push(*request.destination.node_addr());
+            path.push(*next.node_addr());
         }
         let expires_unix = now
             .checked_add(self.policy.lifetime_secs)
@@ -382,78 +443,39 @@ impl RouteQuotes {
             .max_units
             .min(downstream.as_ref().map_or(u64::MAX, |d| d.max_units))
             .min(request.requested_max_units.unwrap_or(u64::MAX));
-        let mut offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
-        if request.reuse_unchanged {
-            let reuse_until = now.saturating_add((self.policy.lifetime_secs / 4).max(1));
-            if let Some(stored) = offers
-                .pending
-                .values()
-                .filter(|s| s.reusable && self.free.can_reuse_offer(&s.offer))
-                .find(|s| {
-                    let o = &s.offer;
-                    o.buyer == *peer.node_addr()
-                        && o.destination == request.destination
-                        && o.path == path
-                        && o.price == price
-                        && o.max_units == max_units
-                        && o.trial == request.requested_max_units.is_some()
-                        && o.expires_unix > reuse_until
-                        && o.expires_unix <= expires_unix
-                })
-            {
-                self.free.offer(&stored.offer)?;
-                return Ok(stored.offer.clone());
-            }
-        }
-        if offers.pending.len() >= MAX_OFFERS
-            || offers
-                .pending
-                .values()
-                .filter(|v| v.offer.buyer == *peer.node_addr())
-                .count()
-                >= MAX_OFFERS_PER_BUYER
-        {
-            return Err("offer capacity".into());
-        }
-        let id = format!("{}-{}", offers.epoch, offers.next_id);
-        offers.next_id = offers
-            .next_id
-            .checked_add(1)
-            .ok_or("quote sequence exhausted")?;
-        let offer = RouteOffer {
-            trial: request.requested_max_units.is_some(),
-            billing: self.policy.billing,
-            id: id.clone(),
-            buyer: *peer.node_addr(),
-            provider: local,
-            destination: request.destination,
-            next_hop: *next.node_addr(),
-            path,
-            price,
-            expires_unix,
-            max_units,
-            mint_url: self.policy.mint_url.clone(),
-            receiver_pubkey_hex: self.policy.receiver_pubkey_hex.clone(),
-            capacity_sat: self.policy.capacity_sat,
-            grace_msat: self.policy.grace_msat,
-        };
-        self.free.offer(&offer)?;
-        offers.pending.insert(
-            id,
+        self.publish(
             StoredOffer {
-                offer: offer.clone(),
+                local_fee_msat_per_kib,
+                offer: RouteOffer {
+                    bid_msat_per_kib: request.bid_msat_per_kib,
+                    trial: request.requested_max_units.is_some(),
+                    billing: self.policy.billing,
+                    id: String::new(),
+                    buyer: *peer.node_addr(),
+                    provider: local,
+                    destination: request.destination,
+                    next_hop: *next.node_addr(),
+                    path,
+                    price,
+                    expires_unix,
+                    max_units,
+                    mint_url: request.preferred_mint.unwrap_or_else(|| self.policy.mint_url.clone()),
+                    receiver_pubkey_hex: self.policy.receiver_pubkey_hex.clone(),
+                    capacity_sat: self.policy.capacity_sat,
+                    grace_msat: self.policy.grace_msat,
+                },
                 downstream,
-                reusable: true,
             },
-        );
-        Ok(offer)
+            request.reuse_unchanged,
+        )
+        .await
     }
 
     pub fn retained_offer(&self, buyer: PeerIdentity, id: &str) -> Result<RouteOffer, String> {
         let now = unix_now()?;
-        self.offers
-            .lock()
-            .map_err(|_| "quote state poisoned")?
+        let offers = self.offers.lock().map_err(|_| "quote state poisoned")?;
+        offers.ensure_ready()?;
+        offers
             .pending
             .get(id)
             .filter(|s| s.offer.buyer == *buyer.node_addr() && s.offer.expires_unix > now)

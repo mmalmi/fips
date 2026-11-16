@@ -286,7 +286,7 @@ async fn interrupted_same_provider_promotion_preserves_trial_allowance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interrupted_promotion_controller_reload_preserves_trial_allowance() {
+async fn interrupted_promotion_source_restart_preserves_trial_allowance() {
     run(true).await;
 }
 
@@ -294,43 +294,14 @@ async fn reload_source(bench: &mut bench::Bench, anchor: &mut Anchor) -> Result<
     use fips_core::node::{
         OriginatedSessionAdmission, OriginatedSessionIntent, OriginatedSessionObserver,
     };
-    // Reload only controller and selector; keep native sessions, transport,
-    // wallet and buyer accounting alive. No process-restart claim is made.
-    let incoming = tokio::time::timeout(Duration::from_secs(20), bench.tasks.remove(0).stop())
-        .await
-        .map_err(|_| "source workers did not stop within the reload bound")?
-        .ok_or("source control request stream lost during reload")?;
     let before = saved(bench, 0);
     let watch = before["watched_routes"].clone();
     if watch[bench.peers[3].npub()]["selected_trial"] != anchor.trial.contract.id {
-        bench.tasks.insert(
-            0,
-            ControllerTasks::start(bench.controllers[0].clone(), incoming),
-        );
         return Err("withdrawal lost the original selected trial reference".into());
     }
     let budget = bench.buyers[0].remaining_budget_sat();
-    drop(bench.controllers.remove(0));
-    bench.nodes[0]
-        .set_source_route(bench.peers[3], None)
-        .await
-        .unwrap();
-    let (transport, policy) = &bench.quote_inputs[0];
-    bench.services[0].quotes = Arc::new(
-        RouteQuotes::new(bench.nodes[0].clone(), transport.clone(), policy.clone())
-            .unwrap()
-            .with_price_selection(PriceSelectionPolicy::default(), bench.buyers[0].clone())
-            .unwrap(),
-    );
-    let controller = Arc::new(
-        Controller::load(
-            &bench.root.path().join("controller-0"),
-            bench.controller_policy.clone(),
-            bench.services[0].clone(),
-        )
-        .unwrap(),
-    );
-    bench.controllers.insert(0, controller.clone());
+    let incoming = bench.restart_promotion_source().await;
+    let controller = bench.controllers[0].clone();
     let resumed = tokio::time::timeout(Duration::from_secs(20), controller.resume_pending()).await;
     let after = saved(bench, 0);
     let inactive = controller.purchases().await?.is_empty()
@@ -340,23 +311,22 @@ async fn reload_source(bench: &mut bench::Bench, anchor: &mut Anchor) -> Result<
             next_hop: anchor.trial.provider,
             session_bytes: 1,
         }) == OriginatedSessionAdmission::Reject;
+
     bench
         .tasks
         .insert(0, ControllerTasks::start(controller, incoming));
-    resumed.map_err(|_| "controller reload recovery exceeded its bound")??;
+    resumed.map_err(|_| "source restart recovery exceeded its bound")??;
     if !inactive
         || after["watched_routes"] != watch
         || after["funding"] != before["funding"]
         || bench.buyers[0].remaining_budget_sat() != budget
         || bench.buyers[0].observed_units(&anchor.trial.contract.id) != Some(anchor.used)
     {
-        return Err(
-            "controller reload changed trial allowance, funding or current authority".into(),
-        );
+        return Err("source restart changed trial allowance, funding or current authority".into());
     }
     anchor.check(bench).await?;
     eprintln!(
-        "promotion: controller+selector reloaded with retained trial reference; retired admission rejected, consumed_units={}",
+        "promotion: source native runtime and accounting reopened with retained trial reference; retired admission rejected, consumed_units={}",
         anchor.used
     );
     Ok(())

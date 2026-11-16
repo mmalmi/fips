@@ -3,8 +3,20 @@ use super::*;
 
 impl Controller {
     fn expired_purchase_unowned(j: &Journal, offer: &RouteOffer, timestamp: u64) -> bool {
-        offer.expires_unix != 0
-            && offer.expires_unix <= timestamp
+        let mut expired = offer.expires_unix != 0 && offer.expires_unix <= timestamp;
+        // Funding can shorten service below the quote's lifetime. Retired
+        // predecessors must not withdraw a still-usable purchase of that quote.
+        for outgoing in j
+            .outgoing
+            .values()
+            .filter(|o| !o.retired && o.offer.id == offer.id)
+        {
+            if outgoing.offer != *offer || outgoing.purchase.contract.expires_unix > timestamp {
+                return false;
+            }
+            expired = true;
+        }
+        expired
             && !j.recovery_only.contains(&offer.id)
             && !j.incoming.values().any(|i| {
                 i.phase != Phase::Stopped

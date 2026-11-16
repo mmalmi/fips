@@ -2,6 +2,13 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// Time spent in the current scheduler phase, measured with a monotonic clock.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct PendingPayment {
+    pub stage: PaymentStage,
+    pub elapsed_ms: u64,
+}
+
 /// A status observation, not an atomic financial snapshot or a delivery receipt.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct PaymentProgress {
@@ -11,22 +18,62 @@ pub struct PaymentProgress {
     pub acknowledged_msat: Option<u64>,
     /// Includes completed jobs whose result has not yet been harvested.
     pub in_flight: bool,
+    pub pending: Option<PendingPayment>,
+    /// Latest failed exchange since this scheduler started, retained after recovery.
+    /// Contains no error text, payment material, or durable financial authority.
+    pub last_failure_stage: Option<PaymentStage>,
 }
 
 #[derive(Default)]
 pub(super) struct ScheduleProgress {
+    channel_id: String,
     pub(super) acknowledged_msat: Option<u64>,
-    pub(super) in_flight: bool,
+    pub(super) last_failure_stage: Option<PaymentStage>,
+    pending: Option<(PaymentStage, tokio::time::Instant)>,
 }
 
 impl ScheduleProgress {
     pub(super) fn started(&mut self) {
-        self.in_flight = true;
+        self.pending = Some((PaymentStage::Scheduled, tokio::time::Instant::now()));
     }
 
-    pub(super) fn finished(&mut self, acknowledged_msat: Option<u64>) {
+    pub(super) fn in_flight(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub(super) fn stage(&mut self, stage: PaymentStage) {
+        if self.in_flight() {
+            self.trace_phase();
+            self.pending = Some((stage, tokio::time::Instant::now()));
+        }
+    }
+
+    fn trace_phase(&self) {
+        if let Some((stage, since)) = self.pending {
+            tracing::debug!(target: "fips_payment", channel_id = %self.channel_id, stage = ?stage,
+                elapsed_us = u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX),
+                "Payment phase completed");
+        }
+    }
+
+    pub(super) fn pending(&self) -> Option<PendingPayment> {
+        self.pending.map(|(stage, since)| PendingPayment {
+            stage,
+            elapsed_ms: u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+
+    pub(super) fn finished(
+        &mut self,
+        acknowledged_msat: Option<u64>,
+        failure: Option<PaymentStage>,
+    ) {
+        self.trace_phase();
         self.acknowledged_msat = acknowledged_msat;
-        self.in_flight = false;
+        self.pending = None;
+        if failure.is_some() {
+            self.last_failure_stage = failure;
+        }
     }
 }
 
@@ -44,7 +91,10 @@ impl ProgressRegistry {
         if channels.len() >= MAX_CHANNELS || channels.contains_key(id) {
             return None;
         }
-        let progress = Arc::new(Mutex::new(ScheduleProgress::default()));
+        let progress = Arc::new(Mutex::new(ScheduleProgress {
+            channel_id: id.to_owned(),
+            ..Default::default()
+        }));
         channels.insert(id.to_owned(), Arc::downgrade(&progress));
         Some(progress)
     }
@@ -66,7 +116,9 @@ impl ProgressRegistry {
                 .ok_or("buyer channel evidence missing")?,
             authorized_sat: buyer.authorized_sat(id).ok_or("buyer channel missing")?,
             acknowledged_msat: progress.as_ref().and_then(|p| p.acknowledged_msat),
-            in_flight: progress.as_ref().is_some_and(|p| p.in_flight),
+            in_flight: progress.as_ref().is_some_and(|p| p.in_flight()),
+            pending: progress.as_ref().and_then(|p| p.pending()),
+            last_failure_stage: progress.as_ref().and_then(|p| p.last_failure_stage),
         })
     }
 }

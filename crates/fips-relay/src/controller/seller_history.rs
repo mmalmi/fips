@@ -1,9 +1,11 @@
 //! Retain seller debt and settlement totals after release or immutable expiry.
+use super::channel_history::with_store;
 use super::*;
 use crate::ledger::channel_history::{History as LedgerHistory, Plan as LedgerPlan};
 use cashu_service::{
     CashuSpilmanReceiverHistory as ReceiverHistory, CashuSpilmanReceiverRetirement as ReceiverPlan,
 };
+use std::borrow::BorrowMut;
 
 mod receiver;
 
@@ -16,6 +18,8 @@ pub(super) struct SellerHistory {
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Totals {
     accounting: LedgerHistory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refund_through_unix: Option<u64>,
     value_sat: u64,
     signed_sat: u64,
     paid_sat: u64,
@@ -27,7 +31,7 @@ struct Totals {
     receiver: Option<ReceiverHistory>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Plan {
     before: Totals,
     after: Totals,
@@ -43,8 +47,18 @@ impl SellerHistory {
 }
 
 impl Totals {
-    fn valid(&self, mint: &str) -> bool {
+    fn refund_deadline(&self) -> Option<u64> {
+        crate::ledger::refund_deadline(
+            self.accounting.expires_through_unix,
+            self.refund_through_unix,
+        )
+    }
+
+    fn valid(&self, policy: &ControllerPolicy) -> bool {
         self.accounting.valid(MAX_CHANNELS)
+            && self
+                .refund_deadline()
+                .is_some_and(|refund| refund >= self.accounting.expires_through_unix)
             && self.accounting.capacity_sat <= self.value_sat
             && self
                 .paid_sat
@@ -57,7 +71,7 @@ impl Totals {
             && self
                 .receiver
                 .as_ref()
-                .is_none_or(|r| receiver::valid_history(r, self, mint))
+                .is_none_or(|r| receiver::valid_history(r, self, policy))
             && (self.accounting.channels != 0
                 || *self
                     == Self {
@@ -66,9 +80,20 @@ impl Totals {
                     })
     }
 
-    fn added(&self, report: &SettlementReport) -> Result<Self, String> {
+    fn added(&self, report: &SettlementReport, channel: &ChannelTerms) -> Result<Self, String> {
         Ok(Self {
             accounting: self.accounting.clone(),
+            refund_through_unix: if self.refund_through_unix.is_some()
+                || channel.refund_after_unix.is_some()
+            {
+                Some(
+                    self.refund_deadline()
+                        .ok_or("retired refund overflow")?
+                        .max(channel.refund_deadline().ok_or("channel refund overflow")?),
+                )
+            } else {
+                None
+            },
             value_sat: add(self.value_sat, report.value_after_stage1_sat)?,
             signed_sat: add(self.signed_sat, report.signed_sat)?,
             paid_sat: add(self.paid_sat, report.paid_sat)?,
@@ -89,8 +114,7 @@ fn completed(j: &Journal, sale: &SellerSettlement, timestamp: u64) -> bool {
     sale.report.is_some()
         && sale
             .channel
-            .expires_unix
-            .checked_add(60)
+            .refund_deadline()
             .is_some_and(|e| e < timestamp)
         && !j.incoming.values().any(|i| i.channel.id == sale.channel.id)
 }
@@ -100,8 +124,8 @@ impl Plan {
         self.ledger
             .validate(MAX_CHANNELS)
             .map_err(|e| e.to_string())?;
-        if !self.before.valid(&j.policy.mint_url)
-            || !self.after.valid(&j.policy.mint_url)
+        if !self.before.valid(&j.policy)
+            || !self.after.valid(&j.policy)
             || self.before.accounting != self.ledger.before
             || self.after.accounting != self.ledger.after
             || j.history
@@ -124,7 +148,7 @@ impl Plan {
             {
                 return Err("retiring sale changed".into());
             }
-            after = after.added(s.report.as_ref().unwrap())?;
+            after = after.added(s.report.as_ref().unwrap(), &s.channel)?;
         }
         after.accounting = self.ledger.after.clone();
         self.validate_receiver(j)?;
@@ -160,7 +184,9 @@ impl Controller {
             };
         };
         if !matches!(j.history_version(), 5 | 6)
-            || !h.totals.valid(&j.policy.mint_url)
+            || !h.totals.valid(&j.policy)
+            || (h.totals.refund_through_unix.is_some()
+                && j.version & journal::FUNDING_DEADLINES_VERSION == 0)
             || (j.history_version() == 6) != h.totals.receiver.is_some()
         {
             return Err("invalid seller history".into());
@@ -181,92 +207,121 @@ impl Controller {
 
 impl Store {
     pub(super) fn retire_sales(
-        &mut self,
+        shared: &Mutex<impl BorrowMut<Store>>,
         seller: &DurableRelay,
         timestamp: u64,
         mut prepare: impl FnMut(&[String]) -> Result<ReceiverPlan, String>,
         mut retire: impl FnMut(&ReceiverPlan) -> Result<ReceiverHistory, String>,
     ) -> Result<usize, String> {
-        self.prepare_sales(seller, timestamp, &mut prepare)?;
-        self.resume_sales(seller, &mut prepare, &mut retire)
+        Self::prepare_sales(shared, seller, timestamp, &mut prepare)?;
+        Self::resume_sales(shared, seller, &mut prepare, &mut retire)
     }
 
     fn prepare_sales(
-        &mut self,
+        shared: &Mutex<impl BorrowMut<Store>>,
         seller: &DurableRelay,
         timestamp: u64,
         mut prepare: impl FnMut(&[String]) -> Result<ReceiverPlan, String>,
     ) -> Result<(), String> {
-        if !self.ready {
-            return Err("controller journal suspended".into());
-        }
-        if !self.journal.history.as_ref().is_some_and(History::pending) {
-            let ids: Vec<_> = self
+        let selected = with_store(shared, |store| {
+            if !store.ready {
+                return Err("controller journal suspended".into());
+            }
+            if store.journal.history.as_ref().is_some_and(History::pending) {
+                return Ok(None);
+            }
+            // One admitted payout fits the SDK handoff; retire the oldest owner first.
+            let ids: Vec<_> = store
                 .journal
                 .seller_settlements
                 .iter()
-                .filter(|(_, s)| completed(&self.journal, s, timestamp))
+                .filter(|(_, s)| completed(&store.journal, s, timestamp))
+                .min_by_key(|(id, s)| (s.channel.refund_deadline(), *id))
                 .map(|(id, _)| id.clone())
+                .into_iter()
                 .collect();
-            if !ids.is_empty() {
-                let ledger = seller
-                    .channel_retirement_plan(&ids, timestamp)
-                    .map_err(|e| e.to_string())?;
-                let before = self
-                    .journal
-                    .history
-                    .as_ref()
-                    .and_then(|h| h.seller.as_ref())
-                    .map(|h| h.totals.clone())
-                    .unwrap_or_default();
-                let mut after = before.clone();
-                for id in &ids {
-                    after = after
-                        .added(self.journal.seller_settlements[id].report.as_ref().unwrap())?;
-                }
-                after.accounting = ledger.after.clone();
-                let plan = Plan {
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            let ledger = seller
+                .channel_retirement_plan(&ids, timestamp)
+                .map_err(|e| e.to_string())?;
+            let before = store
+                .journal
+                .history
+                .as_ref()
+                .and_then(|h| h.seller.as_ref())
+                .map(|h| h.totals.clone())
+                .unwrap_or_default();
+            let mut after = before.clone();
+            for id in &ids {
+                after = after.added(
+                    store.journal.seller_settlements[id]
+                        .report
+                        .as_ref()
+                        .unwrap(),
+                    &store.journal.seller_settlements[id].channel,
+                )?;
+            }
+            after.accounting = ledger.after.clone();
+            Ok(Some((
+                ids,
+                Plan {
                     before,
                     after,
                     ledger,
                     receiver: None,
-                };
-                // An ineligible payout must not leave an unfulfillable intent.
-                self.save_sale_plan(plan, prepare(&ids)?)?;
-            }
+                },
+            )))
+        })?;
+        if let Some((ids, plan)) = selected {
+            // An ineligible payout must not leave an unfulfillable intent.
+            let receiver = prepare(&ids)?;
+            with_store(shared, |store| {
+                store.ensure_ready()?;
+                store.save_sale_plan(plan, receiver).map(|_| ())
+            })?;
         }
         Ok(())
     }
 
     pub(super) fn resume_sales(
-        &mut self,
+        shared: &Mutex<impl BorrowMut<Store>>,
         seller: &DurableRelay,
         mut prepare: impl FnMut(&[String]) -> Result<ReceiverPlan, String>,
         mut retire: impl FnMut(&ReceiverPlan) -> Result<ReceiverHistory, String>,
     ) -> Result<usize, String> {
-        if !self.ready {
-            return Err("controller journal suspended".into());
-        }
-        let Some(mut p) = self
-            .journal
-            .history
-            .as_ref()
-            .and_then(|h| h.seller.as_ref())
-            .and_then(|h| h.pending.clone())
-        else {
+        let pending = with_store(shared, |store| {
+            if !store.ready {
+                return Err("controller journal suspended".into());
+            }
+            let plan = store
+                .journal
+                .history
+                .as_ref()
+                .and_then(|h| h.seller.as_ref())
+                .and_then(|h| h.pending.clone());
+            if let Some(p) = &plan {
+                p.validate(&store.journal)?;
+            }
+            Ok(plan)
+        })?;
+        let Some(mut p) = pending else {
             return Ok(0);
         };
-        p.validate(&self.journal)?;
         if p.receiver.is_none() {
-            // Legacy intents still own their original identities and reports.
-            // Upgrade before a completed ledger handoff can discard those IDs.
+            // Upgrade saved intents before the ledger can discard their IDs.
             let ids = p
                 .ledger
                 .channels
                 .iter()
                 .map(|c| c.terms.id.clone())
                 .collect::<Vec<_>>();
-            p = self.save_sale_plan(p, prepare(&ids)?)?;
+            let receiver = prepare(&ids)?;
+            p = with_store(shared, |store| {
+                store.check_sale_plan(&p)?;
+                store.save_sale_plan(p, receiver)
+            })?;
         }
         seller
             .retire_channels(&p.ledger)
@@ -278,12 +333,30 @@ impl Store {
         if retire(receiver)? != receiver.accounting.after {
             return Err("receiver retirement result changed".into());
         }
-        let mut j = self.journal.clone();
-        p.finish(&mut j);
-        Controller::validate_journal(&j, &j.policy, j.local)?;
-        self.journal = j;
-        self.persist()?;
-        Ok(p.ledger.channels.len())
+        with_store(shared, |store| {
+            store.check_sale_plan(&p)?;
+            let mut j = store.journal.clone();
+            p.finish(&mut j);
+            Controller::validate_journal(&j, &j.policy, j.local)?;
+            store.journal = j;
+            store.persist()?;
+            Ok(p.ledger.channels.len())
+        })
+    }
+
+    fn check_sale_plan(&self, plan: &Plan) -> Result<(), String> {
+        if !self.ready
+            || self
+                .journal
+                .history
+                .as_ref()
+                .and_then(|h| h.seller.as_ref())
+                .and_then(|h| h.pending.as_ref())
+                != Some(plan)
+        {
+            return Err("seller retirement intent changed".into());
+        }
+        plan.validate(&self.journal)
     }
 
     fn save_sale_plan(&mut self, mut plan: Plan, receiver: ReceiverPlan) -> Result<Plan, String> {

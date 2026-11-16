@@ -10,6 +10,199 @@ impl Drop for OnDrop {
 }
 
 #[tokio::test]
+async fn tick_preserves_usage_age_without_duplicate_or_idle_work() {
+    use crate::controller::{refresh::tests::disconnected_controller, transition_tests};
+    use crate::ledger::{BillingBasis, BytePrice};
+    use fips_core::node::{ForwardingOutcome, OriginatedSessionObserver, OriginatedSessionRequest};
+
+    async fn finished(job: &JoinHandle<PaymentResult>) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !job.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fixture reply must finish");
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let original = disconnected_controller(root.path()).await;
+    let local = *original.services.endpoint.node_addr();
+    let services = original.services.clone();
+    drop(original);
+    let (mut store, mut outgoing) =
+        transition_tests::fixture_for_local(&root.path().join("fixture"), local);
+    outgoing.offer.billing = BillingBasis::ForwardingAttempt;
+    outgoing.offer.price = BytePrice {
+        msat: 250,
+        per_bytes: 1_000,
+    };
+    outgoing.purchase.contract =
+        contract_from_offer(&outgoing.offer, &outgoing.purchase.channel).unwrap();
+    store
+        .journal
+        .requested
+        .insert(outgoing.offer.id.clone(), outgoing.offer.clone());
+    store
+        .journal
+        .outgoing
+        .insert(outgoing.purchase.contract.id.clone(), outgoing.clone());
+    store.persist().unwrap();
+    let controller =
+        Arc::new(Controller::with_store(store.journal.policy.clone(), services, store).unwrap());
+    let buyer = &controller.services.buyer;
+    buyer
+        .accept_channel(
+            outgoing.purchase.provider,
+            outgoing.purchase.channel.clone(),
+            0,
+        )
+        .unwrap();
+    buyer
+        .accept_quote(outgoing.purchase.contract.clone())
+        .unwrap();
+    let submit = || {
+        let token = buyer
+            .observe(&OriginatedSessionRequest {
+                source: local,
+                destination: outgoing.purchase.contract.destination,
+                next_hop: outgoing.purchase.provider,
+                session_payload: &[1; 1_000],
+            })
+            .unwrap();
+        buyer.complete(token, ForwardingOutcome::Submitted);
+    };
+    submit();
+    let id = outgoing.purchase.channel.id.clone();
+    assert_eq!(buyer.evidence_msat(&id), Some(250));
+    // Keep any newly scheduled exchange before its network/signing boundary.
+    let channel_guard = controller.channel_work(&id).unwrap().lock_owned().await;
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let policy = PaymentCadence::default();
+    let (reply, pending) = oneshot::channel::<ChannelUsage>();
+    let mut work = ChannelPayment {
+        schedule: ChannelSchedule::default(),
+        job: Some(tokio::spawn(
+            async move { Ok(Some(pending.await.unwrap())) },
+        )),
+        started_evidence_msat: 250,
+        #[cfg(feature = "measurements")]
+        progress: None,
+    };
+    work.schedule.acknowledge(start, 0, 0, 0);
+    assert!(!work.schedule.due(start, 250, 0, 8_000, &policy));
+    let first_job = work.job.as_ref().unwrap().id();
+    let mut workers = PaymentWorkers::default();
+    workers.channels.insert(id.clone(), work);
+    tokio::time::advance(Duration::from_millis(500)).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    assert_eq!(workers.channels[&id].job.as_ref().unwrap().id(), first_job);
+    tokio::time::advance(Duration::from_millis(100)).await;
+    for _ in 0..4 {
+        submit();
+    }
+    assert_eq!(buyer.evidence_msat(&id), Some(1_250));
+    workers.tick(&controller, &policy).await.unwrap();
+    assert_eq!(workers.channels[&id].job.as_ref().unwrap().id(), first_job);
+    tokio::time::advance(Duration::from_millis(400)).await;
+    reply
+        .send(ChannelUsage {
+            submitted_msat: 250,
+            reserved_msat: 250,
+            paid_msat: 1_000,
+            lost_msat: 0,
+        })
+        .unwrap();
+    finished(workers.channels[&id].job.as_ref().unwrap()).await;
+    tokio::time::advance(Duration::from_millis(100)).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    let work = workers.channels.get_mut(&id).unwrap();
+    let next = work
+        .job
+        .take()
+        .expect("the original debt deadline already passed");
+    assert_ne!(next.id(), first_job);
+    assert_eq!(work.started_evidence_msat, 1_250);
+    next.abort();
+    assert!(next.await.unwrap_err().is_cancelled());
+    work.job = Some(tokio::spawn(async {
+        Ok(Some(ChannelUsage {
+            submitted_msat: 1_250,
+            reserved_msat: 1_250,
+            paid_msat: 2_000,
+            lost_msat: 0,
+        }))
+    }));
+    finished(work.job.as_ref().unwrap()).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    assert!(workers.channels[&id].job.is_none());
+    tokio::time::advance(Duration::from_secs(100)).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    assert!(
+        workers.channels[&id].job.is_none(),
+        "covered idle usage must not poll"
+    );
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_millis(333)).await;
+        submit();
+        workers.tick(&controller, &policy).await.unwrap();
+        assert!(
+            workers.channels[&id].job.is_none(),
+            "new usage covered by rounded credit must not poll"
+        );
+    }
+    assert_eq!(buyer.evidence_msat(&id), Some(2_000));
+    tokio::time::advance(Duration::from_millis(334)).await;
+    submit();
+    workers.tick(&controller, &policy).await.unwrap();
+    let work = workers.channels.get_mut(&id).unwrap();
+    let next = work
+        .job
+        .take()
+        .expect("running out of rounded credit must not restart the usage deadline");
+    assert_eq!(work.started_evidence_msat, 2_250);
+    next.abort();
+    assert!(next.await.unwrap_err().is_cancelled());
+    let (reply, pending) = oneshot::channel::<ChannelUsage>();
+    work.job = Some(tokio::spawn(
+        async move { Ok(Some(pending.await.unwrap())) },
+    ));
+    tokio::time::advance(Duration::from_millis(100)).await;
+    submit();
+    workers.tick(&controller, &policy).await.unwrap();
+    tokio::time::advance(Duration::from_millis(100)).await;
+    reply
+        .send(ChannelUsage {
+            submitted_msat: 2_250,
+            reserved_msat: 2_250,
+            paid_msat: 3_000,
+            lost_msat: 0,
+        })
+        .unwrap();
+    finished(workers.channels[&id].job.as_ref().unwrap()).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    tokio::time::advance(Duration::from_millis(100)).await;
+    for _ in 0..3 {
+        submit();
+    }
+    workers.tick(&controller, &policy).await.unwrap();
+    assert!(
+        workers.channels[&id].job.is_none(),
+        "new usage must not inherit already acknowledged debt age"
+    );
+    tokio::time::advance(Duration::from_millis(300)).await;
+    workers.tick(&controller, &policy).await.unwrap();
+    let next = workers.channels.get_mut(&id).unwrap().job.take().unwrap();
+    next.abort();
+    assert!(next.await.unwrap_err().is_cancelled());
+    workers.drain().await.unwrap();
+    drop(channel_guard);
+    tokio::time::resume();
+    controller.services.endpoint.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn successful_reply_does_not_cover_sends_after_the_exchange_started() {
     let mut payment = ChannelPayment {
         started_evidence_msat: 9_584,
@@ -27,12 +220,14 @@ async fn successful_reply_does_not_cover_sends_after_the_exchange_started() {
     };
     let now = tokio::time::Instant::now();
     for _ in 0..8 {
-        payment.schedule.acknowledge(now, 9_584, 8_000);
+        payment.schedule.acknowledge(now, 9_584, 8_000, 0);
     }
     payment.finish().await.unwrap();
     let now = tokio::time::Instant::now();
     let policy = PaymentCadence::default();
     assert!(!payment.schedule.due(now, 9_584, 8, 8_000, &policy));
+    // Reported crash loss leaves only 4,000 msat of grace for new usage.
+    assert!(payment.schedule.due(now, 10_000, 8, 8_000, &policy));
     assert!(payment.schedule.due(now, 14_000, 8, 8_000, &policy));
 }
 
@@ -80,19 +275,29 @@ async fn aborting_a_draining_scheduler_cancels_the_pending_exchange() {
 
 #[cfg(feature = "measurements")]
 #[tokio::test]
-async fn payment_progress_stays_in_flight_until_harvest_and_failures_are_unknown() {
+async fn payment_progress_tracks_harvested_results_and_retains_last_failure() {
     let progress = Arc::new(Mutex::new(
         super::super::payment_progress::ScheduleProgress::default(),
     ));
     let (finish, ready) = oneshot::channel();
     progress.lock().unwrap().started();
+    assert_eq!(
+        progress.lock().unwrap().pending().unwrap().stage,
+        Stage::Scheduled
+    );
+    let observation = PaymentObservation {
+        progress: Some(progress.clone()),
+    };
     let mut payment = ChannelPayment {
-        job: Some(tokio::spawn(async move { ready.await.unwrap() })),
+        job: Some(tokio::spawn(async move {
+            let _observation = observation;
+            ready.await.unwrap()
+        })),
         progress: Some(progress.clone()),
         schedule: ChannelSchedule::default(),
         started_evidence_msat: 0,
     };
-    assert!(progress.lock().unwrap().in_flight);
+    assert!(progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
     finish
         .send(Ok(Some(ChannelUsage {
@@ -110,23 +315,53 @@ async fn payment_progress_stays_in_flight_until_harvest_and_failures_are_unknown
     .await
     .unwrap();
     assert!(
-        progress.lock().unwrap().in_flight,
+        progress.lock().unwrap().in_flight(),
         "unharvested completion is pending"
     );
+    assert_eq!(
+        progress.lock().unwrap().pending().unwrap().stage,
+        Stage::AwaitingHarvest
+    );
     payment.finish().await.unwrap();
-    assert!(!progress.lock().unwrap().in_flight);
+    assert!(!progress.lock().unwrap().in_flight());
+    assert_eq!(progress.lock().unwrap().pending(), None);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, Some(1_000));
 
     progress.lock().unwrap().started();
-    payment.job = Some(tokio::spawn(async { Err("lost acknowledgment".into()) }));
-    assert!(payment.finish().await.is_err());
-    assert!(!progress.lock().unwrap().in_flight);
+    payment.job = Some(tokio::spawn(async {
+        Err(Stage::UpdateRequest.error("lost acknowledgment"))
+    }));
+    assert_eq!(payment.finish().await.unwrap_err(), "lost acknowledgment");
+    assert!(!progress.lock().unwrap().in_flight());
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
-    progress.lock().unwrap().finished(Some(2_000));
+    assert_eq!(
+        progress.lock().unwrap().last_failure_stage,
+        Some(Stage::UpdateRequest)
+    );
+    progress.lock().unwrap().finished(Some(2_000), None);
+    assert_eq!(
+        progress.lock().unwrap().last_failure_stage,
+        Some(Stage::UpdateRequest)
+    );
     payment.job = Some(tokio::spawn(async { Ok(None) }));
     payment.finish().await.unwrap();
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
-    progress.lock().unwrap().finished(Some(3_000));
+    let failed = tokio::spawn(std::future::pending::<PaymentResult>());
+    failed.abort();
+    payment.job = Some(failed);
+    assert!(payment.finish().await.is_err());
+    assert_eq!(
+        progress.lock().unwrap().last_failure_stage,
+        Some(Stage::Worker)
+    );
+    progress.lock().unwrap().finished(Some(3_000), None);
+    progress.lock().unwrap().started();
+    let late_observation = PaymentObservation {
+        progress: Some(progress.clone()),
+    };
     drop(payment);
+    late_observation.stage(Stage::UpdateRequest);
+    drop(late_observation);
     assert_eq!(progress.lock().unwrap().acknowledged_msat, None);
+    assert_eq!(progress.lock().unwrap().pending(), None);
 }
