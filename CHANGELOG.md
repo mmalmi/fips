@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.123] - 2026-11-16
+
+- Recover bidirectional traffic across authenticated peer restarts during session key rotation.
+- Return active flows to a recovered, trusted direct link after using a same-host relay.
+- Advertise LAN traversal addresses that the bound UDP socket can receive on.
+- Expose aggregate WebSocket connection counts to embedded applications.
+
 ## [0.4.118] - 2026-11-05
 
 ### Added
