@@ -15,7 +15,7 @@ fn test_recovery_rekey_replaces_session_after_remote_restart() {
 #[test]
 fn test_restarted_initiator_reestablishes_with_surviving_responder() {
     run_large_stack_async_test("fips-session-restarted-initiator", || async {
-        restarted_initiator_reestablishes_with_surviving_responder(false).await;
+        restarted_initiator_reestablishes_with_surviving_responder(RestartScenario::Fresh).await;
     });
 }
 
@@ -117,7 +117,29 @@ async fn recovery_rekey_replaces_session_after_remote_restart() {
     cleanup_nodes(&mut nodes).await;
 }
 
-async fn restarted_initiator_reestablishes_with_surviving_responder(hold_setup: bool) {
+#[derive(Clone, Copy, PartialEq)]
+enum RestartScenario {
+    Fresh,
+    WithheldSetup,
+    Pending,
+    Draining,
+}
+
+#[test]
+fn restarted_peer_recovers_while_responder_has_pending_keys() {
+    run_large_stack_async_test("fips-restart-pending", || async {
+        restarted_initiator_reestablishes_with_surviving_responder(RestartScenario::Pending).await;
+    });
+}
+
+#[test]
+fn restarted_peer_recovers_while_responder_is_draining() {
+    run_large_stack_async_test("fips-restart-during-drain", || async {
+        restarted_initiator_reestablishes_with_surviving_responder(RestartScenario::Draining).await;
+    });
+}
+
+async fn restarted_initiator_reestablishes_with_surviving_responder(scenario: RestartScenario) {
     let _guard = lock_large_network_test().await;
     let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
     verify_tree_convergence(&nodes);
@@ -182,6 +204,38 @@ async fn restarted_initiator_reestablishes_with_surviving_responder(hold_setup: 
         "surviving responder should still retain its initial SessionAck"
     );
 
+    if matches!(
+        scenario,
+        RestartScenario::Pending | RestartScenario::Draining
+    ) {
+        drain_to_quiescence(&mut nodes).await;
+        settle_session_handshake_retransmits(&mut nodes, 0, &survivor_addr, 1, &restarted_addr);
+        assert!(nodes[0].node.initiate_session_rekey(&survivor_addr).await);
+        wait_for_session_state_for_node(&mut nodes, 1, &restarted_addr, "rekey setup", |s| {
+            s.has_rekey_in_progress()
+        })
+        .await;
+        wait_for_session_state_for_node(&mut nodes, 0, &survivor_addr, "rekey ack", |s| {
+            s.pending_new_session().is_some()
+        })
+        .await;
+        wait_for_session_state_for_node(&mut nodes, 1, &restarted_addr, "rekey completion", |s| {
+            s.pending_new_session().is_some()
+        })
+        .await;
+        if scenario == RestartScenario::Draining {
+            nodes[0]
+                .node
+                .send_dataplane_fsp_pending_epoch_probe(&survivor_addr)
+                .await
+                .unwrap();
+            wait_for_session_state_for_node(&mut nodes, 1, &restarted_addr, "key cutover", |s| {
+                s.is_draining()
+            })
+            .await;
+        }
+    }
+
     nodes[0].node.remove_dataplane_fsp_owner(&survivor_addr);
     assert!(nodes[0].node.remove_session(&survivor_addr).is_some());
     nodes[0].node.startup_epoch[0] ^= 0xff;
@@ -191,7 +245,7 @@ async fn restarted_initiator_reestablishes_with_surviving_responder(hold_setup: 
         .initiate_session(survivor_addr, survivor_identity.pubkey_full())
         .await
         .expect("restarted peer should start a fresh session");
-    if hold_setup {
+    if scenario == RestartScenario::WithheldSetup {
         control::withheld_setup(&mut nodes, &restarted_addr, &survivor_addr).await;
     } else {
         control::wait_for_fresh_setup(&mut nodes[1], &restarted_addr).await;

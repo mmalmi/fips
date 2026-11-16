@@ -38,7 +38,8 @@ pub(super) async fn wait_for_fresh_setup(node: &mut TestNode, remote: &NodeAddr)
 #[test]
 fn unrelated_packet_does_not_complete_withheld_restart_setup() {
     run_large_stack_async_test("fips-restart-held-setup", || async {
-        restarted_initiator_reestablishes_with_surviving_responder(true).await;
+        restarted_initiator_reestablishes_with_surviving_responder(RestartScenario::WithheldSetup)
+            .await;
     });
 }
 
