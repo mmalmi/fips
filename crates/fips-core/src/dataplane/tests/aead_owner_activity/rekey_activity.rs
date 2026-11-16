@@ -164,38 +164,109 @@ fn rekey_delivers_authenticated_work_completed_after_cutover() {
 #[test]
 fn rekey_delivers_outbound_work_queued_before_cutover() {
     for protocol in [PacketProtocol::Fmp, PacketProtocol::Fsp] {
-        let owner = match protocol { PacketProtocol::Fmp => fmp_owner(98), PacketProtocol::Fsp => fsp_owner(98) };
-        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
-        let next_authority = crate::noise::SendCounterAuthority::for_test();
-        let config = |generation, previous| match protocol {
-            PacketProtocol::Fmp => OwnerConfig::new(generation, 8)
-                .with_fmp_epoch(generation == 2, previous)
-                .with_fmp_send_headers(98, if generation == 2 { crate::node::wire::FLAG_KEY_EPOCH } else { 0 }),
-            PacketProtocol::Fsp => OwnerConfig::new(generation, 8).with_fsp_epoch(generation == 2, previous),
-        };
-        driver.mover.register_owner(owner, config(1, None));
-        let state = driver.mover.owner_mut(owner).unwrap();
-        state.set_crypto_keys(OwnerCryptoKeys::new(test_key(98), test_key(98)));
-        assert!(match protocol {
-            PacketProtocol::Fmp => state.install_fmp_pending_receive_epoch(true, test_key(99), next_authority.clone()),
-            PacketProtocol::Fsp => state.install_fsp_pending_epoch(true, test_key(99), test_key(99), next_authority.clone()),
-        });
-        driver.mover.submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"queued reply")).unwrap();
-        let state = driver.mover.owner_mut(owner).unwrap();
-        let config = config(2, Some(false)).with_send_counter_authority(next_authority);
-        let keys = OwnerCryptoKeys::new(test_key(99), test_key(99));
-        assert!(match protocol {
-            PacketProtocol::Fmp => state.install_fmp_session(config, keys),
-            PacketProtocol::Fsp => state.install_fsp_session(config, keys),
-        });
-        let turn = run_aead_available(&mut driver.mover, 8);
-        assert!(turn.drops.is_empty(), "{protocol:?}: {:?}", turn.drops);
-        assert_eq!(turn.outputs().len(), 1, "{protocol:?}: queued plaintext uses current keys");
-        let output = turn.outputs()[0];
-        let plaintext = match protocol {
-            PacketProtocol::Fmp => open_fmp_wire_payload(output.payload.as_slice(), 99),
-            PacketProtocol::Fsp => open_fsp_wire_payload(output.payload.as_slice(), 99),
-        };
-        assert_eq!(plaintext, b"queued reply", "current key and matching wire headers");
+        for reserved_before_cutover in [false, true] {
+            let owner = match protocol {
+                PacketProtocol::Fmp => fmp_owner(98),
+                PacketProtocol::Fsp => fsp_owner(98),
+            };
+            let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
+            let next_authority = crate::noise::SendCounterAuthority::for_test();
+            let config = |generation, previous| match protocol {
+                PacketProtocol::Fmp => OwnerConfig::new(generation, 8)
+                    .with_fmp_epoch(generation == 2, previous)
+                    .with_fmp_send_headers(
+                        98,
+                        if generation == 2 {
+                            crate::node::wire::FLAG_KEY_EPOCH
+                        } else {
+                            0
+                        },
+                    ),
+                PacketProtocol::Fsp => OwnerConfig::new(generation, 8)
+                    .with_fsp_session_start_ms(generation * 1_000)
+                    .with_fsp_epoch(generation == 2, previous),
+            };
+            driver.mover.register_owner(owner, config(1, None));
+            driver
+                .mover
+                .owner_mut(owner)
+                .unwrap()
+                .set_crypto_keys(OwnerCryptoKeys::new(test_key(98), test_key(98)));
+            let mut packet = outbound_packet(owner, 1, PacketClass::Bulk, b"queued reply")
+                .with_activity_tick(ActivityTick::new(1_001));
+            if protocol == PacketProtocol::Fsp {
+                packet = packet.with_fsp_inner_header(
+                    crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                    0,
+                );
+            }
+            driver.mover.submit_outbound_packet(packet).unwrap();
+            let prepared = if reserved_before_cutover {
+                capture_prepared_work(&mut driver.mover, 8)
+            } else {
+                Vec::new()
+            };
+            let state = driver.mover.owner_mut(owner).unwrap();
+            assert!(match protocol {
+                PacketProtocol::Fmp => state.install_fmp_pending_receive_epoch(
+                    true,
+                    test_key(99),
+                    next_authority.clone()
+                ),
+                PacketProtocol::Fsp => state.install_fsp_pending_epoch(
+                    true,
+                    test_key(99),
+                    test_key(99),
+                    next_authority.clone()
+                ),
+            });
+            if protocol == PacketProtocol::Fsp {
+                assert_eq!(
+                    state.fsp_activity().unwrap().has_tx_data_in_epoch(),
+                    reserved_before_cutover,
+                    "staging a pending epoch must not reset current send activity"
+                );
+            }
+            let config = config(2, Some(false)).with_send_counter_authority(next_authority);
+            let keys = OwnerCryptoKeys::new(test_key(99), test_key(99));
+            assert!(match protocol {
+                PacketProtocol::Fmp => state.install_fmp_session(config, keys),
+                PacketProtocol::Fsp => state.install_fsp_session(config, keys),
+            });
+            let (payload, key) = if reserved_before_cutover {
+                let completions = prepared
+                    .into_iter()
+                    .map(execute_test_prepared_crypto_work)
+                    .collect::<Vec<_>>();
+                let turn = run_aead_completion_turn(&mut driver, completions, 8);
+                assert!(turn.drops.is_empty(), "{protocol:?}: {:?}", turn.drops);
+                assert_eq!(turn.outputs.len(), 1);
+                (turn.outputs[0].payload.as_slice().to_vec(), 98)
+            } else {
+                let turn = run_aead_available(&mut driver.mover, 8);
+                assert!(turn.drops.is_empty(), "{protocol:?}: {:?}", turn.drops);
+                assert_eq!(turn.outputs().len(), 1);
+                (turn.outputs()[0].payload.as_slice().to_vec(), 99)
+            };
+            let plaintext = match protocol {
+                PacketProtocol::Fmp => open_fmp_wire_payload(&payload, key),
+                PacketProtocol::Fsp => {
+                    assert_eq!(
+                        driver
+                            .mover
+                            .owner_fsp_activity(owner)
+                            .unwrap()
+                            .has_tx_data_in_epoch(),
+                        !reserved_before_cutover,
+                        "only application data sealed in the current epoch arms recovery"
+                    );
+                    open_fsp_wire_payload(&payload, key)[FSP_INNER_HEADER_SIZE..].to_vec()
+                }
+            };
+            assert_eq!(
+                plaintext, b"queued reply",
+                "payload must retain its actual send-key epoch"
+            );
+        }
     }
 }

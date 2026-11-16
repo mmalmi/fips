@@ -526,6 +526,12 @@ impl Node {
                     return None;
                 }
                 let activity = self.dataplane.fsp_owner_activity(addr)?;
+                // A completed key repair cannot deliver an older unanswered
+                // burst. Retry again when application data uses this epoch;
+                // keep pending exchanges and delivery-quality history intact.
+                if entry.pending_new_session().is_none() && !activity.has_tx_data_in_epoch() {
+                    return None;
+                }
                 let next_hop = activity.last_outbound_next_hop()?;
                 (activity.has_unacknowledged_outbound_from(
                     &next_hop,

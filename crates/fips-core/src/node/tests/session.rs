@@ -27,6 +27,7 @@ mod graph_fallback;
 mod handshake_retention;
 mod handshake_timeout;
 mod idle_control;
+mod idle_recovery;
 mod mesh_signal_replay;
 #[cfg(unix)]
 mod mesh_traversal_interop;
