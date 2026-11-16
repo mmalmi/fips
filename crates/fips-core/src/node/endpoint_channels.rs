@@ -281,6 +281,9 @@ pub(crate) enum NodeEndpointControlCommand {
         response_tx:
             tokio::sync::oneshot::Sender<Vec<crate::discovery::nostr::OverlayEndpointAdvert>>,
     },
+    WebSocketConnectionCounts {
+        response_tx: tokio::sync::oneshot::Sender<Option<crate::endpoint::WebSocketConnectionCounts>>,
+    },
     BoundUdpListenAddrs {
         response_tx: tokio::sync::oneshot::Sender<Vec<std::net::SocketAddr>>,
     },

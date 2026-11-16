@@ -59,7 +59,9 @@ pub use service_carrier::{
     SERVICE_CARRIER_DIAGNOSTICS_MAX_SERVICES, ServiceCarrierDiagnostics, ServiceCarrierSnapshot,
     ServiceCarrierTransportSnapshot,
 };
-pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus, FipsEndpointRoutingStatus};
+pub use status::{
+    FipsEndpointPeer, FipsEndpointRelayStatus, FipsEndpointRoutingStatus, WebSocketConnectionCounts,
+};
 
 /// Endpoint data bytes delivered by FIPS.
 ///
@@ -329,6 +331,19 @@ impl FipsEndpoint {
         crate::discovery::local::LocalInstanceRegistryError,
     > {
         Ok(self.local_capability_directory.snapshot())
+    }
+
+    /// Sample the current WebSocket transports without collecting peer or address data.
+    pub async fn websocket_connection_counts(
+        &self,
+    ) -> Result<Option<WebSocketConnectionCounts>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.control(
+            "WebSocket connection counts",
+            NodeEndpointControlCommand::WebSocketConnectionCounts { response_tx },
+            response_rx,
+        )
+        .await
     }
 
     /// Snapshot addresses owned by operational UDP transports that accept inbound

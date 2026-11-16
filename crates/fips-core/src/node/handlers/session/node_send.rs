@@ -410,6 +410,16 @@ impl Node {
                 };
                 let _ = response_tx.send(endpoints);
             }
+            NodeEndpointControlCommand::WebSocketConnectionCounts { response_tx } => {
+                let snapshots = self.transport_ids().filter_map(|id| {
+                    match self.get_transport(id)? {
+                        crate::transport::TransportHandle::WebSocket(ws) => Some(ws.stats()),
+                        _ => None,
+                    }
+                });
+                let totals = crate::endpoint::WebSocketConnectionCounts::from_snapshots(snapshots);
+                let _ = response_tx.send(totals);
+            }
             NodeEndpointControlCommand::BoundUdpListenAddrs { response_tx } => {
                 let _ = response_tx.send(self.bound_udp_listener_snapshot());
             }

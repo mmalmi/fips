@@ -43,6 +43,7 @@ impl Node {
             };
             match command {
                 NodeEndpointControlCommand::PeerSnapshot { .. }
+                | NodeEndpointControlCommand::WebSocketConnectionCounts { .. }
                 | NodeEndpointControlCommand::RoutingStatus { .. } => {
                     // This exact arm only reads state and sends a oneshot reply.
                     // Never dispatch mutations or async discovery between handlers.

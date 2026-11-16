@@ -2,6 +2,29 @@ use crate::NodeAddr;
 use crate::node::{NodeEndpointPeer, NodeEndpointRelayStatus};
 use std::net::SocketAddr;
 
+/// Registered WebSocket connections and pre-upgrade capacity rejections.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WebSocketConnectionCounts {
+    pub opened: u64,
+    pub closed: u64,
+    pub rejected: u64,
+}
+
+impl WebSocketConnectionCounts {
+    pub(crate) fn from_snapshots(
+        snapshots: impl Iterator<Item = crate::transport::websocket::WebSocketStatsSnapshot>,
+    ) -> Option<Self> {
+        let mut total = None;
+        for row in snapshots {
+            let counts = total.get_or_insert_with(Self::default);
+            counts.opened = counts.opened.checked_add(row.connections_opened)?;
+            counts.closed = counts.closed.checked_add(row.connections_closed)?;
+            counts.rejected = counts.rejected.checked_add(row.connections_rejected)?;
+        }
+        total
+    }
+}
+
 /// The effective routing role and the adjacencies used to negotiate it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
