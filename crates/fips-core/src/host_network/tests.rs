@@ -424,3 +424,42 @@ fn protected_mdns_daemon_rejects_denied_socket_before_startup() {
     assert_eq!(denied.protected.load(Ordering::SeqCst), 1);
     assert_eq!(denied.resolved.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn one_stalled_address_family_does_not_block_the_other() {
+    let v4 = SocketAddr::from(([127, 0, 0, 1], 443));
+    let v6 = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 443));
+    for (first, other) in [(v6, v4), (v4, v6)] {
+        let attempts = std::cell::RefCell::new(Vec::new());
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connect_resolved(vec![first, other], |addr| {
+                attempts.borrow_mut().push(addr);
+                async move {
+                    if addr == first {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(addr)
+                }
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(stream, other);
+        assert_eq!(attempts.into_inner(), vec![first, other]);
+    }
+}
+
+#[tokio::test]
+async fn healthy_first_address_never_dials_the_other_family() {
+    let first = SocketAddr::from(([127, 0, 0, 1], 443));
+    let other = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 443));
+    let chosen = connect_resolved(vec![first, other], |addr| {
+        assert_eq!(addr, first);
+        std::future::ready(Ok(addr))
+    })
+    .await
+    .unwrap();
+    assert_eq!(chosen, first);
+}
