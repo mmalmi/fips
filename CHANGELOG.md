@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.124] - 2026-11-18
+
+- Outbound TCP connections to dual-stack hosts try the other address family after 250 ms when the preferred family stalls. This lets WebSocket clients reach a seed through its working address family within the existing connection deadline.
+
 ## [0.4.123] - 2026-11-16
 
 - Recover bidirectional traffic across authenticated peer restarts during session key rotation.
