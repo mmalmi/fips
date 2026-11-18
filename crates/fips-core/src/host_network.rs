@@ -88,17 +88,56 @@ pub(crate) async fn connect_tcp_host(
     policy: Option<&dyn HostNetwork>,
     address: &str,
 ) -> io::Result<tokio::net::TcpStream> {
-    let mut last_error = io::Error::new(
-        io::ErrorKind::NotFound,
-        "host resolver returned no addresses",
-    );
-    for address in resolve(policy, address).await? {
-        match connect_tcp(policy, address).await {
-            Ok(stream) => return Ok(stream),
-            Err(error) => last_error = error,
+    connect_resolved(resolve(policy, address).await?, |addr| {
+        connect_tcp(policy, addr)
+    })
+    .await
+}
+
+async fn connect_resolved<T, F>(
+    addresses: Vec<SocketAddr>,
+    connect: impl Fn(SocketAddr) -> F,
+) -> io::Result<T>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    let preferred_v6 = addresses.first().is_some_and(SocketAddr::is_ipv6);
+    let (preferred, alternate): (Vec<_>, Vec<_>) = addresses
+        .into_iter()
+        .partition(|addr| addr.is_ipv6() == preferred_v6);
+    let connect = &connect;
+    let try_family = |addresses: Vec<SocketAddr>| async move {
+        let mut last_error = io::Error::new(
+            io::ErrorKind::NotFound,
+            "host resolver returned no addresses",
+        );
+        for address in addresses {
+            match connect(address).await {
+                Ok(stream) => return Ok(stream),
+                Err(error) => last_error = error,
+            }
         }
+        Err(last_error)
+    };
+    if alternate.is_empty() {
+        return try_family(preferred).await;
     }
-    Err(last_error)
+    // Give the resolver's first family a head start. A blackholed TCP SYN
+    // must leave time for the other family within the carrier's dial deadline.
+    let first = try_family(preferred);
+    let other = try_family(alternate);
+    tokio::pin!(first, other);
+    tokio::select! {
+        biased;
+        result = &mut first => return match result {
+            Ok(stream) => Ok(stream),
+            Err(_) => other.await,
+        },
+        () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+    }
+    futures::future::select_ok([first, other])
+        .await
+        .map(|(stream, _)| stream)
 }
 
 pub(crate) async fn listen_tcp_host(
@@ -155,10 +194,6 @@ pub async fn connect_websocket(
     tokio_tungstenite::tungstenite::Error,
 > {
     use tokio_tungstenite::tungstenite::{Error, client::IntoClientRequest, error::UrlError};
-    let Some(policy) = policy else {
-        return tokio_tungstenite::connect_async_tls_with_config(url, config, false, connector)
-            .await;
-    };
     let request = url.into_client_request()?;
     let uri = request.uri();
     let default_port = match uri.scheme_str() {
@@ -173,6 +208,6 @@ pub async fn connect_websocket(
     } else {
         format!("{host}:{port}")
     };
-    let stream = connect_tcp_host(Some(policy), &address).await?;
+    let stream = connect_tcp_host(policy, &address).await?;
     tokio_tungstenite::client_async_tls_with_config(request, stream, config, connector).await
 }
