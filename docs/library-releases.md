@@ -153,6 +153,12 @@ tags only after both packages pass, then send the exact commits, versions, and
 checksums to consumer owners. Preserve source and evidence until integration
 acceptance and clean up only task-owned, inactive outputs.
 
+When updating the public Hashtree release and default branches together, push
+the release branch first and the default branch last. The Git helper makes
+each updated branch the repository's HEAD. Check the published symbolic HEAD
+with `git ls-remote --symref` and compare its commit with the default branch.
+Verify both release tags still point to the packaged source commit.
+
 Source availability, source review, local test results, and registry byte equality
 are separate claims. This procedure does not audit every dependency or claim
 reproducible native binaries. Package-byte equality proves only that the registry
